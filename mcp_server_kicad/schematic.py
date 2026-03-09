@@ -174,7 +174,10 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
         for pin in unit.pins:
             px, py = pin.position.X, pin.position.Y
 
-            # Apply mirror first
+            # Negate Y to convert from lib_symbol (Y-up) to schematic (Y-down)
+            py = -py
+
+            # Apply mirror in schematic coordinate space
             if mir == "x":
                 py = -py
             elif mir == "y":

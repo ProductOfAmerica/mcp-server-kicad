@@ -153,15 +153,15 @@ class TestGetSymbolPins:
 
 class TestGetPinPositions:
     def test_rotation_0(self, scratch_sch: Path) -> None:
-        """Default rotation: Pin 1 at (100, 103.81), Pin 2 at (100, 96.19)."""
+        """Default rotation: Pin 1 at (100, 96.19), Pin 2 at (100, 103.81)."""
         result = schematic.get_pin_positions("R1", str(scratch_sch))
         assert "100" in result
         assert "103.81" in result
         assert "96.19" in result
 
     def test_rotation_90(self, tmp_path: Path) -> None:
-        """90 deg CCW: Pin 1 (0,3.81) -> (-3.81, 0) + (100,100) = (96.19, 100).
-        Pin 2 (0,-3.81) -> (3.81, 0) + (100,100) = (103.81, 100).
+        """90 deg CCW: Pin 1 (0,-3.81) -> (103.81, 100).
+        Pin 2 (0,3.81) -> (96.19, 100).
         """
         path = _make_rotated_sch(tmp_path, rotation=90)
         result = schematic.get_pin_positions("R1", path)
@@ -169,8 +169,8 @@ class TestGetPinPositions:
         assert "103.81" in result
 
     def test_rotation_180(self, tmp_path: Path) -> None:
-        """180 deg: Pin 1 (0,3.81) -> (0, -3.81) + (100,100) = (100, 96.19).
-        Pin 2 (0,-3.81) -> (0, 3.81) + (100,100) = (100, 103.81).
+        """180 deg: Pin 1 (0,-3.81) -> (100, 103.81).
+        Pin 2 (0,3.81) -> (100, 96.19).
         """
         path = _make_rotated_sch(tmp_path, rotation=180)
         result = schematic.get_pin_positions("R1", path)
@@ -178,8 +178,8 @@ class TestGetPinPositions:
         assert "103.81" in result
 
     def test_rotation_270(self, tmp_path: Path) -> None:
-        """270 deg CCW: Pin 1 (0,3.81) -> (3.81, 0) + (100,100) = (103.81, 100).
-        Pin 2 (0,-3.81) -> (-3.81, 0) + (100,100) = (96.19, 100).
+        """270 deg CCW: Pin 1 (0,-3.81) -> (96.19, 100).
+        Pin 2 (0,3.81) -> (103.81, 100).
         """
         path = _make_rotated_sch(tmp_path, rotation=270)
         result = schematic.get_pin_positions("R1", path)
@@ -187,27 +187,27 @@ class TestGetPinPositions:
         assert "96.19" in result
 
     def test_mirror_x(self, tmp_path: Path) -> None:
-        """Mirror x negates py before rotation (rot=0).
-        Pin 1: (0, -3.81) + (100,100) = (100, 96.19).
-        Pin 2: (0, 3.81) + (100,100) = (100, 103.81).
+        """Mirror x negates py in schematic coords (after Y-negate, rot=0).
+        Pin 1: (0,3.81) -> negate Y -> (0,-3.81) -> mirror x -> (0,3.81) -> (100, 103.81).
+        Pin 2: (0,-3.81) -> negate Y -> (0,3.81) -> mirror x -> (0,-3.81) -> (100, 96.19).
         """
         path = _make_rotated_sch(tmp_path, rotation=0, mirror="x")
         result = schematic.get_pin_positions("R1", path)
         assert "96.19" in result
         assert "103.81" in result
         # With mirror x, pin 1 and pin 2 swap positions vs rotation_0
-        # Pin 1 should be at y=96.19, Pin 2 at y=103.81
+        # Pin 1 should be at y=103.81, Pin 2 at y=96.19
         lines = result.strip().split("\n")
         pin_lines = [ln for ln in lines if ln.strip().startswith("Pin")]
         pin1_line = [ln for ln in pin_lines if "Pin 1" in ln][0]
         pin2_line = [ln for ln in pin_lines if "Pin 2" in ln][0]
-        assert "96.19" in pin1_line
-        assert "103.81" in pin2_line
+        assert "103.81" in pin1_line
+        assert "96.19" in pin2_line
 
     def test_mirror_y(self, tmp_path: Path) -> None:
         """Mirror y negates px (which is 0 for a vertical resistor, no visible change).
-        Pin positions same as rotation_0.
-        Pin 1: (100, 103.81), Pin 2: (100, 96.19).
+        Pin positions same as corrected rotation_0.
+        Pin 1: (100, 96.19), Pin 2: (100, 103.81).
         """
         path = _make_rotated_sch(tmp_path, rotation=0, mirror="y")
         result = schematic.get_pin_positions("R1", path)
@@ -218,8 +218,8 @@ class TestGetPinPositions:
         pin_lines = [ln for ln in lines if ln.strip().startswith("Pin")]
         pin1_line = [ln for ln in pin_lines if "Pin 1" in ln][0]
         pin2_line = [ln for ln in pin_lines if "Pin 2" in ln][0]
-        assert "103.81" in pin1_line
-        assert "96.19" in pin2_line
+        assert "96.19" in pin1_line
+        assert "103.81" in pin2_line
 
     def test_unknown_reference(self, scratch_sch: Path) -> None:
         result = schematic.get_pin_positions("X99", str(scratch_sch))
