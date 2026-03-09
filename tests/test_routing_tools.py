@@ -19,7 +19,6 @@ from kiutils.items.schitems import Connection, SchematicSymbol
 
 from mcp_server_kicad import schematic
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -336,5 +335,39 @@ class TestConnectPins:
                 pin1="NOPE",
                 ref2="R1",
                 pin2="1",
+                schematic_path=str(scratch_sch),
+            )
+
+
+# ===========================================================================
+# TestNoConnectPin
+# ===========================================================================
+
+
+class TestNoConnectPin:
+    def test_basic(self, scratch_sch):
+        result = schematic.no_connect_pin(
+            reference="R1",
+            pin_name="1",
+            schematic_path=str(scratch_sch),
+        )
+        assert "No-connect" in result
+        assert "R1" in result
+        sch = reparse(str(scratch_sch))
+        assert len(sch.noConnects) == 1
+
+    def test_bad_reference(self, scratch_sch):
+        with pytest.raises(ValueError, match="not found"):
+            schematic.no_connect_pin(
+                reference="X99",
+                pin_name="1",
+                schematic_path=str(scratch_sch),
+            )
+
+    def test_bad_pin(self, scratch_sch):
+        with pytest.raises(ValueError, match="not found"):
+            schematic.no_connect_pin(
+                reference="R1",
+                pin_name="NONEXIST",
                 schematic_path=str(scratch_sch),
             )

@@ -31,7 +31,11 @@ from mcp_server_kicad._shared import (
 
 mcp = FastMCP(
     "kicad-schematic",
-    instructions="KiCad schematic manipulation and symbol library tools built on kiutils",
+    instructions=(
+        "KiCad schematic manipulation and symbol library tools built on kiutils."
+        " Use wire_pin_to_label and connect_pins for efficient wiring instead of"
+        " manually computing coordinates with get_pin_positions + add_wire + add_label."
+    ),
 )
 
 
@@ -874,6 +878,32 @@ def connect_pins(
         f"Connected {ref1}:{pin1} -> {ref2}:{pin2} "
         f"via {n} wire segment{'s' if n > 1 else ''}"
     )
+
+
+@mcp.tool()
+def no_connect_pin(
+    reference: str,
+    pin_name: str,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Place a no-connect flag on a component pin.
+
+    Combines get_pin_positions + add_no_connect into one call.
+
+    Args:
+        reference: Component reference (e.g. "U2")
+        pin_name: Pin name (e.g. "NC") or number (e.g. "3")
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    px, py, _ = _get_pin_pos(sch, reference, pin_name)
+    px, py = _snap_grid(px), _snap_grid(py)
+
+    nc = NoConnect(position=Position(X=px, Y=py), uuid=_gen_uuid())
+    sch.noConnects.append(nc)
+    sch.to_file()
+
+    return f"No-connect on {reference}:{pin_name} at ({px}, {py})"
 
 
 # ---------------------------------------------------------------------------
