@@ -1,8 +1,6 @@
 """Tests for PCB read tools."""
 
-import pytest
 from mcp_server_kicad import pcb
-from conftest import reparse
 
 
 class TestListFootprints:
@@ -13,6 +11,7 @@ class TestListFootprints:
 
     def test_empty_board(self, tmp_path):
         from kiutils.board import Board
+
         b = Board.create_new()
         path = str(tmp_path / "empty.kicad_pcb")
         b.filePath = path
@@ -29,6 +28,7 @@ class TestListTraces:
 
     def test_empty(self, tmp_path):
         from kiutils.board import Board
+
         b = Board.create_new()
         path = str(tmp_path / "empty.kicad_pcb")
         b.filePath = path

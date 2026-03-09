@@ -1,14 +1,15 @@
 """Tests for CLI schematic export tools."""
 
+import json
 import shutil
+from pathlib import Path
+
 import pytest
+
+from mcp_server_kicad import export
 
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
-
-import json
-from mcp_server_kicad import export
-from pathlib import Path
 
 
 class TestExportSchematicPdf:

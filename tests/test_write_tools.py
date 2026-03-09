@@ -2,19 +2,16 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
-
-from mcp_server_kicad import schematic
 from conftest import assert_erc_clean, reparse
-
 from kiutils.items.schitems import Connection
 
+from mcp_server_kicad import schematic
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _get_refs(sch) -> list[str]:
     """Extract reference designators from schematic symbols."""
@@ -35,15 +32,13 @@ def _find_symbol(sch, reference: str):
 
 def _count_wires(sch) -> int:
     """Count wires in graphicalItems."""
-    return len([
-        g for g in sch.graphicalItems
-        if isinstance(g, Connection) and g.type == "wire"
-    ])
+    return len([g for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"])
 
 
 # ===========================================================================
 # TestPlaceComponent
 # ===========================================================================
+
 
 class TestPlaceComponent:
     def test_basic_placement(self, scratch_sch):
@@ -166,6 +161,7 @@ class TestPlaceComponent:
 # TestRemoveComponent
 # ===========================================================================
 
+
 class TestRemoveComponent:
     def test_remove_existing(self, scratch_sch):
         # Verify R1 exists first
@@ -193,13 +189,17 @@ class TestRemoveComponent:
 # TestAddWire
 # ===========================================================================
 
+
 class TestAddWire:
     def test_basic_wire(self, scratch_sch):
         sch_before = reparse(str(scratch_sch))
         count_before = _count_wires(sch_before)
 
         schematic.add_wire(
-            x1=100, y1=100, x2=200, y2=100,
+            x1=100,
+            y1=100,
+            x2=200,
+            y2=100,
             schematic_path=str(scratch_sch),
         )
 
@@ -209,7 +209,10 @@ class TestAddWire:
 
     def test_wire_erc(self, scratch_sch):
         schematic.add_wire(
-            x1=100, y1=100, x2=200, y2=100,
+            x1=100,
+            y1=100,
+            x2=200,
+            y2=100,
             schematic_path=str(scratch_sch),
         )
         assert_erc_clean(scratch_sch)
@@ -217,7 +220,10 @@ class TestAddWire:
     def test_zero_length_wire(self, scratch_sch):
         # A zero-length wire should not crash
         schematic.add_wire(
-            x1=50, y1=50, x2=50, y2=50,
+            x1=50,
+            y1=50,
+            x2=50,
+            y2=50,
             schematic_path=str(scratch_sch),
         )
         # Should be able to reparse without error
@@ -228,6 +234,7 @@ class TestAddWire:
 # ===========================================================================
 # TestAddWires
 # ===========================================================================
+
 
 class TestAddWires:
     def test_batch(self, scratch_sch):
@@ -264,6 +271,7 @@ class TestAddWires:
 # TestAddLabel
 # ===========================================================================
 
+
 class TestAddLabel:
     def test_basic_label(self, scratch_sch):
         schematic.add_label(
@@ -299,6 +307,7 @@ class TestAddLabel:
 # TestAddJunction
 # ===========================================================================
 
+
 class TestAddJunction:
     def test_basic_junction(self, scratch_sch):
         schematic.add_junction(
@@ -308,16 +317,14 @@ class TestAddJunction:
         )
         sch = reparse(str(scratch_sch))
         # Find a junction at (50, 50)
-        found = any(
-            j.position.X == 50 and j.position.Y == 50
-            for j in sch.junctions
-        )
+        found = any(j.position.X == 50 and j.position.Y == 50 for j in sch.junctions)
         assert found
 
 
 # ===========================================================================
 # TestAddJunctions
 # ===========================================================================
+
 
 class TestAddJunctions:
     def test_batch(self, scratch_sch):

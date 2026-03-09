@@ -5,9 +5,14 @@ import os
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+
 from mcp_server_kicad._shared import (
-    SCH_PATH, SYM_LIB_PATH, PCB_PATH, FP_LIB_PATH, OUTPUT_DIR,
-    _run_cli, _file_meta,
+    OUTPUT_DIR,
+    PCB_PATH,
+    SCH_PATH,
+    SYM_LIB_PATH,
+    _file_meta,
+    _run_cli,
 )
 
 mcp = FastMCP(
@@ -33,8 +38,10 @@ def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str
     """
     out_dir = output_dir or str(Path(schematic_path).parent)
     out_path = str(Path(out_dir) / (Path(schematic_path).stem + "-erc.json"))
-    _run_cli(["sch", "erc", "--format", "json", "--severity-all",
-              "--output", out_path, schematic_path], check=False)
+    _run_cli(
+        ["sch", "erc", "--format", "json", "--severity-all", "--output", out_path, schematic_path],
+        check=False,
+    )
     try:
         with open(out_path) as f:
             report = json.load(f)
@@ -43,12 +50,15 @@ def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str
     all_violations = []
     for sheet in report.get("sheets", []):
         all_violations.extend(sheet.get("violations", []))
-    return json.dumps({
-        "source": report.get("source", ""),
-        "kicad_version": report.get("kicad_version", ""),
-        "violation_count": len(all_violations),
-        "violations": all_violations,
-    }, indent=2)
+    return json.dumps(
+        {
+            "source": report.get("source", ""),
+            "kicad_version": report.get("kicad_version", ""),
+            "violation_count": len(all_violations),
+            "violations": all_violations,
+        },
+        indent=2,
+    )
 
 
 @mcp.tool()
@@ -63,8 +73,10 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
     """
     out_dir = output_dir or str(Path(pcb_path).parent)
     out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-drc.json"))
-    _run_cli(["pcb", "drc", "--format", "json", "--severity-all",
-              "--output", out_path, pcb_path], check=False)
+    _run_cli(
+        ["pcb", "drc", "--format", "json", "--severity-all", "--output", out_path, pcb_path],
+        check=False,
+    )
     try:
         with open(out_path) as f:
             report = json.load(f)
@@ -73,12 +85,15 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
     all_violations = []
     for sheet in report.get("sheets", []):
         all_violations.extend(sheet.get("violations", []))
-    return json.dumps({
-        "source": report.get("source", ""),
-        "kicad_version": report.get("kicad_version", ""),
-        "violation_count": len(all_violations),
-        "violations": all_violations,
-    }, indent=2)
+    return json.dumps(
+        {
+            "source": report.get("source", ""),
+            "kicad_version": report.get("kicad_version", ""),
+            "violation_count": len(all_violations),
+            "violations": all_violations,
+        },
+        indent=2,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -114,12 +129,15 @@ def export_schematic_svg(schematic_path: str = SCH_PATH, output_dir: str = OUTPU
     os.makedirs(out_dir, exist_ok=True)
     _run_cli(["sch", "export", "svg", "--output", out_dir, schematic_path])
     svgs = sorted(Path(out_dir).glob("*.svg"))
-    return json.dumps({
-        "path": out_dir,
-        "format": "svg",
-        "files": [f.name for f in svgs],
-        "count": len(svgs),
-    }, indent=2)
+    return json.dumps(
+        {
+            "path": out_dir,
+            "format": "svg",
+            "files": [f.name for f in svgs],
+            "count": len(svgs),
+        },
+        indent=2,
+    )
 
 
 @mcp.tool()
@@ -138,8 +156,7 @@ def export_schematic_netlist(
     out_dir = output_dir or str(Path(schematic_path).parent)
     ext = ".xml" if format == "kicadxml" else ".net"
     out_path = str(Path(out_dir) / (Path(schematic_path).stem + ext))
-    _run_cli(["sch", "export", "netlist", "--format", format,
-              "--output", out_path, schematic_path])
+    _run_cli(["sch", "export", "netlist", "--format", format, "--output", out_path, schematic_path])
     meta = _file_meta(out_path)
     meta["format"] = format
     return json.dumps(meta, indent=2)
@@ -198,10 +215,15 @@ def export_gerbers(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> st
         os.makedirs(out, exist_ok=True)
         _run_cli(["pcb", "export", "gerbers", "--output", out, pcb_path])
         files = sorted(Path(out).glob("*"))
-        return json.dumps({
-            "path": out, "format": "gerber",
-            "files": [f.name for f in files], "count": len(files),
-        }, indent=2)
+        return json.dumps(
+            {
+                "path": out,
+                "format": "gerber",
+                "files": [f.name for f in files],
+                "count": len(files),
+            },
+            indent=2,
+        )
     except (RuntimeError, FileNotFoundError) as e:
         return json.dumps({"error": str(e)}, indent=2)
 
@@ -222,8 +244,7 @@ def export_gerber(
     try:
         out_dir = output_dir or str(Path(pcb_path).parent)
         out_path = str(Path(out_dir) / f"{Path(pcb_path).stem}-{layer.replace('.', '_')}.gbr")
-        _run_cli(["pcb", "export", "gerber", "--layers", layer,
-                  "--output", out_path, pcb_path])
+        _run_cli(["pcb", "export", "gerber", "--layers", layer, "--output", out_path, pcb_path])
         meta = _file_meta(out_path)
         meta.update({"format": "gerber", "layer": layer})
         return json.dumps(meta, indent=2)
@@ -244,10 +265,15 @@ def export_drill(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
         os.makedirs(out, exist_ok=True)
         _run_cli(["pcb", "export", "drill", "--output", out, pcb_path])
         files = sorted(Path(out).glob("*.drl")) + sorted(Path(out).glob("*.DRL"))
-        return json.dumps({
-            "path": out, "format": "drill",
-            "files": [f.name for f in files], "count": len(files),
-        }, indent=2)
+        return json.dumps(
+            {
+                "path": out,
+                "format": "drill",
+                "files": [f.name for f in files],
+                "count": len(files),
+            },
+            indent=2,
+        )
     except (RuntimeError, FileNotFoundError) as e:
         return json.dumps({"error": str(e)}, indent=2)
 
@@ -269,8 +295,18 @@ def export_pcb_pdf(
         out_dir = output_dir or str(Path(pcb_path).parent)
         out_path = str(Path(out_dir) / (Path(pcb_path).stem + ".pdf"))
         layer_list = layers or ["F.Cu", "B.Cu"]
-        _run_cli(["pcb", "export", "pdf", "--layers", ",".join(layer_list),
-                  "--output", out_path, pcb_path])
+        _run_cli(
+            [
+                "pcb",
+                "export",
+                "pdf",
+                "--layers",
+                ",".join(layer_list),
+                "--output",
+                out_path,
+                pcb_path,
+            ]
+        )
         meta = _file_meta(out_path)
         meta.update({"format": "pdf", "layers": layer_list})
         return json.dumps(meta, indent=2)
@@ -295,8 +331,18 @@ def export_pcb_svg(
         out_dir = output_dir or str(Path(pcb_path).parent)
         out_path = str(Path(out_dir) / (Path(pcb_path).stem + ".svg"))
         layer_list = layers or ["F.Cu"]
-        _run_cli(["pcb", "export", "svg", "--layers", ",".join(layer_list),
-                  "--output", out_path, pcb_path])
+        _run_cli(
+            [
+                "pcb",
+                "export",
+                "svg",
+                "--layers",
+                ",".join(layer_list),
+                "--output",
+                out_path,
+                pcb_path,
+            ]
+        )
         meta = _file_meta(out_path)
         meta.update({"format": "svg", "layers": layer_list})
         return json.dumps(meta, indent=2)
@@ -315,8 +361,7 @@ def export_positions(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> 
     try:
         out_dir = output_dir or str(Path(pcb_path).parent)
         out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-pos.csv"))
-        _run_cli(["pcb", "export", "pos", "--format", "csv",
-                  "--output", out_path, pcb_path])
+        _run_cli(["pcb", "export", "pos", "--format", "csv", "--output", out_path, pcb_path])
         meta = _file_meta(out_path)
         meta["format"] = "csv"
         with open(out_path) as f:
@@ -405,10 +450,23 @@ def render_3d(
     try:
         out_dir = output_dir or str(Path(pcb_path).parent)
         out_path = str(Path(out_dir) / (Path(pcb_path).stem + f"-3d-{side}.png"))
-        _run_cli(["pcb", "render",
-                  "--width", str(width), "--height", str(height),
-                  "--side", side, "--quality", quality,
-                  "--output", out_path, pcb_path])
+        _run_cli(
+            [
+                "pcb",
+                "render",
+                "--width",
+                str(width),
+                "--height",
+                str(height),
+                "--side",
+                side,
+                "--quality",
+                quality,
+                "--output",
+                out_path,
+                pcb_path,
+            ]
+        )
         meta = _file_meta(out_path)
         meta.update({"format": "png", "width": width, "height": height, "side": side})
         return json.dumps(meta, indent=2)
@@ -434,10 +492,15 @@ def export_symbol_svg(symbol_lib_path: str = SYM_LIB_PATH, output_dir: str = OUT
         os.makedirs(out, exist_ok=True)
         _run_cli(["sym", "export", "svg", "--output", out, symbol_lib_path])
         svgs = sorted(Path(out).glob("*.svg"))
-        return json.dumps({
-            "path": out, "format": "svg",
-            "files": [f.name for f in svgs], "count": len(svgs),
-        }, indent=2)
+        return json.dumps(
+            {
+                "path": out,
+                "format": "svg",
+                "files": [f.name for f in svgs],
+                "count": len(svgs),
+            },
+            indent=2,
+        )
     except (RuntimeError, FileNotFoundError) as e:
         return json.dumps({"error": str(e), "format": "svg"}, indent=2)
 
@@ -455,10 +518,15 @@ def export_footprint_svg(footprint_path: str, output_dir: str = OUTPUT_DIR) -> s
         os.makedirs(out, exist_ok=True)
         _run_cli(["fp", "export", "svg", "--output", out, footprint_path])
         svgs = sorted(Path(out).glob("*.svg"))
-        return json.dumps({
-            "path": out, "format": "svg",
-            "files": [f.name for f in svgs], "count": len(svgs),
-        }, indent=2)
+        return json.dumps(
+            {
+                "path": out,
+                "format": "svg",
+                "files": [f.name for f in svgs],
+                "count": len(svgs),
+            },
+            indent=2,
+        )
     except (RuntimeError, FileNotFoundError) as e:
         return json.dumps({"error": str(e), "format": "svg"}, indent=2)
 
@@ -513,6 +581,7 @@ def run_jobset(jobset_path: str) -> str:
 def main():
     """Entry point for mcp-server-kicad-export console script."""
     mcp.run(transport="stdio")
+
 
 if __name__ == "__main__":
     main()

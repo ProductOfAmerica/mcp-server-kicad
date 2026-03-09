@@ -1,14 +1,14 @@
 """Tests for CLI PCB export and utility tools."""
 
+import json
 import shutil
+
 import pytest
+
+from mcp_server_kicad import export
 
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
-
-import json
-from mcp_server_kicad import export
-from pathlib import Path
 
 
 def _parse_result(result: str) -> dict:
@@ -96,6 +96,7 @@ class TestExportSymbolSvg:
 class TestExportFootprintSvg:
     def test_returns_json(self, tmp_path):
         from kiutils.footprint import Footprint
+
         fp = Footprint()
         fp.entryName = "R_0603"
         path = str(tmp_path / "R_0603.kicad_mod")
@@ -109,22 +110,28 @@ class TestExportFootprintSvg:
 class TestUpgradeSymbolLib:
     def test_returns_result(self, scratch_sym_lib, tmp_path):
         import shutil
+
         copy = str(tmp_path / "upgrade_test.kicad_sym")
         shutil.copy(str(scratch_sym_lib), copy)
         result = export.upgrade_symbol_lib(copy)
-        assert "success" in result.lower() or "upgraded" in result.lower() or "error" in result.lower()
+        assert (
+            "success" in result.lower() or "upgraded" in result.lower() or "error" in result.lower()
+        )
 
 
 class TestUpgradeFootprintLib:
     def test_returns_result(self, tmp_path):
         from kiutils.footprint import Footprint
+
         fp = Footprint()
         fp.entryName = "R_0603"
         path = str(tmp_path / "R_0603.kicad_mod")
         fp.filePath = path
         fp.to_file()
         result = export.upgrade_footprint_lib(path)
-        assert "success" in result.lower() or "upgraded" in result.lower() or "error" in result.lower()
+        assert (
+            "success" in result.lower() or "upgraded" in result.lower() or "error" in result.lower()
+        )
 
 
 class TestRunJobset:

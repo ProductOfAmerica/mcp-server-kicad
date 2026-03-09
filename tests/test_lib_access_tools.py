@@ -1,9 +1,9 @@
 """Tests for library access tools."""
 
 import pytest
+
 # Cross-server test: symbol library tools are in schematic, footprint library tools are in pcb.
-from mcp_server_kicad import schematic
-from mcp_server_kicad import pcb
+from mcp_server_kicad import pcb, schematic
 
 
 class TestListLibSymbols:
@@ -34,6 +34,7 @@ class TestListLibFootprints:
         pretty = tmp_path / "TestLib.pretty"
         pretty.mkdir()
         from kiutils.footprint import Footprint
+
         fp = Footprint()
         fp.entryName = "R_0603"
         fp.filePath = str(pretty / "R_0603.kicad_mod")
@@ -46,6 +47,7 @@ class TestGetFootprintInfo:
     def test_from_file(self, tmp_path):
         from kiutils.footprint import Footprint, Pad
         from kiutils.items.common import Position
+
         fp = Footprint()
         fp.entryName = "R_0603"
         pad = Pad()

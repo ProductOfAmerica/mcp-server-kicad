@@ -1,12 +1,11 @@
 """Edge-case tests for KiCad MCP tools: duplicates, bad paths, odd rotations, extremes."""
 
-import os
 from pathlib import Path
 
 import pytest
+from conftest import reparse
 
 from mcp_server_kicad import schematic
-from conftest import reparse
 
 
 class TestDuplicateReference:
@@ -27,7 +26,8 @@ class TestDuplicateReference:
 
         sch = reparse(scratch_sch)
         r1_syms = [
-            s for s in sch.schematicSymbols
+            s
+            for s in sch.schematicSymbols
             if any(p.key == "Reference" and p.value == "R1" for p in s.properties)
         ]
         assert len(r1_syms) == 2
@@ -49,7 +49,8 @@ class TestInvalidRotation:
 
         sch = reparse(scratch_sch)
         r2 = next(
-            s for s in sch.schematicSymbols
+            s
+            for s in sch.schematicSymbols
             if any(p.key == "Reference" and p.value == "R2" for p in s.properties)
         )
         assert r2.position.angle == 45
@@ -69,7 +70,8 @@ class TestInvalidRotation:
 
         sch = reparse(scratch_sch)
         r3 = next(
-            s for s in sch.schematicSymbols
+            s
+            for s in sch.schematicSymbols
             if any(p.key == "Reference" and p.value == "R3" for p in s.properties)
         )
         assert r3.position.angle == -90
@@ -84,9 +86,7 @@ class TestBadPaths:
     def test_nonexistent_sym_lib(self, scratch_sch: Path) -> None:
         """add_lib_symbol with a nonexistent library path should raise an Exception."""
         with pytest.raises(Exception):
-            schematic.add_lib_symbol(
-                "/nonexistent/lib.kicad_sym", "X", str(scratch_sch)
-            )
+            schematic.add_lib_symbol("/nonexistent/lib.kicad_sym", "X", str(scratch_sch))
 
 
 class TestLargeCoordinates:
@@ -104,7 +104,8 @@ class TestLargeCoordinates:
 
         sch = reparse(scratch_sch)
         r99 = next(
-            s for s in sch.schematicSymbols
+            s
+            for s in sch.schematicSymbols
             if any(p.key == "Reference" and p.value == "R99" for p in s.properties)
         )
         assert r99.position.X == 99999

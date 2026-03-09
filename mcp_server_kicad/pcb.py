@@ -3,11 +3,22 @@
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+
 from mcp_server_kicad._shared import (
-    PCB_PATH, FP_LIB_PATH,
-    _gen_uuid, _default_effects, _load_board, _fp_ref, _fp_val,
-    Position, Property, Effects, Net,
-    Board, Footprint, Pad, Segment, Via, Zone, FpText, GrLine, GrText,
+    FP_LIB_PATH,
+    PCB_PATH,
+    Footprint,
+    FpText,
+    GrLine,
+    GrText,
+    Position,
+    Segment,
+    Via,
+    _default_effects,
+    _fp_ref,
+    _fp_val,
+    _gen_uuid,
+    _load_board,
 )
 
 mcp = FastMCP(
@@ -30,8 +41,9 @@ def list_footprints(pcb_path: str = PCB_PATH) -> str:
         ref = _fp_ref(fp)
         val = _fp_val(fp)
         pos = fp.position
-        lines.append(f"{ref}: {val} (lib={fp.libId}) @ ({pos.X}, {pos.Y}) "
-                     f"rot={pos.angle} layer={fp.layer}")
+        lines.append(
+            f"{ref}: {val} (lib={fp.libId}) @ ({pos.X}, {pos.Y}) rot={pos.angle} layer={fp.layer}"
+        )
     return "\n".join(lines) if lines else "No footprints found."
 
 
@@ -42,11 +54,15 @@ def list_traces(pcb_path: str = PCB_PATH) -> str:
     lines = []
     for item in board.traceItems:
         if isinstance(item, Segment):
-            lines.append(f"({item.start.X}, {item.start.Y}) -> ({item.end.X}, {item.end.Y}) "
-                         f"w={item.width} layer={item.layer} net={item.net}")
+            lines.append(
+                f"({item.start.X}, {item.start.Y}) -> ({item.end.X}, {item.end.Y}) "
+                f"w={item.width} layer={item.layer} net={item.net}"
+            )
         elif isinstance(item, Via):
-            lines.append(f"Via @ ({item.position.X}, {item.position.Y}) "
-                         f"size={item.size} drill={item.drill} layers={item.layers} net={item.net}")
+            lines.append(
+                f"Via @ ({item.position.X}, {item.position.Y}) "
+                f"size={item.size} drill={item.drill} layers={item.layers} net={item.net}"
+            )
     return "\n".join(lines) if lines else "No traces found."
 
 
@@ -87,12 +103,14 @@ def get_board_info(pcb_path: str = PCB_PATH) -> str:
     board = _load_board(pcb_path)
     seg_count = sum(1 for t in board.traceItems if isinstance(t, Segment))
     via_count = sum(1 for t in board.traceItems if isinstance(t, Via))
-    return (f"Footprints: {len(board.footprints)}\n"
-            f"Traces: {seg_count}\n"
-            f"Vias: {via_count}\n"
-            f"Nets: {len(board.nets)}\n"
-            f"Zones: {len(board.zones)}\n"
-            f"Thickness: {board.general.thickness}mm")
+    return (
+        f"Footprints: {len(board.footprints)}\n"
+        f"Traces: {seg_count}\n"
+        f"Vias: {via_count}\n"
+        f"Nets: {len(board.nets)}\n"
+        f"Zones: {len(board.zones)}\n"
+        f"Thickness: {board.general.thickness}mm"
+    )
 
 
 @mcp.tool()
@@ -110,10 +128,12 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
             lines = [f"{reference} pads:"]
             for pad in fp.pads:
                 net_name = pad.net.name if pad.net else "none"
-                lines.append(f"  Pad {pad.number}: {pad.type} {pad.shape} "
-                             f"@ ({pad.position.X}, {pad.position.Y}) "
-                             f"size=({pad.size.X}, {pad.size.Y}) "
-                             f"layers={pad.layers} net={net_name}")
+                lines.append(
+                    f"  Pad {pad.number}: {pad.type} {pad.shape} "
+                    f"@ ({pad.position.X}, {pad.position.Y}) "
+                    f"size=({pad.size.X}, {pad.size.Y}) "
+                    f"layers={pad.layers} net={net_name}"
+                )
             return "\n".join(lines)
     return f"Footprint {reference} not found."
 
@@ -125,11 +145,14 @@ def list_board_graphic_items(pcb_path: str = PCB_PATH) -> str:
     lines = []
     for item in board.graphicItems:
         if isinstance(item, GrLine):
-            lines.append(f"Line: ({item.start.X}, {item.start.Y}) -> "
-                         f"({item.end.X}, {item.end.Y}) layer={item.layer}")
+            lines.append(
+                f"Line: ({item.start.X}, {item.start.Y}) -> "
+                f"({item.end.X}, {item.end.Y}) layer={item.layer}"
+            )
         elif isinstance(item, GrText):
-            lines.append(f"Text: '{item.text}' @ ({item.position.X}, {item.position.Y}) "
-                         f"layer={item.layer}")
+            lines.append(
+                f"Text: '{item.text}' @ ({item.position.X}, {item.position.Y}) layer={item.layer}"
+            )
         else:
             lines.append(f"{type(item).__name__} on {getattr(item, 'layer', '?')}")
     return "\n".join(lines) if lines else "No graphic items found."
@@ -142,8 +165,10 @@ def list_board_graphic_items(pcb_path: str = PCB_PATH) -> str:
 
 @mcp.tool()
 def place_footprint(
-    reference: str, value: str,
-    x: float, y: float,
+    reference: str,
+    value: str,
+    x: float,
+    y: float,
     rotation: float = 0,
     layer: str = "F.Cu",
     pcb_path: str = PCB_PATH,
@@ -165,12 +190,20 @@ def place_footprint(
     fp.position = Position(X=x, Y=y, angle=rotation)
     fp.properties = {"Reference": reference, "Value": value}
     fp.graphicItems = [
-        FpText(type="reference", text=reference, layer="F.SilkS",
-               effects=_default_effects(),
-               position=Position(X=0, Y=-2)),
-        FpText(type="value", text=value, layer="F.Fab",
-               effects=_default_effects(),
-               position=Position(X=0, Y=2)),
+        FpText(
+            type="reference",
+            text=reference,
+            layer="F.SilkS",
+            effects=_default_effects(),
+            position=Position(X=0, Y=-2),
+        ),
+        FpText(
+            type="value",
+            text=value,
+            layer="F.Fab",
+            effects=_default_effects(),
+            position=Position(X=0, Y=2),
+        ),
     ]
     board.footprints.append(fp)
     board.to_file()
@@ -179,7 +212,9 @@ def place_footprint(
 
 @mcp.tool()
 def move_footprint(
-    reference: str, x: float, y: float,
+    reference: str,
+    x: float,
+    y: float,
     rotation: float | None = None,
     layer: str = "",
     pcb_path: str = PCB_PATH,
@@ -231,7 +266,10 @@ def remove_footprint(reference: str, pcb_path: str = PCB_PATH) -> str:
 
 @mcp.tool()
 def add_trace(
-    x1: float, y1: float, x2: float, y2: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
     width: float = 0.25,
     layer: str = "F.Cu",
     net: int = 0,
@@ -264,7 +302,8 @@ def add_trace(
 
 @mcp.tool()
 def add_via(
-    x: float, y: float,
+    x: float,
+    y: float,
     size: float = 0.6,
     drill: float = 0.3,
     net: int = 0,
@@ -297,7 +336,9 @@ def add_via(
 
 @mcp.tool()
 def add_pcb_text(
-    text: str, x: float, y: float,
+    text: str,
+    x: float,
+    y: float,
     layer: str = "F.SilkS",
     rotation: float = 0,
     pcb_path: str = PCB_PATH,
@@ -326,7 +367,10 @@ def add_pcb_text(
 
 @mcp.tool()
 def add_pcb_line(
-    x1: float, y1: float, x2: float, y2: float,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
     layer: str = "Edge.Cuts",
     width: float = 0.05,
     pcb_path: str = PCB_PATH,
@@ -387,15 +431,18 @@ def get_footprint_info(footprint_path: str) -> str:
     lines = [f"Footprint: {fp.entryName}"]
     lines.append(f"  Layer: {fp.layer}")
     for pad in fp.pads:
-        lines.append(f"  Pad {pad.number}: {pad.type} {pad.shape} "
-                     f"@ ({pad.position.X}, {pad.position.Y}) "
-                     f"size=({pad.size.X}, {pad.size.Y}) layers={pad.layers}")
+        lines.append(
+            f"  Pad {pad.number}: {pad.type} {pad.shape} "
+            f"@ ({pad.position.X}, {pad.position.Y}) "
+            f"size=({pad.size.X}, {pad.size.Y}) layers={pad.layers}"
+        )
     return "\n".join(lines)
 
 
 def main():
     """Entry point for mcp-server-kicad-pcb console script."""
     mcp.run(transport="stdio")
+
 
 if __name__ == "__main__":
     main()

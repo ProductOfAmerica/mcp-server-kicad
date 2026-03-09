@@ -7,22 +7,21 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from mcp_server_kicad import schematic
 from conftest import (
-    _gen_uuid,
     _default_effects,
+    _gen_uuid,
     build_r_symbol,
     new_schematic,
-    place_r1,
 )
-
 from kiutils.items.common import Effects, Font, Position, Property
 from kiutils.items.schitems import SchematicSymbol
 
+from mcp_server_kicad import schematic
 
 # ---------------------------------------------------------------------------
 # Helper: build a schematic with R1 at a given rotation/mirror
 # ---------------------------------------------------------------------------
+
 
 def _make_rotated_sch(tmp_path: Path, rotation: float = 0, mirror: str = "") -> str:
     """Create a schematic with Device:R placed as R1 at (100,100) with rotation/mirror."""
@@ -42,22 +41,30 @@ def _make_rotated_sch(tmp_path: Path, rotation: float = 0, mirror: str = "") -> 
 
     sym.properties = [
         Property(
-            key="Reference", value="R1", id=0,
+            key="Reference",
+            value="R1",
+            id=0,
             effects=_default_effects(),
             position=Position(X=100, Y=96.19, angle=0),
         ),
         Property(
-            key="Value", value="10K", id=1,
+            key="Value",
+            value="10K",
+            id=1,
             effects=_default_effects(),
             position=Position(X=100, Y=103.81, angle=0),
         ),
         Property(
-            key="Footprint", value="", id=2,
+            key="Footprint",
+            value="",
+            id=2,
             effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
             position=Position(X=100, Y=100, angle=0),
         ),
         Property(
-            key="Datasheet", value="~", id=3,
+            key="Datasheet",
+            value="~",
+            id=3,
             effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
             position=Position(X=100, Y=100, angle=0),
         ),
@@ -76,6 +83,7 @@ def _make_rotated_sch(tmp_path: Path, rotation: float = 0, mirror: str = "") -> 
 # Tests: list_components
 # ---------------------------------------------------------------------------
 
+
 class TestListComponents:
     def test_returns_preplaced_r1(self, scratch_sch: Path) -> None:
         result = schematic.list_components(str(scratch_sch))
@@ -92,6 +100,7 @@ class TestListComponents:
 # Tests: list_labels
 # ---------------------------------------------------------------------------
 
+
 class TestListLabels:
     def test_returns_preplaced_label(self, scratch_sch: Path) -> None:
         result = schematic.list_labels(str(scratch_sch))
@@ -105,6 +114,7 @@ class TestListLabels:
 # ---------------------------------------------------------------------------
 # Tests: list_wires
 # ---------------------------------------------------------------------------
+
 
 class TestListWires:
     def test_returns_preplaced_wire(self, scratch_sch: Path) -> None:
@@ -122,6 +132,7 @@ class TestListWires:
 # Tests: get_symbol_pins
 # ---------------------------------------------------------------------------
 
+
 class TestGetSymbolPins:
     def test_known_symbol(self, scratch_sch: Path) -> None:
         result = schematic.get_symbol_pins("R", str(scratch_sch))
@@ -138,6 +149,7 @@ class TestGetSymbolPins:
 # ---------------------------------------------------------------------------
 # Tests: get_pin_positions
 # ---------------------------------------------------------------------------
+
 
 class TestGetPinPositions:
     def test_rotation_0(self, scratch_sch: Path) -> None:
@@ -186,9 +198,9 @@ class TestGetPinPositions:
         # With mirror x, pin 1 and pin 2 swap positions vs rotation_0
         # Pin 1 should be at y=96.19, Pin 2 at y=103.81
         lines = result.strip().split("\n")
-        pin_lines = [l for l in lines if l.strip().startswith("Pin")]
-        pin1_line = [l for l in pin_lines if "Pin 1" in l][0]
-        pin2_line = [l for l in pin_lines if "Pin 2" in l][0]
+        pin_lines = [ln for ln in lines if ln.strip().startswith("Pin")]
+        pin1_line = [ln for ln in pin_lines if "Pin 1" in ln][0]
+        pin2_line = [ln for ln in pin_lines if "Pin 2" in ln][0]
         assert "96.19" in pin1_line
         assert "103.81" in pin2_line
 
@@ -203,9 +215,9 @@ class TestGetPinPositions:
         assert "96.19" in result
         # Same positions as rotation_0 since px=0 for both pins
         lines = result.strip().split("\n")
-        pin_lines = [l for l in lines if l.strip().startswith("Pin")]
-        pin1_line = [l for l in pin_lines if "Pin 1" in l][0]
-        pin2_line = [l for l in pin_lines if "Pin 2" in l][0]
+        pin_lines = [ln for ln in lines if ln.strip().startswith("Pin")]
+        pin1_line = [ln for ln in pin_lines if "Pin 1" in ln][0]
+        pin2_line = [ln for ln in pin_lines if "Pin 2" in ln][0]
         assert "103.81" in pin1_line
         assert "96.19" in pin2_line
 

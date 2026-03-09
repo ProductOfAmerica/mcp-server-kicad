@@ -1,10 +1,10 @@
 """Tests for PCB write tools."""
 
-import pytest
-from mcp_server_kicad import pcb
-from mcp_server_kicad._shared import _fp_ref
 from kiutils.board import Board
 from kiutils.items.brditems import Segment, Via
+
+from mcp_server_kicad import pcb
+from mcp_server_kicad._shared import _fp_ref
 
 
 class TestPlaceFootprint:
@@ -44,8 +44,9 @@ class TestRemoveFootprint:
 
 class TestAddTrace:
     def test_basic(self, scratch_pcb):
-        result = pcb.add_trace(50, 50, 60, 50, width=0.25,
-                                     layer="F.Cu", net=1, pcb_path=str(scratch_pcb))
+        result = pcb.add_trace(
+            50, 50, 60, 50, width=0.25, layer="F.Cu", net=1, pcb_path=str(scratch_pcb)
+        )
         assert "Trace" in result
         board = Board.from_file(str(scratch_pcb))
         segs = [t for t in board.traceItems if isinstance(t, Segment)]
@@ -63,13 +64,11 @@ class TestAddVia:
 
 class TestAddPcbText:
     def test_basic(self, scratch_pcb):
-        result = pcb.add_pcb_text("BOARD V1", 100, 110,
-                                        layer="F.SilkS", pcb_path=str(scratch_pcb))
+        result = pcb.add_pcb_text("BOARD V1", 100, 110, layer="F.SilkS", pcb_path=str(scratch_pcb))
         assert "BOARD" in result
 
 
 class TestAddPcbLine:
     def test_basic(self, scratch_pcb):
-        result = pcb.add_pcb_line(80, 80, 120, 80,
-                                        layer="Edge.Cuts", pcb_path=str(scratch_pcb))
+        result = pcb.add_pcb_line(80, 80, 120, 80, layer="Edge.Cuts", pcb_path=str(scratch_pcb))
         assert "Line" in result

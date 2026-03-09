@@ -19,25 +19,24 @@ import uuid as _uuid
 from pathlib import Path
 
 import pytest
-
-from kiutils.schematic import Schematic
-from kiutils.symbol import Symbol, SymbolLib, SymbolPin
+from kiutils.board import Board
+from kiutils.footprint import Footprint, Pad
+from kiutils.items.brditems import Segment
 from kiutils.items.common import (
     Effects,
     Fill,
     Font,
+    Net,
     Position,
     Property,
     Stroke,
 )
+from kiutils.items.fpitems import FpText
+from kiutils.items.gritems import GrLine
 from kiutils.items.schitems import Connection, LocalLabel, SchematicSymbol
 from kiutils.items.syitems import SyRect
-from kiutils.board import Board
-from kiutils.footprint import Footprint, Pad
-from kiutils.items.brditems import Segment, Via
-from kiutils.items.fpitems import FpText
-from kiutils.items.gritems import GrLine, GrText
-from kiutils.items.common import Net
+from kiutils.schematic import Schematic
+from kiutils.symbol import Symbol, SymbolLib, SymbolPin
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -51,6 +50,7 @@ KICAD_SYM_VERSION = "20231120"
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
+
 
 def _gen_uuid() -> str:
     return str(_uuid.uuid4())
@@ -67,6 +67,7 @@ def _default_stroke(width: float = 0) -> Stroke:
 # ---------------------------------------------------------------------------
 # Builder helpers (public — importable by test files)
 # ---------------------------------------------------------------------------
+
 
 def build_r_symbol() -> Symbol:
     """Build a Device:R library symbol definition (2-pin passive resistor).
@@ -228,6 +229,7 @@ def new_schematic() -> Schematic:
 # Helpers (public — importable and used by tests directly)
 # ---------------------------------------------------------------------------
 
+
 def reparse(path: str | Path) -> Schematic:
     """Re-parse a schematic file from disk. Returns the Schematic object."""
     return Schematic.from_file(str(path))
@@ -267,18 +269,15 @@ def assert_erc_clean(path: str | Path) -> None:
     """Run ERC and assert zero violations."""
     report = run_erc(path)
     violations = report.get("violations", [])
-    assert violations == [], (
-        f"Expected 0 ERC violations, got {len(violations)}:\n"
-        + "\n".join(
-            f"  {v.get('severity', '?')}: {v.get('description', '?')}"
-            for v in violations
-        )
+    assert violations == [], f"Expected 0 ERC violations, got {len(violations)}:\n" + "\n".join(
+        f"  {v.get('severity', '?')}: {v.get('description', '?')}" for v in violations
     )
 
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture()
 def scratch_sch(tmp_path: Path) -> Path:
@@ -355,8 +354,9 @@ def scratch_sym_lib(tmp_path: Path) -> Path:
     return path
 
 
-def build_test_footprint(ref: str = "R1", value: str = "10K",
-                         x: float = 100, y: float = 100) -> Footprint:
+def build_test_footprint(
+    ref: str = "R1", value: str = "10K", x: float = 100, y: float = 100
+) -> Footprint:
     """Build a minimal footprint with 2 pads."""
     fp = Footprint()
     fp.entryName = "R_0603"
@@ -365,12 +365,20 @@ def build_test_footprint(ref: str = "R1", value: str = "10K",
     fp.position = Position(X=x, Y=y, angle=0)
     fp.properties = {"Reference": ref, "Value": value}
     fp.graphicItems = [
-        FpText(type="reference", text=ref, layer="F.SilkS",
-               effects=_default_effects(),
-               position=Position(X=0, Y=-2)),
-        FpText(type="value", text=value, layer="F.Fab",
-               effects=_default_effects(),
-               position=Position(X=0, Y=2)),
+        FpText(
+            type="reference",
+            text=ref,
+            layer="F.SilkS",
+            effects=_default_effects(),
+            position=Position(X=0, Y=-2),
+        ),
+        FpText(
+            type="value",
+            text=value,
+            layer="F.Fab",
+            effects=_default_effects(),
+            position=Position(X=0, Y=2),
+        ),
     ]
     pad1 = Pad()
     pad1.number = "1"

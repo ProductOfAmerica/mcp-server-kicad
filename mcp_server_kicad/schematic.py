@@ -3,12 +3,27 @@
 import math
 
 from mcp.server.fastmcp import FastMCP
+
 from mcp_server_kicad._shared import (
-    SCH_PATH, SYM_LIB_PATH,
-    _gen_uuid, _default_effects, _default_stroke, _load_sch,
-    Position, Property, Effects, Font, Stroke, ColorRGBA,
-    Schematic, SymbolLib, SchematicSymbol, LocalLabel, GlobalLabel,
-    NoConnect, Text, Junction, Connection,
+    SCH_PATH,
+    SYM_LIB_PATH,
+    ColorRGBA,
+    Connection,
+    Effects,
+    Font,
+    GlobalLabel,
+    Junction,
+    LocalLabel,
+    NoConnect,
+    Position,
+    Property,
+    SchematicSymbol,
+    SymbolLib,
+    Text,
+    _default_effects,
+    _default_stroke,
+    _gen_uuid,
+    _load_sch,
 )
 
 mcp = FastMCP(
@@ -112,7 +127,7 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
     cx, cy = target.position.X, target.position.Y
     angle_deg = target.position.angle or 0
     angle_rad = math.radians(angle_deg)
-    mir = getattr(target, 'mirror', None)
+    mir = getattr(target, "mirror", None)
 
     lines = [f"{reference} ({symbol_name}) @ ({cx}, {cy}) rot={angle_deg} mirror={mir}"]
 
@@ -132,7 +147,9 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
             final_x = cx + px * cos_a - py * sin_a
             final_y = cy + px * sin_a + py * cos_a
 
-            lines.append(f"  Pin {pin.number} ({pin.name}): ({round(final_x, 2)}, {round(final_y, 2)})")
+            lines.append(
+                f"  Pin {pin.number} ({pin.name}): ({round(final_x, 2)}, {round(final_y, 2)})"
+            )
 
     return "\n".join(lines)
 
@@ -203,18 +220,34 @@ def place_component(
 
     # Properties
     sym.properties = [
-        Property(key="Reference", value=reference, id=0,
-                 effects=_default_effects(),
-                 position=Position(X=x, Y=y - 3.81, angle=0)),
-        Property(key="Value", value=value, id=1,
-                 effects=_default_effects(),
-                 position=Position(X=x, Y=y + 3.81, angle=0)),
-        Property(key="Footprint", value="", id=2,
-                 effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                 position=Position(X=x, Y=y, angle=0)),
-        Property(key="Datasheet", value="~", id=3,
-                 effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                 position=Position(X=x, Y=y, angle=0)),
+        Property(
+            key="Reference",
+            value=reference,
+            id=0,
+            effects=_default_effects(),
+            position=Position(X=x, Y=y - 3.81, angle=0),
+        ),
+        Property(
+            key="Value",
+            value=value,
+            id=1,
+            effects=_default_effects(),
+            position=Position(X=x, Y=y + 3.81, angle=0),
+        ),
+        Property(
+            key="Footprint",
+            value="",
+            id=2,
+            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+            position=Position(X=x, Y=y, angle=0),
+        ),
+        Property(
+            key="Datasheet",
+            value="~",
+            id=3,
+            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+            position=Position(X=x, Y=y, angle=0),
+        ),
     ]
 
     # Find lib symbol and add pin UUIDs
@@ -299,7 +332,9 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
 
 
 @mcp.tool()
-def add_label(text: str, x: float, y: float, rotation: float = 0, schematic_path: str = SCH_PATH) -> str:
+def add_label(
+    text: str, x: float, y: float, rotation: float = 0, schematic_path: str = SCH_PATH
+) -> str:
     """Add a net label at a position.
 
     Args:
@@ -386,7 +421,9 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
 
 @mcp.tool()
 def move_component(
-    reference: str, x: float, y: float,
+    reference: str,
+    x: float,
+    y: float,
     rotation: float | None = None,
     schematic_path: str = SCH_PATH,
 ) -> str:
@@ -445,7 +482,9 @@ def edit_component_value(
 
 @mcp.tool()
 def add_global_label(
-    text: str, x: float, y: float,
+    text: str,
+    x: float,
+    y: float,
     rotation: float = 0,
     shape: str = "input",
     schematic_path: str = SCH_PATH,
@@ -491,8 +530,10 @@ def add_no_connect(x: float, y: float, schematic_path: str = SCH_PATH) -> str:
 
 @mcp.tool()
 def add_power_symbol(
-    lib_id: str, reference: str,
-    x: float, y: float,
+    lib_id: str,
+    reference: str,
+    x: float,
+    y: float,
     rotation: float = 0,
     symbol_lib_path: str = "",
     schematic_path: str = SCH_PATH,
@@ -512,8 +553,12 @@ def add_power_symbol(
         schematic_path: Path to .kicad_sch file
     """
     return place_component(
-        lib_id=lib_id, reference=reference, value=lib_id.split(":")[-1],
-        x=x, y=y, rotation=rotation,
+        lib_id=lib_id,
+        reference=reference,
+        value=lib_id.split(":")[-1],
+        x=x,
+        y=y,
+        rotation=rotation,
         symbol_lib_path=symbol_lib_path,
         schematic_path=schematic_path,
     )
@@ -521,7 +566,9 @@ def add_power_symbol(
 
 @mcp.tool()
 def add_text(
-    text: str, x: float, y: float,
+    text: str,
+    x: float,
+    y: float,
     rotation: float = 0,
     schematic_path: str = SCH_PATH,
 ) -> str:
@@ -578,7 +625,7 @@ def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> st
     for sym in lib.symbols:
         if sym.entryName == symbol_name:
             lines = [f"Symbol: {symbol_name}"]
-            for prop in (sym.properties or []):
+            for prop in sym.properties or []:
                 lines.append(f"  {prop.key}: {prop.value}")
             for unit in sym.units:
                 for pin in unit.pins:
@@ -593,6 +640,7 @@ def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> st
 def main():
     """Entry point for mcp-server-kicad-schematic console script."""
     mcp.run(transport="stdio")
+
 
 if __name__ == "__main__":
     main()

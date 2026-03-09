@@ -86,8 +86,8 @@ def test_run_erc_returns_dict(scratch_sch: Path) -> None:
 
 def test_builder_functions_importable() -> None:
     """Verify builder helpers are importable and return correct types."""
-    from kiutils.symbol import Symbol
     from kiutils.items.schitems import SchematicSymbol
+    from kiutils.symbol import Symbol
 
     r = build_r_symbol()
     assert isinstance(r, Symbol)

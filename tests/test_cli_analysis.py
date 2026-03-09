@@ -1,13 +1,14 @@
 """Tests for CLI analysis tools (ERC, DRC)."""
 
+import json
 import shutil
+
 import pytest
+
+from mcp_server_kicad import export
 
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
-
-import json
-from mcp_server_kicad import export
 
 
 class TestRunErc:
@@ -31,5 +32,4 @@ class TestRunDrc:
         # (kiutils-generated PCBs may not be loadable by kicad-cli).
         # Either way, the tool must return valid JSON.
         assert isinstance(data, dict)
-        assert ("source" in data or "violations" in data
-                or "sheets" in data or "error" in data)
+        assert "source" in data or "violations" in data or "sheets" in data or "error" in data
