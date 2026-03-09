@@ -1,6 +1,9 @@
 """Smoke tests to verify conftest fixtures produce valid schematics."""
 
+import shutil
 from pathlib import Path
+
+import pytest
 
 # conftest.py is auto-loaded by pytest. Import helpers via the tests package.
 from conftest import (
@@ -11,6 +14,8 @@ from conftest import (
     reparse,
     run_erc,
 )
+
+HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
 
 def test_scratch_sch_exists(scratch_sch: Path) -> None:
@@ -48,6 +53,7 @@ def test_scratch_sch_reparses(scratch_sch: Path) -> None:
     assert len(rs.units) == 2
 
 
+@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 def test_scratch_sch_erc_clean(scratch_sch: Path) -> None:
     assert_erc_clean(scratch_sch)
 
@@ -59,6 +65,7 @@ def test_empty_sch_exists_and_reparses(empty_sch: Path) -> None:
     assert len(sch.labels) == 0
 
 
+@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 def test_empty_sch_erc_clean(empty_sch: Path) -> None:
     assert_erc_clean(empty_sch)
 
@@ -78,6 +85,7 @@ def test_scratch_sym_lib_reparses(scratch_sym_lib: Path) -> None:
     assert pin_names == {"IN", "OUT"}
 
 
+@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 def test_run_erc_returns_dict(scratch_sch: Path) -> None:
     report = run_erc(scratch_sch)
     assert isinstance(report, dict)

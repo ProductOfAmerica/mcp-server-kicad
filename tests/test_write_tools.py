@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+import shutil
+
 import pytest
 from conftest import assert_erc_clean, reparse
 from kiutils.items.schitems import Connection
 
 from mcp_server_kicad import schematic
 
+HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _get_refs(sch) -> list[str]:
+def _get_refs(sch) -> list[str | None]:
     """Extract reference designators from schematic symbols."""
     return [
         next((p.value for p in s.properties if p.key == "Reference"), None)
@@ -62,6 +66,7 @@ class TestPlaceComponent:
         val = next((p.value for p in r2.properties if p.key == "Value"), None)
         assert val == "4.7K"
 
+    @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
     def test_placement_erc(self, scratch_sch):
         schematic.place_component(
             lib_id="Device:R",
@@ -207,6 +212,7 @@ class TestAddWire:
         count_after = _count_wires(sch_after)
         assert count_after == count_before + 1
 
+    @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
     def test_wire_erc(self, scratch_sch):
         schematic.add_wire(
             x1=100,

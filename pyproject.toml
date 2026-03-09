@@ -52,3 +52,5 @@ select = ["E", "F", "I", "W"]
 [tool.pyright]
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
+reportOptionalMemberAccess = "warning"
+reportAttributeAccessIssue = "warning"
