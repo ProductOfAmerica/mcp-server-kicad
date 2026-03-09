@@ -161,6 +161,59 @@ class TestPlaceComponent:
         assert "1" in r6.pins
         assert "2" in r6.pins
 
+    def test_instances_block_created(self, scratch_sch):
+        """place_component must create an instances block with the schematic UUID."""
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R7",
+            value="47K",
+            x=127,
+            y=127,
+            schematic_path=str(scratch_sch),
+        )
+        sch = reparse(str(scratch_sch))
+        r7 = _find_symbol(sch, "R7")
+        assert r7 is not None
+        assert len(r7.instances) == 1
+        inst = r7.instances[0]
+        assert len(inst.paths) == 1
+        assert inst.paths[0].reference == "R7"
+        assert inst.paths[0].unit == 1
+        assert inst.paths[0].sheetInstancePath == f"/{sch.uuid}"
+
+    def test_grid_snapping(self, scratch_sch):
+        """Off-grid coordinates are snapped to nearest 1.27mm multiple."""
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R8",
+            value="1M",
+            x=100,  # 100 / 1.27 = 78.74 -> 79 -> 100.33
+            y=200,  # 200 / 1.27 = 157.48 -> 157 -> 199.39
+            schematic_path=str(scratch_sch),
+        )
+        sch = reparse(str(scratch_sch))
+        r8 = _find_symbol(sch, "R8")
+        assert r8 is not None
+        assert r8.position.X == 100.33
+        assert r8.position.Y == 199.39
+
+    def test_on_grid_unchanged(self, scratch_sch):
+        """Coordinates already on the 1.27mm grid are not modified."""
+        # 101.6 == 80*1.27, exactly on grid
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R9",
+            value="330",
+            x=101.6,
+            y=101.6,
+            schematic_path=str(scratch_sch),
+        )
+        sch = reparse(str(scratch_sch))
+        r9 = _find_symbol(sch, "R9")
+        assert r9 is not None
+        assert r9.position.X == 101.6
+        assert r9.position.Y == 101.6
+
 
 # ===========================================================================
 # TestRemoveComponent
@@ -317,13 +370,13 @@ class TestAddLabel:
 class TestAddJunction:
     def test_basic_junction(self, scratch_sch):
         schematic.add_junction(
-            x=50,
-            y=50,
+            x=50.8,
+            y=50.8,
             schematic_path=str(scratch_sch),
         )
         sch = reparse(str(scratch_sch))
-        # Find a junction at (50, 50)
-        found = any(j.position.X == 50 and j.position.Y == 50 for j in sch.junctions)
+        # 50.8 == 40*1.27, already on grid
+        found = any(j.position.X == 50.8 and j.position.Y == 50.8 for j in sch.junctions)
         assert found
 
 

@@ -1,6 +1,7 @@
 """KiCad Schematic MCP Server — schematic manipulation + symbol library tools."""
 
 import math
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
@@ -19,6 +20,8 @@ from mcp_server_kicad._shared import (
     Property,
     SchematicSymbol,
     SymbolLib,
+    SymbolProjectInstance,
+    SymbolProjectPath,
     Text,
     _default_effects,
     _default_stroke,
@@ -30,6 +33,46 @@ mcp = FastMCP(
     "kicad-schematic",
     instructions="KiCad schematic manipulation and symbol library tools built on kiutils",
 )
+
+
+def _find_lib_symbol(sch, lib_id: str):
+    """Find a lib_symbol by lib_id, checking both bare and prefixed names.
+
+    KiCad schematics may store lib_symbols with the library prefix
+    (e.g. ``"Device:C"``) or without (e.g. ``"C"``).  This helper
+    normalises the lookup so callers don't need to worry about which
+    convention the file uses.
+
+    Returns the matching Symbol object, or ``None``.
+    """
+    bare = lib_id.split(":")[-1] if ":" in lib_id else lib_id
+    for ls in sch.libSymbols:
+        if ls.entryName == bare or ls.entryName == lib_id:
+            return ls
+        # kiutils exposes libId with the library prefix even when
+        # entryName returns the bare name.
+        if getattr(ls, "libId", None) == lib_id:
+            return ls
+    return None
+
+
+def _lib_symbol_file_name(ls) -> str:
+    """Return the name as it appears in the file (may include library prefix).
+
+    kiutils' ``entryName`` always strips the library prefix, but the
+    file may store ``"Device:C"`` or just ``"C"``.  ``libId`` preserves
+    the original.
+    """
+    return getattr(ls, "libId", None) or ls.entryName
+
+
+# Default KiCad grid spacing in mm (50 mils).
+_GRID_MM = 1.27
+
+
+def _snap_grid(val: float, grid: float = _GRID_MM) -> float:
+    """Snap *val* to the nearest multiple of *grid*."""
+    return round(round(val / grid) * grid, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -82,18 +125,18 @@ def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
-    for ls in sch.libSymbols:
-        if ls.entryName == symbol_name:
-            lines = [f"Symbol: {symbol_name}"]
-            for unit in ls.units:
-                for pin in unit.pins:
-                    lines.append(
-                        f"  Pin {pin.number}: {pin.name} "
-                        f"({pin.electricalType}) "
-                        f"@ ({pin.position.X}, {pin.position.Y}) "
-                        f"rot={pin.position.angle} len={pin.length}"
-                    )
-            return "\n".join(lines)
+    ls = _find_lib_symbol(sch, symbol_name)
+    if ls:
+        lines = [f"Symbol: {symbol_name}"]
+        for unit in ls.units:
+            for pin in unit.pins:
+                lines.append(
+                    f"  Pin {pin.number}: {pin.name} "
+                    f"({pin.electricalType}) "
+                    f"@ ({pin.position.X}, {pin.position.Y}) "
+                    f"rot={pin.position.angle} len={pin.length}"
+                )
+        return "\n".join(lines)
     return f"'{symbol_name}' not found."
 
 
@@ -116,11 +159,7 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
         return f"{reference} not found."
 
     symbol_name = target.libId.split(":")[-1] if ":" in target.libId else target.libId
-    lib_sym = None
-    for ls in sch.libSymbols:
-        if ls.entryName == symbol_name:
-            lib_sym = ls
-            break
+    lib_sym = _find_lib_symbol(sch, target.libId)
     if lib_sym is None:
         return f"Lib symbol for {reference} not found."
 
@@ -196,20 +235,29 @@ def place_component(
     """
     sch = _load_sch(schematic_path)
 
+    # Snap placement to grid
+    x = _snap_grid(x)
+    y = _snap_grid(y)
+
     # Load symbol definition from custom lib if needed
     if symbol_lib_path:
         sym_lib = SymbolLib.from_file(symbol_lib_path)
         symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
         for s in sym_lib.symbols:
             if s.entryName == symbol_name:
-                if not any(ls.entryName == symbol_name for ls in sch.libSymbols):
+                if not _find_lib_symbol(sch, lib_id):
                     sch.libSymbols.append(s)
                 break
 
-    # Create instance
+    # Create instance — set libName to match the lib_symbol's name as stored
+    # in the file so KiCad can resolve the lookup without crashing.
+    lib_sym = _find_lib_symbol(sch, lib_id)
     sym = SchematicSymbol()
     sym.libId = lib_id
-    sym.libName = lib_id.split(":")[-1] if ":" in lib_id else lib_id
+    if lib_sym:
+        sym.libName = _lib_symbol_file_name(lib_sym)
+    else:
+        sym.libName = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     sym.position = Position(X=x, Y=y, angle=rotation)
     sym.uuid = _gen_uuid()
     sym.unit = 1
@@ -251,15 +299,27 @@ def place_component(
     ]
 
     # Find lib symbol and add pin UUIDs
-    symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-    for ls in sch.libSymbols:
-        if ls.entryName == symbol_name:
-            pin_nums = set()
-            for unit in ls.units:
-                for pin in unit.pins:
-                    pin_nums.add(pin.number)
-            sym.pins = {pn: _gen_uuid() for pn in sorted(pin_nums)}
-            break
+    if lib_sym:
+        pin_nums = set()
+        for unit in lib_sym.units:
+            for pin in unit.pins:
+                pin_nums.add(pin.number)
+        sym.pins = {pn: _gen_uuid() for pn in sorted(pin_nums)}
+
+    # Instances block — required by KiCad 9 for proper annotation
+    project_name = Path(sch.filePath).stem if sch.filePath else ""
+    sym.instances = [
+        SymbolProjectInstance(
+            name=project_name,
+            paths=[
+                SymbolProjectPath(
+                    sheetInstancePath=f"/{sch.uuid}",
+                    reference=reference,
+                    unit=1,
+                ),
+            ],
+        ),
+    ]
 
     sch.schematicSymbols.append(sym)
     sch.to_file()
@@ -299,6 +359,7 @@ def add_wire(x1: float, y1: float, x2: float, y2: float, schematic_path: str = S
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
+    x1, y1, x2, y2 = _snap_grid(x1), _snap_grid(y1), _snap_grid(x2), _snap_grid(y2)
     wire = Connection(
         type="wire",
         points=[Position(X=x1, Y=y1), Position(X=x2, Y=y2)],
@@ -322,7 +383,10 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
     for w in wires:
         wire = Connection(
             type="wire",
-            points=[Position(X=w["x1"], Y=w["y1"]), Position(X=w["x2"], Y=w["y2"])],
+            points=[
+                Position(X=_snap_grid(w["x1"]), Y=_snap_grid(w["y1"])),
+                Position(X=_snap_grid(w["x2"]), Y=_snap_grid(w["y2"])),
+            ],
             stroke=_default_stroke(),
             uuid=_gen_uuid(),
         )
@@ -345,6 +409,7 @@ def add_label(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
+    x, y = _snap_grid(x), _snap_grid(y)
     label = LocalLabel(
         text=text,
         position=Position(X=x, Y=y, angle=rotation),
@@ -366,6 +431,7 @@ def add_junction(x: float, y: float, schematic_path: str = SCH_PATH) -> str:
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
+    x, y = _snap_grid(x), _snap_grid(y)
     junc = Junction(
         position=Position(X=x, Y=y),
         diameter=0,
@@ -388,7 +454,7 @@ def add_junctions(points: list[dict], schematic_path: str = SCH_PATH) -> str:
     sch = _load_sch(schematic_path)
     for p in points:
         junc = Junction(
-            position=Position(X=p["x"], Y=p["y"]),
+            position=Position(X=_snap_grid(p["x"]), Y=_snap_grid(p["y"])),
             diameter=0,
             color=ColorRGBA(R=0, G=0, B=0, A=0),
             uuid=_gen_uuid(),
@@ -411,7 +477,7 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
     sym_lib = SymbolLib.from_file(symbol_lib_path)
     for s in sym_lib.symbols:
         if s.entryName == symbol_name:
-            if any(ls.entryName == symbol_name for ls in sch.libSymbols):
+            if _find_lib_symbol(sch, symbol_name):
                 return f"'{symbol_name}' already in lib_symbols."
             sch.libSymbols.append(s)
             sch.to_file()
@@ -437,6 +503,7 @@ def move_component(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
+    x, y = _snap_grid(x), _snap_grid(y)
     for sym in sch.schematicSymbols:
         if any(p.key == "Reference" and p.value == reference for p in sym.properties):
             sym.position.X = x
@@ -500,6 +567,7 @@ def add_global_label(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
+    x, y = _snap_grid(x), _snap_grid(y)
     gl = GlobalLabel(
         text=text,
         position=Position(X=x, Y=y, angle=rotation),
@@ -522,6 +590,7 @@ def add_no_connect(x: float, y: float, schematic_path: str = SCH_PATH) -> str:
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
+    x, y = _snap_grid(x), _snap_grid(y)
     nc = NoConnect(position=Position(X=x, Y=y), uuid=_gen_uuid())
     sch.noConnects.append(nc)
     sch.to_file()

@@ -91,13 +91,17 @@ class TestBadPaths:
 
 class TestLargeCoordinates:
     def test_extreme_position(self, scratch_sch: Path) -> None:
-        """Placing a component at extreme coordinates should round-trip correctly."""
+        """Placing a component at extreme coordinates should round-trip correctly.
+
+        Coordinates are snapped to the 1.27mm grid.
+        99999.8 == 78740*1.27, already on grid.
+        """
         result = schematic.place_component(
             lib_id="Device:R",
             reference="R99",
             value="100K",
-            x=99999,
-            y=99999,
+            x=99999.8,
+            y=99999.8,
             schematic_path=str(scratch_sch),
         )
         assert "Placed" in result
@@ -108,5 +112,5 @@ class TestLargeCoordinates:
             for s in sch.schematicSymbols
             if any(p.key == "Reference" and p.value == "R99" for p in s.properties)
         )
-        assert r99.position.X == 99999
-        assert r99.position.Y == 99999
+        assert r99.position.X == 99999.8
+        assert r99.position.Y == 99999.8

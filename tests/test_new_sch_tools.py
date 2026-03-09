@@ -7,7 +7,8 @@ from mcp_server_kicad import schematic
 
 class TestMoveComponent:
     def test_move_existing(self, scratch_sch):
-        result = schematic.move_component("R1", 200, 200, schematic_path=str(scratch_sch))
+        # 200.66 == 158*1.27, on grid
+        result = schematic.move_component("R1", 200.66, 200.66, schematic_path=str(scratch_sch))
         assert "Moved" in result
         sch = reparse(str(scratch_sch))
         r1 = next(
@@ -15,8 +16,8 @@ class TestMoveComponent:
             for s in sch.schematicSymbols
             if any(p.key == "Reference" and p.value == "R1" for p in s.properties)
         )
-        assert r1.position.X == 200
-        assert r1.position.Y == 200
+        assert r1.position.X == 200.66
+        assert r1.position.Y == 200.66
 
     def test_move_with_rotation(self, scratch_sch):
         schematic.move_component("R1", 200, 200, rotation=90, schematic_path=str(scratch_sch))
@@ -89,8 +90,9 @@ class TestListGlobalLabels:
 
 class TestAddNoConnect:
     def test_basic(self, scratch_sch):
-        result = schematic.add_no_connect(75, 75, schematic_path=str(scratch_sch))
-        assert "75" in result
+        # 76.2 == 60*1.27, on grid
+        result = schematic.add_no_connect(76.2, 76.2, schematic_path=str(scratch_sch))
+        assert "76.2" in result
         sch = reparse(str(scratch_sch))
         assert len(sch.noConnects) == 1
 

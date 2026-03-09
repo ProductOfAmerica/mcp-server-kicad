@@ -1,0 +1,107 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "f47ac10b-58cc-4372-a567-0e02b2c3d479")
+	(paper "A4")
+
+	(lib_symbols
+		(symbol "Device:R" (pin_names (offset 0)) (in_bom yes) (on_board yes)
+			(property "Reference" "R" (at 2.032 0 90)
+				(effects (font (size 1.27 1.27)))
+			)
+			(property "Value" "R" (at 0 0 90)
+				(effects (font (size 1.27 1.27)))
+			)
+			(property "Footprint" "" (at -1.778 0 90)
+				(effects (font (size 1.27 1.27)))
+			)
+			(property "Datasheet" "~" (at 0 0 0)
+				(effects (font (size 1.27 1.27)))
+			)
+			(property "Description" "Resistor" (at 0 0 0)
+				(effects (font (size 1.27 1.27)))
+			)
+			(property "ki_keywords" "R res resistor" (at 0 0 0)
+				(effects (font (size 1.27 1.27)))
+			)
+			(property "ki_fp_filters" "R_*" (at 0 0 0)
+				(effects (font (size 1.27 1.27)))
+			)
+			(symbol "R_0_1"
+				(rectangle (start -1.016 -2.54) (end 1.016 2.54)
+					(stroke (width 0.254) (type default))
+					(fill (type none))
+				)
+			)
+			(symbol "R_1_1"
+				(pin passive line (at 0 3.81 270) (length 1.27)
+					(name "~" (effects (font (size 1.27 1.27))))
+					(number "1" (effects (font (size 1.27 1.27))))
+				)
+				(pin passive line (at 0 -3.81 90) (length 1.27)
+					(name "~" (effects (font (size 1.27 1.27))))
+					(number "2" (effects (font (size 1.27 1.27))))
+				)
+			)
+		)
+	)
+
+	(wire
+		(pts
+			(xy 50 100) (xy 80 100)
+		)
+		(stroke
+			(width 0)
+			(type default)
+		)
+		(uuid "a1b2c3d4-0001-0001-0001-000000000001")
+	)
+
+	(label "TEST_NET"
+		(at 60 100 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(justify left bottom)
+		)
+		(uuid "a1b2c3d4-0002-0002-0002-000000000001")
+	)
+
+	(symbol (lib_id "Device:R") (at 100 100 0) (unit 1)
+		(in_bom yes) (on_board yes) (dnp no) (fields_autoplaced)
+		(uuid "a1b2c3d4-0003-0003-0003-000000000001")
+		(property "Reference" "R1" (at 102.032 98.7299 0)
+			(effects (font (size 1.27 1.27)) (justify left))
+		)
+		(property "Value" "10K" (at 102.032 101.2699 0)
+			(effects (font (size 1.27 1.27)) (justify left))
+		)
+		(property "Footprint" "" (at 98.222 100 90)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+		(property "Datasheet" "~" (at 100 100 0)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+		(property "Description" "Resistor" (at 100 100 0)
+			(effects (font (size 1.27 1.27)) (hide yes))
+		)
+		(pin "1" (uuid "a1b2c3d4-0004-0004-0004-000000000001"))
+		(pin "2" (uuid "a1b2c3d4-0004-0004-0004-000000000002"))
+		(instances
+			(project "kicad_native"
+				(path "/f47ac10b-58cc-4372-a567-0e02b2c3d479"
+					(reference "R1") (unit 1)
+				)
+			)
+		)
+	)
+
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)

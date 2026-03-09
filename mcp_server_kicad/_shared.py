@@ -18,6 +18,8 @@ from kiutils.items.schitems import (
     LocalLabel,
     NoConnect,
     SchematicSymbol,
+    SymbolProjectInstance,
+    SymbolProjectPath,
     Text,
 )
 from kiutils.items.zones import Zone
@@ -49,6 +51,8 @@ __all__ = [
     "Property",
     "Schematic",
     "SchematicSymbol",
+    "SymbolProjectInstance",
+    "SymbolProjectPath",
     "Segment",
     "Stroke",
     "SymbolLib",

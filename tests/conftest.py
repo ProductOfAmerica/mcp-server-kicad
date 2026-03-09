@@ -354,6 +354,27 @@ def scratch_sym_lib(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture()
+def kicad_native_sch(tmp_path: Path) -> Path:
+    """Copy of a hand-written KiCad 9 native schematic into a temp directory.
+
+    Unlike ``scratch_sch`` (built by kiutils), this fixture mirrors the
+    exact format KiCad itself writes:
+
+    - lib_symbol named ``"Device:R"`` (with library prefix)
+    - ``(dnp no)``, ``(fields_autoplaced)``, ``(instances ...)`` on placed symbols
+    - No ``(lib_name ...)`` or ``(id N)`` on placed symbols/properties
+
+    Contents: Device:R lib_symbol, placed R1 at (100, 100), label, wire.
+    """
+    src = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
+    dst = tmp_path / "kicad_native.kicad_sch"
+    import shutil
+
+    shutil.copy2(src, dst)
+    return dst
+
+
 def build_test_footprint(
     ref: str = "R1", value: str = "10K", x: float = 100, y: float = 100
 ) -> Footprint:
