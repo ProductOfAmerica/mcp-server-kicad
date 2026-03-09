@@ -23,9 +23,9 @@ pip install mcp-server-kicad
 Or run directly with `uvx`:
 
 ```bash
-uvx mcp-server-kicad-schematic
-uvx mcp-server-kicad-pcb
-uvx mcp-server-kicad-export
+uvx --from mcp-server-kicad mcp-server-kicad-schematic
+uvx --from mcp-server-kicad mcp-server-kicad-pcb
+uvx --from mcp-server-kicad mcp-server-kicad-export
 ```
 
 ## Configuration
@@ -36,15 +36,18 @@ Add the servers to your Claude Desktop or Claude Code MCP config. Set `cwd` to y
 {
   "mcpServers": {
     "kicad-schematic": {
-      "command": "mcp-server-kicad-schematic",
+      "command": "uvx",
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-schematic"],
       "cwd": "/path/to/your/kicad/project"
     },
     "kicad-pcb": {
-      "command": "mcp-server-kicad-pcb",
+      "command": "uvx",
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-pcb"],
       "cwd": "/path/to/your/kicad/project"
     },
     "kicad-export": {
-      "command": "mcp-server-kicad-export",
+      "command": "uvx",
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-export"],
       "cwd": "/path/to/your/kicad/project"
     }
   }
