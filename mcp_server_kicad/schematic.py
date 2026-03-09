@@ -738,6 +738,77 @@ def add_text(
 
 
 # ---------------------------------------------------------------------------
+# High-level routing tools (3)
+# ---------------------------------------------------------------------------
+
+# Direction -> (dx_sign, dy_sign, label_rotation)
+_DIR_OFFSETS = {
+    "right": (1, 0, 0),
+    "left": (-1, 0, 180),
+    "up": (0, -1, 90),
+    "down": (0, 1, 270),
+}
+
+# Outward angle (math Y-down) -> cardinal direction name
+_ANGLE_TO_DIR = {0: "right", 90: "down", 180: "left", 270: "up"}
+
+
+@mcp.tool()
+def wire_pin_to_label(
+    reference: str,
+    pin_name: str,
+    label_text: str,
+    stub_length: float = 2.54,
+    direction: str = "auto",
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Wire a component pin to a net label with a short stub.
+
+    Combines get_pin_positions + add_wire + add_label into one call.
+
+    Args:
+        reference: Component reference (e.g. "U1", "R1")
+        pin_name: Pin name (e.g. "IN", "GND") or number (e.g. "1")
+        label_text: Net label text (e.g. "VIN_PROT")
+        stub_length: Wire stub length in mm (default 2.54)
+        direction: Wire direction: "left", "right", "up", "down", or "auto"
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    px, py, outward = _get_pin_pos(sch, reference, pin_name)
+    px, py = _snap_grid(px), _snap_grid(py)
+
+    if direction == "auto":
+        snapped = round(outward / 90) * 90 % 360
+        direction = _ANGLE_TO_DIR[snapped]
+
+    dx_sign, dy_sign, label_rot = _DIR_OFFSETS[direction]
+    end_x = _snap_grid(px + dx_sign * stub_length)
+    end_y = _snap_grid(py + dy_sign * stub_length)
+
+    # Wire stub
+    wire = Connection(
+        type="wire",
+        points=[Position(X=px, Y=py), Position(X=end_x, Y=end_y)],
+        stroke=_default_stroke(),
+        uuid=_gen_uuid(),
+    )
+    sch.graphicalItems.append(wire)
+
+    # Net label at endpoint
+    label = LocalLabel(
+        text=label_text,
+        position=Position(X=end_x, Y=end_y, angle=label_rot),
+        effects=_default_effects(),
+        uuid=_gen_uuid(),
+    )
+    sch.labels.append(label)
+
+    sch.to_file()
+    return f"Wired {reference}:{pin_name} -> label '{label_text}' at ({end_x}, {end_y})"
+
+
+# ---------------------------------------------------------------------------
 # Symbol library access tools (2)
 # ---------------------------------------------------------------------------
 
