@@ -63,9 +63,9 @@ class TestAddVia:
 
 class TestAddPcbText:
     def test_basic(self, scratch_pcb):
-        result = pcb.add_pcb_text("SKRIMP V1", 100, 110,
+        result = pcb.add_pcb_text("BOARD V1", 100, 110,
                                         layer="F.SilkS", pcb_path=str(scratch_pcb))
-        assert "SKRIMP" in result
+        assert "BOARD" in result
 
 
 class TestAddPcbLine:

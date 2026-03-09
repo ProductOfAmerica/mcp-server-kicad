@@ -63,7 +63,7 @@ def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
     """Get pin info for a symbol in the schematic's lib_symbols.
 
     Args:
-        symbol_name: Symbol name (e.g. "MP4572GQB-P", "C", "Fuse")
+        symbol_name: Symbol name (e.g. "LM7805", "C", "Fuse")
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
@@ -369,7 +369,7 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
 
     Args:
         symbol_lib_path: Path to .kicad_sym file
-        symbol_name: Symbol name (e.g. "MP4572GQB-P")
+        symbol_name: Symbol name (e.g. "LM7805")
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
@@ -571,7 +571,7 @@ def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> st
     """Get detailed pin and property info for a symbol in a library.
 
     Args:
-        symbol_name: Symbol name (e.g. "MP4572GQB-P")
+        symbol_name: Symbol name (e.g. "LM7805")
         symbol_lib_path: Path to .kicad_sym file
     """
     lib = SymbolLib.from_file(symbol_lib_path)
