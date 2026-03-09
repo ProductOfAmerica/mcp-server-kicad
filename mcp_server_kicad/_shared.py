@@ -123,7 +123,7 @@ def _resolve_config() -> dict[str, str]:
             cfg["sym_lib_path"] = str(sym)
 
         pretty = cwd / f"{stem}.pretty"
-        if pretty.exists():
+        if pretty.is_dir():
             cfg["fp_lib_path"] = str(pretty)
 
         # output_dir is always the project directory when a project is detected
