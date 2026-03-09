@@ -75,6 +75,87 @@ def _snap_grid(val: float, grid: float = _GRID_MM) -> float:
     return round(round(val / grid) * grid, 4)
 
 
+def _transform_pin_pos(
+    px: float,
+    py: float,
+    pin_angle: float,
+    cx: float,
+    cy: float,
+    comp_angle_deg: float,
+    mirror: str | None,
+) -> tuple[float, float, float]:
+    """Transform a pin from lib coords to absolute schematic coords.
+
+    Returns (final_x, final_y, outward_angle_deg).
+
+    The outward angle is the direction away from the component body in
+    schematic coordinates (0=right, 90=down/+Y, 180=left, 270=up/-Y).
+    """
+    angle_rad = math.radians(comp_angle_deg)
+
+    # Negate Y to convert from lib_symbol (Y-up) to schematic (Y-down)
+    py = -py
+
+    # Apply mirror and compute absolute pin angle (toward-body direction)
+    if mirror == "x":
+        py = -py
+        abs_pin_angle = pin_angle + comp_angle_deg
+    elif mirror == "y":
+        px = -px
+        abs_pin_angle = pin_angle + 180 + comp_angle_deg
+    else:
+        abs_pin_angle = -pin_angle + comp_angle_deg
+
+    # Apply rotation (KiCad rotates CCW)
+    cos_a = math.cos(angle_rad)
+    sin_a = math.sin(angle_rad)
+    final_x = cx + px * cos_a - py * sin_a
+    final_y = cy + px * sin_a + py * cos_a
+
+    # Outward direction (away from body)
+    outward = (abs_pin_angle + 180) % 360
+    return final_x, final_y, outward
+
+
+def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, float]:
+    """Return absolute (x, y, outward_angle_deg) for a placed component's pin.
+
+    Matches pin by name (e.g. "IN", "GND") first, then by number (e.g. "1").
+    If multiple pins share a name, returns the first match.
+    Raises ValueError if reference or pin not found.
+    """
+    target = None
+    for sym in sch.schematicSymbols:
+        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
+            target = sym
+            break
+    if target is None:
+        raise ValueError(f"Component {reference} not found")
+
+    lib_sym = _find_lib_symbol(sch, target.libId)
+    if lib_sym is None:
+        raise ValueError(f"Lib symbol for {reference} not found")
+
+    cx, cy = target.position.X, target.position.Y
+    comp_angle = target.position.angle or 0
+    mir = getattr(target, "mirror", None)
+
+    for unit in lib_sym.units:
+        for pin in unit.pins:
+            if pin.name == pin_name or pin.number == pin_name:
+                return _transform_pin_pos(
+                    pin.position.X,
+                    pin.position.Y,
+                    pin.position.angle or 0,
+                    cx,
+                    cy,
+                    comp_angle,
+                    mir,
+                )
+
+    raise ValueError(f"Pin '{pin_name}' not found on {reference}")
+
+
 # ---------------------------------------------------------------------------
 # Schematic read tools (6)
 # ---------------------------------------------------------------------------
@@ -165,30 +246,21 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
 
     cx, cy = target.position.X, target.position.Y
     angle_deg = target.position.angle or 0
-    angle_rad = math.radians(angle_deg)
     mir = getattr(target, "mirror", None)
 
     lines = [f"{reference} ({symbol_name}) @ ({cx}, {cy}) rot={angle_deg} mirror={mir}"]
 
     for unit in lib_sym.units:
         for pin in unit.pins:
-            px, py = pin.position.X, pin.position.Y
-
-            # Negate Y to convert from lib_symbol (Y-up) to schematic (Y-down)
-            py = -py
-
-            # Apply mirror in schematic coordinate space
-            if mir == "x":
-                py = -py
-            elif mir == "y":
-                px = -px
-
-            # Apply rotation (KiCad rotates CCW)
-            cos_a = math.cos(angle_rad)
-            sin_a = math.sin(angle_rad)
-            final_x = cx + px * cos_a - py * sin_a
-            final_y = cy + px * sin_a + py * cos_a
-
+            final_x, final_y, _ = _transform_pin_pos(
+                pin.position.X,
+                pin.position.Y,
+                pin.position.angle or 0,
+                cx,
+                cy,
+                angle_deg,
+                mir,
+            )
             lines.append(
                 f"  Pin {pin.number} ({pin.name}): ({round(final_x, 2)}, {round(final_y, 2)})"
             )
