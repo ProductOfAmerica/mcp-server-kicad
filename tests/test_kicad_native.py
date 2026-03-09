@@ -176,7 +176,10 @@ class TestWriteToolsNative:
 
     def test_add_wire(self, kicad_native_sch):
         schematic.add_wire(
-            x1=100, y1=100, x2=200, y2=100,
+            x1=100,
+            y1=100,
+            x2=200,
+            y2=100,
             schematic_path=str(kicad_native_sch),
         )
         sch = reparse(str(kicad_native_sch))
