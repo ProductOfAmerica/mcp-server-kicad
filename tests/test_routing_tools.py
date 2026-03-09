@@ -225,3 +225,116 @@ class TestWirePinToLabel:
                 label_text="BAD",
                 schematic_path=str(scratch_sch),
             )
+
+
+def _make_two_parts_sch(tmp_path: Path) -> str:
+    """Create schematic with R1 at (100,100) and TestPart U1 at (200,100)."""
+    sch = new_schematic()
+    sch.libSymbols.append(build_r_symbol())
+    sch.libSymbols.append(build_test_part_symbol())
+
+    sch.schematicSymbols.append(place_r1(100, 100))
+
+    sym = SchematicSymbol()
+    sym.libId = "TestPart"
+    sym.libName = "TestPart"
+    sym.position = Position(X=200, Y=100, angle=0)
+    sym.uuid = _gen_uuid()
+    sym.unit = 1
+    sym.inBom = True
+    sym.onBoard = True
+    sym.properties = [
+        Property(
+            key="Reference",
+            value="U1",
+            id=0,
+            effects=_default_effects(),
+            position=Position(X=200, Y=96.19, angle=0),
+        ),
+        Property(
+            key="Value",
+            value="TestPart",
+            id=1,
+            effects=_default_effects(),
+            position=Position(X=200, Y=103.81, angle=0),
+        ),
+        Property(
+            key="Footprint",
+            value="",
+            id=2,
+            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+            position=Position(X=200, Y=100, angle=0),
+        ),
+        Property(
+            key="Datasheet",
+            value="~",
+            id=3,
+            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+            position=Position(X=200, Y=100, angle=0),
+        ),
+    ]
+    sym.pins = {"1": _gen_uuid(), "2": _gen_uuid()}
+    sch.schematicSymbols.append(sym)
+
+    path = str(tmp_path / "two_parts.kicad_sch")
+    sch.filePath = path
+    sch.to_file()
+    return path
+
+
+# ===========================================================================
+# TestConnectPins
+# ===========================================================================
+
+
+class TestConnectPins:
+    def test_l_shaped_route(self, tmp_path):
+        """R1 pin 1 and U1 IN at different X/Y: L-shaped route."""
+        path = _make_two_parts_sch(tmp_path)
+        result = schematic.connect_pins(
+            ref1="R1",
+            pin1="1",
+            ref2="U1",
+            pin2="IN",
+            schematic_path=path,
+        )
+        assert "2 wire segments" in result
+        sch = reparse(path)
+        assert _count_wires(sch) == 2
+
+    def test_axis_aligned_route(self, scratch_sch):
+        """R1 pin 1 and pin 2 share X: single wire."""
+        sch_before = reparse(str(scratch_sch))
+        wires_before = _count_wires(sch_before)
+
+        result = schematic.connect_pins(
+            ref1="R1",
+            pin1="1",
+            ref2="R1",
+            pin2="2",
+            schematic_path=str(scratch_sch),
+        )
+        assert "1 wire segment" in result
+
+        sch_after = reparse(str(scratch_sch))
+        assert _count_wires(sch_after) == wires_before + 1
+
+    def test_bad_reference(self, scratch_sch):
+        with pytest.raises(ValueError, match="not found"):
+            schematic.connect_pins(
+                ref1="X99",
+                pin1="1",
+                ref2="R1",
+                pin2="1",
+                schematic_path=str(scratch_sch),
+            )
+
+    def test_bad_pin(self, scratch_sch):
+        with pytest.raises(ValueError, match="not found"):
+            schematic.connect_pins(
+                ref1="R1",
+                pin1="NOPE",
+                ref2="R1",
+                pin2="1",
+                schematic_path=str(scratch_sch),
+            )

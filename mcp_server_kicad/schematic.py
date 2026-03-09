@@ -808,6 +808,74 @@ def wire_pin_to_label(
     return f"Wired {reference}:{pin_name} -> label '{label_text}' at ({end_x}, {end_y})"
 
 
+@mcp.tool()
+def connect_pins(
+    ref1: str,
+    pin1: str,
+    ref2: str,
+    pin2: str,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Connect two component pins with Manhattan (L-shaped) wire routing.
+
+    Combines get_pin_positions + coordinate math + add_wires into one call.
+
+    Args:
+        ref1: First component reference (e.g. "U1")
+        pin1: First pin name or number
+        ref2: Second component reference (e.g. "C3")
+        pin2: Second pin name or number
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    x1, y1, _ = _get_pin_pos(sch, ref1, pin1)
+    x2, y2, _ = _get_pin_pos(sch, ref2, pin2)
+
+    x1, y1 = _snap_grid(x1), _snap_grid(y1)
+    x2, y2 = _snap_grid(x2), _snap_grid(y2)
+
+    segments = []
+    if x1 == x2 or y1 == y2:
+        # Axis-aligned: single straight wire
+        segments.append(
+            Connection(
+                type="wire",
+                points=[Position(X=x1, Y=y1), Position(X=x2, Y=y2)],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+    else:
+        # L-shaped: horizontal from pin1 to x2, then vertical to pin2
+        mid_x, mid_y = x2, y1
+        segments.append(
+            Connection(
+                type="wire",
+                points=[Position(X=x1, Y=y1), Position(X=mid_x, Y=mid_y)],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+        segments.append(
+            Connection(
+                type="wire",
+                points=[Position(X=mid_x, Y=mid_y), Position(X=x2, Y=y2)],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+
+    for seg in segments:
+        sch.graphicalItems.append(seg)
+    sch.to_file()
+
+    n = len(segments)
+    return (
+        f"Connected {ref1}:{pin1} -> {ref2}:{pin2} "
+        f"via {n} wire segment{'s' if n > 1 else ''}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Symbol library access tools (2)
 # ---------------------------------------------------------------------------
