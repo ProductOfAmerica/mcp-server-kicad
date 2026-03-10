@@ -538,9 +538,7 @@ class TestAddPowerRail:
         vcc_labels = [lbl for lbl in sch.labels if lbl.text == "VCC"]
         assert len(vcc_labels) >= 1
 
-    def test_empty_pins_just_places_symbol(
-        self, scratch_sch, scratch_power_lib
-    ):
+    def test_empty_pins_just_places_symbol(self, scratch_sch, scratch_power_lib):
         result = schematic.add_power_rail(
             lib_id="power:GND",
             reference="#PWR02",
@@ -579,8 +577,7 @@ class TestAutoPlaceDecouplingCap:
         # Cap should be placed
         c1 = None
         for sym in sch.schematicSymbols:
-            if any(p.key == "Reference" and p.value == "C1"
-                   for p in sym.properties):
+            if any(p.key == "Reference" and p.value == "C1" for p in sym.properties):
                 c1 = sym
                 break
         assert c1 is not None

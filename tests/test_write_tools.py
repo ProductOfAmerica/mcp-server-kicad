@@ -542,12 +542,16 @@ class TestRemoveWire:
         )
         assert "Removed" in result
         sch = reparse(str(scratch_sch))
-        wires = [g for g in sch.graphicalItems
-                 if isinstance(g, Connection) and g.type == "wire"]
+        wires = [g for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"]
         matching = [
-            w for w in wires
-            if (abs(w.points[0].X - 50) < 0.1 and abs(w.points[0].Y - 50) < 0.1
-                and abs(w.points[1].X - 80) < 0.1 and abs(w.points[1].Y - 50) < 0.1)
+            w
+            for w in wires
+            if (
+                abs(w.points[0].X - 50) < 0.1
+                and abs(w.points[0].Y - 50) < 0.1
+                and abs(w.points[1].X - 80) < 0.1
+                and abs(w.points[1].Y - 50) < 0.1
+            )
         ]
         assert len(matching) == 0
 
@@ -660,9 +664,7 @@ class TestSetComponentProperty:
         assert "R1" in result
         sch = reparse(str(scratch_sch))
         r1 = _find_symbol(sch, "R1")
-        mpn = next(
-            (p.value for p in r1.properties if p.key == "MPN"), None
-        )
+        mpn = next((p.value for p in r1.properties if p.key == "MPN"), None)
         assert mpn == "RC0402FR-0710KL"
 
     def test_missing_component(self, scratch_sch):
@@ -685,23 +687,15 @@ class TestRemoveJunction:
         # First add a junction
         schematic.add_junction(x=50.8, y=50.8, schematic_path=str(scratch_sch))
         sch = reparse(str(scratch_sch))
-        assert any(
-            j.position.X == 50.8 and j.position.Y == 50.8
-            for j in sch.junctions
-        )
+        assert any(j.position.X == 50.8 and j.position.Y == 50.8 for j in sch.junctions)
 
-        result = schematic.remove_junction(
-            x=50.8, y=50.8, schematic_path=str(scratch_sch)
-        )
+        result = schematic.remove_junction(x=50.8, y=50.8, schematic_path=str(scratch_sch))
         assert "Removed" in result
         sch = reparse(str(scratch_sch))
         assert not any(
-            abs(j.position.X - 50.8) < 0.1 and abs(j.position.Y - 50.8) < 0.1
-            for j in sch.junctions
+            abs(j.position.X - 50.8) < 0.1 and abs(j.position.Y - 50.8) < 0.1 for j in sch.junctions
         )
 
     def test_remove_missing(self, scratch_sch):
-        result = schematic.remove_junction(
-            x=999, y=999, schematic_path=str(scratch_sch)
-        )
+        result = schematic.remove_junction(x=999, y=999, schematic_path=str(scratch_sch))
         assert "not found" in result.lower()

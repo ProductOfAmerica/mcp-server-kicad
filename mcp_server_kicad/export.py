@@ -89,13 +89,17 @@ def list_unconnected_pins(
         return json.dumps({"error": "kicad-cli not found"}, indent=2)
 
     out_dir = output_dir or str(Path(schematic_path).parent)
-    out_path = str(
-        Path(out_dir) / (Path(schematic_path).stem + "-erc.json")
-    )
+    out_path = str(Path(out_dir) / (Path(schematic_path).stem + "-erc.json"))
     _run_cli(
         [
-            "sch", "erc", "--format", "json", "--severity-all",
-            "--output", out_path, schematic_path,
+            "sch",
+            "erc",
+            "--format",
+            "json",
+            "--severity-all",
+            "--output",
+            out_path,
+            schematic_path,
         ],
         check=False,
     )
@@ -103,14 +107,10 @@ def list_unconnected_pins(
         with open(out_path) as f:
             report = json.load(f)
     except FileNotFoundError:
-        return json.dumps(
-            {"error": "ERC failed to produce output"}, indent=2
-        )
+        return json.dumps({"error": "ERC failed to produce output"}, indent=2)
 
     pins = _parse_unconnected_pins(report)
-    return json.dumps(
-        {"unconnected_count": len(pins), "pins": pins}, indent=2
-    )
+    return json.dumps({"unconnected_count": len(pins), "pins": pins}, indent=2)
 
 
 @mcp.tool()

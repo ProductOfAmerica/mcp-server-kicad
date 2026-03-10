@@ -308,8 +308,7 @@ def get_net_connections(
     reachable: set[tuple[float, float]] = set(label_positions)
     for lx, ly in label_positions:
         for item in sch.graphicalItems:
-            if (isinstance(item, Connection) and item.type == "wire"
-                    and len(item.points) >= 2):
+            if isinstance(item, Connection) and item.type == "wire" and len(item.points) >= 2:
                 p0, p1 = item.points[0], item.points[1]
                 if abs(p0.X - lx) < tol and abs(p0.Y - ly) < tol:
                     reachable.add((p1.X, p1.Y))
@@ -334,25 +333,34 @@ def get_net_connections(
         for unit in lib_sym.units:
             for pin in unit.pins:
                 px, py, _ = _transform_pin_pos(
-                    pin.position.X, pin.position.Y,
+                    pin.position.X,
+                    pin.position.Y,
                     pin.position.angle or 0,
-                    cx, cy, comp_angle, mir,
+                    cx,
+                    cy,
+                    comp_angle,
+                    mir,
                 )
                 px, py = _snap_grid(px), _snap_grid(py)
                 for rx, ry in reachable:
                     if abs(px - rx) < tol and abs(py - ry) < tol:
-                        connections.append({
-                            "reference": ref,
-                            "pin": pin.number,
-                            "pin_name": pin.name,
-                            "x": px,
-                            "y": py,
-                        })
-    return _json.dumps({
-        "net": label_text,
-        "label_count": len(label_positions),
-        "connections": connections,
-    }, indent=2)
+                        connections.append(
+                            {
+                                "reference": ref,
+                                "pin": pin.number,
+                                "pin_name": pin.name,
+                                "x": px,
+                                "y": py,
+                            }
+                        )
+    return _json.dumps(
+        {
+            "net": label_text,
+            "label_count": len(label_positions),
+            "connections": connections,
+        },
+        indent=2,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -413,17 +421,13 @@ def place_component(
             similar = [
                 n
                 for n in available
-                if symbol_name.lower() in n.lower()
-                or n.lower() in symbol_name.lower()
+                if symbol_name.lower() in n.lower() or n.lower() in symbol_name.lower()
             ]
             hint = ""
             if similar:
                 hint = f" Similar: {', '.join(similar[:5])}"
             lib_prefix = lib_id.split(":")[0]
-            return (
-                f"Error: symbol '{symbol_name}' not found in"
-                f" {lib_prefix} library.{hint}"
-            )
+            return f"Error: symbol '{symbol_name}' not found in {lib_prefix} library.{hint}"
 
     # Create instance — set libName to match the lib_symbol's name as stored
     # in the file so KiCad can resolve the lookup without crashing.
@@ -592,10 +596,18 @@ def remove_wire(
     for item in sch.graphicalItems:
         if isinstance(item, Connection) and item.type == "wire" and len(item.points) >= 2:
             p0, p1 = item.points[0], item.points[1]
-            fwd = (abs(p0.X - x1) < tol and abs(p0.Y - y1) < tol
-                   and abs(p1.X - x2) < tol and abs(p1.Y - y2) < tol)
-            rev = (abs(p0.X - x2) < tol and abs(p0.Y - y2) < tol
-                   and abs(p1.X - x1) < tol and abs(p1.Y - y1) < tol)
+            fwd = (
+                abs(p0.X - x1) < tol
+                and abs(p0.Y - y1) < tol
+                and abs(p1.X - x2) < tol
+                and abs(p1.Y - y2) < tol
+            )
+            rev = (
+                abs(p0.X - x2) < tol
+                and abs(p0.Y - y2) < tol
+                and abs(p1.X - x1) < tol
+                and abs(p1.Y - y1) < tol
+            )
             if fwd or rev:
                 removed.append(item)
                 continue
@@ -623,8 +635,7 @@ def remove_junction(
     sch = _load_sch(schematic_path)
     tol = 0.1
     for i, junc in enumerate(sch.junctions):
-        if (abs(junc.position.X - x) < tol
-                and abs(junc.position.Y - y) < tol):
+        if abs(junc.position.X - x) < tol and abs(junc.position.Y - y) < tol:
             sch.junctions.pop(i)
             sch.to_file()
             return f"Removed junction at ({x}, {y})"
@@ -846,8 +857,7 @@ def set_component_footprint(
     """
     sch = _load_sch(schematic_path)
     for sym in sch.schematicSymbols:
-        if any(p.key == "Reference" and p.value == reference
-               for p in sym.properties):
+        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
             for prop in sym.properties:
                 if prop.key == "Footprint":
                     prop.value = footprint
@@ -873,8 +883,7 @@ def set_component_property(
     """
     sch = _load_sch(schematic_path)
     for sym in sch.schematicSymbols:
-        if any(p.key == "Reference" and p.value == reference
-               for p in sym.properties):
+        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
             # Update existing property
             for prop in sym.properties:
                 if prop.key == key:
@@ -888,12 +897,8 @@ def set_component_property(
                     key=key,
                     value=value,
                     id=new_id,
-                    effects=Effects(
-                        font=Font(height=1.27, width=1.27), hide=True
-                    ),
-                    position=Position(
-                        X=sym.position.X, Y=sym.position.Y, angle=0
-                    ),
+                    effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                    position=Position(X=sym.position.X, Y=sym.position.Y, angle=0),
                 )
             )
             sch.to_file()
@@ -1139,9 +1144,7 @@ def auto_place_decoupling_cap(
         schematic_path=schematic_path,
     )
 
-    return (
-        f"{result} | pin 1->{power_net} | pin 2->{ground_net}"
-    )
+    return f"{result} | pin 1->{power_net} | pin 2->{ground_net}"
 
 
 @mcp.tool()
@@ -1226,9 +1229,11 @@ def wire_pin_to_label(
     conflict_warning = ""
     tol = 0.1
     for existing in sch.labels:
-        if (abs(existing.position.X - end_x) < tol
-                and abs(existing.position.Y - end_y) < tol
-                and existing.text != label_text):
+        if (
+            abs(existing.position.X - end_x) < tol
+            and abs(existing.position.Y - end_y) < tol
+            and existing.text != label_text
+        ):
             conflict_warning = (
                 f" WARNING: conflicting label '{existing.text}' already at "
                 f"({end_x}, {end_y}) — may create a short with '{label_text}'"
@@ -1303,13 +1308,12 @@ def wire_pins_to_net(
 
         # Check for conflicting labels
         for existing in sch.labels:
-            if (abs(existing.position.X - end_x) < tol
-                    and abs(existing.position.Y - end_y) < tol
-                    and existing.text != label_text):
-                warnings.append(
-                    f"{ref}:{pin_name} conflicts with"
-                    f" '{existing.text}'"
-                )
+            if (
+                abs(existing.position.X - end_x) < tol
+                and abs(existing.position.Y - end_y) < tol
+                and existing.text != label_text
+            ):
+                warnings.append(f"{ref}:{pin_name} conflicts with '{existing.text}'")
                 break
 
         # Wire stub
@@ -1328,9 +1332,7 @@ def wire_pins_to_net(
         sch.labels.append(
             LocalLabel(
                 text=label_text,
-                position=Position(
-                    X=end_x, Y=end_y, angle=label_rot
-                ),
+                position=Position(X=end_x, Y=end_y, angle=label_rot),
                 effects=_default_effects(),
                 uuid=_gen_uuid(),
             )
