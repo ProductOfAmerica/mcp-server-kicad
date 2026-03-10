@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
+import pytest
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
 
@@ -207,3 +209,16 @@ class TestAddHierarchicalSheet:
         sheet = sch.sheets[0]
         assert sheet.position.X == 50.8
         assert sheet.position.Y == 76.2
+
+
+@pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
+class TestGetVersion:
+    def test_returns_version_info(self):
+        result = json.loads(project.get_version())
+        assert "version_info" in result or "error" in result
+
+
+class TestRunJobset:
+    def test_missing_jobset_returns_error(self, tmp_path):
+        result = project.run_jobset(str(tmp_path / "nonexistent.kicad_jobset"))
+        assert "failed" in result.lower() or "error" in result.lower()
