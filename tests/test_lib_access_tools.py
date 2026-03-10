@@ -1,31 +1,6 @@
-"""Tests for library access tools."""
+"""Tests for footprint library access tools."""
 
-import pytest
-
-# Cross-server test: symbol library tools are in schematic, footprint library tools are in pcb.
-from mcp_server_kicad import pcb, schematic
-
-
-class TestListLibSymbols:
-    def test_list_symbols(self, scratch_sym_lib):
-        result = schematic.list_lib_symbols(str(scratch_sym_lib))
-        assert "TestPart" in result
-
-    def test_nonexistent(self):
-        with pytest.raises(Exception):
-            schematic.list_lib_symbols("/nonexistent.kicad_sym")
-
-
-class TestGetSymbolInfo:
-    def test_known(self, scratch_sym_lib):
-        result = schematic.get_symbol_info("TestPart", str(scratch_sym_lib))
-        assert "IN" in result
-        assert "OUT" in result
-        assert "passive" in result
-
-    def test_unknown(self, scratch_sym_lib):
-        result = schematic.get_symbol_info("NOPE", str(scratch_sym_lib))
-        assert "not found" in result
+from mcp_server_kicad import pcb
 
 
 class TestListLibFootprints:
