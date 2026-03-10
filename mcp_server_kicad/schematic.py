@@ -1026,6 +1026,57 @@ def add_power_symbol(
 
 
 @mcp.tool()
+def add_power_rail(
+    lib_id: str,
+    reference: str,
+    pins: list[dict],
+    x: float,
+    y: float,
+    rotation: float = 0,
+    symbol_lib_path: str = "",
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Place a power symbol and wire listed pins to that net.
+
+    Combines add_power_symbol + batch wire_pin_to_label. Each pin
+    gets a stub wire + label with the power net name.
+
+    Args:
+        lib_id: Power symbol (e.g. "power:VCC", "power:GND")
+        reference: Power reference (e.g. "#PWR01")
+        pins: List of {"reference": "C1", "pin": "2"} to connect
+        x: Power symbol X position
+        y: Power symbol Y position
+        rotation: Power symbol rotation (default 0)
+        symbol_lib_path: Path to power .kicad_sym if needed
+        schematic_path: Path to .kicad_sch file
+    """
+    result = add_power_symbol(
+        lib_id=lib_id,
+        reference=reference,
+        x=x,
+        y=y,
+        rotation=rotation,
+        symbol_lib_path=symbol_lib_path,
+        schematic_path=schematic_path,
+    )
+
+    net_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
+
+    if pins:
+        wire_result = wire_pins_to_net(
+            pins=pins,
+            label_text=net_name,
+            schematic_path=schematic_path,
+        )
+        result += f" | {wire_result}"
+    else:
+        result += f" | Wired 0 pins to '{net_name}'."
+
+    return result
+
+
+@mcp.tool()
 def add_text(
     text: str,
     x: float,

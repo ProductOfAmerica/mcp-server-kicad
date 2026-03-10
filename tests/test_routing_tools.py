@@ -504,3 +504,51 @@ class TestWirePinsToNet:
             schematic_path=str(scratch_sch),
         )
         assert "error" in result.lower() or "not found" in result.lower()
+
+
+# ===========================================================================
+# TestAddPowerRail
+# ===========================================================================
+
+
+class TestAddPowerRail:
+    def test_places_symbol_and_wires_pins(self, scratch_sch, scratch_power_lib):
+        result = schematic.add_power_rail(
+            lib_id="power:VCC",
+            reference="#PWR01",
+            pins=[
+                {"reference": "R1", "pin": "1"},
+            ],
+            x=100,
+            y=50,
+            symbol_lib_path=str(scratch_power_lib),
+            schematic_path=str(scratch_sch),
+        )
+        assert "#PWR01" in result
+        assert "1 pin" in result
+
+        sch = reparse(str(scratch_sch))
+        # Power symbol should be placed
+        refs = [
+            next((p.value for p in s.properties if p.key == "Reference"), "")
+            for s in sch.schematicSymbols
+        ]
+        assert "#PWR01" in refs
+        # VCC label should exist (from wiring R1 pin 1)
+        vcc_labels = [l for l in sch.labels if l.text == "VCC"]
+        assert len(vcc_labels) >= 1
+
+    def test_empty_pins_just_places_symbol(
+        self, scratch_sch, scratch_power_lib
+    ):
+        result = schematic.add_power_rail(
+            lib_id="power:GND",
+            reference="#PWR02",
+            pins=[],
+            x=100,
+            y=200,
+            symbol_lib_path=str(scratch_power_lib),
+            schematic_path=str(scratch_sch),
+        )
+        assert "#PWR02" in result
+        assert "0 pin" in result
