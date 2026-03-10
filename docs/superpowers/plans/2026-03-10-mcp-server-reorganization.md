@@ -1,10 +1,10 @@
-# MCP Server Reorganization Implementation Plan
+# MCP Server Reorganization + Tool Consolidation Implementation Plan
 
 > **For agentic workers:** REQUIRED: Use superpowers:subagent-driven-development (if subagents available) or superpowers:executing-plans to implement this plan. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Reorganize from 3 MCP servers (schematic, pcb, export) to 5 domain-aligned servers (schematic, pcb, symbol, footprint, project).
+**Goal:** Reorganize from 3 MCP servers to 5 domain-aligned servers AND consolidate 82 tools down to 63 per Anthropic best practices.
 
-**Architecture:** Move tools from the grab-bag `export.py` into their domain servers. Extract symbol and footprint library tools into dedicated servers. Give project.py its own FastMCP instance. Delete export.py.
+**Architecture:** Move tools from grab-bag `export.py` into domain servers. Extract symbol/footprint library tools. Give project.py its own FastMCP. Consolidate related tools using format/item_type parameters and batch merges. Delete export.py.
 
 **Tech Stack:** Python, FastMCP (`mcp.server.fastmcp`), kiutils, kicad-cli (subprocess)
 
@@ -22,11 +22,10 @@
 - Create: `mcp_server_kicad/symbol.py`
 - Modify: `mcp_server_kicad/schematic.py` (remove 2 tools)
 - Reference: `mcp_server_kicad/export.py` (copy 2 tools)
-- Reference: `mcp_server_kicad/_shared.py` (for imports)
 
 - [ ] **Step 1: Create `mcp_server_kicad/symbol.py`**
 
-This file creates the kicad-symbol FastMCP server with 4 tools. Read the source files first, then create `symbol.py` with this structure:
+Read the source files first, then create `symbol.py` with this structure:
 
 ```python
 """KiCad symbol library MCP server."""
@@ -83,7 +82,7 @@ if __name__ == "__main__":
     main()
 ```
 
-**IMPORTANT:** Copy function bodies exactly from their source files — including parameter names, default values, docstrings, and body logic. Do NOT rename parameters (e.g., keep `symbol_lib_path`, not `library_path`).
+**IMPORTANT:** Copy function bodies exactly from their source files — including parameter names, default values, docstrings, and body logic. Do NOT rename parameters.
 
 - [ ] **Step 2: Remove `list_lib_symbols` and `get_symbol_info` from `schematic.py`**
 
@@ -94,7 +93,7 @@ Do NOT remove `add_lib_symbol` — it writes into the schematic's internal lib_s
 - [ ] **Step 3: Run existing tests to confirm nothing broke**
 
 Run: `uv run pytest tests/test_read_tools.py tests/test_write_tools.py tests/test_routing_tools.py -v`
-Expected: All PASS (schematic tools unaffected)
+Expected: All PASS
 
 - [ ] **Step 4: Commit**
 
@@ -106,30 +105,25 @@ git commit -m "feat: create kicad-symbol server with 4 library tools"
 ### Task 2: Update symbol-related tests
 
 **Files:**
-- Create: `tests/test_symbol_access_tools.py` (from symbol half of `test_lib_access_tools.py`)
+- Create: `tests/test_symbol_access_tools.py`
 - Modify: `tests/test_lib_access_tools.py` (remove symbol tests, keep footprint tests)
 
-NOTE: Do NOT rename `tests/test_lib_tools.py`. That file tests `add_lib_symbol` which remains on the schematic server. Leave it unchanged.
+NOTE: Do NOT rename `tests/test_lib_tools.py`. That file tests `add_lib_symbol` which remains on the schematic server.
 
 - [ ] **Step 1: Create `tests/test_symbol_access_tools.py`**
 
-Copy the `TestListLibSymbols` and `TestGetSymbolInfo` classes from `tests/test_lib_access_tools.py` into a new file `tests/test_symbol_access_tools.py`. Update imports to use `from mcp_server_kicad import symbol` and change all calls from `schematic.list_lib_symbols(...)` to `symbol.list_lib_symbols(...)` and `schematic.get_symbol_info(...)` to `symbol.get_symbol_info(...)`.
+Copy the `TestListLibSymbols` and `TestGetSymbolInfo` classes from `tests/test_lib_access_tools.py`. Update imports to `from mcp_server_kicad import symbol` and change calls from `schematic.list_lib_symbols(...)` to `symbol.list_lib_symbols(...)` etc.
 
 - [ ] **Step 2: Remove symbol tests from `test_lib_access_tools.py`**
 
-Remove the `TestListLibSymbols` and `TestGetSymbolInfo` classes from `tests/test_lib_access_tools.py`, leaving only the footprint tests (`TestListLibFootprints`, `TestGetFootprintInfo`).
+Remove `TestListLibSymbols` and `TestGetSymbolInfo`, leaving only footprint tests.
 
-- [ ] **Step 3: Run symbol tests**
+- [ ] **Step 3: Run tests**
 
-Run: `uv run pytest tests/test_symbol_access_tools.py -v`
+Run: `uv run pytest tests/test_symbol_access_tools.py tests/test_lib_access_tools.py -v`
 Expected: All PASS
 
-- [ ] **Step 4: Run remaining lib access tests**
-
-Run: `uv run pytest tests/test_lib_access_tools.py -v`
-Expected: All PASS (footprint tests still import from pcb)
-
-- [ ] **Step 5: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add tests/
@@ -148,8 +142,6 @@ git commit -m "test: reorganize symbol library tests for new symbol server"
 - Reference: `mcp_server_kicad/export.py` (copy 2 tools)
 
 - [ ] **Step 1: Create `mcp_server_kicad/footprint.py`**
-
-This file creates the kicad-footprint FastMCP server with 4 tools. Read the source files first, then create `footprint.py` with this structure:
 
 ```python
 """KiCad footprint library MCP server."""
@@ -207,7 +199,7 @@ if __name__ == "__main__":
     main()
 ```
 
-**IMPORTANT:** Copy function bodies exactly from their source files. Do NOT rename parameters.
+Copy function bodies exactly. Do NOT rename parameters.
 
 - [ ] **Step 2: Remove `list_lib_footprints` and `get_footprint_info` from `pcb.py`**
 
@@ -216,7 +208,7 @@ Delete the two `@mcp.tool()` decorated functions at `pcb.py:406-439`.
 - [ ] **Step 3: Run existing PCB tests**
 
 Run: `uv run pytest tests/test_pcb_read_tools.py tests/test_pcb_write_tools.py -v`
-Expected: All PASS (PCB tools unaffected)
+Expected: All PASS
 
 - [ ] **Step 4: Commit**
 
@@ -230,17 +222,15 @@ git commit -m "feat: create kicad-footprint server with 4 library tools"
 **Files:**
 - Rename: `tests/test_lib_access_tools.py` → `tests/test_footprint_access_tools.py`
 
-- [ ] **Step 1: Rename remaining `test_lib_access_tools.py` to `test_footprint_access_tools.py`**
-
-After chunk 1 removed symbol tests, this file only has footprint tests.
+- [ ] **Step 1: Rename and update imports**
 
 ```bash
 git mv tests/test_lib_access_tools.py tests/test_footprint_access_tools.py
 ```
 
-Update imports: change `from mcp_server_kicad import pcb` to `from mcp_server_kicad import footprint` and update all function calls from `pcb.list_lib_footprints(...)` to `footprint.list_lib_footprints(...)` and `pcb.get_footprint_info(...)` to `footprint.get_footprint_info(...)`.
+Update imports: `from mcp_server_kicad import pcb` → `from mcp_server_kicad import footprint`, update all function calls.
 
-- [ ] **Step 2: Run footprint tests**
+- [ ] **Step 2: Run tests**
 
 Run: `uv run pytest tests/test_footprint_access_tools.py -v`
 Expected: All PASS
@@ -259,19 +249,17 @@ git commit -m "test: reorganize footprint library tests for new footprint server
 ### Task 5: Give project.py its own FastMCP instance
 
 **Files:**
-- Modify: `mcp_server_kicad/project.py` (add FastMCP, main(), absorb run_jobset, add get_version)
-- Modify: `mcp_server_kicad/schematic.py` (remove _register_project_tools import and call)
+- Modify: `mcp_server_kicad/project.py`
+- Modify: `mcp_server_kicad/schematic.py` (remove _register_project_tools)
 - Reference: `mcp_server_kicad/export.py:655-666` (copy run_jobset)
 
 - [ ] **Step 1: Add FastMCP instance to project.py**
 
-Add to the import block of `project.py`:
+Add imports:
 ```python
 from mcp.server.fastmcp import FastMCP
-from mcp_server_kicad._shared import _run_cli, OUTPUT_DIR
+from mcp_server_kicad._shared import _run_cli
 ```
-
-(Do NOT import `_file_meta` — none of the project tools use it.)
 
 Add after imports:
 ```python
@@ -286,9 +274,8 @@ mcp = FastMCP(
 
 - [ ] **Step 2: Convert register_tools() to direct @mcp.tool() decorators**
 
-Delete the entire `register_tools(mcp: FastMCP)` function (lines 243-311). Replace with direct `@mcp.tool()` decorated functions that delegate to the internal `_create_*` functions. Each function should have the same signature and docstring as the inner functions had in `register_tools()`.
+Delete the entire `register_tools(mcp: FastMCP)` function (lines 243-311). Replace with direct `@mcp.tool()` decorated functions that delegate to the internal `_create_*` functions:
 
-Example:
 ```python
 @mcp.tool()
 def create_project(directory: str, name: str) -> str:
@@ -296,20 +283,15 @@ def create_project(directory: str, name: str) -> str:
     return _create_project(directory, name)
 ```
 
-Do the same for all 5 tools: `create_project`, `create_schematic`, `create_symbol_library`, `create_sym_lib_table`, `add_hierarchical_sheet`.
+Do the same for all 5: `create_project`, `create_schematic`, `create_symbol_library`, `create_sym_lib_table`, `add_hierarchical_sheet`.
 
-Keep the public aliases at lines 235-240 (`create_project = _create_project`, etc.) for test imports.
+Keep the public aliases at lines 235-240 for test imports.
 
-- [ ] **Step 3: Add `run_jobset` tool to project.py**
+- [ ] **Step 3: Add `run_jobset` tool**
 
-Copy `run_jobset` verbatim from `export.py:655-666`. The exact signature is:
-```python
-def run_jobset(jobset_path: str) -> str:
-```
+Copy `run_jobset` verbatim from `export.py:655-666`. Returns **plain strings**, not JSON.
 
-Note: this function returns **plain strings**, not JSON. It uses `_run_cli` internally. Preserve the exact return format.
-
-- [ ] **Step 4: Add `get_version` tool to project.py**
+- [ ] **Step 4: Add `get_version` tool**
 
 ```python
 @mcp.tool()
@@ -321,35 +303,28 @@ def get_version() -> str:
     return json.dumps({"version_info": result.stdout.strip()})
 ```
 
-- [ ] **Step 5: Add `main()` entry point to project.py**
+- [ ] **Step 5: Add `main()` entry point**
 
 ```python
 def main():
     """Entry point for mcp-server-kicad-project console script."""
     mcp.run(transport="stdio")
 
-
 if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 6: Remove `_register_project_tools` import and call from schematic.py**
+- [ ] **Step 6: Remove `_register_project_tools` from schematic.py**
 
-In `schematic.py`:
-- Remove line ~33: `from mcp_server_kicad.project import register_tools as _register_project_tools`
-- Remove line ~1483: `_register_project_tools(mcp)`
+Remove: `from mcp_server_kicad.project import register_tools as _register_project_tools` (line ~33)
+Remove: `_register_project_tools(mcp)` (line ~1483)
 
-- [ ] **Step 7: Run project tests**
+- [ ] **Step 7: Run tests**
 
-Run: `uv run pytest tests/test_project_tools.py -v`
-Expected: All PASS (tests use internal function aliases, not MCP decorators)
-
-- [ ] **Step 8: Run schematic tests to confirm nothing broke**
-
-Run: `uv run pytest tests/test_read_tools.py tests/test_write_tools.py -v`
+Run: `uv run pytest tests/test_project_tools.py tests/test_read_tools.py tests/test_write_tools.py -v`
 Expected: All PASS
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add mcp_server_kicad/project.py mcp_server_kicad/schematic.py
@@ -361,9 +336,7 @@ git commit -m "feat: give kicad-project server its own FastMCP instance with job
 **Files:**
 - Modify: `tests/test_project_tools.py`
 
-- [ ] **Step 1: Write test for `get_version`**
-
-Add to `tests/test_project_tools.py`. Use a **class-level** skip, NOT module-level (other tests in this file don't need kicad-cli):
+- [ ] **Step 1: Write tests**
 
 ```python
 import shutil
@@ -371,29 +344,18 @@ import shutil
 @pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
 class TestGetVersion:
     def test_returns_version_info(self):
-        """get_version should return KiCad version info."""
         result = json.loads(project.get_version())
         assert "version_info" in result or "error" in result
-```
 
-- [ ] **Step 2: Write test for `run_jobset`**
-
-Note: `run_jobset` returns **plain strings**, not JSON. Do NOT use `json.loads`:
-
-```python
 class TestRunJobset:
     def test_missing_jobset_returns_error(self, tmp_path):
-        """run_jobset with a nonexistent file should return an error string."""
         result = project.run_jobset(str(tmp_path / "nonexistent.kicad_jobset"))
         assert "failed" in result.lower() or "error" in result.lower()
 ```
 
-- [ ] **Step 3: Run new tests**
+- [ ] **Step 2: Run and commit**
 
 Run: `uv run pytest tests/test_project_tools.py -v`
-Expected: All PASS
-
-- [ ] **Step 4: Commit**
 
 ```bash
 git add tests/test_project_tools.py
@@ -402,17 +364,180 @@ git commit -m "test: add tests for get_version and run_jobset project tools"
 
 ---
 
-## Chunk 4: Absorb schematic exports into kicad-schematic
+## Chunk 4: Consolidate existing schematic tools
 
-### Task 7: Move ERC tools and schematic exports from export.py to schematic.py
+### Task 7: Consolidate schematic list tools → list_schematic_items
 
 **Files:**
-- Modify: `mcp_server_kicad/schematic.py` (add tools + helpers + imports)
-- Modify: `mcp_server_kicad/export.py` (remove moved tools)
+- Modify: `mcp_server_kicad/schematic.py`
+- Modify: `tests/test_read_tools.py`
+
+- [ ] **Step 1: Read existing list tool implementations**
+
+Read `schematic.py` and locate these 4 functions to understand their logic:
+- `list_components` (~line 162)
+- `list_labels` (~line 175)
+- `list_wires` (~line 185)
+- `list_global_labels` (~line 279)
+
+Each takes `schematic_path: str = SCH_PATH` and returns JSON.
+
+- [ ] **Step 2: Write failing test for `list_schematic_items`**
+
+Add to `tests/test_read_tools.py`:
+
+```python
+class TestListSchematicItems:
+    def test_list_components(self, scratch_schematic):
+        result = json.loads(schematic.list_schematic_items("components", str(scratch_schematic)))
+        assert isinstance(result, list)
+
+    def test_list_labels(self, scratch_schematic):
+        result = json.loads(schematic.list_schematic_items("labels", str(scratch_schematic)))
+        assert isinstance(result, list)
+
+    def test_list_wires(self, scratch_schematic):
+        result = json.loads(schematic.list_schematic_items("wires", str(scratch_schematic)))
+        assert isinstance(result, list)
+
+    def test_list_global_labels(self, scratch_schematic):
+        result = json.loads(schematic.list_schematic_items("global_labels", str(scratch_schematic)))
+        assert isinstance(result, list)
+
+    def test_invalid_item_type(self, scratch_schematic):
+        result = json.loads(schematic.list_schematic_items("invalid", str(scratch_schematic)))
+        assert "error" in result
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `uv run pytest tests/test_read_tools.py::TestListSchematicItems -v`
+Expected: FAIL
+
+- [ ] **Step 4: Implement `list_schematic_items`**
+
+Replace the 4 individual `@mcp.tool()` list functions with one consolidated function. Preserve the existing body logic for each item_type branch:
+
+```python
+@mcp.tool()
+def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
+    """List schematic items by type.
+
+    Args:
+        item_type: One of "components", "labels", "wires", "global_labels"
+        schematic_path: Path to .kicad_sch file
+    """
+    if item_type == "components":
+        # ... existing list_components body ...
+    elif item_type == "labels":
+        # ... existing list_labels body ...
+    elif item_type == "wires":
+        # ... existing list_wires body ...
+    elif item_type == "global_labels":
+        # ... existing list_global_labels body ...
+    else:
+        return json.dumps({"error": f"Unknown item_type: {item_type}. Use: components, labels, wires, global_labels"})
+```
+
+Delete the 4 old `@mcp.tool()` functions (`list_components`, `list_labels`, `list_wires`, `list_global_labels`).
+
+- [ ] **Step 5: Update existing tests in `test_read_tools.py`**
+
+Find any existing test classes for the old individual list tools (`TestListComponents`, `TestListLabels`, `TestListWires`, `TestListGlobalLabels`) and update them to call `list_schematic_items("components", ...)` etc., or remove them if the new `TestListSchematicItems` covers the same cases.
+
+- [ ] **Step 6: Run tests**
+
+Run: `uv run pytest tests/test_read_tools.py -v`
+Expected: All PASS
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add mcp_server_kicad/schematic.py tests/test_read_tools.py
+git commit -m "feat: consolidate 4 schematic list tools into list_schematic_items"
+```
+
+### Task 8: Consolidate batch tools (remove singular variants)
+
+**Files:**
+- Modify: `mcp_server_kicad/schematic.py`
+- Modify: `tests/test_write_tools.py`
+- Modify: `tests/test_routing_tools.py`
+
+- [ ] **Step 1: Remove `add_wire` (keep `add_wires`)**
+
+In `schematic.py`, delete the `add_wire` `@mcp.tool()` function. `add_wires` already accepts a list of wire dicts. Callers pass a single-element list: `add_wires([{"x1": 0, "y1": 0, "x2": 1, "y2": 1}])`.
+
+- [ ] **Step 2: Remove `add_junction` (keep `add_junctions`)**
+
+Delete the `add_junction` `@mcp.tool()` function. `add_junctions` already accepts a list of point dicts. Single junction: `add_junctions([{"x": 0, "y": 0}])`.
+
+- [ ] **Step 3: Remove `wire_pin_to_label` (keep `wire_pins_to_net`)**
+
+Delete the `wire_pin_to_label` `@mcp.tool()` function. `wire_pins_to_net` handles single pins: `wire_pins_to_net(pins=[{"reference": "U1", "pin_name": "VCC"}], label_text="+3V3")`.
+
+- [ ] **Step 4: Update tests**
+
+In `tests/test_write_tools.py`, find tests calling `add_wire(x1, y1, x2, y2, ...)` and update them to call `add_wires([{"x1": ..., "y1": ..., "x2": ..., "y2": ...}], ...)`. Same for `add_junction` → `add_junctions`.
+
+In `tests/test_routing_tools.py`, find tests calling `wire_pin_to_label(...)` and update to `wire_pins_to_net(pins=[{...}], ...)`.
+
+- [ ] **Step 5: Run tests**
+
+Run: `uv run pytest tests/test_write_tools.py tests/test_routing_tools.py -v`
+Expected: All PASS
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add mcp_server_kicad/schematic.py tests/test_write_tools.py tests/test_routing_tools.py
+git commit -m "feat: remove singular add_wire, add_junction, wire_pin_to_label (batch variants are the canonical API)"
+```
+
+### Task 9: Consolidate property tools
+
+**Files:**
+- Modify: `mcp_server_kicad/schematic.py`
+- Modify: `tests/test_write_tools.py`
+
+- [ ] **Step 1: Remove `edit_component_value` and `set_component_footprint`**
+
+Delete both `@mcp.tool()` functions from `schematic.py`. The existing `set_component_property(reference, key, value, schematic_path)` already handles all cases:
+- `set_component_property(ref, "Value", "10k")` — replaces `edit_component_value(ref, value="10k")`
+- `set_component_property(ref, "Reference", "R2")` — replaces `edit_component_value(ref, new_reference="R2")`
+- `set_component_property(ref, "Footprint", "R_0402")` — replaces `set_component_footprint(ref, "R_0402")`
+
+- [ ] **Step 2: Verify `set_component_property` handles all property keys**
+
+Read the body of `set_component_property` in `schematic.py` to confirm it can set Value, Reference, and Footprint properties. If the implementation uses `component.properties` dict, these standard keys should work. If it needs special handling for Reference renaming (e.g., updating the `reference` field on the component object), add that logic.
+
+- [ ] **Step 3: Update tests**
+
+In `tests/test_write_tools.py`, find tests for `edit_component_value` and `set_component_footprint` and rewrite them to use `set_component_property`.
+
+- [ ] **Step 4: Run tests**
+
+Run: `uv run pytest tests/test_write_tools.py -v`
+Expected: All PASS
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add mcp_server_kicad/schematic.py tests/test_write_tools.py
+git commit -m "feat: remove edit_component_value and set_component_footprint (use set_component_property)"
+```
+
+---
+
+## Chunk 5: Absorb + consolidate schematic exports
+
+### Task 10: Move ERC tools and consolidate schematic exports into schematic.py
+
+**Files:**
+- Modify: `mcp_server_kicad/schematic.py`
+- Modify: `mcp_server_kicad/export.py`
 
 - [ ] **Step 1: Add new imports to schematic.py**
-
-Add to the import block of `schematic.py`:
 
 ```python
 import json
@@ -420,124 +545,243 @@ import os
 from mcp_server_kicad._shared import _run_cli, _file_meta, OUTPUT_DIR
 ```
 
-Note: `schematic.py` currently has a local `import json as _json` inside `get_net_connections()`. After adding the top-level `import json`, clean up that local import to use `json` directly instead of `_json`.
+Note: `schematic.py` has a local `import json as _json` inside `get_net_connections()`. After adding top-level `import json`, clean up that local import to use `json` directly.
 
-- [ ] **Step 2: Copy ERC helper functions to schematic.py**
+- [ ] **Step 2: Copy ERC helpers and tools**
 
-Copy verbatim from `export.py:29-69` the two private helpers:
+Copy verbatim from `export.py`:
 - `_annotate_erc_violations()` (lines 29-43)
 - `_parse_unconnected_pins()` (lines 46-69)
-
-Place them after the existing private helpers in `schematic.py` (after `_get_pin_pos()`, around line 160).
-
-- [ ] **Step 3: Copy ERC tool functions to schematic.py**
-
-Copy verbatim from `export.py`:
-- `list_unconnected_pins()` (line 72) — NOTE: this function has an inline `import shutil` that MUST be preserved
+- `list_unconnected_pins()` (line 72) — preserves inline `import shutil`
 - `run_erc()` (line 116)
 
-Place them after the helper functions, before the existing read tools. Copy as-is including `@mcp.tool()` decorators.
+Place after existing private helpers, before the read tools.
 
-- [ ] **Step 4: Copy schematic export functions to schematic.py**
+- [ ] **Step 3: Create consolidated `export_schematic` tool**
 
-Copy verbatim from `export.py`:
-- `export_schematic_pdf()` (line 192)
-- `export_schematic_svg()` (line 208)
-- `export_schematic_netlist()` (line 231)
-- `export_bom()` (line 253)
-- `export_schematic_dxf()` (line 272)
+Instead of copying 3 individual export tools, create one consolidated tool:
 
-Place them at the end of `schematic.py` (before `main()`), in a section marked with a comment like `# ── Exports (wraps kicad-cli) ──`.
+```python
+@mcp.tool()
+def export_schematic(
+    format: str = "pdf",
+    schematic_path: str = SCH_PATH,
+    output_dir: str = OUTPUT_DIR,
+) -> str:
+    """Export schematic to PDF, SVG, or DXF format.
 
-- [ ] **Step 5: Remove moved tools from export.py**
+    Args:
+        format: Output format - "pdf", "svg", or "dxf"
+        schematic_path: Path to .kicad_sch file
+        output_dir: Directory for output files
+    """
+    fmt = format.lower()
+    if fmt not in ("pdf", "svg", "dxf"):
+        return json.dumps({"error": f"Unknown format: {format}. Use: pdf, svg, dxf"})
+
+    stem = Path(schematic_path).stem
+    if fmt == "pdf":
+        out = str(Path(output_dir) / f"{stem}.pdf")
+        args = ["sch", "export", "pdf", schematic_path, "-o", out]
+    elif fmt == "svg":
+        out_dir = str(Path(output_dir) / f"{stem}_svg")
+        os.makedirs(out_dir, exist_ok=True)
+        args = ["sch", "export", "svg", schematic_path, "-o", out_dir]
+    else:  # dxf
+        out = str(Path(output_dir) / f"{stem}.dxf")
+        args = ["sch", "export", "dxf", schematic_path, "-o", out]
+
+    result = _run_cli(args, check=False)
+    if result.returncode != 0:
+        return json.dumps({"error": result.stderr.strip()})
+
+    if fmt == "svg":
+        # SVG exports a directory of files
+        return json.dumps({"output_dir": out_dir, "format": fmt})
+    return json.dumps({**_file_meta(out), "format": fmt})
+```
+
+**IMPORTANT:** Read the actual bodies of `export_schematic_pdf`, `export_schematic_svg`, `export_schematic_dxf` in `export.py` FIRST. The implementation above is a template — match the actual CLI args and output handling from each original function.
+
+- [ ] **Step 4: Create `export_netlist` tool (renamed from `export_schematic_netlist`)**
+
+Copy the body of `export_schematic_netlist` from `export.py:231` but rename the function to `export_netlist`:
+
+```python
+@mcp.tool()
+def export_netlist(
+    schematic_path: str = SCH_PATH,
+    output_dir: str = OUTPUT_DIR,
+    format: str = "kicadxml",
+) -> str:
+    """Export schematic netlist in KiCad XML or KiCad net format."""
+    # ... copy exact body from export_schematic_netlist ...
+```
+
+- [ ] **Step 5: Copy `export_bom` verbatim**
+
+Copy `export_bom` verbatim from `export.py:253`. No consolidation needed.
+
+- [ ] **Step 6: Remove moved tools from export.py**
 
 Remove from `export.py`:
-- `_annotate_erc_violations()` (lines 29-43)
-- `_parse_unconnected_pins()` (lines 46-69)
-- `list_unconnected_pins()` (line 72)
-- `run_erc()` (line 116)
-- `export_schematic_pdf()` (line 192)
-- `export_schematic_svg()` (line 208)
-- `export_schematic_netlist()` (line 231)
-- `export_bom()` (line 253)
-- `export_schematic_dxf()` (line 272)
+- `_annotate_erc_violations`, `_parse_unconnected_pins`
+- `list_unconnected_pins`, `run_erc`
+- `export_schematic_pdf`, `export_schematic_svg`, `export_schematic_dxf`
+- `export_schematic_netlist`, `export_bom`
 
-Also remove unused imports from export.py's import block (e.g., `SCH_PATH` and `SYM_LIB_PATH` if no remaining tools use them).
+Also remove unused imports (`SCH_PATH`, `SYM_LIB_PATH` if no remaining tools use them).
 
-- [ ] **Step 6: Update schematic.py FastMCP instructions**
-
-Change the `instructions` string in the FastMCP constructor at `schematic.py:35-42` to:
+- [ ] **Step 7: Update schematic.py FastMCP instructions**
 
 ```python
 mcp = FastMCP(
     "kicad-schematic",
     instructions=(
         "KiCad schematic manipulation, ERC analysis, and schematic export tools."
-        " Use wire_pin_to_label and connect_pins for efficient wiring instead of"
-        " manually computing coordinates with get_pin_positions + add_wire + add_label."
+        " Use wire_pins_to_net and connect_pins for efficient wiring instead of"
+        " manually computing coordinates with get_pin_positions + add_wires."
     ),
 )
 ```
 
-- [ ] **Step 7: Run tests**
+- [ ] **Step 8: Run tests and commit**
 
 Run: `uv run pytest tests/test_read_tools.py tests/test_write_tools.py tests/test_routing_tools.py -v`
-Expected: All PASS
-
-- [ ] **Step 8: Commit**
 
 ```bash
 git add mcp_server_kicad/schematic.py mcp_server_kicad/export.py
-git commit -m "feat: absorb ERC and schematic export tools into kicad-schematic server"
+git commit -m "feat: absorb ERC tools and consolidated schematic exports into kicad-schematic"
 ```
 
-### Task 8: Update schematic export and ERC tests
+### Task 11: Update schematic export and ERC tests
 
 **Files:**
-- Modify: `tests/test_cli_sch_export.py` (update imports)
-- Modify: `tests/test_cli_analysis.py` (split: ERC → schematic import)
+- Modify: `tests/test_cli_sch_export.py`
+- Modify: `tests/test_cli_analysis.py`
 
-- [ ] **Step 1: Update `test_cli_sch_export.py` imports**
+- [ ] **Step 1: Update `test_cli_sch_export.py`**
 
-Change `from mcp_server_kicad import export` to `from mcp_server_kicad import schematic` and update ALL function calls — including both public tools (e.g., `export.export_schematic_pdf(...)` → `schematic.export_schematic_pdf(...)`) AND private helper references (e.g., `export._annotate_erc_violations(...)` → `schematic._annotate_erc_violations(...)` and `export._parse_unconnected_pins(...)` → `schematic._parse_unconnected_pins(...)`).
+Change `from mcp_server_kicad import export` to `from mcp_server_kicad import schematic`.
 
-- [ ] **Step 2: Split ERC tests out of `test_cli_analysis.py`**
+Update ALL function calls — both public tools and private helpers:
+- `export.export_schematic_pdf(...)` → `schematic.export_schematic(format="pdf", ...)`
+- `export.export_schematic_svg(...)` → `schematic.export_schematic(format="svg", ...)`
+- `export.export_schematic_dxf(...)` → `schematic.export_schematic(format="dxf", ...)`
+- `export.export_schematic_netlist(...)` → `schematic.export_netlist(...)`
+- `export.export_bom(...)` → `schematic.export_bom(...)`
+- `export._annotate_erc_violations(...)` → `schematic._annotate_erc_violations(...)`
+- `export._parse_unconnected_pins(...)` → `schematic._parse_unconnected_pins(...)`
 
-In `tests/test_cli_analysis.py`, the `TestRunErc` class (lines 14-24) should now import from `schematic` instead of `export`. Update the import and function references. The `TestRunDrc` class stays importing from `export` for now (will be moved in chunk 5).
+- [ ] **Step 2: Update ERC tests in `test_cli_analysis.py`**
 
-Change the import to:
+Change `TestRunErc` to import from `schematic`. Add import for `pcb` (DRC stays on `export` until chunk 6):
+
 ```python
 from mcp_server_kicad import schematic
-from mcp_server_kicad import export  # still needed for DRC until chunk 5
+from mcp_server_kicad import export  # still needed for DRC until chunk 6
 ```
 
-Update `TestRunErc` to call `schematic.run_erc(...)` instead of `export.run_erc(...)`.
+Update `TestRunErc` calls: `export.run_erc(...)` → `schematic.run_erc(...)`.
 
-- [ ] **Step 3: Run updated tests**
+- [ ] **Step 3: Run tests and commit**
 
 Run: `uv run pytest tests/test_cli_sch_export.py tests/test_cli_analysis.py -v`
-Expected: All PASS (or skipped if kicad-cli not available)
-
-- [ ] **Step 4: Commit**
 
 ```bash
 git add tests/test_cli_sch_export.py tests/test_cli_analysis.py
-git commit -m "test: update schematic export and ERC test imports"
+git commit -m "test: update schematic export and ERC test imports for consolidated tools"
 ```
 
 ---
 
-## Chunk 5: Absorb PCB exports into kicad-pcb + new tools
+## Chunk 6: Consolidate PCB tools + absorb exports + new tools
 
-### Task 9: Move DRC and PCB exports from export.py to pcb.py
+### Task 12: Consolidate PCB list tools → list_pcb_items
 
 **Files:**
-- Modify: `mcp_server_kicad/pcb.py` (add tools + imports)
-- Modify: `mcp_server_kicad/export.py` (remove moved tools)
+- Modify: `mcp_server_kicad/pcb.py`
+- Modify: `tests/test_pcb_read_tools.py`
+
+- [ ] **Step 1: Read existing PCB list tool implementations**
+
+Read `pcb.py` and locate these 6 functions:
+- `list_footprints`, `list_traces`, `list_nets`, `list_zones`, `list_layers`, `list_board_graphic_items`
+
+All take `pcb_path: str = PCB_PATH` and return JSON. (`get_board_info` and `get_footprint_pads` stay separate — different semantics/params.)
+
+- [ ] **Step 2: Write failing test**
+
+Add to `tests/test_pcb_read_tools.py`:
+
+```python
+class TestListPcbItems:
+    @pytest.mark.parametrize("item_type", ["footprints", "traces", "nets", "zones", "layers", "graphic_items"])
+    def test_list_items(self, scratch_pcb, item_type):
+        result = json.loads(pcb.list_pcb_items(item_type, str(scratch_pcb)))
+        assert isinstance(result, (list, dict))
+
+    def test_invalid_item_type(self, scratch_pcb):
+        result = json.loads(pcb.list_pcb_items("invalid", str(scratch_pcb)))
+        assert "error" in result
+```
+
+- [ ] **Step 3: Run test to verify it fails**
+
+Run: `uv run pytest tests/test_pcb_read_tools.py::TestListPcbItems -v`
+Expected: FAIL
+
+- [ ] **Step 4: Implement `list_pcb_items`**
+
+Replace the 6 individual `@mcp.tool()` list functions with one consolidated function:
+
+```python
+@mcp.tool()
+def list_pcb_items(item_type: str, pcb_path: str = PCB_PATH) -> str:
+    """List PCB items by type.
+
+    Args:
+        item_type: One of "footprints", "traces", "nets", "zones", "layers", "graphic_items"
+        pcb_path: Path to .kicad_pcb file
+    """
+    if item_type == "footprints":
+        # ... existing list_footprints body ...
+    elif item_type == "traces":
+        # ... existing list_traces body ...
+    elif item_type == "nets":
+        # ... existing list_nets body ...
+    elif item_type == "zones":
+        # ... existing list_zones body ...
+    elif item_type == "layers":
+        # ... existing list_layers body ...
+    elif item_type == "graphic_items":
+        # ... existing list_board_graphic_items body ...
+    else:
+        return json.dumps({"error": f"Unknown item_type: {item_type}. Use: footprints, traces, nets, zones, layers, graphic_items"})
+```
+
+Delete the 6 old functions.
+
+- [ ] **Step 5: Update existing tests**
+
+Update any existing tests for the old functions to call `list_pcb_items("footprints", ...)` etc.
+
+- [ ] **Step 6: Run tests and commit**
+
+Run: `uv run pytest tests/test_pcb_read_tools.py -v`
+
+```bash
+git add mcp_server_kicad/pcb.py tests/test_pcb_read_tools.py
+git commit -m "feat: consolidate 6 PCB list tools into list_pcb_items"
+```
+
+### Task 13: Absorb + consolidate PCB exports from export.py
+
+**Files:**
+- Modify: `mcp_server_kicad/pcb.py`
+- Modify: `mcp_server_kicad/export.py`
 
 - [ ] **Step 1: Add new imports to pcb.py**
-
-Add to the import block of `pcb.py`:
 
 ```python
 import json
@@ -545,35 +789,98 @@ import os
 from mcp_server_kicad._shared import _run_cli, _file_meta, OUTPUT_DIR
 ```
 
-(`pcb.py` currently has NO `import json` or `import os` — these are critical for the absorbed tools.)
+(`pcb.py` currently has NO `import json` or `import os`.)
 
-- [ ] **Step 2: Copy DRC tool to pcb.py**
+- [ ] **Step 2: Copy DRC tool verbatim**
 
-Copy `run_drc()` verbatim from `export.py:152-184` into `pcb.py`. Place it in a section after the existing write tools.
+Copy `run_drc()` from `export.py:152-184` into `pcb.py`.
 
-- [ ] **Step 3: Copy PCB export tools to pcb.py**
+- [ ] **Step 3: Create consolidated `export_pcb` tool**
 
-Copy verbatim from `export.py`:
-- `export_gerbers()` (line 293)
-- `export_gerber()` (line 319)
-- `export_drill()` (line 343)
-- `export_pcb_pdf()` (line 369)
-- `export_pcb_svg()` (line 405)
+Consolidates `export_pcb_pdf` + `export_pcb_svg`:
+
+```python
+@mcp.tool()
+def export_pcb(
+    format: str = "pdf",
+    pcb_path: str = PCB_PATH,
+    output_dir: str = OUTPUT_DIR,
+    layers: list[str] | None = None,
+) -> str:
+    """Export PCB to PDF or SVG format.
+
+    Args:
+        format: Output format - "pdf" or "svg"
+        pcb_path: Path to .kicad_pcb file
+        output_dir: Directory for output files
+        layers: Optional list of layer names to include
+    """
+    fmt = format.lower()
+    if fmt not in ("pdf", "svg"):
+        return json.dumps({"error": f"Unknown format: {format}. Use: pdf, svg"})
+    # ... dispatch to appropriate CLI command, matching original export_pcb_pdf/svg logic ...
+```
+
+**Read the actual bodies of `export_pcb_pdf` and `export_pcb_svg`** in `export.py` and replicate their CLI arg construction and output handling per format.
+
+- [ ] **Step 4: Create consolidated `export_gerbers` tool (absorbs drill)**
+
+The existing `export_gerbers` function becomes the base. Add `include_drill: bool = True` param:
+
+```python
+@mcp.tool()
+def export_gerbers(
+    pcb_path: str = PCB_PATH,
+    output_dir: str = OUTPUT_DIR,
+    include_drill: bool = True,
+) -> str:
+    """Export Gerber files for all copper and mask layers, optionally including drill files."""
+    # ... existing export_gerbers body ...
+    # Then, if include_drill:
+    #   ... run the drill export CLI command (from existing export_drill body) ...
+```
+
+Copy the existing `export_gerbers` and `export_drill` bodies from `export.py` and combine them.
+
+- [ ] **Step 5: Copy `export_gerber` (single-layer) verbatim**
+
+Copy from `export.py:319`. This stays as a separate tool — different use case (single layer export).
+
+- [ ] **Step 6: Create consolidated `export_3d` tool**
+
+Consolidates `export_step`, `export_stl`, `export_glb`:
+
+```python
+@mcp.tool()
+def export_3d(
+    format: str = "step",
+    pcb_path: str = PCB_PATH,
+    output_dir: str = OUTPUT_DIR,
+) -> str:
+    """Export PCB 3D model in STEP, STL, or GLB format.
+
+    Args:
+        format: Output format - "step", "stl", or "glb"
+    """
+    fmt = format.lower()
+    if fmt not in ("step", "stl", "glb"):
+        return json.dumps({"error": f"Unknown format: {format}. Use: step, stl, glb"})
+    # ... dispatch to appropriate CLI command ...
+```
+
+Read the original `export_step`, `export_stl`, `export_glb` bodies and replicate.
+
+- [ ] **Step 7: Copy remaining export tools verbatim**
+
+Copy these individually from `export.py` — no consolidation:
 - `export_positions()` (line 441)
-- `export_step()` (line 462)
-- `export_stl()` (line 481)
-- `export_glb()` (line 500)
 - `render_3d()` (line 519)
 
-Place them in a `# ── Exports (wraps kicad-cli) ──` section at the end of `pcb.py` (before `main()`).
+- [ ] **Step 8: Remove moved tools from export.py**
 
-- [ ] **Step 4: Remove moved tools from export.py**
+Remove all DRC and PCB export tools. After this, `export.py` should only contain tools already copied to symbol.py, footprint.py, and project.py (dead code, to be deleted in chunk 7).
 
-Remove all DRC and PCB export tools from `export.py`. After this step, export.py should only contain:
-- `export_symbol_svg`, `export_footprint_svg`, `upgrade_symbol_lib`, `upgrade_footprint_lib`, `run_jobset`
-(These were already copied to symbol.py, footprint.py, and project.py in earlier chunks.)
-
-- [ ] **Step 5: Update pcb.py FastMCP instructions**
+- [ ] **Step 9: Update pcb.py FastMCP instructions**
 
 ```python
 mcp = FastMCP(
@@ -585,75 +892,44 @@ mcp = FastMCP(
 )
 ```
 
-- [ ] **Step 6: Run PCB tests**
+- [ ] **Step 10: Run tests and commit**
 
 Run: `uv run pytest tests/test_pcb_read_tools.py tests/test_pcb_write_tools.py -v`
-Expected: All PASS
-
-- [ ] **Step 7: Commit**
 
 ```bash
 git add mcp_server_kicad/pcb.py mcp_server_kicad/export.py
-git commit -m "feat: absorb DRC and PCB export tools into kicad-pcb server"
+git commit -m "feat: absorb DRC and consolidated PCB export tools into kicad-pcb"
 ```
 
-### Task 10: Add new PCB export tools
+### Task 14: Add new PCB export tools
 
 **Files:**
 - Modify: `mcp_server_kicad/pcb.py`
+- Create: `tests/test_pcb_dxf_export.py`
+- Create: `tests/test_ipc2581_export.py`
 
 - [ ] **Step 1: Write `export_pcb_dxf` test**
 
-Create `tests/test_pcb_dxf_export.py`:
-
 ```python
 """Tests for PCB DXF export tool."""
-
 import json
 import shutil
-
 import pytest
-
 from mcp_server_kicad import pcb
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("kicad-cli") is None, reason="kicad-cli not found"
-)
-
+pytestmark = pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
 
 class TestExportPcbDxf:
     def test_export_runs(self, scratch_pcb, tmp_path):
-        output = str(tmp_path / "board.dxf")
-        result = json.loads(
-            pcb.export_pcb_dxf(
-                pcb_path=str(scratch_pcb),
-                output=output,
-                layers="F.Cu",
-            )
-        )
-        # kicad-cli may fail on kiutils-generated PCBs; accept either result
+        result = json.loads(pcb.export_pcb_dxf(pcb_path=str(scratch_pcb), output=str(tmp_path / "board.dxf"), layers="F.Cu"))
         assert "path" in result or "error" in result
 
     def test_missing_layers_returns_error(self, scratch_pcb, tmp_path):
-        output = str(tmp_path / "board.dxf")
-        result = json.loads(
-            pcb.export_pcb_dxf(
-                pcb_path=str(scratch_pcb),
-                output=output,
-                layers="",
-            )
-        )
+        result = json.loads(pcb.export_pcb_dxf(pcb_path=str(scratch_pcb), output=str(tmp_path / "board.dxf"), layers=""))
         assert "error" in result
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
-
-Run: `uv run pytest tests/test_pcb_dxf_export.py -v`
-Expected: FAIL (function not defined)
-
-- [ ] **Step 3: Implement `export_pcb_dxf` in pcb.py**
-
-Add to pcb.py in the exports section:
+- [ ] **Step 2: Implement `export_pcb_dxf`**
 
 ```python
 @mcp.tool()
@@ -688,49 +964,24 @@ def export_pcb_dxf(
     return json.dumps({**_file_meta(out), "layers": layers})
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
-
-Run: `uv run pytest tests/test_pcb_dxf_export.py -v`
-Expected: PASS (or skipped if kicad-cli not found)
-
-- [ ] **Step 5: Write `export_ipc2581` test**
-
-Create `tests/test_ipc2581_export.py`:
+- [ ] **Step 3: Write `export_ipc2581` test**
 
 ```python
 """Tests for IPC-2581 export tool."""
-
 import json
 import shutil
-
 import pytest
-
 from mcp_server_kicad import pcb
 
-pytestmark = pytest.mark.skipif(
-    shutil.which("kicad-cli") is None, reason="kicad-cli not found"
-)
-
+pytestmark = pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
 
 class TestExportIpc2581:
     def test_export_runs(self, scratch_pcb, tmp_path):
-        output = str(tmp_path / "board.xml")
-        result = json.loads(
-            pcb.export_ipc2581(
-                pcb_path=str(scratch_pcb),
-                output=output,
-            )
-        )
-        # kicad-cli may fail on kiutils-generated PCBs; accept either result
+        result = json.loads(pcb.export_ipc2581(pcb_path=str(scratch_pcb), output=str(tmp_path / "board.xml")))
         assert "path" in result or "error" in result
 ```
 
-- [ ] **Step 6: Run test to verify it fails**
-
-Run: `uv run pytest tests/test_ipc2581_export.py -v`
-Expected: FAIL
-
-- [ ] **Step 7: Implement `export_ipc2581` in pcb.py**
+- [ ] **Step 4: Implement `export_ipc2581`**
 
 ```python
 @mcp.tool()
@@ -759,106 +1010,109 @@ def export_ipc2581(
     return json.dumps(_file_meta(out))
 ```
 
-- [ ] **Step 8: Run test to verify it passes**
+- [ ] **Step 5: Run tests and commit**
 
-Run: `uv run pytest tests/test_ipc2581_export.py -v`
-Expected: PASS (or skipped)
-
-- [ ] **Step 9: Commit**
+Run: `uv run pytest tests/test_pcb_dxf_export.py tests/test_ipc2581_export.py -v`
 
 ```bash
 git add mcp_server_kicad/pcb.py tests/test_pcb_dxf_export.py tests/test_ipc2581_export.py
 git commit -m "feat: add export_pcb_dxf and export_ipc2581 tools to PCB server"
 ```
 
-### Task 11: Update PCB export, DRC, and cross-domain tests
+### Task 15: Update PCB export, DRC, and cross-domain tests
 
 **Files:**
-- Modify: `tests/test_cli_pcb_export.py` (update imports + relocate cross-domain tests)
-- Modify: `tests/test_cli_analysis.py` (DRC → pcb import)
+- Modify: `tests/test_cli_pcb_export.py`
+- Modify: `tests/test_cli_analysis.py`
+- Modify: `tests/test_symbol_access_tools.py` (add relocated tests)
+- Modify: `tests/test_footprint_access_tools.py` (add relocated tests)
+- Modify: `tests/test_project_tools.py` (add relocated tests)
 
 - [ ] **Step 1: Update `test_cli_pcb_export.py` PCB export imports**
 
-Change `from mcp_server_kicad import export` to `from mcp_server_kicad import pcb` and update PCB export function calls.
+Change `from mcp_server_kicad import export` to `from mcp_server_kicad import pcb`.
 
-- [ ] **Step 2: Relocate symbol/footprint/jobset tests from `test_cli_pcb_export.py`**
+Update function calls to use consolidated tool names:
+- `export.export_pcb_pdf(...)` → `pcb.export_pcb(format="pdf", ...)`
+- `export.export_pcb_svg(...)` → `pcb.export_pcb(format="svg", ...)`
+- `export.export_gerbers(...)` → `pcb.export_gerbers(...)`  (now includes drill by default)
+- `export.export_drill(...)` → remove (absorbed into export_gerbers)
+- `export.export_step(...)` → `pcb.export_3d(format="step", ...)`
+- `export.export_stl(...)` → `pcb.export_3d(format="stl", ...)`
+- `export.export_glb(...)` → `pcb.export_3d(format="glb", ...)`
+- Other tools: `export.<name>(...)` → `pcb.<name>(...)`
 
-`test_cli_pcb_export.py` also contains test classes that belong to other servers:
-- `TestExportSymbolSvg` (line ~89) → move to `tests/test_symbol_access_tools.py`, import from `symbol`
-- `TestExportFootprintSvg` (line ~96) → move to `tests/test_footprint_access_tools.py`, import from `footprint`
-- `TestUpgradeSymbolLib` (line ~110) → move to `tests/test_symbol_access_tools.py`, import from `symbol`
-- `TestUpgradeFootprintLib` (line ~122) → move to `tests/test_footprint_access_tools.py`, import from `footprint`
-- `TestRunJobset` (line ~137) → move to `tests/test_project_tools.py`, import from `project`
+- [ ] **Step 2: Relocate cross-domain tests from `test_cli_pcb_export.py`**
 
-Remove these classes from `test_cli_pcb_export.py` after moving them.
+Move these test classes to their new homes:
+- `TestExportSymbolSvg` (line ~89) → `tests/test_symbol_access_tools.py`, import from `symbol`
+- `TestExportFootprintSvg` (line ~96) → `tests/test_footprint_access_tools.py`, import from `footprint`
+- `TestUpgradeSymbolLib` (line ~110) → `tests/test_symbol_access_tools.py`, import from `symbol`
+- `TestUpgradeFootprintLib` (line ~122) → `tests/test_footprint_access_tools.py`, import from `footprint`
+- `TestRunJobset` (line ~137) → `tests/test_project_tools.py`, import from `project`
+
+Remove these classes from `test_cli_pcb_export.py`.
 
 - [ ] **Step 3: Update DRC tests in `test_cli_analysis.py`**
 
-Change the `TestRunDrc` class to import from `pcb` instead of `export`. Now the entire file should import from `schematic` (for ERC) and `pcb` (for DRC). Remove the `export` import entirely.
+Change `TestRunDrc` to import from `pcb` instead of `export`. Remove the `export` import entirely.
 
-- [ ] **Step 4: Run updated tests**
+- [ ] **Step 4: Run tests and commit**
 
 Run: `uv run pytest tests/test_cli_pcb_export.py tests/test_cli_analysis.py tests/test_symbol_access_tools.py tests/test_footprint_access_tools.py tests/test_project_tools.py -v`
-Expected: All PASS (or skipped)
-
-- [ ] **Step 5: Commit**
 
 ```bash
 git add tests/
-git commit -m "test: update PCB export and DRC test imports, relocate cross-domain tests"
+git commit -m "test: update PCB export and DRC tests for consolidated tools, relocate cross-domain tests"
 ```
 
 ---
 
-## Chunk 6: Delete export.py, update entry points, README
+## Chunk 7: Delete export.py, update entry points, README, verify
 
-### Task 12: Delete export.py
+### Task 16: Delete export.py
 
 **Files:**
 - Delete: `mcp_server_kicad/export.py`
 
 - [ ] **Step 1: Verify all export.py tools have been moved**
 
-Check that every tool from export.py has a home:
-- `list_unconnected_pins` → schematic.py ✓
-- `run_erc` → schematic.py ✓
+Quick check:
+- `list_unconnected_pins`, `run_erc` → schematic.py ✓
 - `run_drc` → pcb.py ✓
-- `export_schematic_pdf/svg/netlist/dxf` → schematic.py ✓
+- `export_schematic_pdf/svg/dxf` → schematic.py (as `export_schematic`) ✓
+- `export_schematic_netlist` → schematic.py (as `export_netlist`) ✓
 - `export_bom` → schematic.py ✓
-- `export_gerbers/gerber/drill/pcb_pdf/pcb_svg/positions/step/stl/glb` → pcb.py ✓
+- `export_gerbers/drill` → pcb.py (as consolidated `export_gerbers`) ✓
+- `export_gerber/pcb_pdf/pcb_svg` → pcb.py (pcb_pdf/svg as `export_pcb`) ✓
+- `export_positions/step/stl/glb` → pcb.py (step/stl/glb as `export_3d`) ✓
 - `render_3d` → pcb.py ✓
 - `export_symbol_svg`, `upgrade_symbol_lib` → symbol.py ✓
 - `export_footprint_svg`, `upgrade_footprint_lib` → footprint.py ✓
 - `run_jobset` → project.py ✓
 
-- [ ] **Step 2: Delete export.py**
+- [ ] **Step 2: Delete and verify**
 
 ```bash
 git rm mcp_server_kicad/export.py
+uv run ruff check mcp_server_kicad/ tests/
 ```
 
-- [ ] **Step 3: Verify no remaining imports of export module**
-
-Search codebase for any remaining references to the export module. There should be none.
-
-Run: `uv run ruff check mcp_server_kicad/ tests/`
-
-- [ ] **Step 4: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
 git add -A && git commit -m "chore: delete export.py - all tools distributed to domain servers"
 ```
 
-### Task 13: Update pyproject.toml entry points
+### Task 17: Update pyproject.toml entry points
 
 **Files:**
 - Modify: `pyproject.toml`
 
-- [ ] **Step 1: Update [project.scripts] section**
+- [ ] **Step 1: Replace [project.scripts]**
 
-Replace lines 27-30:
+Replace:
 ```toml
-[project.scripts]
 mcp-server-kicad-schematic = "mcp_server_kicad.schematic:main"
 mcp-server-kicad-pcb = "mcp_server_kicad.pcb:main"
 mcp-server-kicad-export = "mcp_server_kicad.export:main"
@@ -866,7 +1120,6 @@ mcp-server-kicad-export = "mcp_server_kicad.export:main"
 
 With:
 ```toml
-[project.scripts]
 mcp-server-kicad-schematic = "mcp_server_kicad.schematic:main"
 mcp-server-kicad-pcb = "mcp_server_kicad.pcb:main"
 mcp-server-kicad-symbol = "mcp_server_kicad.symbol:main"
@@ -881,24 +1134,19 @@ git add pyproject.toml
 git commit -m "chore: update entry points from 3 servers to 5 domain-aligned servers"
 ```
 
-### Task 14: Update README and __main__.py
+### Task 18: Update README and __main__.py
 
 **Files:**
 - Modify: `README.md`
 - Modify: `mcp_server_kicad/__main__.py`
 
-- [ ] **Step 1: Update server configuration example in README**
+- [ ] **Step 1: Update README**
 
-Replace the 3-server MCP client config in README.md with the 5-server config from the design spec. Also update any prose that describes the 3 servers to describe 5.
-
-Key sections to update:
-- The server descriptions/list
-- The JSON config example
-- Any table or list referencing "kicad-export"
+Replace 3-server MCP config with 5-server config from the design spec. Update prose describing servers. Update tool count references.
 
 - [ ] **Step 2: Update `__main__.py`**
 
-`__main__.py` lists the available server commands in its error message. Update to list all 5 servers:
+List all 5 servers in the error message:
 - `python -m mcp_server_kicad.schematic`
 - `python -m mcp_server_kicad.pcb`
 - `python -m mcp_server_kicad.symbol`
@@ -909,44 +1157,26 @@ Key sections to update:
 
 ```bash
 git add README.md mcp_server_kicad/__main__.py
-git commit -m "docs: update README and __main__.py for 5-server architecture"
+git commit -m "docs: update README and __main__.py for 5-server architecture with 63 tools"
 ```
 
-### Task 15: Final test sweep
+### Task 19: Final test sweep and verification
 
-**Files:**
-- Check: `tests/test_edge_cases.py`, `tests/test_kicad_native.py`, `tests/test_new_sch_tools.py`
+- [ ] **Step 1: Check for stale imports**
 
-- [ ] **Step 1: Check for stale export imports**
-
-Read each file and check if any import from `mcp_server_kicad.export` or reference `export.` function calls. Update as needed. (These files likely only import from `schematic` and `conftest`, so no changes expected.)
+Read `tests/test_edge_cases.py`, `tests/test_kicad_native.py`, `tests/test_new_sch_tools.py` for any stale `export` imports.
 
 - [ ] **Step 2: Run full test suite**
 
 Run: `uv run pytest tests/ -v`
-Expected: All PASS (some may skip if kicad-cli not found)
+Expected: All PASS (some skip if kicad-cli not found)
 
 - [ ] **Step 3: Run lint**
 
 Run: `uv run ruff check mcp_server_kicad/ tests/`
 Expected: No errors
 
-- [ ] **Step 4: Commit if changes were needed**
-
-```bash
-git add -A && git commit -m "test: fix remaining stale imports after server reorganization"
-```
-
-### Task 16: Final verification
-
-- [ ] **Step 1: Run full test suite**
-
-Run: `uv run pytest tests/ -v`
-Expected: All PASS
-
-- [ ] **Step 2: Verify each server starts**
-
-Use `timeout` to prevent hanging:
+- [ ] **Step 4: Verify each server starts**
 
 ```bash
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.schematic 2>/dev/null | head -1
@@ -956,19 +1186,20 @@ echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":
 echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.project 2>/dev/null | head -1
 ```
 
-Expected: Each returns a JSON-RPC response with server info.
+Expected: Each returns a JSON-RPC response.
 
-- [ ] **Step 3: Verify tool counts per server**
+- [ ] **Step 5: Verify tool counts per server**
 
-Use MCP Inspector or a quick script to call `tools/list` on each server and confirm the expected tool counts:
-- kicad-schematic: 39
-- kicad-pcb: 28
+Use `tools/list` on each server and confirm:
+- kicad-schematic: 29
+- kicad-pcb: 19
 - kicad-symbol: 4
 - kicad-footprint: 4
 - kicad-project: 7
+- **Total: 63**
 
-- [ ] **Step 4: Final commit if any fixups needed**
+- [ ] **Step 6: Commit if any fixups needed**
 
 ```bash
-git add -A && git commit -m "chore: final cleanup after server reorganization"
+git add -A && git commit -m "chore: final cleanup after server reorganization and tool consolidation"
 ```
