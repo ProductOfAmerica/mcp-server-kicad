@@ -529,6 +529,30 @@ def remove_wire(
 
 
 @mcp.tool()
+def remove_junction(
+    x: float,
+    y: float,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Remove a junction at the given coordinates.
+
+    Args:
+        x: X position
+        y: Y position
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    tol = 0.1
+    for i, junc in enumerate(sch.junctions):
+        if (abs(junc.position.X - x) < tol
+                and abs(junc.position.Y - y) < tol):
+            sch.junctions.pop(i)
+            sch.to_file()
+            return f"Removed junction at ({x}, {y})"
+    return f"Junction at ({x}, {y}) not found."
+
+
+@mcp.tool()
 def add_wire(x1: float, y1: float, x2: float, y2: float, schematic_path: str = SCH_PATH) -> str:
     """Add a wire between two points.
 

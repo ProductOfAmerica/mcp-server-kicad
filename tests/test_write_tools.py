@@ -673,3 +673,35 @@ class TestSetComponentProperty:
             schematic_path=str(scratch_sch),
         )
         assert "not found" in result.lower()
+
+
+# ===========================================================================
+# TestRemoveJunction
+# ===========================================================================
+
+
+class TestRemoveJunction:
+    def test_remove_existing(self, scratch_sch):
+        # First add a junction
+        schematic.add_junction(x=50.8, y=50.8, schematic_path=str(scratch_sch))
+        sch = reparse(str(scratch_sch))
+        assert any(
+            j.position.X == 50.8 and j.position.Y == 50.8
+            for j in sch.junctions
+        )
+
+        result = schematic.remove_junction(
+            x=50.8, y=50.8, schematic_path=str(scratch_sch)
+        )
+        assert "Removed" in result
+        sch = reparse(str(scratch_sch))
+        assert not any(
+            abs(j.position.X - 50.8) < 0.1 and abs(j.position.Y - 50.8) < 0.1
+            for j in sch.junctions
+        )
+
+    def test_remove_missing(self, scratch_sch):
+        result = schematic.remove_junction(
+            x=999, y=999, schematic_path=str(scratch_sch)
+        )
+        assert "not found" in result.lower()
