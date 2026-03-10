@@ -31,7 +31,7 @@ _KICAD_SYM_VERSION = "20231120"
 
 
 def _create_project(directory: str, name: str) -> str:
-    """Create a KiCad 9 project (.kicad_pro + .kicad_prl).
+    """Create a KiCad 9 project (.kicad_pro + .kicad_prl + .kicad_sch).
 
     Args:
         directory: Directory to create the project in (created if missing)
@@ -51,7 +51,14 @@ def _create_project(directory: str, name: str) -> str:
     prl_path = d / f"{name}.kicad_prl"
     prl_path.write_text(json.dumps(prl_data, indent=2) + "\n")
 
-    return f"Created project at {pro_path}"
+    # Also create the root schematic (matching real KiCad behavior).
+    # Guard is defensive — the .kicad_pro check above ensures this is
+    # only reached on a fresh project, but a stray .kicad_sch could exist.
+    sch_path = d / f"{name}.kicad_sch"
+    if not sch_path.exists():
+        _create_schematic(str(sch_path))
+
+    return f"Created project at {pro_path} (including root schematic)"
 
 
 def _create_schematic(schematic_path: str) -> str:
@@ -238,7 +245,7 @@ def register_tools(mcp: FastMCP) -> None:
 
     @mcp.tool()
     def create_project(directory: str, name: str) -> str:
-        """Create a KiCad 9 project (.kicad_pro + .kicad_prl).
+        """Create a KiCad 9 project (.kicad_pro + .kicad_prl + .kicad_sch).
 
         Args:
             directory: Directory to create the project in (created if missing)

@@ -34,6 +34,16 @@ class TestCreateProject:
         project.create_project(directory=str(target), name="test")
         assert (target / "test.kicad_pro").exists()
 
+    def test_creates_root_schematic(self, tmp_path: Path):
+        """create_project also creates the root .kicad_sch file."""
+        project.create_project(directory=str(tmp_path / "myproj"), name="myproj")
+        sch_path = tmp_path / "myproj" / "myproj.kicad_sch"
+        assert sch_path.exists()
+
+        sch = Schematic.from_file(str(sch_path))
+        assert sch.version == 20250114
+        assert sch.schematicSymbols == []
+
     def test_errors_if_pro_exists(self, tmp_path: Path):
         (tmp_path / "dup.kicad_pro").write_text("{}")
         result = project.create_project(directory=str(tmp_path), name="dup")
