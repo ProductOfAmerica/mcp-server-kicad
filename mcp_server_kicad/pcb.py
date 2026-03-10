@@ -675,6 +675,84 @@ def render_3d(
         return json.dumps({"error": str(e), "format": "png"}, indent=2)
 
 
+@mcp.tool()
+def export_pcb_dxf(
+    pcb_path: str = PCB_PATH,
+    output: str = "",
+    layers: str = "",
+    output_units: str = "in",
+    exclude_refdes: bool = False,
+    exclude_value: bool = False,
+    use_contours: bool = False,
+    include_border_title: bool = False,
+) -> str:
+    """Export PCB layers to DXF format for mechanical CAD exchange.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+        output: Output file path
+        layers: Comma-separated layer names (required)
+        output_units: Output units - "in" or "mm"
+        exclude_refdes: Exclude reference designators
+        exclude_value: Exclude component values
+        use_contours: Use board outline contours
+        include_border_title: Include border and title block
+    """
+    if not layers:
+        return json.dumps({"error": "layers parameter is required"})
+    out = output or str(Path(OUTPUT_DIR) / (Path(pcb_path).stem + ".dxf"))
+    args = ["pcb", "export", "dxf", pcb_path, "-o", out, "-l", layers]
+    if output_units != "in":
+        args += ["--output-units", output_units]
+    if exclude_refdes:
+        args.append("--exclude-refdes")
+    if exclude_value:
+        args.append("--exclude-value")
+    if use_contours:
+        args.append("--use-contours")
+    if include_border_title:
+        args.append("--include-border-title")
+    result = _run_cli(args, check=False)
+    if result.returncode != 0:
+        return json.dumps({"error": result.stderr.strip()})
+    return json.dumps({**_file_meta(out), "layers": layers})
+
+
+@mcp.tool()
+def export_ipc2581(
+    pcb_path: str = PCB_PATH,
+    output: str = "",
+    precision: int = 3,
+    compress: bool = False,
+    version: str = "C",
+    units: str = "mm",
+) -> str:
+    """Export PCB in IPC-2581 format for manufacturing data exchange.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+        output: Output file path
+        precision: Numeric precision (default: 3)
+        compress: Compress output file
+        version: IPC-2581 version (default: "C")
+        units: Output units - "mm" or "in"
+    """
+    out = output or str(Path(OUTPUT_DIR) / (Path(pcb_path).stem + ".xml"))
+    args = ["pcb", "export", "ipc2581", pcb_path, "-o", out]
+    if precision != 3:
+        args += ["--precision", str(precision)]
+    if compress:
+        args.append("--compress")
+    if version != "C":
+        args += ["--version", version]
+    if units != "mm":
+        args += ["--units", units]
+    result = _run_cli(args, check=False)
+    if result.returncode != 0:
+        return json.dumps({"error": result.stderr.strip()})
+    return json.dumps(_file_meta(out))
+
+
 def main():
     """Entry point for mcp-server-kicad-pcb console script."""
     mcp.run(transport="stdio")
