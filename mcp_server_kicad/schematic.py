@@ -891,7 +891,7 @@ def set_component_property(
                     sch.to_file()
                     return f"Set {reference}.{key} = {value}"
             # Create new property (hidden, at component center)
-            new_id = max((p.id for p in sym.properties), default=-1) + 1
+            new_id = max((p.id for p in sym.properties if p.id is not None), default=-1) + 1
             sym.properties.append(
                 Property(
                     key=key,

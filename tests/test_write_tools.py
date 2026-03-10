@@ -11,6 +11,13 @@ from kiutils.items.schitems import Connection
 from mcp_server_kicad import schematic
 
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
+HAS_KICAD_LIBS = any(
+    (p / "Device.kicad_sym").exists()
+    for p in [
+        __import__("pathlib").Path("/usr/share/kicad/symbols"),
+        __import__("pathlib").Path("/usr/local/share/kicad/symbols"),
+    ]
+)
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -214,6 +221,7 @@ class TestPlaceComponent:
         assert r9.position.X == 101.6
         assert r9.position.Y == 101.6
 
+    @pytest.mark.skipif(not HAS_KICAD_LIBS, reason="KiCad system libraries not installed")
     def test_auto_embeds_lib_symbol(self, empty_sch):
         """place_component auto-embeds lib_symbol from system library."""
         result = schematic.place_component(
@@ -230,6 +238,7 @@ class TestPlaceComponent:
         lib_names = [ls.entryName for ls in sch.libSymbols]
         assert "R" in lib_names
 
+    @pytest.mark.skipif(not HAS_KICAD_LIBS, reason="KiCad system libraries not installed")
     def test_auto_embed_then_wire(self, empty_sch):
         """place_component + wire_pin_to_label works without add_lib_symbol."""
         schematic.place_component(
@@ -266,6 +275,7 @@ class TestPlaceComponent:
         sch_after = reparse(str(scratch_sch))
         assert len(sch_after.libSymbols) == lib_count_before
 
+    @pytest.mark.skipif(not HAS_KICAD_LIBS, reason="KiCad system libraries not installed")
     def test_missing_symbol_suggests_alternatives(self, empty_sch):
         """When symbol not found, error lists available symbols from lib."""
         result = schematic.place_component(
