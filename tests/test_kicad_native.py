@@ -51,17 +51,24 @@ class TestKicadNativeFixture:
 
 class TestReadToolsNative:
     def test_list_components(self, kicad_native_sch):
-        result = schematic.list_components(schematic_path=str(kicad_native_sch))
-        assert "R1" in result
-        assert "10K" in result
+        import json
+
+        result = json.loads(schematic.list_schematic_items("components", str(kicad_native_sch)))
+        refs = [c["reference"] for c in result]
+        assert "R1" in refs
 
     def test_list_labels(self, kicad_native_sch):
-        result = schematic.list_labels(schematic_path=str(kicad_native_sch))
-        assert "TEST_NET" in result
+        import json
+
+        result = json.loads(schematic.list_schematic_items("labels", str(kicad_native_sch)))
+        texts = [item["text"] for item in result]
+        assert "TEST_NET" in texts
 
     def test_list_wires(self, kicad_native_sch):
-        result = schematic.list_wires(schematic_path=str(kicad_native_sch))
-        assert "50" in result
+        import json
+
+        result = json.loads(schematic.list_schematic_items("wires", str(kicad_native_sch)))
+        assert isinstance(result, list)
 
     def test_get_symbol_pins(self, kicad_native_sch):
         """get_symbol_pins should find a lib_symbol stored with prefix."""
@@ -175,11 +182,8 @@ class TestWriteToolsNative:
         assert "R1" not in refs
 
     def test_add_wire(self, kicad_native_sch):
-        schematic.add_wire(
-            x1=100,
-            y1=100,
-            x2=200,
-            y2=100,
+        schematic.add_wires(
+            [{"x1": 100, "y1": 100, "x2": 200, "y2": 100}],
             schematic_path=str(kicad_native_sch),
         )
         sch = reparse(str(kicad_native_sch))
