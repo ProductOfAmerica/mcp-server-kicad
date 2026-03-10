@@ -33,46 +33,106 @@ small user base.
   server only uses a subset
 - **Domain-scoped servers** — matches the pattern of MCP reference servers (Filesystem,
   Git, Memory, Time) where each server covers one coherent domain
+- **Anthropic tool use best practice** — "Consolidate related operations into fewer tools.
+  Fewer, more capable tools reduce selection ambiguity and make your tool surface easier
+  for Claude to navigate." (from platform.claude.com tool use docs)
 
-## Tool Assignment
+## Tool Consolidation
 
-### kicad-schematic (39 tools)
+To reduce tool surface area from 82 → 63, the following consolidations apply:
 
-**Existing from schematic.py (32):**
-- Read: `list_components`, `list_labels`, `list_wires`, `get_symbol_pins`,
-  `get_pin_positions`, `list_global_labels`, `get_net_connections`
-- Write: `place_component`, `remove_component`, `remove_label`, `remove_wire`,
-  `remove_junction`, `add_wire`, `add_wires`, `add_label`, `add_junction`,
-  `add_junctions`, `add_lib_symbol`, `move_component`, `edit_component_value`,
-  `set_component_footprint`, `set_component_property`, `add_global_label`,
-  `add_no_connect`, `add_power_symbol`, `add_power_rail`, `auto_place_decoupling_cap`
-- Routing: `add_text`, `wire_pin_to_label`, `wire_pins_to_net`, `connect_pins`,
-  `no_connect_pin`
+### Format-parameter merges (7 tools → 3)
 
-**From export.py (7):**
-- Analysis: `run_erc`, `list_unconnected_pins`
-- Export: `export_schematic_pdf`, `export_schematic_svg`, `export_schematic_dxf`,
-  `export_schematic_netlist`, `export_bom`
+| Old tools | New tool | Rationale |
+|---|---|---|
+| `export_schematic_pdf`, `_svg`, `_dxf` | `export_schematic(format="pdf\|svg\|dxf")` | Identical signatures |
+| `export_pcb_pdf`, `_pcb_svg` | `export_pcb(format="pdf\|svg")` | Identical signatures (DXF stays separate — distinct required params) |
+| `export_step`, `_stl`, `_glb` | `export_3d(format="step\|stl\|glb")` | Identical signatures |
+
+### Absorption merges (2 tools → 1)
+
+| Old tools | New tool | Rationale |
+|---|---|---|
+| `export_gerbers` + `export_drill` | `export_gerbers(include_drill=True)` | Always used together in fabrication |
+
+### Single/batch merges (6 tools → 3)
+
+| Old tools | New tool | Rationale |
+|---|---|---|
+| `add_wire` + `add_wires` | `add_wires` (list, handles single) | Batch superset |
+| `add_junction` + `add_junctions` | `add_junctions` (list, handles single) | Batch superset |
+| `wire_pin_to_label` + `wire_pins_to_net` | `wire_pins_to_net` (list, handles single) | Batch superset |
+
+### Query consolidation (10 tools → 2)
+
+| Old tools | New tool | Rationale |
+|---|---|---|
+| `list_components`, `list_labels`, `list_wires`, `list_global_labels` | `list_schematic_items(item_type=...)` | Same signature, same pattern |
+| `list_footprints`, `list_traces`, `list_nets`, `list_zones`, `list_layers`, `list_board_graphic_items` | `list_pcb_items(item_type=...)` | Same signature, same pattern |
+
+### Property tool consolidation (3 tools → 1)
+
+| Old tools | New tool | Rationale |
+|---|---|---|
+| `edit_component_value`, `set_component_footprint`, `set_component_property` | `set_component_property` (already general) | Superset handles all cases via key param |
+
+## Tool Assignment (post-consolidation)
+
+### kicad-schematic (29 tools)
+
+**Read (4):**
+- `list_schematic_items` — query by item_type: components, labels, wires, global_labels
+- `get_symbol_pins`, `get_pin_positions`, `get_net_connections`
+
+**Write (16):**
+- `place_component`, `remove_component`, `move_component`
+- `set_component_property` — set any property (Value, Reference, Footprint, custom)
+- `add_lib_symbol`
+- `add_wires` — add one or more wires (batch; replaces add_wire)
+- `remove_wire`
+- `add_label`, `remove_label`, `add_global_label`
+- `add_junctions` — add one or more junctions (batch; replaces add_junction)
+- `remove_junction`
+- `add_no_connect`, `add_power_symbol`, `add_power_rail`, `auto_place_decoupling_cap`
+
+**Routing (4):**
+- `add_text`
+- `wire_pins_to_net` — wire one or more pins to a net label (replaces wire_pin_to_label)
+- `connect_pins`, `no_connect_pin`
+
+**Analysis (2):**
+- `run_erc`, `list_unconnected_pins`
+
+**Export (3):**
+- `export_schematic` — format param: pdf, svg, dxf
+- `export_netlist` — netlist formats (kicadxml, kicadnet)
+- `export_bom`
 
 **Not included (moved to kicad-symbol):** `list_lib_symbols`, `get_symbol_info`
 
-### kicad-pcb (28 tools)
+### kicad-pcb (19 tools)
 
-**Existing from pcb.py (15):**
-- Read: `list_footprints`, `list_traces`, `list_nets`, `list_zones`, `list_layers`,
-  `get_board_info`, `get_footprint_pads`, `list_board_graphic_items`
-- Write: `place_footprint`, `move_footprint`, `remove_footprint`, `add_trace`, `add_via`,
-  `add_pcb_text`, `add_pcb_line`
+**Read (3):**
+- `list_pcb_items` — query by item_type: footprints, traces, nets, zones, layers,
+  graphic_items
+- `get_board_info`, `get_footprint_pads`
 
-**From export.py (11):**
-- Analysis: `run_drc`
-- Export: `export_gerbers`, `export_gerber`, `export_drill`, `export_pcb_pdf`,
-  `export_pcb_svg`, `export_positions`, `export_step`, `export_stl`, `export_glb`,
-  `render_3d`
+**Write (7):**
+- `place_footprint`, `move_footprint`, `remove_footprint`
+- `add_trace`, `add_via`, `add_pcb_text`, `add_pcb_line`
 
-**New (2):**
-- `export_pcb_dxf` — wraps `kicad-cli pcb export dxf`
-- `export_ipc2581` — wraps `kicad-cli pcb export ipc2581`
+**Analysis (1):**
+- `run_drc`
+
+**Export (8):**
+- `export_pcb` — 2D export, format param: pdf, svg
+- `export_pcb_dxf` — DXF export (separate: required layers, units, contour options)
+- `export_gerbers` — all Gerber layers + optional drill (include_drill param)
+- `export_gerber` — single-layer Gerber
+- `export_positions` — pick-and-place
+- `export_3d` — 3D model, format param: step, stl, glb
+- `render_3d` — 3D render to image (separate: width, height, side, quality)
+- `export_ipc2581` — IPC-2581
 
 **Not included (moved to kicad-footprint):** `list_lib_footprints`, `get_footprint_info`
 
@@ -93,7 +153,7 @@ small user base.
 - From export.py: `run_jobset`
 - New: `get_version` — wraps `kicad-cli version --format about`
 
-**Total: 82 unique tools** (79 existing + 3 new: `export_pcb_dxf`, `export_ipc2581`, `get_version`)
+**Total: 63 tools** (82 pre-consolidation − 19 consolidated away)
 
 ## File Structure
 
@@ -143,15 +203,66 @@ subset of config it needs (e.g., symbol server uses `SYM_LIB_PATH`, PCB server u
 `PCB_PATH` and `FP_LIB_PATH`). The config resolution cost is negligible (one directory
 scan at import).
 
-## New Tool Specifications
+## New & Consolidated Tool Specifications
 
-### export_pcb_dxf
+### list_schematic_items (consolidated)
 
-Wraps `kicad-cli pcb export dxf`.
+Replaces `list_components`, `list_labels`, `list_wires`, `list_global_labels`.
+
+Parameters:
+- `item_type: str` — one of: "components", "labels", "wires", "global_labels" (required)
+- `schematic_path: str` — path to .kicad_sch (default: `SCH_PATH`)
+
+Each item_type dispatches to the existing query logic (kiutils parsing).
+
+### list_pcb_items (consolidated)
+
+Replaces `list_footprints`, `list_traces`, `list_nets`, `list_zones`, `list_layers`,
+`list_board_graphic_items`.
+
+Parameters:
+- `item_type: str` — one of: "footprints", "traces", "nets", "zones", "layers",
+  "graphic_items" (required)
+- `pcb_path: str` — path to .kicad_pcb (default: `PCB_PATH`)
+
+### export_schematic (consolidated)
+
+Replaces `export_schematic_pdf`, `export_schematic_svg`, `export_schematic_dxf`.
+Wraps `kicad-cli sch export <format>`.
+
+Parameters:
+- `format: str` — "pdf", "svg", or "dxf" (default: "pdf")
+- `schematic_path: str` — path to .kicad_sch (default: `SCH_PATH`)
+- `output_dir: str` — output directory (default: `OUTPUT_DIR`)
+
+### export_netlist (renamed)
+
+Was `export_schematic_netlist`. Wraps `kicad-cli sch export netlist`.
+
+Parameters:
+- `schematic_path: str` — path to .kicad_sch (default: `SCH_PATH`)
+- `output_dir: str` — output directory (default: `OUTPUT_DIR`)
+- `format: str` — "kicadxml" or "kicadnet" (default: "kicadxml")
+
+### export_pcb (consolidated)
+
+Replaces `export_pcb_pdf`, `export_pcb_svg`.
+Wraps `kicad-cli pcb export <format>`.
+
+Parameters:
+- `format: str` — "pdf" or "svg" (default: "pdf")
+- `pcb_path: str` — path to .kicad_pcb (default: `PCB_PATH`)
+- `output_dir: str` — output directory (default: `OUTPUT_DIR`)
+- `layers: list[str] | None` — layer list (default: None = all layers)
+
+### export_pcb_dxf (new)
+
+Wraps `kicad-cli pcb export dxf`. Kept separate from `export_pcb` because DXF has
+distinct required parameters.
 
 Parameters:
 - `pcb_path: str` — path to .kicad_pcb (default: `PCB_PATH`)
-- `output: str` — output file path (default: auto from `OUTPUT_DIR`)
+- `output_dir: str` — output directory (default: `OUTPUT_DIR`)
 - `layers: str` — comma-separated layer list (required)
 - `output_units: str` — "mm" or "in" (default: "in")
 - `exclude_refdes: bool` — exclude reference designators (default: False)
@@ -159,19 +270,39 @@ Parameters:
 - `use_contours: bool` — plot using contours (default: False)
 - `include_border_title: bool` — include border and title block (default: False)
 
-### export_ipc2581
+### export_gerbers (consolidated)
+
+Absorbs `export_drill`. Wraps `kicad-cli pcb export gerbers` + `kicad-cli pcb export
+drill`.
+
+Parameters:
+- `pcb_path: str` — path to .kicad_pcb (default: `PCB_PATH`)
+- `output_dir: str` — output directory (default: `OUTPUT_DIR`)
+- `include_drill: bool` — also export drill files (default: True)
+
+### export_3d (consolidated)
+
+Replaces `export_step`, `export_stl`, `export_glb`.
+Wraps `kicad-cli pcb export <format>`.
+
+Parameters:
+- `format: str` — "step", "stl", or "glb" (default: "step")
+- `pcb_path: str` — path to .kicad_pcb (default: `PCB_PATH`)
+- `output_dir: str` — output directory (default: `OUTPUT_DIR`)
+
+### export_ipc2581 (new)
 
 Wraps `kicad-cli pcb export ipc2581`.
 
 Parameters:
 - `pcb_path: str` — path to .kicad_pcb (default: `PCB_PATH`)
-- `output: str` — output file path (default: auto from `OUTPUT_DIR`)
+- `output_dir: str` — output directory (default: `OUTPUT_DIR`)
 - `precision: int` — decimal digits (default: 3)
 - `compress: bool` — ZIP compress output (default: False)
 - `version: str` — IPC-2581 version "B" or "C" (default: "C")
 - `units: str` — "mm" or "in" (default: "mm")
 
-### get_version
+### get_version (new)
 
 Wraps `kicad-cli version --format about`.
 
@@ -182,15 +313,15 @@ Returns: KiCad version string with build and library info.
 
 | Current test file | Action |
 |---|---|
-| `test_cli_sch_export.py` | Update imports to schematic module |
-| `test_cli_pcb_export.py` | Update imports to pcb module |
+| `test_cli_sch_export.py` | Update: imports from schematic, test consolidated `export_schematic(format=...)` |
+| `test_cli_pcb_export.py` | Update: imports from pcb, test consolidated `export_pcb(format=...)` etc. |
 | `test_cli_analysis.py` | Split: ERC tests import from schematic, DRC from pcb |
-| `test_read_tools.py` | No change |
-| `test_write_tools.py` | No change |
-| `test_routing_tools.py` | No change |
+| `test_read_tools.py` | Update: test `list_schematic_items(item_type=...)` instead of individual list tools |
+| `test_write_tools.py` | Update: remove tests for `add_wire`/`add_junction`/`edit_component_value`/`set_component_footprint` (absorbed into batch/general tools) |
+| `test_routing_tools.py` | Update: test `wire_pins_to_net` for single-pin case (replaces `wire_pin_to_label`) |
 | `test_lib_tools.py` | No change (tests `add_lib_symbol` which stays on schematic server) |
 | `test_lib_access_tools.py` | Split: symbol tests → `test_symbol_access_tools.py`, footprint tests → `test_footprint_access_tools.py` |
-| `test_pcb_read_tools.py` | No change |
+| `test_pcb_read_tools.py` | Update: test `list_pcb_items(item_type=...)` instead of individual list tools |
 | `test_pcb_write_tools.py` | No change |
 | `test_new_sch_tools.py` | No change |
 | `test_edge_cases.py` | Update imports if any reference export module |
@@ -201,6 +332,7 @@ Returns: KiCad version string with build and library info.
 | New: `test_footprint_tools.py` | Tests for footprint lib tools |
 | New: `test_pcb_dxf_export.py` | Tests for `export_pcb_dxf` |
 | New: `test_ipc2581_export.py` | Tests for `export_ipc2581` |
+| New: `test_consolidation.py` | Tests for consolidated tools (`export_3d`, `export_gerbers` w/ drill, etc.) |
 
 ## README Update
 
@@ -250,6 +382,15 @@ Update the MCP client config example from 3 servers to 5:
   register on the schematic server. It must be reworked to create its own
   `FastMCP("kicad-project")` instance with a `main()` entry point. The internal
   `_create_project()` etc. functions and their public aliases stay for test imports.
+- **Consolidation approach:** Consolidated tools (e.g., `export_schematic`) should use a
+  `format` or `item_type` parameter that dispatches to the appropriate CLI command or
+  kiutils logic internally. The function body contains a match/if-elif on the parameter.
+- **Batch tools:** `add_wires`, `add_junctions`, `wire_pins_to_net` already accept lists.
+  Remove the singular variants (`add_wire`, `add_junction`, `wire_pin_to_label`) and
+  update callers/tests. Single-item calls pass a one-element list.
+- **Property consolidation:** Remove `edit_component_value` and `set_component_footprint`.
+  Users call `set_component_property(ref, key="Value", value="10k")` etc. The existing
+  `set_component_property` implementation already handles arbitrary keys.
 
 ## Scope Exclusions
 
