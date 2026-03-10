@@ -216,6 +216,42 @@ def build_test_part_symbol() -> Symbol:
     return sym
 
 
+def build_power_symbol(name: str, pin_type: str = "power_in") -> Symbol:
+    """Build a minimal power symbol (VCC, GND, PWR_FLAG, etc.).
+
+    Pin 1 at (0, 0) angle 90.  ``pin_type`` is typically ``"power_in"``
+    for VCC/GND or ``"power_out"`` for PWR_FLAG.
+    """
+    sym = Symbol()
+    sym.entryName = name
+    sym.isPower = True
+    sym.pinNamesOffset = 0
+    sym.inBom = False
+    sym.onBoard = True
+
+    unit0 = Symbol()
+    unit0.entryName = name
+    unit0.unitId = 0
+    unit0.styleId = 1
+
+    unit1 = Symbol()
+    unit1.entryName = name
+    unit1.unitId = 1
+    unit1.styleId = 1
+    unit1.pins = [
+        SymbolPin(
+            electricalType=pin_type,
+            position=Position(X=0, Y=0, angle=90),
+            length=0,
+            name="~",
+            number="1",
+        ),
+    ]
+
+    sym.units = [unit0, unit1]
+    return sym
+
+
 def new_schematic() -> Schematic:
     """Create a minimal valid empty schematic compatible with KiCad 9."""
     sch = Schematic.create_new()
@@ -332,6 +368,23 @@ def empty_sch(tmp_path: Path) -> Path:
     path = tmp_path / "empty.kicad_sch"
     sch.filePath = str(path)
     sch.to_file()
+    return path
+
+
+@pytest.fixture()
+def scratch_power_lib(tmp_path: Path) -> Path:
+    """Create a .kicad_sym with VCC, GND, and PWR_FLAG power symbols.
+
+    Returns the file path.
+    """
+    lib = SymbolLib(version=KICAD_SYM_VERSION, generator="kicad_symbol_editor")
+    lib.symbols.append(build_power_symbol("VCC", "power_in"))
+    lib.symbols.append(build_power_symbol("GND", "power_in"))
+    lib.symbols.append(build_power_symbol("PWR_FLAG", "power_out"))
+
+    path = tmp_path / "power.kicad_sym"
+    lib.filePath = str(path)
+    lib.to_file()
     return path
 
 

@@ -110,6 +110,57 @@ class TestAddPowerSymbol:
         ]
         assert "VCC1" in refs
 
+    def test_auto_pwr_flag(self, scratch_sch, scratch_power_lib):
+        """add_power_symbol should auto-place a PWR_FLAG."""
+        result = schematic.add_power_symbol(
+            "power:VCC",
+            "#PWR01",
+            127,
+            63.5,
+            symbol_lib_path=str(scratch_power_lib),
+            schematic_path=str(scratch_sch),
+        )
+        assert "#FLG01" in result
+
+        sch = reparse(str(scratch_sch))
+        refs = [
+            next((p.value for p in s.properties if p.key == "Reference"), None)
+            for s in sch.schematicSymbols
+        ]
+        assert "#PWR01" in refs
+        assert "#FLG01" in refs
+
+        # PWR_FLAG should be in lib_symbols
+        lib_names = [ls.entryName for ls in sch.libSymbols]
+        assert "PWR_FLAG" in lib_names
+
+    def test_auto_pwr_flag_unique_refs(self, scratch_sch, scratch_power_lib):
+        """Multiple power symbols should get unique #FLG references."""
+        schematic.add_power_symbol(
+            "power:VCC",
+            "#PWR01",
+            127,
+            63.5,
+            symbol_lib_path=str(scratch_power_lib),
+            schematic_path=str(scratch_sch),
+        )
+        schematic.add_power_symbol(
+            "power:GND",
+            "#PWR02",
+            127,
+            114.3,
+            symbol_lib_path=str(scratch_power_lib),
+            schematic_path=str(scratch_sch),
+        )
+
+        sch = reparse(str(scratch_sch))
+        refs = [
+            next((p.value for p in s.properties if p.key == "Reference"), None)
+            for s in sch.schematicSymbols
+        ]
+        assert "#FLG01" in refs
+        assert "#FLG02" in refs
+
 
 class TestAddText:
     def test_basic(self, scratch_sch):
