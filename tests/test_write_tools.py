@@ -214,6 +214,58 @@ class TestPlaceComponent:
         assert r9.position.X == 101.6
         assert r9.position.Y == 101.6
 
+    def test_auto_embeds_lib_symbol(self, empty_sch):
+        """place_component auto-embeds lib_symbol from system library."""
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="R1",
+            value="10K",
+            x=100,
+            y=100,
+            schematic_path=str(empty_sch),
+        )
+        assert "R1" in result
+        sch = reparse(str(empty_sch))
+        # lib_symbol should be embedded — wire_pin_to_label should work
+        lib_names = [ls.entryName for ls in sch.libSymbols]
+        assert "R" in lib_names
+
+    def test_auto_embed_then_wire(self, empty_sch):
+        """place_component + wire_pin_to_label works without add_lib_symbol."""
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R1",
+            value="10K",
+            x=100,
+            y=100,
+            schematic_path=str(empty_sch),
+        )
+        # This should NOT raise "Lib symbol not found"
+        result = schematic.wire_pin_to_label(
+            reference="R1",
+            pin_name="1",
+            label_text="VCC",
+            direction="up",
+            schematic_path=str(empty_sch),
+        )
+        assert "VCC" in result
+
+    def test_auto_embed_skips_if_already_present(self, scratch_sch):
+        """Don't duplicate lib_symbol if it's already in the schematic."""
+        sch_before = reparse(str(scratch_sch))
+        lib_count_before = len(sch_before.libSymbols)
+
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R2",
+            value="4.7K",
+            x=150,
+            y=150,
+            schematic_path=str(scratch_sch),
+        )
+        sch_after = reparse(str(scratch_sch))
+        assert len(sch_after.libSymbols) == lib_count_before
+
 
 # ===========================================================================
 # TestRemoveComponent

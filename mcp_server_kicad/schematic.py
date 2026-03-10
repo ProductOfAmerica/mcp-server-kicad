@@ -27,6 +27,7 @@ from mcp_server_kicad._shared import (
     _default_stroke,
     _gen_uuid,
     _load_sch,
+    _resolve_system_lib,
     _snap_grid,
 )
 from mcp_server_kicad.project import register_tools as _register_project_tools
@@ -311,15 +312,19 @@ def place_component(
     x = _snap_grid(x)
     y = _snap_grid(y)
 
-    # Load symbol definition from custom lib if needed
-    if symbol_lib_path:
-        sym_lib = SymbolLib.from_file(symbol_lib_path)
-        symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-        for s in sym_lib.symbols:
-            if s.entryName == symbol_name:
-                if not _find_lib_symbol(sch, lib_id):
+    # Load symbol definition from custom lib or system library
+    symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
+    if not _find_lib_symbol(sch, lib_id):
+        lib_path = symbol_lib_path
+        if not lib_path and ":" in lib_id:
+            lib_prefix = lib_id.split(":")[0]
+            lib_path = _resolve_system_lib(lib_prefix)
+        if lib_path:
+            sym_lib = SymbolLib.from_file(lib_path)
+            for s in sym_lib.symbols:
+                if s.entryName == symbol_name:
                     sch.libSymbols.append(s)
-                break
+                    break
 
     # Create instance — set libName to match the lib_symbol's name as stored
     # in the file so KiCad can resolve the lookup without crashing.
