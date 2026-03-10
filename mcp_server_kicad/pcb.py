@@ -1,11 +1,8 @@
 """KiCad PCB MCP Server — PCB manipulation + footprint library tools."""
 
-from pathlib import Path
-
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
-    FP_LIB_PATH,
     PCB_PATH,
     Footprint,
     FpText,
@@ -396,47 +393,6 @@ def add_pcb_line(
     board.graphicItems.append(line)
     board.to_file()
     return f"Line: ({x1}, {y1}) -> ({x2}, {y2}) on {layer}"
-
-
-# ---------------------------------------------------------------------------
-# Footprint library access tools (2)
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-def list_lib_footprints(pretty_dir: str = FP_LIB_PATH) -> str:
-    """List all footprints in a .pretty library directory.
-
-    Args:
-        pretty_dir: Path to .pretty directory containing .kicad_mod files
-    """
-    p = Path(pretty_dir)
-    if not p.is_dir():
-        return f"'{pretty_dir}' is not a directory."
-    mods = sorted(p.glob("*.kicad_mod"))
-    if not mods:
-        return "No footprints found."
-    lines = [f.stem for f in mods]
-    return "\n".join(lines)
-
-
-@mcp.tool()
-def get_footprint_info(footprint_path: str) -> str:
-    """Get pad and outline details for a footprint .kicad_mod file.
-
-    Args:
-        footprint_path: Path to .kicad_mod file
-    """
-    fp = Footprint.from_file(footprint_path)
-    lines = [f"Footprint: {fp.entryName}"]
-    lines.append(f"  Layer: {fp.layer}")
-    for pad in fp.pads:
-        lines.append(
-            f"  Pad {pad.number}: {pad.type} {pad.shape} "
-            f"@ ({pad.position.X}, {pad.position.Y}) "
-            f"size=({pad.size.X}, {pad.size.Y}) layers={pad.layers}"
-        )
-    return "\n".join(lines)
 
 
 def main():
