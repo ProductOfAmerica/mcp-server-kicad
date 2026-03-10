@@ -77,6 +77,8 @@ __all__ = [
     "_file_meta",
     "_fp_ref",
     "_fp_val",
+    "_GRID_MM",
+    "_snap_grid",
 ]
 
 
@@ -182,6 +184,15 @@ def _default_effects(size: float = 1.27) -> Effects:
 
 def _default_stroke() -> Stroke:
     return Stroke(width=0, type="default")
+
+
+# Default KiCad grid spacing in mm (50 mils).
+_GRID_MM = 1.27
+
+
+def _snap_grid(val: float, grid: float = _GRID_MM) -> float:
+    """Snap *val* to the nearest multiple of *grid*."""
+    return round(round(val / grid) * grid, 4)
 
 
 def _load_board(path: str = PCB_PATH) -> Board:

@@ -23,10 +23,12 @@ from mcp_server_kicad._shared import (
     SymbolProjectInstance,
     SymbolProjectPath,
     Text,
+    _GRID_MM,
     _default_effects,
     _default_stroke,
     _gen_uuid,
     _load_sch,
+    _snap_grid,
 )
 
 mcp = FastMCP(
@@ -70,13 +72,6 @@ def _lib_symbol_file_name(ls) -> str:
     return getattr(ls, "libId", None) or ls.entryName
 
 
-# Default KiCad grid spacing in mm (50 mils).
-_GRID_MM = 1.27
-
-
-def _snap_grid(val: float, grid: float = _GRID_MM) -> float:
-    """Snap *val* to the nearest multiple of *grid*."""
-    return round(round(val / grid) * grid, 4)
 
 
 def _transform_pin_pos(
