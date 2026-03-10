@@ -19,3 +19,23 @@ class TestExportIpc2581:
             )
         )
         assert "path" in result or "error" in result
+
+    def test_with_precision(self, scratch_pcb, tmp_path):
+        result = json.loads(
+            pcb.export_ipc2581(
+                pcb_path=str(scratch_pcb),
+                output=str(tmp_path / "board_p6.xml"),
+                precision=6,
+            )
+        )
+        assert "path" in result or "error" in result
+
+    def test_with_compress(self, scratch_pcb, tmp_path):
+        result = json.loads(
+            pcb.export_ipc2581(
+                pcb_path=str(scratch_pcb),
+                output=str(tmp_path / "board_c.xml"),
+                compress=True,
+            )
+        )
+        assert "path" in result or "error" in result

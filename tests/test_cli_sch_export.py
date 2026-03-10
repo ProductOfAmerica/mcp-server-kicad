@@ -54,6 +54,14 @@ class TestExportSchematicDxf:
         assert data["format"] == "dxf"
 
 
+class TestExportSchematicInvalidFormat:
+    pytestmark = []  # no kicad-cli needed for format validation
+
+    def test_invalid_format(self):
+        result = json.loads(schematic.export_schematic(format="xyz"))
+        assert "error" in result
+
+
 class TestRunErcAnnotation:
     # This test doesn't need kicad-cli — we test the annotation logic directly
     pytestmark = []

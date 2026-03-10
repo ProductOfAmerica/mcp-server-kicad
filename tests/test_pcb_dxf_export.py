@@ -30,3 +30,26 @@ class TestExportPcbDxf:
             )
         )
         assert "error" in result
+
+    def test_with_mm_units(self, scratch_pcb, tmp_path):
+        result = json.loads(
+            pcb.export_pcb_dxf(
+                pcb_path=str(scratch_pcb),
+                output=str(tmp_path / "board_mm.dxf"),
+                layers="F.Cu",
+                output_units="mm",
+            )
+        )
+        assert "path" in result or "error" in result
+
+    def test_with_options(self, scratch_pcb, tmp_path):
+        result = json.loads(
+            pcb.export_pcb_dxf(
+                pcb_path=str(scratch_pcb),
+                output=str(tmp_path / "board_opts.dxf"),
+                layers="F.Cu",
+                exclude_refdes=True,
+                exclude_value=True,
+            )
+        )
+        assert "path" in result or "error" in result

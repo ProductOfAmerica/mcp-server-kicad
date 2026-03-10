@@ -22,6 +22,13 @@ class TestExportGerbers:
         data = _parse_result(result)
         assert "format" in data or "error" in data
 
+    def test_without_drill(self, scratch_pcb, tmp_path):
+        result = pcb.export_gerbers(
+            str(scratch_pcb), str(tmp_path / "gerbers"), include_drill=False
+        )
+        data = _parse_result(result)
+        assert "drill_files" not in data
+
 
 class TestExportGerber:
     def test_returns_json(self, scratch_pcb, tmp_path):
@@ -87,3 +94,15 @@ class TestRender3d:
         result = pcb.render_3d(str(scratch_pcb), str(tmp_path))
         data = _parse_result(result)
         assert "format" in data or "error" in data
+
+
+class TestExportPcbInvalidFormat:
+    pytestmark = []  # no kicad-cli needed for format validation
+
+    def test_export_pcb_invalid_format(self):
+        result = _parse_result(pcb.export_pcb(format="xyz"))
+        assert "error" in result
+
+    def test_export_3d_invalid_format(self):
+        result = _parse_result(pcb.export_3d(format="obj"))
+        assert "error" in result
