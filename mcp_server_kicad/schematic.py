@@ -155,7 +155,7 @@ def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, floa
 
 
 # ---------------------------------------------------------------------------
-# Schematic read tools (6)
+# Schematic read tools (7)
 # ---------------------------------------------------------------------------
 
 
@@ -356,7 +356,7 @@ def get_net_connections(
 
 
 # ---------------------------------------------------------------------------
-# Schematic write tools (14)
+# Schematic write tools (19)
 # ---------------------------------------------------------------------------
 
 
@@ -1060,6 +1060,8 @@ def add_power_rail(
         symbol_lib_path=symbol_lib_path,
         schematic_path=schematic_path,
     )
+    if result.startswith("Error"):
+        return result
 
     net_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
 
@@ -1172,7 +1174,7 @@ def add_text(
 
 
 # ---------------------------------------------------------------------------
-# High-level routing tools (3)
+# High-level routing tools (4)
 # ---------------------------------------------------------------------------
 
 # Direction -> (dx_sign, dy_sign, label_rotation)
