@@ -712,6 +712,11 @@ def add_power_symbol(
         schematic_path=schematic_path,
     )
 
+    # Don't auto-add PWR_FLAG if we just placed one
+    symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
+    if symbol_name == "PWR_FLAG":
+        return result
+
     # Auto-place PWR_FLAG at the same position for ERC compliance
     pwr_lib = symbol_lib_path
     if not pwr_lib:

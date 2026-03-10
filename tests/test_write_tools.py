@@ -462,3 +462,48 @@ class TestAddJunctions:
             schematic_path=str(scratch_sch),
         )
         assert "0" in result
+
+
+# ===========================================================================
+# TestAddPowerSymbol
+# ===========================================================================
+
+
+class TestAddPowerSymbol:
+    def test_pwr_flag_no_duplicate(self, empty_sch, scratch_power_lib):
+        """Placing PWR_FLAG should NOT auto-create a second PWR_FLAG."""
+        schematic.add_power_symbol(
+            lib_id="power:PWR_FLAG",
+            reference="#FLG01",
+            x=100,
+            y=100,
+            symbol_lib_path=str(scratch_power_lib),
+            schematic_path=str(empty_sch),
+        )
+        sch = reparse(str(empty_sch))
+        flg_refs = [
+            next((p.value for p in s.properties if p.key == "Reference"), "")
+            for s in sch.schematicSymbols
+            if any(p.value == "PWR_FLAG" for p in s.properties if p.key == "Value")
+        ]
+        # Should be exactly 1 PWR_FLAG, not 2
+        assert len(flg_refs) == 1
+        assert flg_refs[0] == "#FLG01"
+
+    def test_vcc_gets_auto_pwr_flag(self, empty_sch, scratch_power_lib):
+        """Placing VCC should auto-create a PWR_FLAG."""
+        schematic.add_power_symbol(
+            lib_id="power:VCC",
+            reference="#PWR01",
+            x=100,
+            y=100,
+            symbol_lib_path=str(scratch_power_lib),
+            schematic_path=str(empty_sch),
+        )
+        sch = reparse(str(empty_sch))
+        refs = [
+            next((p.value for p in s.properties if p.key == "Reference"), "")
+            for s in sch.schematicSymbols
+        ]
+        assert "#PWR01" in refs
+        assert any(r.startswith("#FLG") for r in refs)
