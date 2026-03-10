@@ -326,6 +326,26 @@ def place_component(
                     sch.libSymbols.append(s)
                     break
 
+    # Check if lib_symbol was found; give helpful error if not
+    if not _find_lib_symbol(sch, lib_id) and ":" in lib_id:
+        lib_prefix = lib_id.split(":")[0]
+        lib_path = symbol_lib_path or _resolve_system_lib(lib_prefix)
+        if lib_path:
+            sym_lib = SymbolLib.from_file(lib_path)
+            available = [s.entryName for s in sym_lib.symbols]
+            target = lib_id.split(":")[-1]
+            similar = [
+                n
+                for n in available
+                if target.lower() in n.lower() or n.lower() in target.lower()
+            ]
+            hint = ""
+            if similar:
+                hint = f" Similar: {', '.join(similar[:5])}"
+            return (
+                f"Error: symbol '{target}' not found in {lib_prefix} library.{hint}"
+            )
+
     # Create instance — set libName to match the lib_symbol's name as stored
     # in the file so KiCad can resolve the lookup without crashing.
     lib_sym = _find_lib_symbol(sch, lib_id)

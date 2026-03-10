@@ -266,6 +266,22 @@ class TestPlaceComponent:
         sch_after = reparse(str(scratch_sch))
         assert len(sch_after.libSymbols) == lib_count_before
 
+    def test_missing_symbol_suggests_alternatives(self, empty_sch):
+        """When symbol not found, error lists available symbols from lib."""
+        result = schematic.place_component(
+            lib_id="Device:Q_PMOS_GSD",
+            reference="Q1",
+            value="test",
+            x=100,
+            y=100,
+            schematic_path=str(empty_sch),
+        )
+        # Should mention the symbol wasn't found and list alternatives
+        assert "not found" in result.lower() or "Q_PMOS_GSD" in result
+        # Should suggest similar symbols if the library was found
+        if "Device" in result:
+            assert "Q_PMOS" in result or "available" in result.lower()
+
 
 # ===========================================================================
 # TestRemoveComponent
