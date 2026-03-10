@@ -1,6 +1,6 @@
 """Tests for footprint library access tools."""
 
-from mcp_server_kicad import pcb
+from mcp_server_kicad import footprint
 
 
 class TestListLibFootprints:
@@ -14,7 +14,7 @@ class TestListLibFootprints:
         fp.entryName = "R_0603"
         fp.filePath = str(pretty / "R_0603.kicad_mod")
         fp.to_file()
-        result = pcb.list_lib_footprints(str(pretty))
+        result = footprint.list_lib_footprints(str(pretty))
         assert "R_0603" in result
 
 
@@ -36,5 +36,5 @@ class TestGetFootprintInfo:
         path = str(tmp_path / "R_0603.kicad_mod")
         fp.filePath = path
         fp.to_file()
-        result = pcb.get_footprint_info(path)
+        result = footprint.get_footprint_info(path)
         assert "Pad 1" in result or "pad" in result.lower()
