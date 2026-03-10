@@ -27,7 +27,9 @@ Issues = "https://github.com/ProductOfAmerica/mcp-server-kicad/issues"
 [project.scripts]
 mcp-server-kicad-schematic = "mcp_server_kicad.schematic:main"
 mcp-server-kicad-pcb = "mcp_server_kicad.pcb:main"
-mcp-server-kicad-export = "mcp_server_kicad.export:main"
+mcp-server-kicad-symbol = "mcp_server_kicad.symbol:main"
+mcp-server-kicad-footprint = "mcp_server_kicad.footprint:main"
+mcp-server-kicad-project = "mcp_server_kicad.project:main"
 
 [project.optional-dependencies]
 dev = ["pytest>=9.0", "ruff", "pyright"]
