@@ -23,13 +23,13 @@ from mcp_server_kicad._shared import (
     SymbolProjectInstance,
     SymbolProjectPath,
     Text,
-    _GRID_MM,
     _default_effects,
     _default_stroke,
     _gen_uuid,
     _load_sch,
     _snap_grid,
 )
+from mcp_server_kicad.project import register_tools as _register_project_tools
 
 mcp = FastMCP(
     "kicad-schematic",
@@ -70,8 +70,6 @@ def _lib_symbol_file_name(ls) -> str:
     the original.
     """
     return getattr(ls, "libId", None) or ls.entryName
-
-
 
 
 def _transform_pin_pos(
@@ -910,10 +908,7 @@ def connect_pins(
     sch.to_file()
 
     n = len(segments)
-    return (
-        f"Connected {ref1}:{pin1} -> {ref2}:{pin2} "
-        f"via {n} wire segment{'s' if n > 1 else ''}"
-    )
+    return f"Connected {ref1}:{pin1} -> {ref2}:{pin2} via {n} wire segment{'s' if n > 1 else ''}"
 
 
 @mcp.tool()
@@ -986,7 +981,6 @@ def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> st
     return f"'{symbol_name}' not found in {symbol_lib_path}."
 
 
-from mcp_server_kicad.project import register_tools as _register_project_tools
 _register_project_tools(mcp)
 
 
