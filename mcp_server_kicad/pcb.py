@@ -1,10 +1,13 @@
-"""KiCad PCB MCP Server — PCB manipulation + footprint library tools."""
+"""KiCad PCB MCP Server — PCB manipulation, DRC, and export tools."""
 
 import json
+import os
+from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
+    OUTPUT_DIR,
     PCB_PATH,
     Footprint,
     FpText,
@@ -14,15 +17,20 @@ from mcp_server_kicad._shared import (
     Segment,
     Via,
     _default_effects,
+    _file_meta,
     _fp_ref,
     _fp_val,
     _gen_uuid,
     _load_board,
+    _run_cli,
 )
 
 mcp = FastMCP(
     "kicad-pcb",
-    instructions="KiCad PCB manipulation and footprint library tools built on kiutils",
+    instructions=(
+        "KiCad PCB manipulation, DRC analysis, and PCB export tools"
+        " including Gerber, drill, 3D models, and pick-and-place."
+    ),
 )
 
 
@@ -183,26 +191,6 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
                 )
             return "\n".join(lines)
     return f"Footprint {reference} not found."
-
-
-@mcp.tool()
-def list_board_graphic_items(pcb_path: str = PCB_PATH) -> str:
-    """List graphic items on the PCB (lines, text, dimensions)."""
-    board = _load_board(pcb_path)
-    lines = []
-    for item in board.graphicItems:
-        if isinstance(item, GrLine):
-            lines.append(
-                f"Line: ({item.start.X}, {item.start.Y}) -> "
-                f"({item.end.X}, {item.end.Y}) layer={item.layer}"
-            )
-        elif isinstance(item, GrText):
-            lines.append(
-                f"Text: '{item.text}' @ ({item.position.X}, {item.position.Y}) layer={item.layer}"
-            )
-        else:
-            lines.append(f"{type(item).__name__} on {getattr(item, 'layer', '?')}")
-    return "\n".join(lines) if lines else "No graphic items found."
 
 
 # ---------------------------------------------------------------------------
@@ -443,6 +431,248 @@ def add_pcb_line(
     board.graphicItems.append(line)
     board.to_file()
     return f"Line: ({x1}, {y1}) -> ({x2}, {y2}) on {layer}"
+
+
+# ---------------------------------------------------------------------------
+# CLI analysis tools (1)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
+    """Run Design Rules Check (DRC) on a PCB.
+
+    Returns JSON report with violations.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+        output_dir: Directory for report file (default: same as PCB)
+    """
+    out_dir = output_dir or str(Path(pcb_path).parent)
+    out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-drc.json"))
+    _run_cli(
+        ["pcb", "drc", "--format", "json", "--severity-all", "--output", out_path, pcb_path],
+        check=False,
+    )
+    try:
+        with open(out_path) as f:
+            report = json.load(f)
+    except FileNotFoundError:
+        return json.dumps({"error": "DRC failed to produce output file"}, indent=2)
+    all_violations = []
+    for sheet in report.get("sheets", []):
+        all_violations.extend(sheet.get("violations", []))
+    return json.dumps(
+        {
+            "source": report.get("source", ""),
+            "kicad_version": report.get("kicad_version", ""),
+            "violation_count": len(all_violations),
+            "violations": all_violations,
+        },
+        indent=2,
+    )
+
+
+# ---------------------------------------------------------------------------
+# CLI PCB export tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def export_pcb(
+    format: str = "pdf",
+    pcb_path: str = PCB_PATH,
+    output_dir: str = OUTPUT_DIR,
+    layers: list[str] | None = None,
+) -> str:
+    """Export PCB to PDF or SVG format.
+
+    Args:
+        format: Output format - "pdf" or "svg"
+        pcb_path: Path to .kicad_pcb file
+        output_dir: Directory for output files
+        layers: Optional list of layer names to include
+    """
+    fmt = format.lower()
+    if fmt not in ("pdf", "svg"):
+        return json.dumps({"error": f"Unknown format: {format}. Use: pdf, svg"})
+    try:
+        out_dir = output_dir or str(Path(pcb_path).parent)
+        ext = ".pdf" if fmt == "pdf" else ".svg"
+        out_path = str(Path(out_dir) / (Path(pcb_path).stem + ext))
+        if fmt == "pdf":
+            layer_list = layers or ["F.Cu", "B.Cu"]
+        else:
+            layer_list = layers or ["F.Cu"]
+        _run_cli(
+            [
+                "pcb",
+                "export",
+                fmt,
+                "--layers",
+                ",".join(layer_list),
+                "--output",
+                out_path,
+                pcb_path,
+            ]
+        )
+        meta = _file_meta(out_path)
+        meta.update({"format": fmt, "layers": layer_list})
+        return json.dumps(meta, indent=2)
+    except (RuntimeError, FileNotFoundError) as e:
+        return json.dumps({"error": str(e), "format": fmt}, indent=2)
+
+
+@mcp.tool()
+def export_gerbers(
+    pcb_path: str = PCB_PATH,
+    output_dir: str = OUTPUT_DIR,
+    include_drill: bool = True,
+) -> str:
+    """Export Gerber files for all copper and mask layers, optionally including drill files.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+        output_dir: Output directory for gerber files
+        include_drill: Also export drill files (default: True)
+    """
+    try:
+        out = output_dir or str(Path(pcb_path).parent / "gerbers")
+        os.makedirs(out, exist_ok=True)
+        _run_cli(["pcb", "export", "gerbers", "--output", out, pcb_path])
+        files = sorted(Path(out).glob("*"))
+        result = {
+            "path": out,
+            "format": "gerber",
+            "files": [f.name for f in files],
+            "count": len(files),
+        }
+        if include_drill:
+            _run_cli(["pcb", "export", "drill", "--output", out, pcb_path])
+            drill_files = sorted(Path(out).glob("*.drl")) + sorted(Path(out).glob("*.DRL"))
+            result["drill_files"] = [f.name for f in drill_files]
+            result["drill_count"] = len(drill_files)
+        return json.dumps(result, indent=2)
+    except (RuntimeError, FileNotFoundError) as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def export_gerber(
+    pcb_path: str = PCB_PATH,
+    layer: str = "F.Cu",
+    output_dir: str = OUTPUT_DIR,
+) -> str:
+    """Export a single Gerber file for one layer.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+        layer: Layer name (e.g. "F.Cu", "B.Cu", "F.SilkS")
+        output_dir: Output directory
+    """
+    try:
+        out_dir = output_dir or str(Path(pcb_path).parent)
+        out_path = str(Path(out_dir) / f"{Path(pcb_path).stem}-{layer.replace('.', '_')}.gbr")
+        _run_cli(["pcb", "export", "gerber", "--layers", layer, "--output", out_path, pcb_path])
+        meta = _file_meta(out_path)
+        meta.update({"format": "gerber", "layer": layer})
+        return json.dumps(meta, indent=2)
+    except (RuntimeError, FileNotFoundError) as e:
+        return json.dumps({"error": str(e), "format": "gerber", "layer": layer}, indent=2)
+
+
+@mcp.tool()
+def export_3d(
+    format: str = "step",
+    pcb_path: str = PCB_PATH,
+    output_dir: str = OUTPUT_DIR,
+) -> str:
+    """Export PCB 3D model in STEP, STL, or GLB format.
+
+    Args:
+        format: Output format - "step", "stl", or "glb"
+        pcb_path: Path to .kicad_pcb file
+        output_dir: Output directory
+    """
+    fmt = format.lower()
+    if fmt not in ("step", "stl", "glb"):
+        return json.dumps({"error": f"Unknown format: {format}. Use: step, stl, glb"})
+    try:
+        out_dir = output_dir or str(Path(pcb_path).parent)
+        out_path = str(Path(out_dir) / (Path(pcb_path).stem + f".{fmt}"))
+        _run_cli(["pcb", "export", fmt, "--output", out_path, pcb_path])
+        meta = _file_meta(out_path)
+        meta["format"] = fmt
+        return json.dumps(meta, indent=2)
+    except (RuntimeError, FileNotFoundError) as e:
+        return json.dumps({"error": str(e), "format": fmt}, indent=2)
+
+
+@mcp.tool()
+def export_positions(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
+    """Export component position file (pick and place).
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+        output_dir: Output directory
+    """
+    try:
+        out_dir = output_dir or str(Path(pcb_path).parent)
+        out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-pos.csv"))
+        _run_cli(["pcb", "export", "pos", "--format", "csv", "--output", out_path, pcb_path])
+        meta = _file_meta(out_path)
+        meta["format"] = "csv"
+        with open(out_path) as f:
+            meta["component_count"] = max(0, len(f.readlines()) - 1)
+        return json.dumps(meta, indent=2)
+    except (RuntimeError, FileNotFoundError) as e:
+        return json.dumps({"error": str(e)}, indent=2)
+
+
+@mcp.tool()
+def render_3d(
+    pcb_path: str = PCB_PATH,
+    output_dir: str = OUTPUT_DIR,
+    width: int = 1600,
+    height: int = 900,
+    side: str = "top",
+    quality: str = "basic",
+) -> str:
+    """Render PCB 3D view to image.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+        output_dir: Output directory
+        width: Image width in pixels
+        height: Image height in pixels
+        side: View side: top, bottom, left, right, front, back
+        quality: Render quality: basic, high
+    """
+    try:
+        out_dir = output_dir or str(Path(pcb_path).parent)
+        out_path = str(Path(out_dir) / (Path(pcb_path).stem + f"-3d-{side}.png"))
+        _run_cli(
+            [
+                "pcb",
+                "render",
+                "--width",
+                str(width),
+                "--height",
+                str(height),
+                "--side",
+                side,
+                "--quality",
+                quality,
+                "--output",
+                out_path,
+                pcb_path,
+            ]
+        )
+        meta = _file_meta(out_path)
+        meta.update({"format": "png", "width": width, "height": height, "side": side})
+        return json.dumps(meta, indent=2)
+    except (RuntimeError, FileNotFoundError) as e:
+        return json.dumps({"error": str(e), "format": "png"}, indent=2)
 
 
 def main():
