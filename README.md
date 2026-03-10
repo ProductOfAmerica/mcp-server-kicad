@@ -4,15 +4,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Tests](https://github.com/ProductOfAmerica/mcp-server-kicad/actions/workflows/test.yml/badge.svg)](https://github.com/ProductOfAmerica/mcp-server-kicad/actions/workflows/test.yml)
 
-MCP servers for KiCad schematic, PCB, and export automation.
+MCP servers for KiCad schematic, PCB, symbol, footprint, and project automation.
 
 ## Servers
 
 | Server | Tools | Description |
 |--------|-------|-------------|
-| `mcp-server-kicad-schematic` | 22 | Schematic read/write and symbol library tools built on kiutils |
-| `mcp-server-kicad-pcb` | 17 | PCB read/write and footprint library tools built on kiutils |
-| `mcp-server-kicad-export` | 22 | ERC/DRC analysis, exports (Gerber, PDF, SVG, STEP, STL, GLB, etc.), and utilities via kicad-cli |
+| `mcp-server-kicad-schematic` | 29 | Schematic read/write, ERC analysis, and schematic exports (PDF, SVG, DXF, netlist, BOM) |
+| `mcp-server-kicad-pcb` | 19 | PCB read/write, DRC analysis, and PCB exports (Gerber, drill, 3D models, pick-and-place) |
+| `mcp-server-kicad-symbol` | 4 | Symbol library browsing, SVG export, and library upgrade |
+| `mcp-server-kicad-footprint` | 4 | Footprint library browsing, SVG export, and library upgrade |
+| `mcp-server-kicad-project` | 7 | Project scaffolding, hierarchical sheets, jobset execution, and version info |
 
 ## Installation
 
@@ -25,7 +27,9 @@ Or run directly with `uvx`:
 ```bash
 uvx --from mcp-server-kicad mcp-server-kicad-schematic
 uvx --from mcp-server-kicad mcp-server-kicad-pcb
-uvx --from mcp-server-kicad mcp-server-kicad-export
+uvx --from mcp-server-kicad mcp-server-kicad-symbol
+uvx --from mcp-server-kicad mcp-server-kicad-footprint
+uvx --from mcp-server-kicad mcp-server-kicad-project
 ```
 
 ## Configuration
@@ -45,9 +49,19 @@ Add the servers to your Claude Desktop or Claude Code MCP config. Set `cwd` to y
       "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-pcb"],
       "cwd": "/path/to/your/kicad/project"
     },
-    "kicad-export": {
+    "kicad-symbol": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-export"],
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-symbol"],
+      "cwd": "/path/to/your/kicad/project"
+    },
+    "kicad-footprint": {
+      "command": "uvx",
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-footprint"],
+      "cwd": "/path/to/your/kicad/project"
+    },
+    "kicad-project": {
+      "command": "uvx",
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-project"],
       "cwd": "/path/to/your/kicad/project"
     }
   }
@@ -74,18 +88,17 @@ The servers resolve file paths in this order:
 
 ## Available Tools
 
-### Schematic Server (22 tools)
+### Schematic Server (29 tools)
 
 #### Read Tools
 
 | Tool | Description |
 |------|-------------|
-| `list_components` | List all placed components with references, values, and positions |
-| `list_labels` | List all net labels in a schematic |
-| `list_wires` | List all wires with their endpoints |
+| `list_schematic_items` | List schematic items by type (components, labels, wires, global_labels) |
 | `get_symbol_pins` | Get pin info for a symbol in the schematic's lib_symbols |
 | `get_pin_positions` | Get absolute pin positions for a placed component (accounts for rotation/mirror) |
-| `list_global_labels` | List all global labels in a schematic |
+| `get_net_connections` | Get all connections for a named net |
+| `list_unconnected_pins` | List unconnected pins from ERC data |
 
 #### Write Tools
 
@@ -93,40 +106,42 @@ The servers resolve file paths in this order:
 |------|-------------|
 | `place_component` | Place a component in the schematic |
 | `remove_component` | Remove a component by reference designator |
-| `add_wire` | Add a wire between two points |
-| `add_wires` | Add multiple wires at once |
+| `add_wires` | Add one or more wires between points |
 | `add_label` | Add a net label at a position |
-| `add_junction` | Add a junction dot where wires cross and should connect |
-| `add_junctions` | Add multiple junctions at once |
+| `add_junctions` | Add one or more junction dots |
 | `add_lib_symbol` | Load a symbol definition from a .kicad_sym library into the schematic |
 | `move_component` | Move a placed component to a new position |
-| `edit_component_value` | Edit properties of a placed component (value, reference, footprint) |
+| `set_component_property` | Set any property (Value, Reference, Footprint, etc.) on a placed component |
 | `add_global_label` | Add a global net label visible across all sheets |
 | `add_no_connect` | Add a no-connect flag on an unused pin |
-| `add_power_symbol` | Place a power symbol (VCC, GND, +3V3, etc.) |
+| `add_power_symbol` | Place a power symbol (VCC, GND, +3V3, etc.) with auto PWR_FLAG |
 | `add_text` | Add a text annotation to the schematic |
+| `wire_pins_to_net` | Wire one or more pins to a named net |
+| `auto_place_decoupling_cap` | Automatically place a decoupling capacitor near an IC |
 
-#### Symbol Library Tools
+#### ERC Analysis
 
 | Tool | Description |
 |------|-------------|
-| `list_lib_symbols` | List all symbols in a .kicad_sym library file |
-| `get_symbol_info` | Get detailed pin and property info for a symbol in a library |
+| `run_erc` | Run Electrical Rules Check (ERC) on a schematic |
 
-### PCB Server (17 tools)
+#### Schematic Export Tools
+
+| Tool | Description |
+|------|-------------|
+| `export_schematic` | Export schematic to PDF, SVG, or DXF format |
+| `export_netlist` | Export schematic netlist |
+| `export_bom` | Export Bill of Materials (BOM) as CSV |
+
+### PCB Server (19 tools)
 
 #### Read Tools
 
 | Tool | Description |
 |------|-------------|
-| `list_footprints` | List all footprints with references, values, positions, and layers |
-| `list_traces` | List all traces with start/end, width, layer, and net |
-| `list_nets` | List all nets on a PCB |
-| `list_zones` | List all copper zones on a PCB |
-| `list_layers` | List all enabled layers on a PCB |
+| `list_pcb_items` | List PCB items by type (footprints, traces, nets, zones, layers, graphic_items) |
 | `get_board_info` | Get board summary: footprint count, trace count, net count, thickness |
 | `get_footprint_pads` | Get pad info for a placed footprint on the PCB |
-| `list_board_graphic_items` | List graphic items on the PCB (lines, text, dimensions) |
 
 #### Write Tools
 
@@ -140,67 +155,60 @@ The servers resolve file paths in this order:
 | `add_pcb_text` | Add text to the PCB (silkscreen, fab layer, etc.) |
 | `add_pcb_line` | Add a graphic line to the PCB (edge cuts, silkscreen, etc.) |
 
-#### Footprint Library Tools
+#### DRC Analysis
 
 | Tool | Description |
 |------|-------------|
-| `list_lib_footprints` | List all footprints in a .pretty library directory |
-| `get_footprint_info` | Get pad and outline details for a footprint .kicad_mod file |
-
-### Export Server (22 tools)
-
-#### Analysis Tools
-
-| Tool | Description |
-|------|-------------|
-| `run_erc` | Run Electrical Rules Check (ERC) on a schematic |
 | `run_drc` | Run Design Rules Check (DRC) on a PCB |
-
-#### Schematic Export Tools
-
-| Tool | Description |
-|------|-------------|
-| `export_schematic_pdf` | Export schematic to PDF |
-| `export_schematic_svg` | Export schematic to SVG |
-| `export_schematic_netlist` | Export schematic netlist (KiCad XML, CadStar, OrcadPCB2) |
-| `export_bom` | Export Bill of Materials (BOM) as CSV |
-| `export_schematic_dxf` | Export schematic to DXF |
 
 #### PCB Export Tools
 
 | Tool | Description |
 |------|-------------|
-| `export_gerbers` | Export Gerber files for all layers |
+| `export_pcb` | Export PCB layers to PDF or SVG |
+| `export_gerbers` | Export Gerber files for all layers (optionally including drill files) |
 | `export_gerber` | Export a single Gerber file for one layer |
-| `export_drill` | Export drill files |
-| `export_pcb_pdf` | Export PCB layers to PDF |
-| `export_pcb_svg` | Export PCB layers to SVG |
+| `export_3d` | Export PCB 3D model in STEP, STL, or GLB format |
 | `export_positions` | Export component position file (pick and place) |
-| `export_step` | Export PCB as STEP 3D model |
-| `export_stl` | Export PCB as STL 3D model |
-| `export_glb` | Export PCB as GLB (binary glTF) 3D model |
 | `render_3d` | Render PCB 3D view to image |
+| `export_pcb_dxf` | Export PCB layers to DXF for mechanical CAD exchange |
+| `export_ipc2581` | Export PCB in IPC-2581 format for manufacturing data exchange |
 
-#### Symbol/Footprint Export Tools
+### Symbol Server (4 tools)
 
 | Tool | Description |
 |------|-------------|
+| `list_lib_symbols` | List all symbols in a .kicad_sym library file |
+| `get_symbol_info` | Get detailed pin and property info for a symbol in a library |
 | `export_symbol_svg` | Export symbol library to SVG images |
-| `export_footprint_svg` | Export footprint to SVG |
+| `upgrade_symbol_lib` | Upgrade a symbol library to current KiCad format |
 
-#### Utility Tools
+### Footprint Server (4 tools)
 
 | Tool | Description |
 |------|-------------|
-| `upgrade_symbol_lib` | Upgrade a symbol library to current KiCad format |
+| `list_lib_footprints` | List all footprints in a .pretty library directory |
+| `get_footprint_info` | Get pad and outline details for a footprint .kicad_mod file |
+| `export_footprint_svg` | Export footprint to SVG |
 | `upgrade_footprint_lib` | Upgrade a footprint library to current KiCad format |
+
+### Project Server (7 tools)
+
+| Tool | Description |
+|------|-------------|
+| `create_project` | Create a KiCad 9 project (.kicad_pro + .kicad_prl + .kicad_sch) |
+| `create_schematic` | Create a blank schematic file |
+| `create_symbol_library` | Create a blank symbol library file |
+| `create_sym_lib_table` | Create a sym-lib-table file |
+| `add_hierarchical_sheet` | Add a hierarchical sheet to a parent schematic |
 | `run_jobset` | Run a KiCad jobset file |
+| `get_version` | Get KiCad version information |
 
 ## System Requirements
 
 - **Python 3.10+**
-- **KiCad 9.x** -- required only for the export server (`kicad-cli` must be on `PATH`)
-- The schematic and PCB servers use [kiutils](https://github.com/mvnmgrx/kiutils) for file parsing and do not require a KiCad installation
+- **KiCad 9.x** -- required for CLI-based tools (ERC, DRC, exports). The `kicad-cli` binary must be on `PATH`.
+- The schematic and PCB read/write tools use [kiutils](https://github.com/mvnmgrx/kiutils) for file parsing and do not require a KiCad installation.
 
 ## Debugging
 
