@@ -654,30 +654,6 @@ def remove_junction(
 
 
 @mcp.tool()
-def add_wire(x1: float, y1: float, x2: float, y2: float, schematic_path: str = SCH_PATH) -> str:
-    """Add a wire between two points.
-
-    Args:
-        x1: Start X
-        y1: Start Y
-        x2: End X
-        y2: End Y
-        schematic_path: Path to .kicad_sch file
-    """
-    sch = _load_sch(schematic_path)
-    x1, y1, x2, y2 = _snap_grid(x1), _snap_grid(y1), _snap_grid(x2), _snap_grid(y2)
-    wire = Connection(
-        type="wire",
-        points=[Position(X=x1, Y=y1), Position(X=x2, Y=y2)],
-        stroke=_default_stroke(),
-        uuid=_gen_uuid(),
-    )
-    sch.graphicalItems.append(wire)
-    sch.to_file()
-    return f"Wire: ({x1}, {y1}) -> ({x2}, {y2})"
-
-
-@mcp.tool()
 def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
     """Add multiple wires at once. Each wire dict has keys: x1, y1, x2, y2.
 
@@ -725,28 +701,6 @@ def add_label(
     sch.labels.append(label)
     sch.to_file()
     return f"Label '{text}' at ({x}, {y})"
-
-
-@mcp.tool()
-def add_junction(x: float, y: float, schematic_path: str = SCH_PATH) -> str:
-    """Add a junction dot where wires cross and should connect.
-
-    Args:
-        x: X position
-        y: Y position
-        schematic_path: Path to .kicad_sch file
-    """
-    sch = _load_sch(schematic_path)
-    x, y = _snap_grid(x), _snap_grid(y)
-    junc = Junction(
-        position=Position(X=x, Y=y),
-        diameter=0,
-        color=ColorRGBA(R=0, G=0, B=0, A=0),
-        uuid=_gen_uuid(),
-    )
-    sch.junctions.append(junc)
-    sch.to_file()
-    return f"Junction at ({x}, {y})"
 
 
 @mcp.tool()
@@ -1138,18 +1092,16 @@ def auto_place_decoupling_cap(
         return result
 
     # Wire pin 1 (top) to power net
-    wire_pin_to_label(
-        reference=reference,
-        pin_name="1",
+    wire_pins_to_net(
+        pins=[{"reference": reference, "pin": "1"}],
         label_text=power_net,
         direction="up",
         schematic_path=schematic_path,
     )
 
     # Wire pin 2 (bottom) to ground net
-    wire_pin_to_label(
-        reference=reference,
-        pin_name="2",
+    wire_pins_to_net(
+        pins=[{"reference": reference, "pin": "2"}],
         label_text=ground_net,
         direction="down",
         schematic_path=schematic_path,
@@ -1201,77 +1153,6 @@ _DIR_OFFSETS = {
 
 # Outward angle (math Y-down) -> cardinal direction name
 _ANGLE_TO_DIR = {0: "right", 90: "down", 180: "left", 270: "up"}
-
-
-@mcp.tool()
-def wire_pin_to_label(
-    reference: str,
-    pin_name: str,
-    label_text: str,
-    stub_length: float = 2.54,
-    direction: str = "auto",
-    schematic_path: str = SCH_PATH,
-) -> str:
-    """Wire a component pin to a net label with a short stub.
-
-    Combines get_pin_positions + add_wire + add_label into one call.
-
-    Args:
-        reference: Component reference (e.g. "U1", "R1")
-        pin_name: Pin name (e.g. "IN", "GND") or number (e.g. "1")
-        label_text: Net label text (e.g. "VIN_PROT")
-        stub_length: Wire stub length in mm (default 2.54)
-        direction: Wire direction: "left", "right", "up", "down", or "auto"
-        schematic_path: Path to .kicad_sch file
-    """
-    sch = _load_sch(schematic_path)
-    px, py, outward = _get_pin_pos(sch, reference, pin_name)
-    px, py = _snap_grid(px), _snap_grid(py)
-
-    if direction == "auto":
-        snapped = round(outward / 90) * 90 % 360
-        direction = _ANGLE_TO_DIR[snapped]
-
-    dx_sign, dy_sign, label_rot = _DIR_OFFSETS[direction]
-    end_x = _snap_grid(px + dx_sign * stub_length)
-    end_y = _snap_grid(py + dy_sign * stub_length)
-
-    # Check for conflicting labels at the endpoint
-    conflict_warning = ""
-    tol = 0.1
-    for existing in sch.labels:
-        if (
-            abs(existing.position.X - end_x) < tol
-            and abs(existing.position.Y - end_y) < tol
-            and existing.text != label_text
-        ):
-            conflict_warning = (
-                f" WARNING: conflicting label '{existing.text}' already at "
-                f"({end_x}, {end_y}) — may create a short with '{label_text}'"
-            )
-            break
-
-    # Wire stub
-    wire = Connection(
-        type="wire",
-        points=[Position(X=px, Y=py), Position(X=end_x, Y=end_y)],
-        stroke=_default_stroke(),
-        uuid=_gen_uuid(),
-    )
-    sch.graphicalItems.append(wire)
-
-    # Net label at endpoint
-    label = LocalLabel(
-        text=label_text,
-        position=Position(X=end_x, Y=end_y, angle=label_rot),
-        effects=_default_effects(),
-        uuid=_gen_uuid(),
-    )
-    sch.labels.append(label)
-
-    sch.to_file()
-    msg = f"Wired {reference}:{pin_name} -> label '{label_text}' at ({end_x}, {end_y})"
-    return msg + conflict_warning
 
 
 @mcp.tool()

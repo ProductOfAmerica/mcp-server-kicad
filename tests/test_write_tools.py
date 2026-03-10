@@ -250,9 +250,8 @@ class TestPlaceComponent:
             schematic_path=str(empty_sch),
         )
         # This should NOT raise "Lib symbol not found"
-        result = schematic.wire_pin_to_label(
-            reference="R1",
-            pin_name="1",
+        result = schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
             label_text="VCC",
             direction="up",
             schematic_path=str(empty_sch),
@@ -331,11 +330,8 @@ class TestAddWire:
         sch_before = reparse(str(scratch_sch))
         count_before = _count_wires(sch_before)
 
-        schematic.add_wire(
-            x1=100,
-            y1=100,
-            x2=200,
-            y2=100,
+        schematic.add_wires(
+            [{"x1": 100, "y1": 100, "x2": 200, "y2": 100}],
             schematic_path=str(scratch_sch),
         )
 
@@ -345,22 +341,16 @@ class TestAddWire:
 
     @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
     def test_wire_erc(self, scratch_sch):
-        schematic.add_wire(
-            x1=100,
-            y1=100,
-            x2=200,
-            y2=100,
+        schematic.add_wires(
+            [{"x1": 100, "y1": 100, "x2": 200, "y2": 100}],
             schematic_path=str(scratch_sch),
         )
         assert_erc_clean(scratch_sch)
 
     def test_zero_length_wire(self, scratch_sch):
         # A zero-length wire should not crash
-        schematic.add_wire(
-            x1=50,
-            y1=50,
-            x2=50,
-            y2=50,
+        schematic.add_wires(
+            [{"x1": 50, "y1": 50, "x2": 50, "y2": 50}],
             schematic_path=str(scratch_sch),
         )
         # Should be able to reparse without error
@@ -447,9 +437,8 @@ class TestAddLabel:
 
 class TestAddJunction:
     def test_basic_junction(self, scratch_sch):
-        schematic.add_junction(
-            x=50.8,
-            y=50.8,
+        schematic.add_junctions(
+            [{"x": 50.8, "y": 50.8}],
             schematic_path=str(scratch_sch),
         )
         sch = reparse(str(scratch_sch))
@@ -695,7 +684,7 @@ class TestSetComponentProperty:
 class TestRemoveJunction:
     def test_remove_existing(self, scratch_sch):
         # First add a junction
-        schematic.add_junction(x=50.8, y=50.8, schematic_path=str(scratch_sch))
+        schematic.add_junctions([{"x": 50.8, "y": 50.8}], schematic_path=str(scratch_sch))
         sch = reparse(str(scratch_sch))
         assert any(j.position.X == 50.8 and j.position.Y == 50.8 for j in sch.junctions)
 

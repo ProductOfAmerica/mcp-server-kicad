@@ -1,4 +1,4 @@
-"""Tests for high-level routing tools: wire_pin_to_label, connect_pins, no_connect_pin."""
+"""Tests for high-level routing tools: wire_pins_to_net, connect_pins, no_connect_pin."""
 
 from __future__ import annotations
 
@@ -91,9 +91,8 @@ def _count_wires(sch) -> int:
 class TestWirePinToLabel:
     def test_explicit_direction_right(self, tmp_path):
         path = _make_test_part_sch(tmp_path)
-        result = schematic.wire_pin_to_label(
-            reference="U1",
-            pin_name="IN",
+        result = schematic.wire_pins_to_net(
+            pins=[{"reference": "U1", "pin": "IN"}],
             label_text="VIN",
             direction="right",
             schematic_path=path,
@@ -105,9 +104,8 @@ class TestWirePinToLabel:
 
     def test_explicit_direction_left(self, tmp_path):
         path = _make_test_part_sch(tmp_path)
-        schematic.wire_pin_to_label(
-            reference="U1",
-            pin_name="IN",
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "U1", "pin": "IN"}],
             label_text="NET_A",
             direction="left",
             schematic_path=path,
@@ -119,9 +117,8 @@ class TestWirePinToLabel:
     def test_auto_direction_in_pin(self, tmp_path):
         """TestPart IN pin at (-5.08,0) angle 0: outward is left."""
         path = _make_test_part_sch(tmp_path)
-        schematic.wire_pin_to_label(
-            reference="U1",
-            pin_name="IN",
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "U1", "pin": "IN"}],
             label_text="AUTO_IN",
             direction="auto",
             schematic_path=path,
@@ -137,9 +134,8 @@ class TestWirePinToLabel:
     def test_auto_direction_out_pin(self, tmp_path):
         """TestPart OUT pin at (5.08,0) angle 180: outward is right."""
         path = _make_test_part_sch(tmp_path)
-        schematic.wire_pin_to_label(
-            reference="U1",
-            pin_name="OUT",
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "U1", "pin": "OUT"}],
             label_text="AUTO_OUT",
             direction="auto",
             schematic_path=path,
@@ -152,9 +148,8 @@ class TestWirePinToLabel:
     def test_auto_direction_rotated_90(self, tmp_path):
         """TestPart at 90deg: IN pin outward should be up (-Y)."""
         path = _make_test_part_sch(tmp_path, rotation=90)
-        schematic.wire_pin_to_label(
-            reference="U1",
-            pin_name="IN",
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "U1", "pin": "IN"}],
             label_text="ROT90",
             direction="auto",
             schematic_path=path,
@@ -169,9 +164,8 @@ class TestWirePinToLabel:
     def test_auto_direction_mirror_x(self, tmp_path):
         """TestPart IN pin with mirror=x: outward should still be left."""
         path = _make_test_part_sch(tmp_path, mirror="x")
-        schematic.wire_pin_to_label(
-            reference="U1",
-            pin_name="IN",
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "U1", "pin": "IN"}],
             label_text="MIR_X",
             direction="auto",
             schematic_path=path,
@@ -182,9 +176,8 @@ class TestWirePinToLabel:
 
     def test_pin_by_number(self, scratch_sch):
         """R1 pins have name '~', should match by number."""
-        result = schematic.wire_pin_to_label(
-            reference="R1",
-            pin_name="1",
+        result = schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
             label_text="R1_PIN1",
             direction="up",
             schematic_path=str(scratch_sch),
@@ -195,9 +188,8 @@ class TestWirePinToLabel:
 
     def test_custom_stub_length(self, tmp_path):
         path = _make_test_part_sch(tmp_path)
-        schematic.wire_pin_to_label(
-            reference="U1",
-            pin_name="IN",
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "U1", "pin": "IN"}],
             label_text="STUB",
             stub_length=5.08,
             direction="left",
@@ -209,37 +201,33 @@ class TestWirePinToLabel:
         assert abs(dx - 5.08) < 0.02
 
     def test_bad_reference(self, scratch_sch):
-        with pytest.raises(ValueError, match="not found"):
-            schematic.wire_pin_to_label(
-                reference="X99",
-                pin_name="1",
-                label_text="BAD",
-                schematic_path=str(scratch_sch),
-            )
+        result = schematic.wire_pins_to_net(
+            pins=[{"reference": "X99", "pin": "1"}],
+            label_text="BAD",
+            schematic_path=str(scratch_sch),
+        )
+        assert "error" in result.lower() or "not found" in result.lower()
 
     def test_bad_pin(self, scratch_sch):
-        with pytest.raises(ValueError, match="not found"):
-            schematic.wire_pin_to_label(
-                reference="R1",
-                pin_name="NONEXIST",
-                label_text="BAD",
-                schematic_path=str(scratch_sch),
-            )
+        result = schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "NONEXIST"}],
+            label_text="BAD",
+            schematic_path=str(scratch_sch),
+        )
+        assert "error" in result.lower() or "not found" in result.lower()
 
     def test_warns_on_conflicting_label(self, scratch_sch):
         """Warn when a different net label already exists at the endpoint."""
         # Wire R1 pin 1 to "NET_A"
-        schematic.wire_pin_to_label(
-            reference="R1",
-            pin_name="1",
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
             label_text="NET_A",
             direction="up",
             schematic_path=str(scratch_sch),
         )
         # Wire R1 pin 1 again to "NET_B" (different net, same pin = same endpoint)
-        result = schematic.wire_pin_to_label(
-            reference="R1",
-            pin_name="1",
+        result = schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
             label_text="NET_B",
             direction="up",
             schematic_path=str(scratch_sch),
@@ -403,9 +391,8 @@ class TestNoConnectPin:
 class TestGetNetConnections:
     def test_finds_wired_pin(self, scratch_sch):
         """Wire a pin to a label, then query that net."""
-        schematic.wire_pin_to_label(
-            reference="R1",
-            pin_name="1",
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
             label_text="NET_X",
             direction="up",
             schematic_path=str(scratch_sch),
@@ -428,16 +415,14 @@ class TestGetNetConnections:
             y=100,
             schematic_path=str(scratch_sch),
         )
-        schematic.wire_pin_to_label(
-            reference="R1",
-            pin_name="1",
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
             label_text="SHARED",
             direction="up",
             schematic_path=str(scratch_sch),
         )
-        schematic.wire_pin_to_label(
-            reference="R2",
-            pin_name="1",
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R2", "pin": "1"}],
             label_text="SHARED",
             direction="up",
             schematic_path=str(scratch_sch),
