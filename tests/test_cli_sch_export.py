@@ -46,3 +46,32 @@ class TestExportSchematicDxf:
         result = export.export_schematic_dxf(str(scratch_sch), str(tmp_path))
         data = json.loads(result)
         assert data["format"] == "dxf"
+
+
+class TestRunErcAnnotation:
+    # This test doesn't need kicad-cli — we test the annotation logic directly
+    pytestmark = []
+
+    def test_annotates_subsheet_errors(self):
+        """ERC result includes annotation for sub-sheet hierarchical label errors."""
+        fake_violations = [
+            {
+                "description": 'Hierarchical label "VIN" in root sheet cannot be connected to non-existent parent sheet',
+                "severity": "error",
+                "type": "pin_not_connected",
+            },
+        ]
+        annotated = export._annotate_erc_violations(fake_violations)
+        assert annotated[0].get("expected_subsheet_issue") is True
+
+    def test_leaves_real_errors_alone(self):
+        """Non-subsheet errors should not be annotated."""
+        fake_violations = [
+            {
+                "description": "Pin not connected",
+                "severity": "error",
+                "type": "pin_not_connected",
+            },
+        ]
+        annotated = export._annotate_erc_violations(fake_violations)
+        assert "expected_subsheet_issue" not in annotated[0]

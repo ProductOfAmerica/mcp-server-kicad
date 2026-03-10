@@ -26,6 +26,23 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 
+def _annotate_erc_violations(violations: list[dict]) -> list[dict]:
+    """Annotate ERC violations with contextual hints.
+
+    Marks "hierarchical label cannot connect to non-existent parent sheet"
+    violations as expected sub-sheet behavior.
+    """
+    for v in violations:
+        desc = v.get("description", "")
+        if "cannot be connected to non-existent parent sheet" in desc:
+            v["expected_subsheet_issue"] = True
+            v["hint"] = (
+                "Expected when running ERC on a sub-sheet standalone. "
+                "This resolves when opened from the parent schematic."
+            )
+    return violations
+
+
 @mcp.tool()
 def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str:
     """Run Electrical Rules Check (ERC) on a schematic.
@@ -50,6 +67,7 @@ def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str
     all_violations = []
     for sheet in report.get("sheets", []):
         all_violations.extend(sheet.get("violations", []))
+    all_violations = _annotate_erc_violations(all_violations)
     return json.dumps(
         {
             "source": report.get("source", ""),
