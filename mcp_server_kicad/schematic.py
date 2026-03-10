@@ -986,6 +986,10 @@ def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> st
     return f"'{symbol_name}' not found in {symbol_lib_path}."
 
 
+from mcp_server_kicad.project import register_tools as _register_project_tools
+_register_project_tools(mcp)
+
+
 def main():
     """Entry point for mcp-server-kicad-schematic console script."""
     mcp.run(transport="stdio")

@@ -10,10 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
-
-from kiutils.schematic import Schematic
-from kiutils.symbol import SymbolLib
+from kiutils.items.common import ColorRGBA, Effects, Font, Position, Property, Stroke
 from kiutils.items.schitems import (
     HierarchicalLabel,
     HierarchicalPin,
@@ -21,10 +18,11 @@ from kiutils.items.schitems import (
     HierarchicalSheetProjectInstance,
     HierarchicalSheetProjectPath,
 )
-from kiutils.items.common import ColorRGBA, Effects, Font, Position, Property, Stroke
+from kiutils.schematic import Schematic
+from kiutils.symbol import SymbolLib
+from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import _gen_uuid, _load_sch, _snap_grid
-
 
 # KiCad 9 file format constants
 _KICAD_SCH_VERSION = 20250114
@@ -109,9 +107,7 @@ def _create_sym_lib_table(directory: str, entries: list[dict]) -> str:
     for entry in entries:
         name = entry["name"]
         uri = entry["uri"]
-        lines.append(
-            f'  (lib (name "{name}")(type "KiCad")(uri "{uri}")(options "")(descr ""))'
-        )
+        lines.append(f'  (lib (name "{name}")(type "KiCad")(uri "{uri}")(options "")(descr ""))')
     lines.append(")")
 
     table_path = d / "sym-lib-table"
@@ -305,6 +301,4 @@ def register_tools(mcp: FastMCP) -> None:
             x: X position of sheet block (default 25.4)
             y: Y position of sheet block (default 25.4)
         """
-        return _add_hierarchical_sheet(
-            parent_schematic_path, sheet_name, sheet_file, pins, x, y
-        )
+        return _add_hierarchical_sheet(parent_schematic_path, sheet_name, sheet_file, pins, x, y)
