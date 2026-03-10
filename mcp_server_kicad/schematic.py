@@ -29,7 +29,6 @@ from mcp_server_kicad._shared import (
     _resolve_system_lib,
     _snap_grid,
 )
-from mcp_server_kicad.project import register_tools as _register_project_tools
 
 mcp = FastMCP(
     "kicad-schematic",
@@ -1433,10 +1432,6 @@ def no_connect_pin(
     sch.to_file()
 
     return f"No-connect on {reference}:{pin_name} at ({px}, {py})"
-
-
-# ---------------------------------------------------------------------------
-_register_project_tools(mcp)
 
 
 def main():

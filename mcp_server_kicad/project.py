@@ -1,8 +1,7 @@
 """KiCad project scaffolding tools.
 
 Tools for creating KiCad project files, schematics, symbol libraries,
-sym-lib-tables, and hierarchical sheets from scratch. Registered on the
-schematic server via register_tools().
+sym-lib-tables, hierarchical sheets, jobset execution, and version info.
 """
 
 from __future__ import annotations
@@ -22,12 +21,21 @@ from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp import FastMCP
 
-from mcp_server_kicad._shared import _gen_uuid, _load_sch, _snap_grid
+from mcp_server_kicad._shared import _gen_uuid, _load_sch, _run_cli, _snap_grid
 
 # KiCad 9 file format constants
 _KICAD_SCH_VERSION = 20250114
 _KICAD_SCH_GENERATOR = "eeschema"
 _KICAD_SYM_VERSION = "20231120"
+
+
+mcp = FastMCP(
+    "kicad-project",
+    instructions=(
+        "KiCad project scaffolding, hierarchical sheet management,"
+        " jobset execution, and version info."
+    ),
+)
 
 
 def _create_project(directory: str, name: str) -> str:
@@ -240,72 +248,111 @@ create_sym_lib_table = _create_sym_lib_table
 add_hierarchical_sheet = _add_hierarchical_sheet
 
 
-def register_tools(mcp: FastMCP) -> None:
-    """Register all project scaffolding tools on the given FastMCP instance."""
+# ── MCP tool wrappers ─────────────────────────────────────────────
 
-    @mcp.tool()
-    def create_project(directory: str, name: str) -> str:
-        """Create a KiCad 9 project (.kicad_pro + .kicad_prl + .kicad_sch).
 
-        Args:
-            directory: Directory to create the project in (created if missing)
-            name: Project name (used for filenames)
-        """
-        return _create_project(directory, name)
+@mcp.tool()
+def create_project(directory: str, name: str) -> str:  # noqa: F811
+    """Create a KiCad 9 project (.kicad_pro + .kicad_prl + .kicad_sch).
 
-    @mcp.tool()
-    def create_schematic(schematic_path: str) -> str:
-        """Create a valid empty KiCad 9 schematic file.
+    Args:
+        directory: Directory to create the project in (created if missing)
+        name: Project name (used for filenames)
+    """
+    return _create_project(directory, name)
 
-        Args:
-            schematic_path: Path for the new .kicad_sch file
-        """
-        return _create_schematic(schematic_path)
 
-    @mcp.tool()
-    def create_symbol_library(symbol_lib_path: str) -> str:
-        """Create a valid empty KiCad 9 symbol library.
+@mcp.tool()
+def create_schematic(schematic_path: str) -> str:  # noqa: F811
+    """Create a valid empty KiCad 9 schematic file.
 
-        Args:
-            symbol_lib_path: Path for the new .kicad_sym file
-        """
-        return _create_symbol_library(symbol_lib_path)
+    Args:
+        schematic_path: Path for the new .kicad_sch file
+    """
+    return _create_schematic(schematic_path)
 
-    @mcp.tool()
-    def create_sym_lib_table(directory: str, entries: list[dict]) -> str:
-        """Create a sym-lib-table file in the given directory.
 
-        Each entry dict needs 'name' and 'uri' keys.
-        Overwrites existing sym-lib-table if present.
+@mcp.tool()
+def create_symbol_library(symbol_lib_path: str) -> str:  # noqa: F811
+    """Create a valid empty KiCad 9 symbol library.
 
-        Args:
-            directory: Directory to write sym-lib-table in
-            entries: List of dicts with 'name' and 'uri' keys
-        """
-        return _create_sym_lib_table(directory, entries)
+    Args:
+        symbol_lib_path: Path for the new .kicad_sym file
+    """
+    return _create_symbol_library(symbol_lib_path)
 
-    @mcp.tool()
-    def add_hierarchical_sheet(
-        parent_schematic_path: str,
-        sheet_name: str,
-        sheet_file: str,
-        pins: list[dict],
-        x: float = 25.4,
-        y: float = 25.4,
-    ) -> str:
-        """Add a hierarchical sheet to a parent schematic with matching labels in the child.
 
-        Creates the sheet block in the parent and corresponding hierarchical
-        labels in the child schematic. The child schematic must already exist
-        (create it with create_schematic first).
+@mcp.tool()
+def create_sym_lib_table(directory: str, entries: list[dict]) -> str:  # noqa: F811
+    """Create a sym-lib-table file in the given directory.
 
-        Args:
-            parent_schematic_path: Path to parent .kicad_sch
-            sheet_name: Display name for the sheet
-            sheet_file: Path to child .kicad_sch (must exist)
-            pins: List of dicts with 'name' (str) and 'direction' (str) keys.
-                  Direction: input, output, bidirectional, tri_state, passive.
-            x: X position of sheet block (default 25.4)
-            y: Y position of sheet block (default 25.4)
-        """
-        return _add_hierarchical_sheet(parent_schematic_path, sheet_name, sheet_file, pins, x, y)
+    Each entry dict needs 'name' and 'uri' keys.
+    Overwrites existing sym-lib-table if present.
+
+    Args:
+        directory: Directory to write sym-lib-table in
+        entries: List of dicts with 'name' and 'uri' keys
+    """
+    return _create_sym_lib_table(directory, entries)
+
+
+@mcp.tool()
+def add_hierarchical_sheet(  # noqa: F811
+    parent_schematic_path: str,
+    sheet_name: str,
+    sheet_file: str,
+    pins: list[dict],
+    x: float = 25.4,
+    y: float = 25.4,
+) -> str:
+    """Add a hierarchical sheet to a parent schematic with matching labels in the child.
+
+    Creates the sheet block in the parent and corresponding hierarchical
+    labels in the child schematic. The child schematic must already exist
+    (create it with create_schematic first).
+
+    Args:
+        parent_schematic_path: Path to parent .kicad_sch
+        sheet_name: Display name for the sheet
+        sheet_file: Path to child .kicad_sch (must exist)
+        pins: List of dicts with 'name' (str) and 'direction' (str) keys.
+              Direction: input, output, bidirectional, tri_state, passive.
+        x: X position of sheet block (default 25.4)
+        y: Y position of sheet block (default 25.4)
+    """
+    return _add_hierarchical_sheet(parent_schematic_path, sheet_name, sheet_file, pins, x, y)
+
+
+@mcp.tool()
+def run_jobset(jobset_path: str) -> str:
+    """Run a KiCad jobset file.
+
+    Args:
+        jobset_path: Path to .kicad_jobset file
+    """
+    try:
+        result = _run_cli(["jobset", "run", jobset_path])
+        return f"Jobset completed successfully.\n{result.stdout}"
+    except RuntimeError as e:
+        return f"Jobset failed: {e}"
+
+
+@mcp.tool()
+def get_version() -> str:
+    """Get KiCad version information including build details and library versions."""
+    result = _run_cli(["version", "--format", "about"], check=False)
+    if result.returncode != 0:
+        return json.dumps({"error": result.stderr.strip()})
+    return json.dumps({"version_info": result.stdout.strip()})
+
+
+# ── Entry point ───────────────────────────────────────────────────
+
+
+def main():
+    """Entry point for mcp-server-kicad-project console script."""
+    mcp.run(transport="stdio")
+
+
+if __name__ == "__main__":
+    main()
