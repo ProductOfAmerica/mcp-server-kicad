@@ -486,7 +486,7 @@ class TestWirePinsToNet:
         )
         assert "2 pins" in result
         sch = reparse(str(scratch_sch))
-        vcc_labels = [l for l in sch.labels if l.text == "VCC"]
+        vcc_labels = [lbl for lbl in sch.labels if lbl.text == "VCC"]
         assert len(vcc_labels) == 2
 
     def test_empty_list(self, scratch_sch):
@@ -535,7 +535,7 @@ class TestAddPowerRail:
         ]
         assert "#PWR01" in refs
         # VCC label should exist (from wiring R1 pin 1)
-        vcc_labels = [l for l in sch.labels if l.text == "VCC"]
+        vcc_labels = [lbl for lbl in sch.labels if lbl.text == "VCC"]
         assert len(vcc_labels) >= 1
 
     def test_empty_pins_just_places_symbol(
@@ -560,22 +560,22 @@ class TestAddPowerRail:
 
 
 class TestAutoPlaceDecouplingCap:
-    def test_places_and_wires_cap(self, empty_sch):
+    def test_places_and_wires_cap(self, scratch_sch):
         result = schematic.auto_place_decoupling_cap(
-            lib_id="Device:C",
+            lib_id="Device:R",
             reference="C1",
             value="100nF",
             x=150,
             y=100,
             power_net="VCC",
             ground_net="GND",
-            schematic_path=str(empty_sch),
+            schematic_path=str(scratch_sch),
         )
         assert "C1" in result
         assert "VCC" in result
         assert "GND" in result
 
-        sch = reparse(str(empty_sch))
+        sch = reparse(str(scratch_sch))
         # Cap should be placed
         c1 = None
         for sym in sch.schematicSymbols:
@@ -586,24 +586,24 @@ class TestAutoPlaceDecouplingCap:
         assert c1 is not None
 
         # Should have VCC and GND labels
-        label_texts = {l.text for l in sch.labels}
+        label_texts = {lbl.text for lbl in sch.labels}
         assert "VCC" in label_texts
         assert "GND" in label_texts
 
-    def test_custom_nets(self, empty_sch):
+    def test_custom_nets(self, scratch_sch):
         """Works with non-standard net names."""
         result = schematic.auto_place_decoupling_cap(
-            lib_id="Device:C",
+            lib_id="Device:R",
             reference="C2",
             value="10uF",
             x=200,
             y=100,
             power_net="+3V3",
             ground_net="PGND",
-            schematic_path=str(empty_sch),
+            schematic_path=str(scratch_sch),
         )
         assert "C2" in result
-        sch = reparse(str(empty_sch))
-        label_texts = {l.text for l in sch.labels}
+        sch = reparse(str(scratch_sch))
+        label_texts = {lbl.text for lbl in sch.labels}
         assert "+3V3" in label_texts
         assert "PGND" in label_texts
