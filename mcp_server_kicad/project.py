@@ -87,10 +87,35 @@ def _create_symbol_library(symbol_lib_path: str) -> str:
     return f"Created symbol library at {p}"
 
 
+def _create_sym_lib_table(directory: str, entries: list[dict]) -> str:
+    """Create a sym-lib-table file.
+
+    Args:
+        directory: Directory to write sym-lib-table in
+        entries: List of dicts with 'name' and 'uri' keys
+    """
+    d = Path(directory)
+    d.mkdir(parents=True, exist_ok=True)
+
+    lines = ["(sym_lib_table", "  (version 7)"]
+    for entry in entries:
+        name = entry["name"]
+        uri = entry["uri"]
+        lines.append(
+            f'  (lib (name "{name}")(type "KiCad")(uri "{uri}")(options "")(descr ""))'
+        )
+    lines.append(")")
+
+    table_path = d / "sym-lib-table"
+    table_path.write_text("\n".join(lines) + "\n")
+    return f"Created sym-lib-table with {len(entries)} entries at {table_path}"
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
 create_symbol_library = _create_symbol_library
+create_sym_lib_table = _create_sym_lib_table
 
 
 def register_tools(mcp: FastMCP) -> None:
@@ -123,3 +148,16 @@ def register_tools(mcp: FastMCP) -> None:
             symbol_lib_path: Path for the new .kicad_sym file
         """
         return _create_symbol_library(symbol_lib_path)
+
+    @mcp.tool()
+    def create_sym_lib_table(directory: str, entries: list[dict]) -> str:
+        """Create a sym-lib-table file in the given directory.
+
+        Each entry dict needs 'name' and 'uri' keys.
+        Overwrites existing sym-lib-table if present.
+
+        Args:
+            directory: Directory to write sym-lib-table in
+            entries: List of dicts with 'name' and 'uri' keys
+        """
+        return _create_sym_lib_table(directory, entries)

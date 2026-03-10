@@ -76,3 +76,34 @@ class TestCreateSymbolLibrary:
         lib_path.write_text("")
         result = project.create_symbol_library(symbol_lib_path=str(lib_path))
         assert "already exists" in result
+
+
+class TestCreateSymLibTable:
+    def test_creates_table_with_entries(self, tmp_path: Path):
+        entries = [
+            {"name": "skrimp", "uri": "${KIPRJMOD}/skrimp.kicad_sym"},
+            {"name": "power", "uri": "${KICAD8_SYMBOL_DIR}/power.kicad_sym"},
+        ]
+        result = project.create_sym_lib_table(directory=str(tmp_path), entries=entries)
+        assert "2 entries" in result
+
+        content = (tmp_path / "sym-lib-table").read_text()
+        assert "(sym_lib_table" in content
+        assert '(name "skrimp")' in content
+        assert '(uri "${KIPRJMOD}/skrimp.kicad_sym")' in content
+        assert '(name "power")' in content
+
+    def test_creates_empty_table(self, tmp_path: Path):
+        result = project.create_sym_lib_table(directory=str(tmp_path), entries=[])
+        assert "0 entries" in result
+        content = (tmp_path / "sym-lib-table").read_text()
+        assert "(sym_lib_table" in content
+
+    def test_overwrites_existing(self, tmp_path: Path):
+        (tmp_path / "sym-lib-table").write_text("old content")
+        entries = [{"name": "new", "uri": "new.kicad_sym"}]
+        result = project.create_sym_lib_table(directory=str(tmp_path), entries=entries)
+        assert "1 entries" in result
+        content = (tmp_path / "sym-lib-table").read_text()
+        assert '(name "new")' in content
+        assert "old content" not in content
