@@ -5,7 +5,7 @@ import shutil
 
 import pytest
 
-from mcp_server_kicad import export
+from mcp_server_kicad import export, schematic
 
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
@@ -13,12 +13,12 @@ pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 
 class TestRunErc:
     def test_clean_schematic(self, scratch_sch, tmp_path):
-        result = export.run_erc(str(scratch_sch), str(tmp_path))
+        result = schematic.run_erc(str(scratch_sch), str(tmp_path))
         data = json.loads(result)
         assert "violations" in data
 
     def test_returns_json(self, scratch_sch, tmp_path):
-        result = export.run_erc(str(scratch_sch), str(tmp_path))
+        result = schematic.run_erc(str(scratch_sch), str(tmp_path))
         data = json.loads(result)
         assert "source" in data
         assert "kicad_version" in data

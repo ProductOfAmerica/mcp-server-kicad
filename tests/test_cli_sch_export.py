@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mcp_server_kicad import export
+from mcp_server_kicad import schematic
 
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
@@ -14,7 +14,9 @@ pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 
 class TestExportSchematicPdf:
     def test_produces_file(self, scratch_sch, tmp_path):
-        result = export.export_schematic_pdf(str(scratch_sch), str(tmp_path))
+        result = schematic.export_schematic(
+            format="pdf", schematic_path=str(scratch_sch), output_dir=str(tmp_path)
+        )
         data = json.loads(result)
         assert Path(data["path"]).exists()
         assert data["format"] == "pdf"
@@ -22,28 +24,32 @@ class TestExportSchematicPdf:
 
 class TestExportSchematicSvg:
     def test_produces_file(self, scratch_sch, tmp_path):
-        result = export.export_schematic_svg(str(scratch_sch), str(tmp_path))
+        result = schematic.export_schematic(
+            format="svg", schematic_path=str(scratch_sch), output_dir=str(tmp_path)
+        )
         data = json.loads(result)
         assert data["format"] == "svg"
 
 
 class TestExportSchematicNetlist:
     def test_produces_file(self, scratch_sch, tmp_path):
-        result = export.export_schematic_netlist(str(scratch_sch), str(tmp_path))
+        result = schematic.export_netlist(schematic_path=str(scratch_sch), output_dir=str(tmp_path))
         data = json.loads(result)
         assert Path(data["path"]).exists()
 
 
 class TestExportBom:
     def test_produces_file(self, scratch_sch, tmp_path):
-        result = export.export_bom(str(scratch_sch), str(tmp_path))
+        result = schematic.export_bom(schematic_path=str(scratch_sch), output_dir=str(tmp_path))
         data = json.loads(result)
         assert Path(data["path"]).exists()
 
 
 class TestExportSchematicDxf:
     def test_produces_file(self, scratch_sch, tmp_path):
-        result = export.export_schematic_dxf(str(scratch_sch), str(tmp_path))
+        result = schematic.export_schematic(
+            format="dxf", schematic_path=str(scratch_sch), output_dir=str(tmp_path)
+        )
         data = json.loads(result)
         assert data["format"] == "dxf"
 
@@ -64,7 +70,7 @@ class TestRunErcAnnotation:
                 "type": "pin_not_connected",
             },
         ]
-        annotated = export._annotate_erc_violations(fake_violations)
+        annotated = schematic._annotate_erc_violations(fake_violations)
         assert annotated[0].get("expected_subsheet_issue") is True
 
     def test_leaves_real_errors_alone(self):
@@ -76,7 +82,7 @@ class TestRunErcAnnotation:
                 "type": "pin_not_connected",
             },
         ]
-        annotated = export._annotate_erc_violations(fake_violations)
+        annotated = schematic._annotate_erc_violations(fake_violations)
         assert "expected_subsheet_issue" not in annotated[0]
 
 
@@ -115,7 +121,7 @@ class TestListUnconnectedPins:
                 },
             ],
         }
-        result = export._parse_unconnected_pins(fake_erc_json)
+        result = schematic._parse_unconnected_pins(fake_erc_json)
         # Should include the real unconnected pin, not the sub-sheet noise
         assert len(result) == 1
         assert result[0]["description"] == "Pin not connected"
@@ -123,5 +129,5 @@ class TestListUnconnectedPins:
     def test_empty_violations(self):
         """No violations returns empty list."""
         fake_erc_json = {"sheets": [{"violations": []}]}
-        result = export._parse_unconnected_pins(fake_erc_json)
+        result = schematic._parse_unconnected_pins(fake_erc_json)
         assert result == []
