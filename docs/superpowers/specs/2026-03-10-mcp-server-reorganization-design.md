@@ -188,7 +188,7 @@ Returns: KiCad version string with build and library info.
 | `test_read_tools.py` | No change |
 | `test_write_tools.py` | No change |
 | `test_routing_tools.py` | No change |
-| `test_lib_tools.py` | Rename → `test_symbol_tools.py`, import from symbol module |
+| `test_lib_tools.py` | No change (tests `add_lib_symbol` which stays on schematic server) |
 | `test_lib_access_tools.py` | Split: symbol tests → `test_symbol_access_tools.py`, footprint tests → `test_footprint_access_tools.py` |
 | `test_pcb_read_tools.py` | No change |
 | `test_pcb_write_tools.py` | No change |

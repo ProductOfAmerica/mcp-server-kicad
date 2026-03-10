@@ -949,11 +949,11 @@ Expected: All PASS
 Use `timeout` to prevent hanging:
 
 ```bash
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.schematic 2>/dev/null | head -1
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.pcb 2>/dev/null | head -1
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.symbol 2>/dev/null | head -1
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.footprint 2>/dev/null | head -1
-echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.project 2>/dev/null | head -1
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.schematic 2>/dev/null | head -1
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.pcb 2>/dev/null | head -1
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.symbol 2>/dev/null | head -1
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.footprint 2>/dev/null | head -1
+echo '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"test","version":"0.1"}}}' | timeout 5 uv run python -m mcp_server_kicad.project 2>/dev/null | head -1
 ```
 
 Expected: Each returns a JSON-RPC response with server info.
