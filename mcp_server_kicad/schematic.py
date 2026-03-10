@@ -918,6 +918,19 @@ def wire_pin_to_label(
     end_x = _snap_grid(px + dx_sign * stub_length)
     end_y = _snap_grid(py + dy_sign * stub_length)
 
+    # Check for conflicting labels at the endpoint
+    conflict_warning = ""
+    tol = 0.1
+    for existing in sch.labels:
+        if (abs(existing.position.X - end_x) < tol
+                and abs(existing.position.Y - end_y) < tol
+                and existing.text != label_text):
+            conflict_warning = (
+                f" WARNING: conflicting label '{existing.text}' already at "
+                f"({end_x}, {end_y}) — may create a short with '{label_text}'"
+            )
+            break
+
     # Wire stub
     wire = Connection(
         type="wire",
@@ -937,7 +950,7 @@ def wire_pin_to_label(
     sch.labels.append(label)
 
     sch.to_file()
-    return f"Wired {reference}:{pin_name} -> label '{label_text}' at ({end_x}, {end_y})"
+    return f"Wired {reference}:{pin_name} -> label '{label_text}' at ({end_x}, {end_y}){conflict_warning}"
 
 
 @mcp.tool()

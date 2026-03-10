@@ -225,6 +225,27 @@ class TestWirePinToLabel:
                 schematic_path=str(scratch_sch),
             )
 
+    def test_warns_on_conflicting_label(self, scratch_sch):
+        """Warn when a different net label already exists at the endpoint."""
+        # Wire R1 pin 1 to "NET_A"
+        schematic.wire_pin_to_label(
+            reference="R1",
+            pin_name="1",
+            label_text="NET_A",
+            direction="up",
+            schematic_path=str(scratch_sch),
+        )
+        # Wire R1 pin 1 again to "NET_B" (different net, same pin = same endpoint)
+        result = schematic.wire_pin_to_label(
+            reference="R1",
+            pin_name="1",
+            label_text="NET_B",
+            direction="up",
+            schematic_path=str(scratch_sch),
+        )
+        # Should contain a warning about conflicting label
+        assert "warning" in result.lower() or "conflict" in result.lower()
+
 
 def _make_two_parts_sch(tmp_path: Path) -> str:
     """Create schematic with R1 at (100,100) and TestPart U1 at (200,100)."""
