@@ -691,6 +691,9 @@ def add_power_symbol(
     Uses place_component internally. Power symbols are regular symbols
     from the 'power' library with isPower=True.
 
+    Automatically places a PWR_FLAG at the same position so the net
+    satisfies ERC (power pin driven).
+
     Args:
         lib_id: Library ID (e.g. "power:VCC", "power:GND")
         reference: Reference (e.g. "#PWR01")
@@ -700,7 +703,7 @@ def add_power_symbol(
         symbol_lib_path: Path to power symbol .kicad_sym if not in schematic
         schematic_path: Path to .kicad_sch file
     """
-    return place_component(
+    result = place_component(
         lib_id=lib_id,
         reference=reference,
         value=lib_id.split(":")[-1],
@@ -710,6 +713,44 @@ def add_power_symbol(
         symbol_lib_path=symbol_lib_path,
         schematic_path=schematic_path,
     )
+
+    # Auto-place PWR_FLAG at the same position for ERC compliance
+    pwr_lib = symbol_lib_path
+    if not pwr_lib:
+        for candidate in [
+            Path("/usr/share/kicad/symbols/power.kicad_sym"),
+            Path("/usr/local/share/kicad/symbols/power.kicad_sym"),
+        ]:
+            if candidate.exists():
+                pwr_lib = str(candidate)
+                break
+
+    if pwr_lib:
+        sch = _load_sch(schematic_path)
+        existing = {
+            p.value
+            for sym in sch.schematicSymbols
+            for p in sym.properties
+            if p.key == "Reference" and p.value.startswith("#FLG")
+        }
+        n = 1
+        while f"#FLG{n:02d}" in existing:
+            n += 1
+        flg_ref = f"#FLG{n:02d}"
+
+        place_component(
+            lib_id="power:PWR_FLAG",
+            reference=flg_ref,
+            value="PWR_FLAG",
+            x=x,
+            y=y,
+            rotation=0,
+            symbol_lib_path=pwr_lib,
+            schematic_path=schematic_path,
+        )
+        result += f" + {flg_ref}"
+
+    return result
 
 
 @mcp.tool()
