@@ -12,6 +12,8 @@ from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from kiutils.schematic import Schematic
+
 from mcp_server_kicad._shared import _gen_uuid, _load_sch, _snap_grid
 
 
@@ -45,8 +47,30 @@ def _create_project(directory: str, name: str) -> str:
     return f"Created project at {pro_path}"
 
 
+def _create_schematic(schematic_path: str) -> str:
+    """Create a valid empty KiCad 9 schematic file.
+
+    Args:
+        schematic_path: Path for the new .kicad_sch file
+    """
+    p = Path(schematic_path)
+    if p.exists():
+        return f"Error: {p} already exists."
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    sch = Schematic.create_new()
+    sch.version = _KICAD_SCH_VERSION
+    sch.generator = _KICAD_SCH_GENERATOR
+    sch.uuid = _gen_uuid()
+    sch.filePath = str(p)
+    sch.to_file()
+    return f"Created schematic at {p}"
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
+create_schematic = _create_schematic
 
 
 def register_tools(mcp: FastMCP) -> None:
@@ -61,3 +85,12 @@ def register_tools(mcp: FastMCP) -> None:
             name: Project name (used for filenames)
         """
         return _create_project(directory, name)
+
+    @mcp.tool()
+    def create_schematic(schematic_path: str) -> str:
+        """Create a valid empty KiCad 9 schematic file.
+
+        Args:
+            schematic_path: Path for the new .kicad_sch file
+        """
+        return _create_schematic(schematic_path)

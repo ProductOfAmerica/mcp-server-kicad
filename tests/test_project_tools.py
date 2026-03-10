@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from kiutils.schematic import Schematic
 
 from mcp_server_kicad import project
 
@@ -36,4 +37,23 @@ class TestCreateProject:
     def test_errors_if_pro_exists(self, tmp_path: Path):
         (tmp_path / "dup.kicad_pro").write_text("{}")
         result = project.create_project(directory=str(tmp_path), name="dup")
+        assert "already exists" in result
+
+
+class TestCreateSchematic:
+    def test_creates_valid_schematic(self, tmp_path: Path):
+        sch_path = str(tmp_path / "test.kicad_sch")
+        result = project.create_schematic(schematic_path=sch_path)
+        assert "test.kicad_sch" in result
+
+        sch = Schematic.from_file(sch_path)
+        assert sch.version == 20250114
+        assert sch.generator == "eeschema"
+        assert sch.uuid is not None
+        assert sch.schematicSymbols == []
+
+    def test_errors_if_exists(self, tmp_path: Path):
+        sch_path = tmp_path / "dup.kicad_sch"
+        sch_path.write_text("")
+        result = project.create_schematic(schematic_path=str(sch_path))
         assert "already exists" in result
