@@ -425,6 +425,90 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
 
 
 @mcp.tool()
+def remove_label(
+    text: str,
+    x: float | None = None,
+    y: float | None = None,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Remove net label(s) by text, optionally filtered by position.
+
+    If x and y are provided, only removes labels matching both text AND
+    position (within 0.1mm tolerance). Otherwise removes ALL labels with
+    matching text.
+
+    Args:
+        text: Label text to match (e.g. "VCC", "PGND")
+        x: Optional X position filter
+        y: Optional Y position filter
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    tol = 0.1
+    # Snap filter coordinates the same way add_label snaps placement coords
+    if x is not None and y is not None:
+        x, y = _snap_grid(x), _snap_grid(y)
+    removed = []
+    remaining = []
+    for lbl in sch.labels:
+        if lbl.text == text:
+            if x is not None and y is not None:
+                if abs(lbl.position.X - x) < tol and abs(lbl.position.Y - y) < tol:
+                    removed.append(lbl)
+                    continue
+            else:
+                removed.append(lbl)
+                continue
+        remaining.append(lbl)
+    if not removed:
+        return f"Label '{text}' not found."
+    sch.labels = remaining
+    sch.to_file()
+    return f"Removed {len(removed)} label(s) '{text}'."
+
+
+@mcp.tool()
+def remove_wire(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Remove a wire segment by its endpoint coordinates.
+
+    Matches wires with endpoints within 0.1mm tolerance (in either order).
+
+    Args:
+        x1: Start X
+        y1: Start Y
+        x2: End X
+        y2: End Y
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    tol = 0.1
+    removed = []
+    remaining = []
+    for item in sch.graphicalItems:
+        if isinstance(item, Connection) and item.type == "wire" and len(item.points) >= 2:
+            p0, p1 = item.points[0], item.points[1]
+            fwd = (abs(p0.X - x1) < tol and abs(p0.Y - y1) < tol
+                   and abs(p1.X - x2) < tol and abs(p1.Y - y2) < tol)
+            rev = (abs(p0.X - x2) < tol and abs(p0.Y - y2) < tol
+                   and abs(p1.X - x1) < tol and abs(p1.Y - y1) < tol)
+            if fwd or rev:
+                removed.append(item)
+                continue
+        remaining.append(item)
+    if not removed:
+        return f"Wire ({x1},{y1})->({x2},{y2}) not found."
+    sch.graphicalItems = remaining
+    sch.to_file()
+    return f"Removed {len(removed)} wire(s)."
+
+
+@mcp.tool()
 def add_wire(x1: float, y1: float, x2: float, y2: float, schematic_path: str = SCH_PATH) -> str:
     """Add a wire between two points.
 

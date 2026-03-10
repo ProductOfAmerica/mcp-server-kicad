@@ -465,6 +465,88 @@ class TestAddJunctions:
 
 
 # ===========================================================================
+# TestRemoveLabel
+# ===========================================================================
+
+
+class TestRemoveLabel:
+    def test_remove_by_text(self, scratch_sch):
+        """Remove a label by its text."""
+        result = schematic.remove_label(
+            text="TEST_NET",
+            schematic_path=str(scratch_sch),
+        )
+        assert "Removed" in result
+        sch = reparse(str(scratch_sch))
+        assert not any(lbl.text == "TEST_NET" for lbl in sch.labels)
+
+    def test_remove_by_text_and_position(self, scratch_sch):
+        """Remove only the label at a specific position."""
+        # Add a second label with the same text at a different location
+        schematic.add_label(
+            text="TEST_NET",
+            x=200,
+            y=200,
+            schematic_path=str(scratch_sch),
+        )
+        result = schematic.remove_label(
+            text="TEST_NET",
+            x=200,
+            y=200,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Removed 1" in result
+        sch = reparse(str(scratch_sch))
+        # Original label at (50, 50) should still exist
+        remaining = [lbl for lbl in sch.labels if lbl.text == "TEST_NET"]
+        assert len(remaining) == 1
+
+    def test_remove_missing(self, scratch_sch):
+        result = schematic.remove_label(
+            text="NONEXISTENT",
+            schematic_path=str(scratch_sch),
+        )
+        assert "not found" in result.lower() or "0" in result
+
+
+# ===========================================================================
+# TestRemoveWire
+# ===========================================================================
+
+
+class TestRemoveWire:
+    def test_remove_by_endpoints(self, scratch_sch):
+        """Remove a wire by its start/end coordinates."""
+        result = schematic.remove_wire(
+            x1=50,
+            y1=50,
+            x2=80,
+            y2=50,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Removed" in result
+        sch = reparse(str(scratch_sch))
+        wires = [g for g in sch.graphicalItems
+                 if isinstance(g, Connection) and g.type == "wire"]
+        matching = [
+            w for w in wires
+            if (abs(w.points[0].X - 50) < 0.1 and abs(w.points[0].Y - 50) < 0.1
+                and abs(w.points[1].X - 80) < 0.1 and abs(w.points[1].Y - 50) < 0.1)
+        ]
+        assert len(matching) == 0
+
+    def test_remove_missing(self, scratch_sch):
+        result = schematic.remove_wire(
+            x1=999,
+            y1=999,
+            x2=999,
+            y2=998,
+            schematic_path=str(scratch_sch),
+        )
+        assert "not found" in result.lower() or "0" in result
+
+
+# ===========================================================================
 # TestAddPowerSymbol
 # ===========================================================================
 
