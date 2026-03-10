@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -392,3 +393,68 @@ class TestNoConnectPin:
                 pin_name="NONEXIST",
                 schematic_path=str(scratch_sch),
             )
+
+
+# ===========================================================================
+# TestGetNetConnections
+# ===========================================================================
+
+
+class TestGetNetConnections:
+    def test_finds_wired_pin(self, scratch_sch):
+        """Wire a pin to a label, then query that net."""
+        schematic.wire_pin_to_label(
+            reference="R1",
+            pin_name="1",
+            label_text="NET_X",
+            direction="up",
+            schematic_path=str(scratch_sch),
+        )
+        result = schematic.get_net_connections(
+            label_text="NET_X",
+            schematic_path=str(scratch_sch),
+        )
+        data = json.loads(result)
+        refs = [c["reference"] for c in data["connections"]]
+        assert "R1" in refs
+
+    def test_finds_multiple_pins(self, scratch_sch):
+        """Multiple pins wired to the same net all appear."""
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R2",
+            value="4.7K",
+            x=200,
+            y=100,
+            schematic_path=str(scratch_sch),
+        )
+        schematic.wire_pin_to_label(
+            reference="R1",
+            pin_name="1",
+            label_text="SHARED",
+            direction="up",
+            schematic_path=str(scratch_sch),
+        )
+        schematic.wire_pin_to_label(
+            reference="R2",
+            pin_name="1",
+            label_text="SHARED",
+            direction="up",
+            schematic_path=str(scratch_sch),
+        )
+        result = schematic.get_net_connections(
+            label_text="SHARED",
+            schematic_path=str(scratch_sch),
+        )
+        data = json.loads(result)
+        refs = [c["reference"] for c in data["connections"]]
+        assert "R1" in refs
+        assert "R2" in refs
+
+    def test_no_connections(self, scratch_sch):
+        result = schematic.get_net_connections(
+            label_text="NONEXISTENT",
+            schematic_path=str(scratch_sch),
+        )
+        data = json.loads(result)
+        assert data["connections"] == []

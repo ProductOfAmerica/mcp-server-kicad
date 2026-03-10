@@ -276,6 +276,85 @@ def list_global_labels(schematic_path: str = SCH_PATH) -> str:
     return "\n".join(lines) if lines else "No global labels found."
 
 
+@mcp.tool()
+def get_net_connections(
+    label_text: str,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Find all component pins connected to a net label.
+
+    Scans labels matching the text, traces wires from label positions,
+    and identifies component pins at wire endpoints.
+
+    Args:
+        label_text: Net name to search for (e.g. "VCC", "GND")
+        schematic_path: Path to .kicad_sch file
+    """
+    import json as _json
+
+    sch = _load_sch(schematic_path)
+    tol = 0.1
+
+    # Collect all label positions for this net
+    label_positions: set[tuple[float, float]] = set()
+    for lbl in sch.labels:
+        if lbl.text == label_text:
+            label_positions.add((lbl.position.X, lbl.position.Y))
+    for glbl in sch.globalLabels:
+        if glbl.text == label_text:
+            label_positions.add((glbl.position.X, glbl.position.Y))
+
+    # Collect all wire endpoints reachable from label positions
+    reachable: set[tuple[float, float]] = set(label_positions)
+    for lx, ly in label_positions:
+        for item in sch.graphicalItems:
+            if (isinstance(item, Connection) and item.type == "wire"
+                    and len(item.points) >= 2):
+                p0, p1 = item.points[0], item.points[1]
+                if abs(p0.X - lx) < tol and abs(p0.Y - ly) < tol:
+                    reachable.add((p1.X, p1.Y))
+                elif abs(p1.X - lx) < tol and abs(p1.Y - ly) < tol:
+                    reachable.add((p0.X, p0.Y))
+
+    # Find component pins at reachable positions
+    connections = []
+    for sym in sch.schematicSymbols:
+        ref = next(
+            (p.value for p in sym.properties if p.key == "Reference"),
+            None,
+        )
+        if ref is None:
+            continue
+        lib_sym = _find_lib_symbol(sch, sym.libId)
+        if lib_sym is None:
+            continue
+        cx, cy = sym.position.X, sym.position.Y
+        comp_angle = sym.position.angle or 0
+        mir = getattr(sym, "mirror", None)
+        for unit in lib_sym.units:
+            for pin in unit.pins:
+                px, py, _ = _transform_pin_pos(
+                    pin.position.X, pin.position.Y,
+                    pin.position.angle or 0,
+                    cx, cy, comp_angle, mir,
+                )
+                px, py = _snap_grid(px), _snap_grid(py)
+                for rx, ry in reachable:
+                    if abs(px - rx) < tol and abs(py - ry) < tol:
+                        connections.append({
+                            "reference": ref,
+                            "pin": pin.number,
+                            "pin_name": pin.name,
+                            "x": px,
+                            "y": py,
+                        })
+    return _json.dumps({
+        "net": label_text,
+        "label_count": len(label_positions),
+        "connections": connections,
+    }, indent=2)
+
+
 # ---------------------------------------------------------------------------
 # Schematic write tools (14)
 # ---------------------------------------------------------------------------
