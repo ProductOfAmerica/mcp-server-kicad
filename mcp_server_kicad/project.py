@@ -13,6 +13,7 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from kiutils.schematic import Schematic
+from kiutils.symbol import SymbolLib
 
 from mcp_server_kicad._shared import _gen_uuid, _load_sch, _snap_grid
 
@@ -68,9 +69,28 @@ def _create_schematic(schematic_path: str) -> str:
     return f"Created schematic at {p}"
 
 
+def _create_symbol_library(symbol_lib_path: str) -> str:
+    """Create a valid empty KiCad 9 symbol library.
+
+    Args:
+        symbol_lib_path: Path for the new .kicad_sym file
+    """
+    p = Path(symbol_lib_path)
+    if p.exists():
+        return f"Error: {p} already exists."
+
+    p.parent.mkdir(parents=True, exist_ok=True)
+
+    lib = SymbolLib(version=_KICAD_SYM_VERSION, generator="kicad_symbol_editor")
+    lib.filePath = str(p)
+    lib.to_file()
+    return f"Created symbol library at {p}"
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
+create_symbol_library = _create_symbol_library
 
 
 def register_tools(mcp: FastMCP) -> None:
@@ -94,3 +114,12 @@ def register_tools(mcp: FastMCP) -> None:
             schematic_path: Path for the new .kicad_sch file
         """
         return _create_schematic(schematic_path)
+
+    @mcp.tool()
+    def create_symbol_library(symbol_lib_path: str) -> str:
+        """Create a valid empty KiCad 9 symbol library.
+
+        Args:
+            symbol_lib_path: Path for the new .kicad_sym file
+        """
+        return _create_symbol_library(symbol_lib_path)

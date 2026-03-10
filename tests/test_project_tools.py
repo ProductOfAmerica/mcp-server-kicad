@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 from kiutils.schematic import Schematic
+from kiutils.symbol import SymbolLib
 
 from mcp_server_kicad import project
 
@@ -56,4 +57,22 @@ class TestCreateSchematic:
         sch_path = tmp_path / "dup.kicad_sch"
         sch_path.write_text("")
         result = project.create_schematic(schematic_path=str(sch_path))
+        assert "already exists" in result
+
+
+class TestCreateSymbolLibrary:
+    def test_creates_valid_sym_lib(self, tmp_path: Path):
+        lib_path = str(tmp_path / "custom.kicad_sym")
+        result = project.create_symbol_library(symbol_lib_path=lib_path)
+        assert "custom.kicad_sym" in result
+
+        lib = SymbolLib.from_file(lib_path)
+        assert str(lib.version) == "20231120"
+        assert lib.generator == "kicad_symbol_editor"
+        assert lib.symbols == []
+
+    def test_errors_if_exists(self, tmp_path: Path):
+        lib_path = tmp_path / "dup.kicad_sym"
+        lib_path.write_text("")
+        result = project.create_symbol_library(symbol_lib_path=str(lib_path))
         assert "already exists" in result
