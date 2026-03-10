@@ -1,11 +1,12 @@
 """Tests for _resolve_config() and config resolution logic in _shared.py."""
 
+import os
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
-from mcp_server_kicad._shared import _resolve_config
+from mcp_server_kicad._shared import _resolve_config, _resolve_system_lib
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -163,3 +164,48 @@ class TestEnvVarOverrides:
 
         assert cfg["pcb_path"] == "/env/board.kicad_pcb"
         assert cfg["sch_path"] == ""  # no auto-detect, no env var
+
+
+# ---------------------------------------------------------------------------
+# _resolve_system_lib tests
+# ---------------------------------------------------------------------------
+
+
+class TestResolveSystemLib:
+    def test_returns_none_for_custom_lib(self):
+        """Non-system library prefixes return None."""
+        assert _resolve_system_lib("skrimp") is None
+
+    def test_returns_path_for_device(self):
+        """'Device' resolves to Device.kicad_sym if KiCad is installed."""
+        result = _resolve_system_lib("Device")
+        if result is not None:
+            assert Path(result).name == "Device.kicad_sym"
+            assert Path(result).exists()
+
+    def test_returns_path_for_connector_generic(self):
+        """'Connector_Generic' resolves if KiCad is installed."""
+        result = _resolve_system_lib("Connector_Generic")
+        if result is not None:
+            assert Path(result).name == "Connector_Generic.kicad_sym"
+
+    def test_env_override(self, tmp_path, monkeypatch):
+        """KICAD_SYMBOL_DIR env var is checked first."""
+        fake_lib = tmp_path / "FakeLib.kicad_sym"
+        fake_lib.write_text("")
+        monkeypatch.setenv("KICAD_SYMBOL_DIR", str(tmp_path))
+        result = _resolve_system_lib("FakeLib")
+        assert result == str(fake_lib)
+
+    def test_env_override_nonexistent_dir(self, tmp_path, monkeypatch):
+        """KICAD_SYMBOL_DIR points to nonexistent dir, falls through to system paths."""
+        monkeypatch.setenv("KICAD_SYMBOL_DIR", str(tmp_path / "nonexistent"))
+        # Should not raise, just falls through (and likely returns None)
+        result = _resolve_system_lib("Device")
+        # If KiCad is installed system-wide it may still resolve; otherwise None
+        if result is not None:
+            assert Path(result).name == "Device.kicad_sym"
+
+    def test_returns_none_for_empty_string(self):
+        """Empty string returns None."""
+        assert _resolve_system_lib("") is None

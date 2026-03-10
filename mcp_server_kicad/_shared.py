@@ -79,6 +79,8 @@ __all__ = [
     "_fp_val",
     "_GRID_MM",
     "_snap_grid",
+    "_SYSTEM_SYM_DIRS",
+    "_resolve_system_lib",
 ]
 
 
@@ -193,6 +195,43 @@ _GRID_MM = 1.27
 def _snap_grid(val: float, grid: float = _GRID_MM) -> float:
     """Snap *val* to the nearest multiple of *grid*."""
     return round(round(val / grid) * grid, 4)
+
+
+# ---------------------------------------------------------------------------
+# System library resolution
+# ---------------------------------------------------------------------------
+
+_SYSTEM_SYM_DIRS: list[Path] = [
+    Path("/usr/share/kicad/symbols"),
+    Path("/usr/local/share/kicad/symbols"),
+    Path("/Applications/KiCad/KiCad.app/Contents/SharedSupport/symbols"),
+]
+
+
+def _resolve_system_lib(lib_prefix: str) -> str | None:
+    """Resolve a KiCad library prefix to its system .kicad_sym path.
+
+    Checks KICAD_SYMBOL_DIR env var first, then standard install locations.
+    Returns the full path string, or None if not found.
+    """
+    if not lib_prefix:
+        return None
+    filename = f"{lib_prefix}.kicad_sym"
+
+    # Check env var override first
+    env_dir = os.environ.get("KICAD_SYMBOL_DIR")
+    if env_dir:
+        candidate = Path(env_dir) / filename
+        if candidate.exists():
+            return str(candidate)
+
+    # Check standard system locations
+    for d in _SYSTEM_SYM_DIRS:
+        candidate = d / filename
+        if candidate.exists():
+            return str(candidate)
+
+    return None
 
 
 def _load_board(path: str = PCB_PATH) -> Board:
