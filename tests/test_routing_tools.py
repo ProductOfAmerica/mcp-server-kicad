@@ -458,3 +458,49 @@ class TestGetNetConnections:
         )
         data = json.loads(result)
         assert data["connections"] == []
+
+
+# ===========================================================================
+# TestWirePinsToNet
+# ===========================================================================
+
+
+class TestWirePinsToNet:
+    def test_wires_multiple_pins(self, scratch_sch):
+        """Batch wire 2 pins to the same net."""
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R2",
+            value="4.7K",
+            x=200,
+            y=100,
+            schematic_path=str(scratch_sch),
+        )
+        result = schematic.wire_pins_to_net(
+            pins=[
+                {"reference": "R1", "pin": "1"},
+                {"reference": "R2", "pin": "1"},
+            ],
+            label_text="VCC",
+            schematic_path=str(scratch_sch),
+        )
+        assert "2 pins" in result
+        sch = reparse(str(scratch_sch))
+        vcc_labels = [l for l in sch.labels if l.text == "VCC"]
+        assert len(vcc_labels) == 2
+
+    def test_empty_list(self, scratch_sch):
+        result = schematic.wire_pins_to_net(
+            pins=[],
+            label_text="VCC",
+            schematic_path=str(scratch_sch),
+        )
+        assert "0 pins" in result
+
+    def test_bad_reference(self, scratch_sch):
+        result = schematic.wire_pins_to_net(
+            pins=[{"reference": "R999", "pin": "1"}],
+            label_text="VCC",
+            schematic_path=str(scratch_sch),
+        )
+        assert "error" in result.lower() or "not found" in result.lower()

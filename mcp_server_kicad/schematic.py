@@ -1140,6 +1140,91 @@ def wire_pin_to_label(
 
 
 @mcp.tool()
+def wire_pins_to_net(
+    pins: list[dict],
+    label_text: str,
+    direction: str = "auto",
+    stub_length: float = 2.54,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Wire multiple component pins to the same net label.
+
+    Batch version of wire_pin_to_label. Single file load/save cycle.
+
+    Args:
+        pins: List of {"reference": "R1", "pin": "1"} dicts
+        label_text: Net label text (e.g. "GND", "VCC")
+        direction: Wire direction: "auto", "left", "right", "up", "down"
+        stub_length: Wire stub length in mm (default 2.54)
+        schematic_path: Path to .kicad_sch file
+    """
+    if not pins:
+        return f"Wired 0 pins to '{label_text}'."
+    sch = _load_sch(schematic_path)
+    tol = 0.1
+    warnings = []
+    for pin_def in pins:
+        ref = pin_def["reference"]
+        pin_name = pin_def["pin"]
+        try:
+            px, py, outward = _get_pin_pos(sch, ref, pin_name)
+        except ValueError as e:
+            return f"Error wiring {ref}:{pin_name}: {e}"
+        px, py = _snap_grid(px), _snap_grid(py)
+
+        if direction == "auto":
+            snapped = round(outward / 90) * 90 % 360
+            d = _ANGLE_TO_DIR[snapped]
+        else:
+            d = direction
+
+        dx_sign, dy_sign, label_rot = _DIR_OFFSETS[d]
+        end_x = _snap_grid(px + dx_sign * stub_length)
+        end_y = _snap_grid(py + dy_sign * stub_length)
+
+        # Check for conflicting labels
+        for existing in sch.labels:
+            if (abs(existing.position.X - end_x) < tol
+                    and abs(existing.position.Y - end_y) < tol
+                    and existing.text != label_text):
+                warnings.append(
+                    f"{ref}:{pin_name} conflicts with"
+                    f" '{existing.text}'"
+                )
+                break
+
+        # Wire stub
+        sch.graphicalItems.append(
+            Connection(
+                type="wire",
+                points=[
+                    Position(X=px, Y=py),
+                    Position(X=end_x, Y=end_y),
+                ],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+        # Net label
+        sch.labels.append(
+            LocalLabel(
+                text=label_text,
+                position=Position(
+                    X=end_x, Y=end_y, angle=label_rot
+                ),
+                effects=_default_effects(),
+                uuid=_gen_uuid(),
+            )
+        )
+
+    sch.to_file()
+    msg = f"Wired {len(pins)} pins to '{label_text}'."
+    if warnings:
+        msg += " WARNINGS: " + "; ".join(warnings)
+    return msg
+
+
+@mcp.tool()
 def connect_pins(
     ref1: str,
     pin1: str,
