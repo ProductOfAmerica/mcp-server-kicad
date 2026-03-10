@@ -43,6 +43,76 @@ def _annotate_erc_violations(violations: list[dict]) -> list[dict]:
     return violations
 
 
+def _parse_unconnected_pins(erc_report: dict) -> list[dict]:
+    """Extract unconnected pin violations from an ERC report.
+
+    Filters out sub-sheet hierarchical label noise.
+    """
+    results = []
+    for sheet in erc_report.get("sheets", []):
+        for v in sheet.get("violations", []):
+            desc = v.get("description", "")
+            if "not connected" not in desc.lower():
+                continue
+            if "non-existent parent sheet" in desc:
+                continue
+            entry: dict = {"description": desc, "severity": v.get("severity", "")}
+            items = v.get("items", [])
+            if items:
+                item_desc = items[0].get("description", "")
+                entry["detail"] = item_desc
+                pos = items[0].get("pos", {})
+                if pos:
+                    entry["x"] = pos.get("x")
+                    entry["y"] = pos.get("y")
+            results.append(entry)
+    return results
+
+
+@mcp.tool()
+def list_unconnected_pins(
+    schematic_path: str = SCH_PATH,
+    output_dir: str = OUTPUT_DIR,
+) -> str:
+    """List unconnected pins by running ERC and filtering results.
+
+    Requires kicad-cli. Filters out expected sub-sheet hierarchical
+    label noise.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+        output_dir: Directory for ERC report file
+    """
+    import shutil
+
+    if not shutil.which("kicad-cli"):
+        return json.dumps({"error": "kicad-cli not found"}, indent=2)
+
+    out_dir = output_dir or str(Path(schematic_path).parent)
+    out_path = str(
+        Path(out_dir) / (Path(schematic_path).stem + "-erc.json")
+    )
+    _run_cli(
+        [
+            "sch", "erc", "--format", "json", "--severity-all",
+            "--output", out_path, schematic_path,
+        ],
+        check=False,
+    )
+    try:
+        with open(out_path) as f:
+            report = json.load(f)
+    except FileNotFoundError:
+        return json.dumps(
+            {"error": "ERC failed to produce output"}, indent=2
+        )
+
+    pins = _parse_unconnected_pins(report)
+    return json.dumps(
+        {"unconnected_count": len(pins), "pins": pins}, indent=2
+    )
+
+
 @mcp.tool()
 def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str:
     """Run Electrical Rules Check (ERC) on a schematic.

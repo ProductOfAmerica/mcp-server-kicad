@@ -78,3 +78,50 @@ class TestRunErcAnnotation:
         ]
         annotated = export._annotate_erc_violations(fake_violations)
         assert "expected_subsheet_issue" not in annotated[0]
+
+
+class TestListUnconnectedPins:
+    # This test doesn't need kicad-cli — tests the parsing logic
+    pytestmark = []
+
+    def test_parses_unconnected_violations(self):
+        """Extracts pin info from ERC violations."""
+        fake_erc_json = {
+            "sheets": [
+                {
+                    "violations": [
+                        {
+                            "type": "pin_not_connected",
+                            "description": "Pin not connected",
+                            "severity": "error",
+                            "items": [
+                                {
+                                    "description": 'Pin "EN" of component "U1"',
+                                    "pos": {"x": 100.0, "y": 50.0},
+                                },
+                            ],
+                        },
+                        {
+                            "type": "pin_not_connected",
+                            "description": (
+                                "Hierarchical label cannot be"
+                                " connected to non-existent"
+                                " parent sheet"
+                            ),
+                            "severity": "error",
+                            "items": [],
+                        },
+                    ],
+                },
+            ],
+        }
+        result = export._parse_unconnected_pins(fake_erc_json)
+        # Should include the real unconnected pin, not the sub-sheet noise
+        assert len(result) == 1
+        assert result[0]["description"] == "Pin not connected"
+
+    def test_empty_violations(self):
+        """No violations returns empty list."""
+        fake_erc_json = {"sheets": [{"violations": []}]}
+        result = export._parse_unconnected_pins(fake_erc_json)
+        assert result == []
