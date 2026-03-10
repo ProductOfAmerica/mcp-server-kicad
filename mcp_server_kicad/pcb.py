@@ -1,5 +1,7 @@
 """KiCad PCB MCP Server — PCB manipulation + footprint library tools."""
 
+import json
+
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
@@ -30,68 +32,116 @@ mcp = FastMCP(
 
 
 @mcp.tool()
-def list_footprints(pcb_path: str = PCB_PATH) -> str:
-    """List all footprints on a PCB with references, values, positions, and layers."""
+def list_pcb_items(item_type: str, pcb_path: str = PCB_PATH) -> str:
+    """List PCB items by type.
+
+    Args:
+        item_type: One of "footprints", "traces", "nets", "zones", "layers", "graphic_items"
+        pcb_path: Path to .kicad_pcb file
+    """
     board = _load_board(pcb_path)
-    lines = []
-    for fp in board.footprints:
-        ref = _fp_ref(fp)
-        val = _fp_val(fp)
-        pos = fp.position
-        lines.append(
-            f"{ref}: {val} (lib={fp.libId}) @ ({pos.X}, {pos.Y}) rot={pos.angle} layer={fp.layer}"
+    if item_type == "footprints":
+        items = []
+        for fp in board.footprints:
+            ref = _fp_ref(fp)
+            val = _fp_val(fp)
+            pos = fp.position
+            items.append(
+                {
+                    "reference": ref,
+                    "value": val,
+                    "lib_id": fp.libId,
+                    "x": pos.X,
+                    "y": pos.Y,
+                    "rotation": pos.angle,
+                    "layer": fp.layer,
+                }
+            )
+        return json.dumps(items)
+    elif item_type == "traces":
+        items = []
+        for item in board.traceItems:
+            if isinstance(item, Segment):
+                items.append(
+                    {
+                        "type": "segment",
+                        "start_x": item.start.X,
+                        "start_y": item.start.Y,
+                        "end_x": item.end.X,
+                        "end_y": item.end.Y,
+                        "width": item.width,
+                        "layer": item.layer,
+                        "net": item.net,
+                    }
+                )
+            elif isinstance(item, Via):
+                items.append(
+                    {
+                        "type": "via",
+                        "x": item.position.X,
+                        "y": item.position.Y,
+                        "size": item.size,
+                        "drill": item.drill,
+                        "layers": item.layers,
+                        "net": item.net,
+                    }
+                )
+        return json.dumps(items)
+    elif item_type == "nets":
+        items = []
+        for net in board.nets:
+            if net.name:  # skip unnamed net 0
+                items.append({"number": net.number, "name": net.name})
+        return json.dumps(items)
+    elif item_type == "zones":
+        items = []
+        for z in board.zones:
+            items.append({"net_name": z.netName, "layers": z.layers, "priority": z.priority})
+        return json.dumps(items)
+    elif item_type == "layers":
+        items = []
+        for layer in board.layers:
+            items.append({"ordinal": layer.ordinal, "name": layer.name, "type": layer.type})
+        return json.dumps(items)
+    elif item_type == "graphic_items":
+        items = []
+        for item in board.graphicItems:
+            if isinstance(item, GrLine):
+                items.append(
+                    {
+                        "type": "line",
+                        "start_x": item.start.X,
+                        "start_y": item.start.Y,
+                        "end_x": item.end.X,
+                        "end_y": item.end.Y,
+                        "layer": item.layer,
+                    }
+                )
+            elif isinstance(item, GrText):
+                items.append(
+                    {
+                        "type": "text",
+                        "text": item.text,
+                        "x": item.position.X,
+                        "y": item.position.Y,
+                        "layer": item.layer,
+                    }
+                )
+            else:
+                items.append(
+                    {
+                        "type": type(item).__name__,
+                        "layer": getattr(item, "layer", "unknown"),
+                    }
+                )
+        return json.dumps(items)
+    else:
+        return json.dumps(
+            {
+                "error": f"Unknown item_type: {item_type}."
+                " Use: footprints, traces, nets, zones, layers, graphic_items"
+            }
         )
-    return "\n".join(lines) if lines else "No footprints found."
-
-
-@mcp.tool()
-def list_traces(pcb_path: str = PCB_PATH) -> str:
-    """List all traces on a PCB with start/end, width, layer, and net."""
-    board = _load_board(pcb_path)
-    lines = []
-    for item in board.traceItems:
-        if isinstance(item, Segment):
-            lines.append(
-                f"({item.start.X}, {item.start.Y}) -> ({item.end.X}, {item.end.Y}) "
-                f"w={item.width} layer={item.layer} net={item.net}"
-            )
-        elif isinstance(item, Via):
-            lines.append(
-                f"Via @ ({item.position.X}, {item.position.Y}) "
-                f"size={item.size} drill={item.drill} layers={item.layers} net={item.net}"
-            )
-    return "\n".join(lines) if lines else "No traces found."
-
-
-@mcp.tool()
-def list_nets(pcb_path: str = PCB_PATH) -> str:
-    """List all nets on a PCB."""
-    board = _load_board(pcb_path)
-    lines = []
-    for net in board.nets:
-        if net.name:  # skip unnamed net 0
-            lines.append(f"Net {net.number}: {net.name}")
-    return "\n".join(lines) if lines else "No nets found."
-
-
-@mcp.tool()
-def list_zones(pcb_path: str = PCB_PATH) -> str:
-    """List all copper zones on a PCB."""
-    board = _load_board(pcb_path)
-    lines = []
-    for z in board.zones:
-        lines.append(f"Zone: net={z.netName} layers={z.layers} priority={z.priority}")
-    return "\n".join(lines) if lines else "No zones found."
-
-
-@mcp.tool()
-def list_layers(pcb_path: str = PCB_PATH) -> str:
-    """List all enabled layers on a PCB."""
-    board = _load_board(pcb_path)
-    lines = []
-    for layer in board.layers:
-        lines.append(f"{layer.ordinal}: {layer.name} ({layer.type})")
-    return "\n".join(lines) if lines else "No layers defined."
 
 
 @mcp.tool()
