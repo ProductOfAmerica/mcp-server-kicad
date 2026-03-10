@@ -1,5 +1,6 @@
 """KiCad Schematic MCP Server — schematic manipulation + symbol library tools."""
 
+import json
 import math
 from pathlib import Path
 
@@ -158,39 +159,63 @@ def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, floa
 
 
 @mcp.tool()
-def list_components(schematic_path: str = SCH_PATH) -> str:
-    """List all placed components in a schematic with their references, values, and positions."""
+def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
+    """List schematic items by type.
+
+    Args:
+        item_type: One of "components", "labels", "wires", "global_labels"
+        schematic_path: Path to .kicad_sch file
+    """
     sch = _load_sch(schematic_path)
-    lines = []
-    for sym in sch.schematicSymbols:
-        ref = next((p.value for p in sym.properties if p.key == "Reference"), "?")
-        val = next((p.value for p in sym.properties if p.key == "Value"), "?")
-        pos = sym.position
-        lines.append(f"{ref}: {val} (lib={sym.libId}) @ ({pos.X}, {pos.Y}) rot={pos.angle}")
-    return "\n".join(lines) if lines else "No components found."
-
-
-@mcp.tool()
-def list_labels(schematic_path: str = SCH_PATH) -> str:
-    """List all net labels in a schematic."""
-    sch = _load_sch(schematic_path)
-    lines = []
-    for label in sch.labels:
-        lines.append(f"{label.text} @ ({label.position.X}, {label.position.Y})")
-    return "\n".join(lines) if lines else "No labels found."
-
-
-@mcp.tool()
-def list_wires(schematic_path: str = SCH_PATH) -> str:
-    """List all wires in a schematic with their endpoints."""
-    sch = _load_sch(schematic_path)
-    lines = []
-    for item in sch.graphicalItems:
-        if isinstance(item, Connection) and item.type == "wire":
-            p = item.points
-            if len(p) >= 2:
-                lines.append(f"({p[0].X}, {p[0].Y}) -> ({p[1].X}, {p[1].Y})")
-    return "\n".join(lines) if lines else "No wires found."
+    if item_type == "components":
+        items = []
+        for sym in sch.schematicSymbols:
+            ref = next((p.value for p in sym.properties if p.key == "Reference"), "?")
+            val = next((p.value for p in sym.properties if p.key == "Value"), "?")
+            pos = sym.position
+            items.append(
+                {
+                    "reference": ref,
+                    "value": val,
+                    "lib_id": sym.libId,
+                    "x": pos.X,
+                    "y": pos.Y,
+                    "rotation": pos.angle,
+                }
+            )
+        return json.dumps(items)
+    elif item_type == "labels":
+        items = []
+        for label in sch.labels:
+            items.append({"text": label.text, "x": label.position.X, "y": label.position.Y})
+        return json.dumps(items)
+    elif item_type == "wires":
+        items = []
+        for item in sch.graphicalItems:
+            if isinstance(item, Connection) and item.type == "wire":
+                p = item.points
+                if len(p) >= 2:
+                    items.append({"x1": p[0].X, "y1": p[0].Y, "x2": p[1].X, "y2": p[1].Y})
+        return json.dumps(items)
+    elif item_type == "global_labels":
+        items = []
+        for gl in sch.globalLabels:
+            items.append(
+                {
+                    "text": gl.text,
+                    "shape": gl.shape,
+                    "x": gl.position.X,
+                    "y": gl.position.Y,
+                }
+            )
+        return json.dumps(items)
+    else:
+        return json.dumps(
+            {
+                "error": f"Unknown item_type: {item_type}. "
+                "Use: components, labels, wires, global_labels"
+            }
+        )
 
 
 @mcp.tool()
@@ -265,16 +290,6 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
 
 
 @mcp.tool()
-def list_global_labels(schematic_path: str = SCH_PATH) -> str:
-    """List all global labels in a schematic."""
-    sch = _load_sch(schematic_path)
-    lines = []
-    for gl in sch.globalLabels:
-        lines.append(f"{gl.text} ({gl.shape}) @ ({gl.position.X}, {gl.position.Y})")
-    return "\n".join(lines) if lines else "No global labels found."
-
-
-@mcp.tool()
 def get_net_connections(
     label_text: str,
     schematic_path: str = SCH_PATH,
@@ -288,8 +303,6 @@ def get_net_connections(
         label_text: Net name to search for (e.g. "VCC", "GND")
         schematic_path: Path to .kicad_sch file
     """
-    import json as _json
-
     sch = _load_sch(schematic_path)
     tol = 0.1
 
@@ -351,7 +364,7 @@ def get_net_connections(
                                 "y": py,
                             }
                         )
-    return _json.dumps(
+    return json.dumps(
         {
             "net": label_text,
             "label_count": len(label_positions),

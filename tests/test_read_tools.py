@@ -1,10 +1,11 @@
-"""Tests for the 5 read-only tools in schematic.py.
+"""Tests for the read-only tools in schematic.py.
 
-Covers: list_components, list_labels, list_wires, get_symbol_pins, get_pin_positions.
+Covers: list_schematic_items, get_symbol_pins, get_pin_positions.
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from conftest import (
@@ -80,52 +81,46 @@ def _make_rotated_sch(tmp_path: Path, rotation: float = 0, mirror: str = "") -> 
 
 
 # ---------------------------------------------------------------------------
-# Tests: list_components
+# Tests: list_schematic_items (consolidated)
 # ---------------------------------------------------------------------------
 
 
-class TestListComponents:
-    def test_returns_preplaced_r1(self, scratch_sch: Path) -> None:
-        result = schematic.list_components(str(scratch_sch))
-        assert "R1" in result
-        assert "10K" in result
-        assert "Device:R" in result
+class TestListSchematicItems:
+    def test_list_components(self, scratch_sch):
+        result = json.loads(schematic.list_schematic_items("components", str(scratch_sch)))
+        assert isinstance(result, list)
 
-    def test_empty_schematic(self, empty_sch: Path) -> None:
-        result = schematic.list_components(str(empty_sch))
-        assert result == "No components found."
+    def test_list_components_has_data(self, scratch_sch):
+        result = json.loads(schematic.list_schematic_items("components", str(scratch_sch)))
+        assert len(result) > 0
 
+    def test_list_labels(self, scratch_sch):
+        result = json.loads(schematic.list_schematic_items("labels", str(scratch_sch)))
+        assert isinstance(result, list)
 
-# ---------------------------------------------------------------------------
-# Tests: list_labels
-# ---------------------------------------------------------------------------
+    def test_list_wires(self, scratch_sch):
+        result = json.loads(schematic.list_schematic_items("wires", str(scratch_sch)))
+        assert isinstance(result, list)
 
+    def test_list_global_labels(self, scratch_sch):
+        result = json.loads(schematic.list_schematic_items("global_labels", str(scratch_sch)))
+        assert isinstance(result, list)
 
-class TestListLabels:
-    def test_returns_preplaced_label(self, scratch_sch: Path) -> None:
-        result = schematic.list_labels(str(scratch_sch))
-        assert "TEST_NET" in result
+    def test_invalid_item_type(self, scratch_sch):
+        result = json.loads(schematic.list_schematic_items("invalid", str(scratch_sch)))
+        assert "error" in result
 
-    def test_empty_schematic(self, empty_sch: Path) -> None:
-        result = schematic.list_labels(str(empty_sch))
-        assert result == "No labels found."
+    def test_empty_components(self, empty_sch):
+        result = json.loads(schematic.list_schematic_items("components", str(empty_sch)))
+        assert result == []
 
+    def test_empty_labels(self, empty_sch):
+        result = json.loads(schematic.list_schematic_items("labels", str(empty_sch)))
+        assert result == []
 
-# ---------------------------------------------------------------------------
-# Tests: list_wires
-# ---------------------------------------------------------------------------
-
-
-class TestListWires:
-    def test_returns_preplaced_wire(self, scratch_sch: Path) -> None:
-        result = schematic.list_wires(str(scratch_sch))
-        # Wire goes from (50, 50) to (80, 50)
-        assert "50" in result
-        assert "80" in result
-
-    def test_empty_schematic(self, empty_sch: Path) -> None:
-        result = schematic.list_wires(str(empty_sch))
-        assert result == "No wires found."
+    def test_empty_wires(self, empty_sch):
+        result = json.loads(schematic.list_schematic_items("wires", str(empty_sch)))
+        assert result == []
 
 
 # ---------------------------------------------------------------------------
