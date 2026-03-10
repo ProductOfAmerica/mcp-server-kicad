@@ -5,7 +5,7 @@ import shutil
 
 import pytest
 
-from mcp_server_kicad import export, schematic
+from mcp_server_kicad import pcb, schematic
 
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
@@ -26,7 +26,7 @@ class TestRunErc:
 
 class TestRunDrc:
     def test_clean_board(self, scratch_pcb, tmp_path):
-        result = export.run_drc(str(scratch_pcb), str(tmp_path))
+        result = pcb.run_drc(str(scratch_pcb), str(tmp_path))
         data = json.loads(result)
         # DRC may find violations on scratch board, or fail to load it entirely
         # (kiutils-generated PCBs may not be loadable by kicad-cli).

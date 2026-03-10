@@ -1,8 +1,12 @@
 """Tests for symbol library access tools on the symbol server."""
 
+import shutil
+
 import pytest
 
 from mcp_server_kicad import symbol
+
+HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
 
 class TestListLibSymbols:
@@ -25,3 +29,26 @@ class TestGetSymbolInfo:
     def test_unknown(self, scratch_sym_lib):
         result = symbol.get_symbol_info("NOPE", str(scratch_sym_lib))
         assert "not found" in result
+
+
+@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+class TestExportSymbolSvg:
+    def test_returns_json(self, scratch_sym_lib, tmp_path):
+        import json
+
+        result = symbol.export_symbol_svg(str(scratch_sym_lib), str(tmp_path))
+        data = json.loads(result)
+        assert "format" in data or "error" in data
+
+
+@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+class TestUpgradeSymbolLib:
+    def test_returns_result(self, scratch_sym_lib, tmp_path):
+        import shutil as shutil_mod
+
+        copy = str(tmp_path / "upgrade_test.kicad_sym")
+        shutil_mod.copy(str(scratch_sym_lib), copy)
+        result = symbol.upgrade_symbol_lib(copy)
+        assert (
+            "success" in result.lower() or "upgraded" in result.lower() or "error" in result.lower()
+        )
