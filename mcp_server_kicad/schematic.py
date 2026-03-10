@@ -776,62 +776,6 @@ def move_component(
 
 
 @mcp.tool()
-def edit_component_value(
-    reference: str,
-    value: str = "",
-    new_reference: str = "",
-    footprint: str = "",
-    schematic_path: str = SCH_PATH,
-) -> str:
-    """Edit properties of a placed component.
-
-    Args:
-        reference: Current reference designator (e.g. "R1")
-        value: New value (e.g. "4.7K"). Empty = no change.
-        new_reference: New reference designator. Empty = no change.
-        footprint: New footprint. Empty = no change.
-        schematic_path: Path to .kicad_sch file
-    """
-    sch = _load_sch(schematic_path)
-    for sym in sch.schematicSymbols:
-        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
-            for prop in sym.properties:
-                if prop.key == "Value" and value:
-                    prop.value = value
-                elif prop.key == "Reference" and new_reference:
-                    prop.value = new_reference
-                elif prop.key == "Footprint" and footprint:
-                    prop.value = footprint
-            sch.to_file()
-            return f"Updated {reference}"
-    return f"Component {reference} not found."
-
-
-@mcp.tool()
-def set_component_footprint(
-    reference: str,
-    footprint: str,
-    schematic_path: str = SCH_PATH,
-) -> str:
-    """Set the footprint on a placed component.
-
-    Args:
-        reference: Component reference (e.g. "R1", "U1")
-        footprint: Footprint string (e.g. "Resistor_SMD:R_0402_1005Metric")
-        schematic_path: Path to .kicad_sch file
-    """
-    sch = _load_sch(schematic_path)
-    for sym in sch.schematicSymbols:
-        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
-            for prop in sym.properties:
-                if prop.key == "Footprint":
-                    prop.value = footprint
-                    sch.to_file()
-                    return f"Set {reference} footprint to {footprint}"
-    return f"Component {reference} not found."
-
-
-@mcp.tool()
 def set_component_property(
     reference: str,
     key: str,

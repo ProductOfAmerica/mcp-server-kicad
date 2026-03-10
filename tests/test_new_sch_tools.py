@@ -1,5 +1,7 @@
 """Tests for new schematic manipulation tools."""
 
+import json
+
 from conftest import reparse
 
 from mcp_server_kicad import schematic
@@ -36,8 +38,10 @@ class TestMoveComponent:
 
 class TestEditComponentValue:
     def test_edit_value(self, scratch_sch):
-        result = schematic.edit_component_value("R1", value="4.7K", schematic_path=str(scratch_sch))
-        assert "Updated" in result
+        result = schematic.set_component_property(
+            "R1", key="Value", value="4.7K", schematic_path=str(scratch_sch)
+        )
+        assert "R1" in result
         sch = reparse(str(scratch_sch))
         r1 = next(
             s
@@ -48,7 +52,9 @@ class TestEditComponentValue:
         assert val == "4.7K"
 
     def test_edit_reference(self, scratch_sch):
-        schematic.edit_component_value("R1", new_reference="R99", schematic_path=str(scratch_sch))
+        schematic.set_component_property(
+            "R1", key="Reference", value="R99", schematic_path=str(scratch_sch)
+        )
         sch = reparse(str(scratch_sch))
         refs = [
             next((p.value for p in s.properties if p.key == "Reference"), None)
@@ -57,7 +63,9 @@ class TestEditComponentValue:
         assert "R99" in refs
 
     def test_edit_missing(self, scratch_sch):
-        result = schematic.edit_component_value("R999", value="1K", schematic_path=str(scratch_sch))
+        result = schematic.set_component_property(
+            "R999", key="Value", value="1K", schematic_path=str(scratch_sch)
+        )
         assert "not found" in result
 
 
@@ -79,13 +87,14 @@ class TestAddGlobalLabel:
 
 class TestListGlobalLabels:
     def test_empty(self, scratch_sch):
-        result = schematic.list_global_labels(str(scratch_sch))
-        assert "No global labels" in result
+        result = json.loads(schematic.list_schematic_items("global_labels", str(scratch_sch)))
+        assert result == []
 
     def test_with_labels(self, scratch_sch):
         schematic.add_global_label("VCC", 50, 50, schematic_path=str(scratch_sch))
-        result = schematic.list_global_labels(str(scratch_sch))
-        assert "VCC" in result
+        result = json.loads(schematic.list_schematic_items("global_labels", str(scratch_sch)))
+        texts = [item["text"] for item in result]
+        assert "VCC" in texts
 
 
 class TestAddNoConnect:

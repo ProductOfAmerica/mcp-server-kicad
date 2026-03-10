@@ -612,9 +612,10 @@ class TestAddPowerSymbol:
 
 class TestSetComponentFootprint:
     def test_sets_footprint(self, scratch_sch):
-        result = schematic.set_component_footprint(
+        result = schematic.set_component_property(
             reference="R1",
-            footprint="Resistor_SMD:R_0402_1005Metric",
+            key="Footprint",
+            value="Resistor_SMD:R_0402_1005Metric",
             schematic_path=str(scratch_sch),
         )
         assert "R1" in result
@@ -624,9 +625,10 @@ class TestSetComponentFootprint:
         assert fp == "Resistor_SMD:R_0402_1005Metric"
 
     def test_missing_component(self, scratch_sch):
-        result = schematic.set_component_footprint(
+        result = schematic.set_component_property(
             reference="R999",
-            footprint="test",
+            key="Footprint",
+            value="test",
             schematic_path=str(scratch_sch),
         )
         assert "not found" in result.lower()
