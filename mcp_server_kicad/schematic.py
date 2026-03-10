@@ -314,36 +314,36 @@ def place_component(
 
     # Load symbol definition from custom lib or system library
     symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
+    _loaded_sym_lib = None
     if not _find_lib_symbol(sch, lib_id):
         lib_path = symbol_lib_path
         if not lib_path and ":" in lib_id:
             lib_prefix = lib_id.split(":")[0]
             lib_path = _resolve_system_lib(lib_prefix)
         if lib_path:
-            sym_lib = SymbolLib.from_file(lib_path)
-            for s in sym_lib.symbols:
+            _loaded_sym_lib = SymbolLib.from_file(lib_path)
+            for s in _loaded_sym_lib.symbols:
                 if s.entryName == symbol_name:
                     sch.libSymbols.append(s)
                     break
 
     # Check if lib_symbol was found; give helpful error if not
     if not _find_lib_symbol(sch, lib_id) and ":" in lib_id:
-        lib_prefix = lib_id.split(":")[0]
-        lib_path = symbol_lib_path or _resolve_system_lib(lib_prefix)
-        if lib_path:
-            sym_lib = SymbolLib.from_file(lib_path)
-            available = [s.entryName for s in sym_lib.symbols]
-            target = lib_id.split(":")[-1]
+        if _loaded_sym_lib is not None:
+            available = [s.entryName for s in _loaded_sym_lib.symbols]
             similar = [
                 n
                 for n in available
-                if target.lower() in n.lower() or n.lower() in target.lower()
+                if symbol_name.lower() in n.lower()
+                or n.lower() in symbol_name.lower()
             ]
             hint = ""
             if similar:
                 hint = f" Similar: {', '.join(similar[:5])}"
+            lib_prefix = lib_id.split(":")[0]
             return (
-                f"Error: symbol '{target}' not found in {lib_prefix} library.{hint}"
+                f"Error: symbol '{symbol_name}' not found in"
+                f" {lib_prefix} library.{hint}"
             )
 
     # Create instance — set libName to match the lib_symbol's name as stored
@@ -822,15 +822,7 @@ def add_power_symbol(
         return result
 
     # Auto-place PWR_FLAG at the same position for ERC compliance
-    pwr_lib = symbol_lib_path
-    if not pwr_lib:
-        for candidate in [
-            Path("/usr/share/kicad/symbols/power.kicad_sym"),
-            Path("/usr/local/share/kicad/symbols/power.kicad_sym"),
-        ]:
-            if candidate.exists():
-                pwr_lib = str(candidate)
-                break
+    pwr_lib = symbol_lib_path or _resolve_system_lib("power")
 
     if pwr_lib:
         sch = _load_sch(schematic_path)
@@ -970,7 +962,8 @@ def wire_pin_to_label(
     sch.labels.append(label)
 
     sch.to_file()
-    return f"Wired {reference}:{pin_name} -> label '{label_text}' at ({end_x}, {end_y}){conflict_warning}"
+    msg = f"Wired {reference}:{pin_name} -> label '{label_text}' at ({end_x}, {end_y})"
+    return msg + conflict_warning
 
 
 @mcp.tool()

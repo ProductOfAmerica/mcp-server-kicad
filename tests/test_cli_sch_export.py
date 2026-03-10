@@ -56,7 +56,10 @@ class TestRunErcAnnotation:
         """ERC result includes annotation for sub-sheet hierarchical label errors."""
         fake_violations = [
             {
-                "description": 'Hierarchical label "VIN" in root sheet cannot be connected to non-existent parent sheet',
+                "description": (
+                    'Hierarchical label "VIN" in root sheet cannot'
+                    " be connected to non-existent parent sheet"
+                ),
                 "severity": "error",
                 "type": "pin_not_connected",
             },

@@ -1,6 +1,5 @@
 """Tests for _resolve_config() and config resolution logic in _shared.py."""
 
-import os
 from pathlib import Path
 from unittest.mock import patch
 
