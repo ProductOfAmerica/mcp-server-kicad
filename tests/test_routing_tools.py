@@ -552,3 +552,58 @@ class TestAddPowerRail:
         )
         assert "#PWR02" in result
         assert "0 pin" in result
+
+
+# ===========================================================================
+# TestAutoPlaceDecouplingCap
+# ===========================================================================
+
+
+class TestAutoPlaceDecouplingCap:
+    def test_places_and_wires_cap(self, empty_sch):
+        result = schematic.auto_place_decoupling_cap(
+            lib_id="Device:C",
+            reference="C1",
+            value="100nF",
+            x=150,
+            y=100,
+            power_net="VCC",
+            ground_net="GND",
+            schematic_path=str(empty_sch),
+        )
+        assert "C1" in result
+        assert "VCC" in result
+        assert "GND" in result
+
+        sch = reparse(str(empty_sch))
+        # Cap should be placed
+        c1 = None
+        for sym in sch.schematicSymbols:
+            if any(p.key == "Reference" and p.value == "C1"
+                   for p in sym.properties):
+                c1 = sym
+                break
+        assert c1 is not None
+
+        # Should have VCC and GND labels
+        label_texts = {l.text for l in sch.labels}
+        assert "VCC" in label_texts
+        assert "GND" in label_texts
+
+    def test_custom_nets(self, empty_sch):
+        """Works with non-standard net names."""
+        result = schematic.auto_place_decoupling_cap(
+            lib_id="Device:C",
+            reference="C2",
+            value="10uF",
+            x=200,
+            y=100,
+            power_net="+3V3",
+            ground_net="PGND",
+            schematic_path=str(empty_sch),
+        )
+        assert "C2" in result
+        sch = reparse(str(empty_sch))
+        label_texts = {l.text for l in sch.labels}
+        assert "+3V3" in label_texts
+        assert "PGND" in label_texts

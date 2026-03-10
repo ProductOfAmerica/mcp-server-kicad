@@ -1077,6 +1077,72 @@ def add_power_rail(
 
 
 @mcp.tool()
+def auto_place_decoupling_cap(
+    lib_id: str,
+    reference: str,
+    value: str,
+    x: float,
+    y: float,
+    power_net: str,
+    ground_net: str,
+    rotation: float = 0,
+    symbol_lib_path: str = "",
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Place a decoupling capacitor and wire it to power/ground nets.
+
+    Places the cap, wires pin 1 (top) to power_net and pin 2 (bottom)
+    to ground_net via stub wires + labels.
+
+    Args:
+        lib_id: Cap symbol (e.g. "Device:C")
+        reference: Reference (e.g. "C5")
+        value: Cap value (e.g. "100nF")
+        x: X position
+        y: Y position
+        power_net: Label for pin 1 (e.g. "VCC", "+3V3")
+        ground_net: Label for pin 2 (e.g. "GND", "PGND")
+        rotation: Rotation in degrees (default 0)
+        symbol_lib_path: Path to .kicad_sym if using custom lib
+        schematic_path: Path to .kicad_sch file
+    """
+    result = place_component(
+        lib_id=lib_id,
+        reference=reference,
+        value=value,
+        x=x,
+        y=y,
+        rotation=rotation,
+        symbol_lib_path=symbol_lib_path,
+        schematic_path=schematic_path,
+    )
+    if result.startswith("Error"):
+        return result
+
+    # Wire pin 1 (top) to power net
+    wire_pin_to_label(
+        reference=reference,
+        pin_name="1",
+        label_text=power_net,
+        direction="up",
+        schematic_path=schematic_path,
+    )
+
+    # Wire pin 2 (bottom) to ground net
+    wire_pin_to_label(
+        reference=reference,
+        pin_name="2",
+        label_text=ground_net,
+        direction="down",
+        schematic_path=schematic_path,
+    )
+
+    return (
+        f"{result} | pin 1->{power_net} | pin 2->{ground_net}"
+    )
+
+
+@mcp.tool()
 def add_text(
     text: str,
     x: float,
