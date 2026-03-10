@@ -605,3 +605,25 @@ class TestAddPowerSymbol:
         ]
         assert "#PWR01" in refs
         assert any(r.startswith("#FLG") for r in refs)
+
+
+class TestSetComponentFootprint:
+    def test_sets_footprint(self, scratch_sch):
+        result = schematic.set_component_footprint(
+            reference="R1",
+            footprint="Resistor_SMD:R_0402_1005Metric",
+            schematic_path=str(scratch_sch),
+        )
+        assert "R1" in result
+        sch = reparse(str(scratch_sch))
+        r1 = _find_symbol(sch, "R1")
+        fp = next(p.value for p in r1.properties if p.key == "Footprint")
+        assert fp == "Resistor_SMD:R_0402_1005Metric"
+
+    def test_missing_component(self, scratch_sch):
+        result = schematic.set_component_footprint(
+            reference="R999",
+            footprint="test",
+            schematic_path=str(scratch_sch),
+        )
+        assert "not found" in result.lower()
