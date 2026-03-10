@@ -7,7 +7,6 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
     SCH_PATH,
-    SYM_LIB_PATH,
     ColorRGBA,
     Connection,
     Effects,
@@ -1437,49 +1436,6 @@ def no_connect_pin(
 
 
 # ---------------------------------------------------------------------------
-# Symbol library access tools (2)
-# ---------------------------------------------------------------------------
-
-
-@mcp.tool()
-def list_lib_symbols(symbol_lib_path: str = SYM_LIB_PATH) -> str:
-    """List all symbols in a .kicad_sym library file.
-
-    Args:
-        symbol_lib_path: Path to .kicad_sym file
-    """
-    lib = SymbolLib.from_file(symbol_lib_path)
-    lines = []
-    for sym in lib.symbols:
-        pin_count = sum(len(u.pins) for u in sym.units)
-        lines.append(f"{sym.entryName} ({pin_count} pins)")
-    return "\n".join(lines) if lines else "No symbols found."
-
-
-@mcp.tool()
-def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> str:
-    """Get detailed pin and property info for a symbol in a library.
-
-    Args:
-        symbol_name: Symbol name (e.g. "LM7805")
-        symbol_lib_path: Path to .kicad_sym file
-    """
-    lib = SymbolLib.from_file(symbol_lib_path)
-    for sym in lib.symbols:
-        if sym.entryName == symbol_name:
-            lines = [f"Symbol: {symbol_name}"]
-            for prop in sym.properties or []:
-                lines.append(f"  {prop.key}: {prop.value}")
-            for unit in sym.units:
-                for pin in unit.pins:
-                    lines.append(
-                        f"  Pin {pin.number}: {pin.name} ({pin.electricalType}) "
-                        f"@ ({pin.position.X}, {pin.position.Y}) rot={pin.position.angle}"
-                    )
-            return "\n".join(lines)
-    return f"'{symbol_name}' not found in {symbol_lib_path}."
-
-
 _register_project_tools(mcp)
 
 
