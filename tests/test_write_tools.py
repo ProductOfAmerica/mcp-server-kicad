@@ -627,3 +627,49 @@ class TestSetComponentFootprint:
             schematic_path=str(scratch_sch),
         )
         assert "not found" in result.lower()
+
+
+# ===========================================================================
+# TestSetComponentProperty
+# ===========================================================================
+
+
+class TestSetComponentProperty:
+    def test_updates_existing_property(self, scratch_sch):
+        """Update the Value property (which already exists)."""
+        result = schematic.set_component_property(
+            reference="R1",
+            key="Value",
+            value="4.7K",
+            schematic_path=str(scratch_sch),
+        )
+        assert "R1" in result
+        sch = reparse(str(scratch_sch))
+        r1 = _find_symbol(sch, "R1")
+        val = next(p.value for p in r1.properties if p.key == "Value")
+        assert val == "4.7K"
+
+    def test_creates_new_property(self, scratch_sch):
+        """Create a property that doesn't exist yet."""
+        result = schematic.set_component_property(
+            reference="R1",
+            key="MPN",
+            value="RC0402FR-0710KL",
+            schematic_path=str(scratch_sch),
+        )
+        assert "R1" in result
+        sch = reparse(str(scratch_sch))
+        r1 = _find_symbol(sch, "R1")
+        mpn = next(
+            (p.value for p in r1.properties if p.key == "MPN"), None
+        )
+        assert mpn == "RC0402FR-0710KL"
+
+    def test_missing_component(self, scratch_sch):
+        result = schematic.set_component_property(
+            reference="R999",
+            key="Value",
+            value="test",
+            schematic_path=str(scratch_sch),
+        )
+        assert "not found" in result.lower()

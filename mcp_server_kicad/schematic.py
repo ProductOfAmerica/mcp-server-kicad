@@ -754,6 +754,51 @@ def set_component_footprint(
 
 
 @mcp.tool()
+def set_component_property(
+    reference: str,
+    key: str,
+    value: str,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Set any property on a placed component. Creates it if missing.
+
+    Args:
+        reference: Component reference (e.g. "R1")
+        key: Property name (e.g. "MPN", "Tolerance", "Value")
+        value: Property value
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    for sym in sch.schematicSymbols:
+        if any(p.key == "Reference" and p.value == reference
+               for p in sym.properties):
+            # Update existing property
+            for prop in sym.properties:
+                if prop.key == key:
+                    prop.value = value
+                    sch.to_file()
+                    return f"Set {reference}.{key} = {value}"
+            # Create new property (hidden, at component center)
+            new_id = max((p.id for p in sym.properties), default=-1) + 1
+            sym.properties.append(
+                Property(
+                    key=key,
+                    value=value,
+                    id=new_id,
+                    effects=Effects(
+                        font=Font(height=1.27, width=1.27), hide=True
+                    ),
+                    position=Position(
+                        X=sym.position.X, Y=sym.position.Y, angle=0
+                    ),
+                )
+            )
+            sch.to_file()
+            return f"Set {reference}.{key} = {value} (new property)"
+    return f"Component {reference} not found."
+
+
+@mcp.tool()
 def add_global_label(
     text: str,
     x: float,
