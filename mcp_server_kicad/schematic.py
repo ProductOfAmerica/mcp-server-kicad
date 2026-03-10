@@ -1,12 +1,14 @@
-"""KiCad Schematic MCP Server — schematic manipulation + symbol library tools."""
+"""KiCad Schematic MCP Server — schematic manipulation, ERC analysis, and schematic export tools."""
 
 import json
 import math
+import os
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
+    OUTPUT_DIR,
     SCH_PATH,
     ColorRGBA,
     Connection,
@@ -25,18 +27,20 @@ from mcp_server_kicad._shared import (
     Text,
     _default_effects,
     _default_stroke,
+    _file_meta,
     _gen_uuid,
     _load_sch,
     _resolve_system_lib,
+    _run_cli,
     _snap_grid,
 )
 
 mcp = FastMCP(
     "kicad-schematic",
     instructions=(
-        "KiCad schematic manipulation and symbol library tools built on kiutils."
-        " Use wire_pin_to_label and connect_pins for efficient wiring instead of"
-        " manually computing coordinates with get_pin_positions + add_wire + add_label."
+        "KiCad schematic manipulation, ERC analysis, and schematic export tools."
+        " Use wire_pins_to_net and connect_pins for efficient wiring instead of"
+        " manually computing coordinates with get_pin_positions + add_wires."
     ),
 )
 
@@ -1270,6 +1274,230 @@ def no_connect_pin(
     sch.to_file()
 
     return f"No-connect on {reference}:{pin_name} at ({px}, {py})"
+
+
+# ---------------------------------------------------------------------------
+# ERC analysis tools (2)
+# ---------------------------------------------------------------------------
+
+
+def _annotate_erc_violations(violations: list[dict]) -> list[dict]:
+    """Annotate ERC violations with contextual hints.
+
+    Marks "hierarchical label cannot connect to non-existent parent sheet"
+    violations as expected sub-sheet behavior.
+    """
+    for v in violations:
+        desc = v.get("description", "")
+        if "cannot be connected to non-existent parent sheet" in desc:
+            v["expected_subsheet_issue"] = True
+            v["hint"] = (
+                "Expected when running ERC on a sub-sheet standalone. "
+                "This resolves when opened from the parent schematic."
+            )
+    return violations
+
+
+def _parse_unconnected_pins(erc_report: dict) -> list[dict]:
+    """Extract unconnected pin violations from an ERC report.
+
+    Filters out sub-sheet hierarchical label noise.
+    """
+    results = []
+    for sheet in erc_report.get("sheets", []):
+        for v in sheet.get("violations", []):
+            desc = v.get("description", "")
+            if "not connected" not in desc.lower():
+                continue
+            if "non-existent parent sheet" in desc:
+                continue
+            entry: dict = {"description": desc, "severity": v.get("severity", "")}
+            items = v.get("items", [])
+            if items:
+                item_desc = items[0].get("description", "")
+                entry["detail"] = item_desc
+                pos = items[0].get("pos", {})
+                if pos:
+                    entry["x"] = pos.get("x")
+                    entry["y"] = pos.get("y")
+            results.append(entry)
+    return results
+
+
+@mcp.tool()
+def list_unconnected_pins(
+    schematic_path: str = SCH_PATH,
+    output_dir: str = OUTPUT_DIR,
+) -> str:
+    """List unconnected pins by running ERC and filtering results.
+
+    Requires kicad-cli. Filters out expected sub-sheet hierarchical
+    label noise.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+        output_dir: Directory for ERC report file
+    """
+    import shutil
+
+    if not shutil.which("kicad-cli"):
+        return json.dumps({"error": "kicad-cli not found"}, indent=2)
+
+    out_dir = output_dir or str(Path(schematic_path).parent)
+    out_path = str(Path(out_dir) / (Path(schematic_path).stem + "-erc.json"))
+    _run_cli(
+        [
+            "sch",
+            "erc",
+            "--format",
+            "json",
+            "--severity-all",
+            "--output",
+            out_path,
+            schematic_path,
+        ],
+        check=False,
+    )
+    try:
+        with open(out_path) as f:
+            report = json.load(f)
+    except FileNotFoundError:
+        return json.dumps({"error": "ERC failed to produce output"}, indent=2)
+
+    pins = _parse_unconnected_pins(report)
+    return json.dumps({"unconnected_count": len(pins), "pins": pins}, indent=2)
+
+
+@mcp.tool()
+def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str:
+    """Run Electrical Rules Check (ERC) on a schematic.
+
+    Returns JSON report with violations.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+        output_dir: Directory for report file (default: same as schematic)
+    """
+    out_dir = output_dir or str(Path(schematic_path).parent)
+    out_path = str(Path(out_dir) / (Path(schematic_path).stem + "-erc.json"))
+    _run_cli(
+        ["sch", "erc", "--format", "json", "--severity-all", "--output", out_path, schematic_path],
+        check=False,
+    )
+    try:
+        with open(out_path) as f:
+            report = json.load(f)
+    except FileNotFoundError:
+        return json.dumps({"error": "ERC failed to produce output file"}, indent=2)
+    all_violations = []
+    for sheet in report.get("sheets", []):
+        all_violations.extend(sheet.get("violations", []))
+    all_violations = _annotate_erc_violations(all_violations)
+    return json.dumps(
+        {
+            "source": report.get("source", ""),
+            "kicad_version": report.get("kicad_version", ""),
+            "violation_count": len(all_violations),
+            "violations": all_violations,
+        },
+        indent=2,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Schematic export tools (3)
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def export_schematic(
+    format: str = "pdf",
+    schematic_path: str = SCH_PATH,
+    output_dir: str = OUTPUT_DIR,
+) -> str:
+    """Export schematic to PDF, SVG, or DXF format.
+
+    Args:
+        format: Output format - "pdf", "svg", or "dxf"
+        schematic_path: Path to .kicad_sch file
+        output_dir: Directory for output files
+    """
+    fmt = format.lower()
+    if fmt not in ("pdf", "svg", "dxf"):
+        return json.dumps({"error": f"Unknown format: {format}. Use: pdf, svg, dxf"})
+
+    out_dir = output_dir or str(Path(schematic_path).parent)
+    stem = Path(schematic_path).stem
+
+    if fmt == "pdf":
+        out_path = str(Path(out_dir) / f"{stem}.pdf")
+        _run_cli(["sch", "export", "pdf", "--output", out_path, schematic_path])
+        meta = _file_meta(out_path)
+        meta["format"] = "pdf"
+        return json.dumps(meta, indent=2)
+    elif fmt == "svg":
+        os.makedirs(out_dir, exist_ok=True)
+        _run_cli(["sch", "export", "svg", "--output", out_dir, schematic_path])
+        svgs = sorted(Path(out_dir).glob("*.svg"))
+        return json.dumps(
+            {
+                "path": out_dir,
+                "format": "svg",
+                "files": [f.name for f in svgs],
+                "count": len(svgs),
+            },
+            indent=2,
+        )
+    else:  # dxf
+        out_path = str(Path(out_dir) / f"{stem}.dxf")
+        _run_cli(["sch", "export", "dxf", "--output", out_path, schematic_path])
+        meta = _file_meta(out_path)
+        meta["format"] = "dxf"
+        return json.dumps(meta, indent=2)
+
+
+@mcp.tool()
+def export_netlist(
+    schematic_path: str = SCH_PATH,
+    output_dir: str = OUTPUT_DIR,
+    format: str = "kicadxml",
+) -> str:
+    """Export schematic netlist in KiCad XML or KiCad net format.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+        output_dir: Output directory
+        format: Netlist format: kicadxml, cadstar, orcadpcb2
+    """
+    out_dir = output_dir or str(Path(schematic_path).parent)
+    ext = ".xml" if format == "kicadxml" else ".net"
+    out_path = str(Path(out_dir) / (Path(schematic_path).stem + ext))
+    _run_cli(["sch", "export", "netlist", "--format", format, "--output", out_path, schematic_path])
+    meta = _file_meta(out_path)
+    meta["format"] = format
+    return json.dumps(meta, indent=2)
+
+
+@mcp.tool()
+def export_bom(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str:
+    """Export Bill of Materials (BOM) as CSV.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+        output_dir: Output directory
+    """
+    out_dir = output_dir or str(Path(schematic_path).parent)
+    out_path = str(Path(out_dir) / (Path(schematic_path).stem + "-bom.csv"))
+    _run_cli(["sch", "export", "bom", "--output", out_path, schematic_path])
+    meta = _file_meta(out_path)
+    meta["format"] = "csv"
+    with open(out_path) as f:
+        lines = f.readlines()
+    meta["component_count"] = max(0, len(lines) - 1)  # minus header
+    return json.dumps(meta, indent=2)
+
+
+# ── Entry point ───────────────────────────────────────────────────
 
 
 def main():
