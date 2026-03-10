@@ -218,6 +218,7 @@ class TestGetVersion:
         assert "version_info" in result or "error" in result
 
 
+@pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
 class TestRunJobset:
     def test_missing_jobset_returns_error(self, tmp_path):
         result = project.run_jobset(str(tmp_path / "nonexistent.kicad_jobset"))

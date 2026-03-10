@@ -333,14 +333,17 @@ def run_jobset(jobset_path: str) -> str:
     try:
         result = _run_cli(["jobset", "run", jobset_path])
         return f"Jobset completed successfully.\n{result.stdout}"
-    except RuntimeError as e:
+    except (RuntimeError, FileNotFoundError) as e:
         return f"Jobset failed: {e}"
 
 
 @mcp.tool()
 def get_version() -> str:
     """Get KiCad version information including build details and library versions."""
-    result = _run_cli(["version", "--format", "about"], check=False)
+    try:
+        result = _run_cli(["version", "--format", "about"], check=False)
+    except FileNotFoundError:
+        return json.dumps({"error": "kicad-cli not found on PATH"})
     if result.returncode != 0:
         return json.dumps({"error": result.stderr.strip()})
     return json.dumps({"version_info": result.stdout.strip()})
