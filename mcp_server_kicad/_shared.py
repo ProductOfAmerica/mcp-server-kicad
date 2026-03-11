@@ -120,6 +120,10 @@ __all__ = [
     "_SYSTEM_SYM_DIRS",
     "_resolve_system_lib",
     "_resolve_hierarchy_path",
+    "_RAW_LIB_SYMBOLS",
+    "_save_sch",
+    "_load_system_lib_symbol",
+    "_extract_raw_symbol",
 ]
 
 
@@ -282,6 +286,10 @@ _SYSTEM_SYM_DIRS: list[Path] = [
 ]
 
 
+# Module-level cache: symbol entryName -> raw S-expression text from system library
+_RAW_LIB_SYMBOLS: dict[str, str] = {}
+
+
 def _resolve_system_lib(lib_prefix: str) -> str | None:
     """Resolve a KiCad library prefix to its system .kicad_sym path.
 
@@ -306,6 +314,134 @@ def _resolve_system_lib(lib_prefix: str) -> str | None:
             return str(candidate)
 
     return None
+
+
+def _extract_raw_symbol(lib_path: str, symbol_name: str) -> str | None:
+    """Extract raw S-expression text for a top-level symbol from a .kicad_sym file.
+
+    Uses balanced-paren counting.  Skips sub-unit matches like ``PWR_FLAG_0_0``.
+    """
+    text = Path(lib_path).read_text()
+    target = f'(symbol "{symbol_name}"'
+    pos = 0
+    while True:
+        idx = text.find(target, pos)
+        if idx == -1:
+            return None
+        after = idx + len(target)
+        # Reject sub-unit names (e.g. PWR_FLAG_0_0)
+        if after < len(text) and text[after] not in (" ", "\n", "\r"):
+            pos = after
+            continue
+        depth = 0
+        i = idx
+        while i < len(text):
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    return text[idx : i + 1]
+            i += 1
+        return None
+
+
+def _replace_lib_symbol_block(text: str, sym_name: str, raw_text: str) -> str:
+    """Replace a lib_symbol block inside ``(lib_symbols ...)`` with *raw_text*."""
+    lib_sym_start = text.find("(lib_symbols")
+    if lib_sym_start == -1:
+        return text
+    target = f'(symbol "{sym_name}"'
+    pos = lib_sym_start
+    while True:
+        idx = text.find(target, pos)
+        if idx == -1:
+            return text
+        after = idx + len(target)
+        if after < len(text) and text[after] not in (" ", "\n", "\r"):
+            pos = after
+            continue
+        # Count balanced parens to find end of block
+        depth = 0
+        i = idx
+        while i < len(text):
+            if text[i] == "(":
+                depth += 1
+            elif text[i] == ")":
+                depth -= 1
+                if depth == 0:
+                    # Determine indent from line start
+                    line_start = text.rfind("\n", 0, idx)
+                    indent = text[line_start + 1 : idx] if line_start != -1 else ""
+                    reindented = _reindent(raw_text, indent)
+                    return text[:idx] + reindented + text[i + 1 :]
+            i += 1
+        return text
+
+
+def _reindent(sexpr: str, indent: str) -> str:
+    """Re-indent an S-expression block to use *indent* as the base."""
+    lines = sexpr.split("\n")
+    if not lines:
+        return sexpr
+    # Detect original base indent
+    orig_indent = ""
+    for ch in lines[0]:
+        if ch in (" ", "\t"):
+            orig_indent += ch
+        else:
+            break
+    result = []
+    for line in lines:
+        stripped = line.lstrip()
+        if not stripped:
+            result.append("")
+            continue
+        orig_line_indent = ""
+        for ch in line:
+            if ch in (" ", "\t"):
+                orig_line_indent += ch
+            else:
+                break
+        if orig_line_indent.startswith(orig_indent):
+            relative = orig_line_indent[len(orig_indent) :]
+        else:
+            relative = ""
+        result.append(indent + relative + stripped)
+    return "\n".join(result)
+
+
+def _save_sch(sch) -> None:
+    """Write schematic, then fix system library symbols that kiutils corrupts."""
+    sch.to_file()
+    if not _RAW_LIB_SYMBOLS:
+        return
+    path = sch.filePath
+    text = Path(path).read_text()
+    changed = False
+    for sym_name, raw_text in _RAW_LIB_SYMBOLS.items():
+        new_text = _replace_lib_symbol_block(text, sym_name, raw_text)
+        if new_text != text:
+            text = new_text
+            changed = True
+    if changed:
+        Path(path).write_text(text)
+
+
+def _load_system_lib_symbol(sch, lib_prefix: str, symbol_name: str) -> bool:
+    """Load a symbol from system library into *sch.libSymbols*, caching raw text."""
+    lib_path = _resolve_system_lib(lib_prefix)
+    if not lib_path:
+        return False
+    sym_lib = SymbolLib.from_file(lib_path)
+    for s in sym_lib.symbols:
+        if s.entryName == symbol_name:
+            sch.libSymbols.append(s)
+            raw = _extract_raw_symbol(lib_path, symbol_name)
+            if raw:
+                _RAW_LIB_SYMBOLS[symbol_name] = raw
+            return True
+    return False
 
 
 def _load_board(path: str = PCB_PATH) -> Board:

@@ -96,7 +96,7 @@ the user is working in.
 
 The KiCad MCP server gives you tools to drive KiCad programmatically.
 You do not need the user to click anything in KiCad — the tools do it
-for you. Tool groups (59 tools total):
+for you. Tool groups (60 tools total):
 
 - **Project:** `create_project`, `create_schematic`,
   `create_symbol_library`, `create_sym_lib_table`,
@@ -105,7 +105,8 @@ for you. Tool groups (59 tools total):
   definitions), `list_lib_symbols`, `get_symbol_info`,
   `export_symbol_svg`, `upgrade_symbol_lib`
 - **Schematic — Place & Edit:** `place_component`, `move_component`,
-  `remove_component`, `set_component_property`, `add_lib_symbol`
+  `remove_component`, `set_component_property`, `set_page_size`,
+  `add_lib_symbol`
 - **Schematic — Wiring:** `connect_pins`, `wire_pins_to_net`,
   `add_wires`, `add_label`, `add_global_label`, `add_junctions`,
   `no_connect_pin`, `remove_label`, `remove_wire`, `remove_junction`

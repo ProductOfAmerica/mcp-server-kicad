@@ -388,6 +388,118 @@ class TestHierarchicalSheetErcClean:
         assert_erc_clean(str(proj_dir / "erc_proj.kicad_sch"))
 
 
+@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+class TestSubSheetErcRedirect:
+    """Tests for sub-sheet ERC auto-redirect to root schematic."""
+
+    def test_subsheet_erc_redirects_to_root(self, tmp_path: Path):
+        """Run ERC on a sub-sheet and verify it auto-redirects to root."""
+        from conftest import build_r_symbol, place_r1
+
+        from mcp_server_kicad import schematic
+
+        # Create hierarchical project
+        proj_dir = tmp_path / "erc_proj"
+        project.create_project(directory=str(proj_dir), name="erc_proj")
+        child_path = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child_path))
+        pins = [
+            {"name": "VIN", "direction": "input"},
+            {"name": "GND", "direction": "bidirectional"},
+        ]
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "erc_proj.kicad_sch"),
+            sheet_name="Power",
+            sheet_file=str(child_path),
+            pins=pins,
+            project_path=str(proj_dir / "erc_proj.kicad_pro"),
+        )
+
+        # In child: place a resistor and wire its pins to hierarchy net labels
+        child_sch = Schematic.from_file(str(child_path))
+        child_sch.libSymbols.append(build_r_symbol())
+        r1 = place_r1(50, 50)
+        child_sch.schematicSymbols.append(r1)
+        child_sch.to_file()
+
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
+            label_text="VIN",
+            schematic_path=str(child_path),
+        )
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "2"}],
+            label_text="GND",
+            schematic_path=str(child_path),
+        )
+
+        # Run ERC on the *child* — should auto-redirect to root
+        result = schematic.run_erc(schematic_path=str(child_path))
+        data = json.loads(result)
+        assert "note" in data, "Expected a 'note' key indicating root redirect"
+        assert "root schematic" in data["note"]
+        assert data["violation_count"] == 0
+
+    def test_erc_on_root_no_redirect(self, tmp_path: Path):
+        """Run ERC on root schematic directly — no redirect note expected."""
+        from conftest import build_r_symbol, place_r1
+
+        from mcp_server_kicad import schematic
+
+        # Create hierarchical project
+        proj_dir = tmp_path / "erc_proj"
+        project.create_project(directory=str(proj_dir), name="erc_proj")
+        child_path = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child_path))
+        pins = [
+            {"name": "VIN", "direction": "input"},
+            {"name": "GND", "direction": "bidirectional"},
+        ]
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "erc_proj.kicad_sch"),
+            sheet_name="Power",
+            sheet_file=str(child_path),
+            pins=pins,
+            project_path=str(proj_dir / "erc_proj.kicad_pro"),
+        )
+
+        # In child: place a resistor and wire its pins to hierarchy net labels
+        child_sch = Schematic.from_file(str(child_path))
+        child_sch.libSymbols.append(build_r_symbol())
+        r1 = place_r1(50, 50)
+        child_sch.schematicSymbols.append(r1)
+        child_sch.to_file()
+
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
+            label_text="VIN",
+            schematic_path=str(child_path),
+        )
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "2"}],
+            label_text="GND",
+            schematic_path=str(child_path),
+        )
+
+        # Run ERC on the *root* — no redirect
+        root_path = str(proj_dir / "erc_proj.kicad_sch")
+        result = schematic.run_erc(schematic_path=root_path)
+        data = json.loads(result)
+        assert "note" not in data, "Root schematic ERC should not have a redirect note"
+
+    def test_non_hierarchical_no_redirect(self, tmp_path: Path):
+        """Standalone schematic with no .kicad_pro — no redirect note."""
+        from mcp_server_kicad import schematic
+
+        # Create a standalone schematic (no project file)
+        standalone = tmp_path / "standalone.kicad_sch"
+        project.create_schematic(schematic_path=str(standalone))
+
+        result = schematic.run_erc(schematic_path=str(standalone))
+        data = json.loads(result)
+        assert "note" not in data, "Standalone schematic ERC should not have a redirect note"
+
+
 @pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
 class TestGetVersion:
     def test_returns_version_info(self):

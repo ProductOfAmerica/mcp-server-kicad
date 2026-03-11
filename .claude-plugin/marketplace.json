@@ -1,0 +1,21 @@
+{
+  "name": "ProductOfAmerica",
+  "description": "KiCad EDA plugins for Claude Code",
+  "owner": {
+    "name": "ProductOfAmerica"
+  },
+  "plugins": [
+    {
+      "name": "kicad",
+      "description": "KiCad EDA tools and design skills for Claude Code",
+      "version": "0.5.1",
+      "author": {
+        "name": "ProductOfAmerica"
+      },
+      "source": {
+        "source": "url",
+        "url": "file:///home/sc17/PycharmProjects/mcp-server-kicad"
+      }
+    }
+  ]
+}

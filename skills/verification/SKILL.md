@@ -36,8 +36,10 @@ them.
 These are the kicad MCP tools you should be using during verification:
 
 **Schematic checks:**
-- `run_erc` — run electrical rules check, returns all violations
-- `list_unconnected_pins` — find unconnected pins by component
+- `run_erc` — run electrical rules check, returns all violations.
+  Auto-redirects sub-sheets to root for full hierarchy context.
+- `list_unconnected_pins` — find unconnected pins by component.
+  Auto-redirects sub-sheets to root to avoid false positives.
 - `get_net_connections` — trace a net to debug connectivity issues
 
 **Schematic fixes:**
@@ -46,6 +48,7 @@ These are the kicad MCP tools you should be using during verification:
 - `wire_pins_to_net` — connect pins to a named net
 - `no_connect_pin` — mark intentionally unused pins
 - `remove_label` — remove misplaced labels
+- `set_page_size` — resize sheet when components exceed page boundary
 
 **PCB checks:**
 - `run_drc` — run design rules check, returns all violations
@@ -72,6 +75,13 @@ These are the kicad MCP tools you should be using during verification:
 Use `run_erc` to get the full violation list. Read every violation
 before fixing anything — some errors share a root cause.
 
+**Sub-sheet note:** `run_erc` and `list_unconnected_pins` automatically
+redirect sub-sheets to the root schematic for full hierarchy context.
+This eliminates false positives from missing parent connections
+(hierarchical label errors, dangling wire errors). The result is
+filtered to only include violations from the target sub-sheet, and a
+`"note"` field indicates when redirection occurred.
+
 ### Step 2: Fix by Category
 
 Work through violations in this order. Fixing earlier categories
@@ -91,9 +101,14 @@ The most common ERC error. A power input pin has no driving source.
 Use `add_power_symbol` to place PWR_FLAG. Connect it to the net with
 `wire_pins_to_net` or `connect_pins`.
 
-**Where to place PWR_FLAG:** On every net that is driven by something
-KiCad does not recognize as a power source — regulator outputs,
-battery terminals, connector pins providing external power.
+**Automatic PWR_FLAG:** `wire_pins_to_net` automatically inserts a
+PWR_FLAG when it detects a net with power_in pins but no power_out
+source. The inserted symbol comes from the system library and is
+preserved faithfully through save (no ERC mismatch warnings).
+
+**Where to place PWR_FLAG manually:** On every net that is driven by
+something KiCad does not recognize as a power source — regulator
+outputs, battery terminals, connector pins providing external power.
 
 **Category 2: Unconnected pins**
 

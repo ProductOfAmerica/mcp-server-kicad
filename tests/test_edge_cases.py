@@ -6,6 +6,7 @@ import pytest
 from conftest import reparse
 
 from mcp_server_kicad import schematic
+from mcp_server_kicad.schematic import _get_page_size
 
 
 class TestDuplicateReference:
@@ -110,3 +111,96 @@ class TestLargeCoordinates:
         )
         assert "Error" in result
         assert "outside" in result
+
+
+class TestSetPageSize:
+    def test_set_standard_size_a3(self, scratch_sch: Path) -> None:
+        """Setting page size to A3 should round-trip correctly."""
+        result = schematic.set_page_size(
+            size="A3",
+            schematic_path=str(scratch_sch),
+        )
+        assert "Page size set" in result
+
+        sch = reparse(scratch_sch)
+        assert sch.paper.paperSize == "A3"
+
+    def test_set_user_custom_size(self, scratch_sch: Path) -> None:
+        """Setting a custom 'User' page size stores width and height."""
+        result = schematic.set_page_size(
+            size="User",
+            width=500,
+            height=300,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Page size set" in result
+
+        sch = reparse(scratch_sch)
+        assert sch.paper.paperSize == "User"
+        assert sch.paper.width == 500
+        assert sch.paper.height == 300
+
+    def test_user_without_dimensions_returns_error(self, scratch_sch: Path) -> None:
+        """'User' size without width/height returns an error string."""
+        result = schematic.set_page_size(
+            size="User",
+            schematic_path=str(scratch_sch),
+        )
+        assert "Error" in result
+
+    def test_invalid_size_returns_error(self, scratch_sch: Path) -> None:
+        """An invalid size name like 'Z99' returns an error string."""
+        result = schematic.set_page_size(
+            size="Z99",
+            schematic_path=str(scratch_sch),
+        )
+        assert "Error" in result
+
+    def test_resize_then_place(self, empty_sch: Path) -> None:
+        """Placement outside A4 fails, but succeeds after resizing to A3."""
+        # A4 is 297x210 — (400, 200) is outside
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="R1",
+            value="10K",
+            x=400,
+            y=200,
+            schematic_path=str(empty_sch),
+            project_path=str(empty_sch.with_suffix(".kicad_pro")),
+        )
+        assert "Error" in result
+        assert "outside" in result
+
+        # Resize to A3 (420x297) — (400, 200) is now inside
+        result = schematic.set_page_size(
+            size="A3",
+            schematic_path=str(empty_sch),
+        )
+        assert "Page size set" in result
+
+        # Place should now succeed
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="R1",
+            value="10K",
+            x=400,
+            y=200,
+            schematic_path=str(empty_sch),
+            project_path=str(empty_sch.with_suffix(".kicad_pro")),
+        )
+        assert "Placed" in result
+
+    def test_portrait_mode(self, empty_sch: Path) -> None:
+        """A4 portrait should swap dimensions: 210x297 instead of 297x210."""
+        result = schematic.set_page_size(
+            size="A4",
+            portrait=True,
+            schematic_path=str(empty_sch),
+        )
+        assert "Page size set" in result
+
+        sch = reparse(empty_sch)
+        w, h = _get_page_size(sch)
+        # Normal A4: 297x210; portrait swaps to 210x297
+        assert w == 210
+        assert h == 297

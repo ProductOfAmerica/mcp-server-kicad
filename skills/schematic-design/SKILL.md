@@ -65,6 +65,12 @@ first component (input connector or leftmost element) at approximately
 **(25, 50)** to clear the page margin (10mm) and leave room for sheet
 labels. Scale proportionally for other page sizes.
 
+If components won't fit on the default A4 sheet, use `set_page_size` to
+resize before placement. Available standard sizes: A5, A4, A3, A2, A1, A0,
+A, B, C, D, E, or "User" for custom dimensions. The placement tools will
+tell you if a position is outside the current sheet boundary and suggest
+using `set_page_size`.
+
 Title block clearance: the title block occupies ~108x32mm at the
 bottom-right corner. On A4 landscape (297x210mm), keep components
 within X < 180mm and Y < 175mm to stay clear.
@@ -124,6 +130,7 @@ These are the kicad MCP tools you should be using during schematic design:
 - `move_component` — reposition a placed component
 - `remove_component` — delete a placed component
 - `set_component_property` — change reference, value, footprint, etc.
+- `set_page_size` — resize the schematic sheet (A5–A0, A–E, or custom)
 - `add_lib_symbol` — load a symbol from a library into the schematic
 
 **Wiring and connectivity:**
@@ -178,7 +185,12 @@ bidirectional, open_collector, etc.), position, rotation, and length.
 ## Verification
 
 After completing placement and wiring:
-1. Run `run_erc` to check for violations.
-2. Fix "power pin not driven" with PWR_FLAG symbols.
-3. Fix unconnected pins with `wire_pin_to_label` or `no_connect_pin`.
+1. Run `run_erc` to check for violations. For hierarchical designs, you
+   can run ERC on any sub-sheet — the tool automatically redirects to the
+   root schematic and filters results to the target sheet, avoiding false
+   positives from missing hierarchy context.
+2. Fix "power pin not driven" with PWR_FLAG symbols. Note: `wire_pins_to_net`
+   auto-inserts PWR_FLAG on power_in nets that lack a power source, using the
+   system library version to avoid ERC mismatch warnings.
+3. Fix unconnected pins with `wire_pins_to_net` or `no_connect_pin`.
 4. Re-run ERC until clean.

@@ -62,36 +62,30 @@ class TestExportSchematicInvalidFormat:
         assert "error" in result
 
 
-class TestRunErcAnnotation:
-    # This test doesn't need kicad-cli — we test the annotation logic directly
+class TestFindRootSchematic:
+    """Test _find_root_schematic helper used by ERC auto-redirect."""
+
     pytestmark = []
 
-    def test_annotates_subsheet_errors(self):
-        """ERC result includes annotation for sub-sheet hierarchical label errors."""
-        fake_violations = [
-            {
-                "description": (
-                    'Hierarchical label "VIN" in root sheet cannot'
-                    " be connected to non-existent parent sheet"
-                ),
-                "severity": "error",
-                "type": "pin_not_connected",
-            },
-        ]
-        annotated = schematic._annotate_erc_violations(fake_violations)
-        assert annotated[0].get("expected_subsheet_issue") is True
+    def test_returns_none_for_root(self, tmp_path):
+        """Root schematic returns None (no redirect needed)."""
+        from mcp_server_kicad import project
 
-    def test_leaves_real_errors_alone(self):
-        """Non-subsheet errors should not be annotated."""
-        fake_violations = [
-            {
-                "description": "Pin not connected",
-                "severity": "error",
-                "type": "pin_not_connected",
-            },
-        ]
-        annotated = schematic._annotate_erc_violations(fake_violations)
-        assert "expected_subsheet_issue" not in annotated[0]
+        project.create_project(directory=str(tmp_path / "proj"), name="proj")
+        root = str(tmp_path / "proj" / "proj.kicad_sch")
+        assert schematic._find_root_schematic(root) is None
+
+    def test_returns_root_for_subsheet(self, tmp_path):
+        """Sub-sheet returns path to root schematic."""
+        from mcp_server_kicad import project
+
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+        result = schematic._find_root_schematic(str(child))
+        assert result is not None
+        assert result.endswith("proj.kicad_sch")
 
 
 class TestListUnconnectedPins:

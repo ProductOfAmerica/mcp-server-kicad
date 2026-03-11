@@ -36,9 +36,11 @@ from mcp_server_kicad._shared import (
     _file_meta,
     _gen_uuid,
     _load_sch,
+    _load_system_lib_symbol,
     _resolve_hierarchy_path,
     _resolve_system_lib,
     _run_cli,
+    _save_sch,
     _snap_grid,
 )
 
@@ -112,9 +114,12 @@ def _validate_position(x: float, y: float, sch) -> str | None:
     """Return an error string if (x, y) is outside the sheet boundary, else None."""
     page_w, page_h = _get_page_size(sch)
     if x < 0 or x > page_w or y < 0 or y > page_h:
+        page_name = sch.paper.paperSize if sch.paper else "A4"
+        sizes = ", ".join(_PAGE_SIZES.keys())
         return (
             f"Error: position ({x}, {y}) is outside the sheet boundary "
-            f"({page_w}x{page_h}mm). Use coordinates within the drawable area."
+            f"({page_w}x{page_h}mm, page '{page_name}'). "
+            f"Use set_page_size to resize (available: {sizes}, or 'User')."
         )
     return None
 
@@ -579,16 +584,19 @@ def place_component(
     symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     _loaded_sym_lib = None
     if not _find_lib_symbol(sch, lib_id):
-        lib_path = symbol_lib_path
-        if not lib_path and ":" in lib_id:
-            lib_prefix = lib_id.split(":")[0]
-            lib_path = _resolve_system_lib(lib_prefix)
-        if lib_path:
-            _loaded_sym_lib = SymbolLib.from_file(lib_path)
+        if symbol_lib_path:
+            _loaded_sym_lib = SymbolLib.from_file(symbol_lib_path)
             for s in _loaded_sym_lib.symbols:
                 if s.entryName == symbol_name:
                     sch.libSymbols.append(s)
                     break
+        elif ":" in lib_id:
+            lib_prefix = lib_id.split(":")[0]
+            if not _load_system_lib_symbol(sch, lib_prefix, symbol_name):
+                # Load full lib for error suggestions
+                lib_path = _resolve_system_lib(lib_prefix)
+                if lib_path:
+                    _loaded_sym_lib = SymbolLib.from_file(lib_path)
 
     # Check if lib_symbol was found; give helpful error if not
     if not _find_lib_symbol(sch, lib_id) and ":" in lib_id:
@@ -681,7 +689,7 @@ def place_component(
     ]
 
     sch.schematicSymbols.append(sym)
-    sch.to_file()
+    _save_sch(sch)
     return f"Placed {reference} ({value}) at ({x}, {y})"
 
 
@@ -702,7 +710,7 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
     if target is None:
         return f"Component {reference} not found."
     sch.schematicSymbols.remove(target)
-    sch.to_file()
+    _save_sch(sch)
     return f"Removed {reference}"
 
 
@@ -744,7 +752,7 @@ def remove_label(
     if not removed:
         return f"Label '{text}' not found."
     sch.labels = remaining
-    sch.to_file()
+    _save_sch(sch)
     return f"Removed {len(removed)} label(s) '{text}'."
 
 
@@ -794,7 +802,7 @@ def remove_wire(
     if not removed:
         return f"Wire ({x1},{y1})->({x2},{y2}) not found."
     sch.graphicalItems = remaining
-    sch.to_file()
+    _save_sch(sch)
     return f"Removed {len(removed)} wire(s)."
 
 
@@ -816,7 +824,7 @@ def remove_junction(
     for i, junc in enumerate(sch.junctions):
         if abs(junc.position.X - x) < tol and abs(junc.position.Y - y) < tol:
             sch.junctions.pop(i)
-            sch.to_file()
+            _save_sch(sch)
             return f"Removed junction at ({x}, {y})"
     return f"Junction at ({x}, {y}) not found."
 
@@ -845,7 +853,7 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
             uuid=_gen_uuid(),
         )
         sch.graphicalItems.append(wire)
-    sch.to_file()
+    _save_sch(sch)
     return f"Added {len(wires)} wires"
 
 
@@ -874,7 +882,7 @@ def add_label(
         uuid=_gen_uuid(),
     )
     sch.labels.append(label)
-    sch.to_file()
+    _save_sch(sch)
     return f"Label '{text}' at ({x}, {y})"
 
 
@@ -898,7 +906,7 @@ def add_junctions(points: list[dict], schematic_path: str = SCH_PATH) -> str:
             uuid=_gen_uuid(),
         )
         sch.junctions.append(junc)
-    sch.to_file()
+    _save_sch(sch)
     return f"Added {len(points)} junctions"
 
 
@@ -918,7 +926,7 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
             if _find_lib_symbol(sch, symbol_name):
                 return f"'{symbol_name}' already in lib_symbols."
             sch.libSymbols.append(s)
-            sch.to_file()
+            _save_sch(sch)
             return f"Added '{symbol_name}' to lib_symbols."
     return f"'{symbol_name}' not found in {symbol_lib_path}."
 
@@ -951,7 +959,7 @@ def move_component(
             sym.position.Y = y
             if rotation is not None:
                 sym.position.angle = rotation
-            sch.to_file()
+            _save_sch(sch)
             return f"Moved {reference} to ({x}, {y})"
     return f"Component {reference} not found."
 
@@ -978,7 +986,7 @@ def set_component_property(
             for prop in sym.properties:
                 if prop.key == key:
                     prop.value = value
-                    sch.to_file()
+                    _save_sch(sch)
                     return f"Set {reference}.{key} = {value}"
             # Create new property (hidden, at component center)
             new_id = max((p.id for p in sym.properties if p.id is not None), default=-1) + 1
@@ -991,9 +999,53 @@ def set_component_property(
                     position=Position(X=sym.position.X, Y=sym.position.Y, angle=0),
                 )
             )
-            sch.to_file()
+            _save_sch(sch)
             return f"Set {reference}.{key} = {value} (new property)"
     return f"Component {reference} not found."
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def set_page_size(
+    size: str,
+    width: float | None = None,
+    height: float | None = None,
+    portrait: bool = False,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Set the schematic page/sheet size.
+
+    Args:
+        size: Standard name (A5, A4, A3, A2, A1, A0, A, B, C, D, E) or 'User' for custom
+        width: Custom width in mm (required when size='User')
+        height: Custom height in mm (required when size='User')
+        portrait: If True, swap width/height for portrait orientation
+        schematic_path: Path to .kicad_sch file
+    """
+    size_key = size.strip()
+    if size_key == "User":
+        if width is None or height is None:
+            return "Error: 'User' page size requires both width and height parameters."
+        w, h = float(width), float(height)
+    elif size_key in _PAGE_SIZES:
+        w, h = _PAGE_SIZES[size_key]
+    else:
+        valid = ", ".join(list(_PAGE_SIZES.keys()) + ["User"])
+        return f"Error: unknown page size '{size_key}'. Valid sizes: {valid}."
+
+    sch = _load_sch(schematic_path)
+    sch.paper.paperSize = size_key
+    if size_key == "User":
+        sch.paper.width = w
+        sch.paper.height = h
+    else:
+        sch.paper.width = None
+        sch.paper.height = None
+    sch.paper.portrait = portrait
+    _save_sch(sch)
+
+    if portrait:
+        return f"Page size set to {size_key} ({h}x{w}mm, portrait)"
+    return f"Page size set to {size_key} ({w}x{h}mm)"
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1028,7 +1080,7 @@ def add_global_label(
         uuid=_gen_uuid(),
     )
     sch.globalLabels.append(gl)
-    sch.to_file()
+    _save_sch(sch)
     return f"Global label '{text}' ({shape}) at ({x}, {y})"
 
 
@@ -1203,7 +1255,7 @@ def add_text(
         uuid=_gen_uuid(),
     )
     sch.texts.append(t)
-    sch.to_file()
+    _save_sch(sch)
     return f"Text '{text}' at ({x}, {y})"
 
 
@@ -1383,15 +1435,7 @@ def wire_pins_to_net(
             # Ensure PWR_FLAG lib symbol exists
             if not _find_lib_symbol(sch, "power:PWR_FLAG"):
                 # Try loading from KiCad system library first
-                _loaded = False
-                lib_path = _resolve_system_lib("power")
-                if lib_path:
-                    _sym_lib = SymbolLib.from_file(lib_path)
-                    for s in _sym_lib.symbols:
-                        if s.entryName == "PWR_FLAG":
-                            sch.libSymbols.append(s)
-                            _loaded = True
-                            break
+                _loaded = _load_system_lib_symbol(sch, "power", "PWR_FLAG")
                 # Fallback: synthetic symbol for CI without KiCad
                 if not _loaded:
                     pwr_flag = LibSymbol()
@@ -1473,7 +1517,7 @@ def wire_pins_to_net(
             flg_sym.pins = {"1": _gen_uuid()}
             sch.schematicSymbols.append(flg_sym)
 
-    sch.to_file()
+    _save_sch(sch)
     msg = f"Wired {len(pins)} pins to '{label_text}'."
     if warnings:
         msg += " WARNINGS: " + "; ".join(warnings)
@@ -1543,7 +1587,7 @@ def connect_pins(
         new_points.append((x2, y1))  # L-shape corner
     _auto_junctions(sch, new_points)
 
-    sch.to_file()
+    _save_sch(sch)
 
     n = len(segments)
     return f"Connected {ref1}:{pin1} -> {ref2}:{pin2} via {n} wire segment{'s' if n > 1 else ''}"
@@ -1570,7 +1614,7 @@ def no_connect_pin(
 
     nc = NoConnect(position=Position(X=px, Y=py), uuid=_gen_uuid())
     sch.noConnects.append(nc)
-    sch.to_file()
+    _save_sch(sch)
 
     return f"No-connect on {reference}:{pin_name} at ({px}, {py})"
 
@@ -1580,35 +1624,40 @@ def no_connect_pin(
 # ---------------------------------------------------------------------------
 
 
-def _annotate_erc_violations(violations: list[dict]) -> list[dict]:
-    """Annotate ERC violations with contextual hints.
+def _find_root_schematic(schematic_path: str) -> str | None:
+    """Return the root schematic path if *schematic_path* is a sub-sheet.
 
-    Marks "hierarchical label cannot connect to non-existent parent sheet"
-    violations as expected sub-sheet behavior.
+    Looks for a ``.kicad_pro`` in the same directory and derives the root
+    ``.kicad_sch`` from its stem.  Returns ``None`` when *schematic_path*
+    is already the root (or no project file is found).
     """
-    for v in violations:
-        desc = v.get("description", "")
-        if "cannot be connected to non-existent parent sheet" in desc:
-            v["expected_subsheet_issue"] = True
-            v["hint"] = (
-                "Expected when running ERC on a sub-sheet standalone. "
-                "This resolves when opened from the parent schematic."
-            )
-    return violations
+    sch_dir = Path(schematic_path).parent
+    pro_files = list(sch_dir.glob("*.kicad_pro"))
+    if len(pro_files) != 1:
+        return None
+    root_sch = pro_files[0].with_suffix(".kicad_sch")
+    if not root_sch.exists():
+        return None
+    if root_sch.resolve() == Path(schematic_path).resolve():
+        return None  # Already the root
+    return str(root_sch)
 
 
-def _parse_unconnected_pins(erc_report: dict) -> list[dict]:
+def _parse_unconnected_pins(erc_report: dict, sheet_filter: str | None = None) -> list[dict]:
     """Extract unconnected pin violations from an ERC report.
 
-    Filters out sub-sheet hierarchical label noise.
+    When *sheet_filter* is set, only violations from matching sheet paths
+    are included.
     """
     results = []
     for sheet in erc_report.get("sheets", []):
+        if sheet_filter:
+            sheet_path = sheet.get("path", "")
+            if sheet_filter not in sheet_path:
+                continue
         for v in sheet.get("violations", []):
             desc = v.get("description", "")
             if "not connected" not in desc.lower():
-                continue
-            if "non-existent parent sheet" in desc:
                 continue
             entry: dict = {"description": desc, "severity": v.get("severity", "")}
             items = v.get("items", [])
@@ -1630,8 +1679,8 @@ def list_unconnected_pins(
 ) -> str:
     """List unconnected pins by running ERC and filtering results.
 
-    Requires kicad-cli. Filters out expected sub-sheet hierarchical
-    label noise.
+    Requires kicad-cli. Auto-redirects to root schematic for sub-sheets
+    to avoid false positives from hierarchical label context.
 
     Args:
         schematic_path: Path to .kicad_sch file
@@ -1642,8 +1691,13 @@ def list_unconnected_pins(
     if not shutil.which("kicad-cli"):
         return json.dumps({"error": "kicad-cli not found"}, indent=2)
 
-    out_dir = output_dir or str(Path(schematic_path).parent)
-    out_path = str(Path(out_dir) / (Path(schematic_path).stem + "-erc.json"))
+    # Auto-redirect sub-sheets to root for full hierarchy context
+    root_path = _find_root_schematic(schematic_path)
+    erc_target = root_path or schematic_path
+    sheet_filter = Path(schematic_path).name if root_path else None
+
+    out_dir = output_dir or str(Path(erc_target).parent)
+    out_path = str(Path(out_dir) / (Path(erc_target).stem + "-erc.json"))
     _run_cli(
         [
             "sch",
@@ -1653,7 +1707,7 @@ def list_unconnected_pins(
             "--severity-all",
             "--output",
             out_path,
-            schematic_path,
+            erc_target,
         ],
         check=False,
     )
@@ -1663,13 +1717,19 @@ def list_unconnected_pins(
     except FileNotFoundError:
         return json.dumps({"error": "ERC failed to produce output"}, indent=2)
 
-    pins = _parse_unconnected_pins(report)
-    return json.dumps({"unconnected_count": len(pins), "pins": pins}, indent=2)
+    pins = _parse_unconnected_pins(report, sheet_filter=sheet_filter)
+    result: dict = {"unconnected_count": len(pins), "pins": pins}
+    if root_path:
+        result["note"] = "ERC ran from root schematic to include full hierarchy context"
+    return json.dumps(result, indent=2)
 
 
 @mcp.tool(annotations=_EXPORT)
 def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str:
     """Run Electrical Rules Check (ERC) on a schematic.
+
+    Auto-redirects to root schematic for sub-sheets to avoid false
+    positives from missing hierarchical context.
 
     Returns JSON report with violations.
 
@@ -1677,10 +1737,15 @@ def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str
         schematic_path: Path to .kicad_sch file
         output_dir: Directory for report file (default: same as schematic)
     """
-    out_dir = output_dir or str(Path(schematic_path).parent)
-    out_path = str(Path(out_dir) / (Path(schematic_path).stem + "-erc.json"))
+    # Auto-redirect sub-sheets to root for full hierarchy context
+    root_path = _find_root_schematic(schematic_path)
+    erc_target = root_path or schematic_path
+    sheet_filter = Path(schematic_path).name if root_path else None
+
+    out_dir = output_dir or str(Path(erc_target).parent)
+    out_path = str(Path(out_dir) / (Path(erc_target).stem + "-erc.json"))
     _run_cli(
-        ["sch", "erc", "--format", "json", "--severity-all", "--output", out_path, schematic_path],
+        ["sch", "erc", "--format", "json", "--severity-all", "--output", out_path, erc_target],
         check=False,
     )
     try:
@@ -1688,19 +1753,24 @@ def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str
             report = json.load(f)
     except FileNotFoundError:
         return json.dumps({"error": "ERC failed to produce output file"}, indent=2)
+
     all_violations = []
     for sheet in report.get("sheets", []):
+        if sheet_filter:
+            sheet_path = sheet.get("path", "")
+            if sheet_filter not in sheet_path:
+                continue
         all_violations.extend(sheet.get("violations", []))
-    all_violations = _annotate_erc_violations(all_violations)
-    return json.dumps(
-        {
-            "source": report.get("source", ""),
-            "kicad_version": report.get("kicad_version", ""),
-            "violation_count": len(all_violations),
-            "violations": all_violations,
-        },
-        indent=2,
-    )
+
+    result = {
+        "source": report.get("source", ""),
+        "kicad_version": report.get("kicad_version", ""),
+        "violation_count": len(all_violations),
+        "violations": all_violations,
+    }
+    if root_path:
+        result["note"] = "ERC ran from root schematic to include full hierarchy context"
+    return json.dumps(result, indent=2)
 
 
 # ---------------------------------------------------------------------------

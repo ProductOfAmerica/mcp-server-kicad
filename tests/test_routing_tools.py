@@ -1138,3 +1138,67 @@ class TestAutoPwrFlag:
         assert len(embedded.units) == len(sys_pwr_flag.units), (
             f"Unit count mismatch: embedded={len(embedded.units)}, system={len(sys_pwr_flag.units)}"
         )
+
+
+# ===========================================================================
+# TestSystemLibSymbolRoundtrip
+# ===========================================================================
+
+
+@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+class TestSystemLibSymbolRoundtrip:
+    def test_pwr_flag_raw_tokens_preserved(self, tmp_path):
+        """System library tokens like exclude_from_sim survive kiutils round-trip."""
+        path = _make_power_sch(tmp_path)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "#PWR01", "pin": "1"}],
+            label_text="VCC",
+            schematic_path=path,
+        )
+        raw_text = Path(path).read_text()
+        # These tokens are dropped by kiutils but preserved by _save_sch
+        assert "exclude_from_sim" in raw_text, "exclude_from_sim was dropped"
+        assert "pin_numbers" in raw_text, "pin_numbers was dropped"
+
+    def test_system_lib_erc_no_mismatch(self, tmp_path):
+        """ERC should report zero PWR_FLAG 'symbol doesn't match' violations after round-trip."""
+        from conftest import run_erc
+
+        path = _make_power_sch(tmp_path)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "#PWR01", "pin": "1"}],
+            label_text="VCC",
+            schematic_path=path,
+        )
+        report = run_erc(path)
+        violations = []
+        for sheet in report.get("sheets", []):
+            violations.extend(sheet.get("violations", []))
+        # Only check for PWR_FLAG mismatch — the VCC symbol is synthetic (from
+        # conftest) and may legitimately differ from the system library copy.
+        pwr_flag_mismatch = [
+            v
+            for v in violations
+            if "match" in v.get("description", "").lower()
+            and "PWR_FLAG" in v.get("description", "")
+        ]
+        assert pwr_flag_mismatch == [], f"PWR_FLAG symbol mismatch violations: {pwr_flag_mismatch}"
+
+
+# ===========================================================================
+# TestCustomLibNotAffected
+# ===========================================================================
+
+
+class TestCustomLibNotAffected:
+    def test_custom_lib_not_cached(self, tmp_path):
+        """Non-system-library symbols should not be cached for post-processing."""
+        from mcp_server_kicad._shared import _RAW_LIB_SYMBOLS
+
+        path = _make_test_part_sch(tmp_path)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "U1", "pin": "IN"}],
+            label_text="SIG",
+            schematic_path=path,
+        )
+        assert "TestPart" not in _RAW_LIB_SYMBOLS
