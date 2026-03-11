@@ -5,7 +5,6 @@ from kiutils.symbol import SymbolLib
 from mcp_server_kicad import symbol
 from mcp_server_kicad.symbol import _auto_body_rect
 
-
 # ── Helper pin dicts ─────────────────────────────────────────────
 
 

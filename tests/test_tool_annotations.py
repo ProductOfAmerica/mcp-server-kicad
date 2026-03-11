@@ -2,8 +2,8 @@
 
 import pytest
 
-from mcp_server_kicad._shared import _ADDITIVE, _DESTRUCTIVE, _EXPORT, _READ_ONLY
 from mcp_server_kicad import footprint, pcb, project, schematic, symbol
+from mcp_server_kicad._shared import _ADDITIVE, _DESTRUCTIVE, _EXPORT, _READ_ONLY
 
 
 def _get_annotations(module, tool_name):

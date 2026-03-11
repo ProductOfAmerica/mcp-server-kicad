@@ -11,13 +11,13 @@ from kiutils.symbol import Symbol, SymbolPin
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
-    OUTPUT_DIR,
-    SYM_LIB_PATH,
-    SymbolLib,
     _ADDITIVE,
     _DESTRUCTIVE,
     _EXPORT,
     _READ_ONLY,
+    OUTPUT_DIR,
+    SYM_LIB_PATH,
+    SymbolLib,
     _run_cli,
 )
 

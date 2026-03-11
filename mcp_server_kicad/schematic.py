@@ -9,6 +9,10 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
+    _ADDITIVE,
+    _DESTRUCTIVE,
+    _EXPORT,
+    _READ_ONLY,
     OUTPUT_DIR,
     SCH_PATH,
     ColorRGBA,
@@ -26,10 +30,6 @@ from mcp_server_kicad._shared import (
     SymbolProjectInstance,
     SymbolProjectPath,
     Text,
-    _ADDITIVE,
-    _DESTRUCTIVE,
-    _EXPORT,
-    _READ_ONLY,
     _default_effects,
     _default_stroke,
     _file_meta,

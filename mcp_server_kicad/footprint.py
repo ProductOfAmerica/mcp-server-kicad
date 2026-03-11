@@ -7,12 +7,12 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
-    FP_LIB_PATH,
-    OUTPUT_DIR,
-    Footprint,
     _DESTRUCTIVE,
     _EXPORT,
     _READ_ONLY,
+    FP_LIB_PATH,
+    OUTPUT_DIR,
+    Footprint,
     _run_cli,
 )
 

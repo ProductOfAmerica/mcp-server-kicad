@@ -550,7 +550,8 @@ class TestStubCollision:
         sch.schematicSymbols.append(place_r1(100, 100))
 
         # Place R2 close to R1
-        from conftest import _default_effects as _de, _gen_uuid as _gu
+        from conftest import _default_effects as _de
+        from conftest import _gen_uuid as _gu
         r2 = SchematicSymbol()
         r2.libId = "Device:R"
         r2.libName = "R"
@@ -596,8 +597,8 @@ class TestStubCollision:
 
         # Verify the two labels are at different positions (collision avoided)
         sch2 = reparse(path)
-        lbl_a = [l for l in sch2.labels if l.text == "NET_A"]
-        lbl_b = [l for l in sch2.labels if l.text == "NET_B"]
+        lbl_a = [lb for lb in sch2.labels if lb.text == "NET_A"]
+        lbl_b = [lb for lb in sch2.labels if lb.text == "NET_B"]
         assert len(lbl_a) == 1
         assert len(lbl_b) == 1
         # They should not overlap

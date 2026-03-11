@@ -7,6 +7,10 @@ from pathlib import Path
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
+    _ADDITIVE,
+    _DESTRUCTIVE,
+    _EXPORT,
+    _READ_ONLY,
     OUTPUT_DIR,
     PCB_PATH,
     Footprint,
@@ -16,10 +20,6 @@ from mcp_server_kicad._shared import (
     Position,
     Segment,
     Via,
-    _ADDITIVE,
-    _DESTRUCTIVE,
-    _EXPORT,
-    _READ_ONLY,
     _default_effects,
     _file_meta,
     _fp_ref,
