@@ -13,6 +13,16 @@ NEVER use the Read, Write, or Edit tools on KiCad files (.kicad_sch,
 KiCad file manipulation MUST go through the kicad MCP tools. NEVER
 run kicad-cli commands via Bash. If an MCP tool returns an error, try
 different parameters — do NOT fall back to manual file editing.
+
+EVERY KiCad operation has a corresponding MCP tool. Do NOT claim a
+tool does not exist without first listing all available tools. Key
+tools that MUST be used instead of file writes:
+- `add_symbol` — create custom symbol definitions in .kicad_sym files
+- `create_symbol_library` — create new .kicad_sym library files
+- `create_schematic` — create new .kicad_sch files
+- `create_project` — create new .kicad_pro project files
+If you find yourself thinking "there's no MCP tool for this," you are
+wrong. Check the tool list again.
 </CRITICAL-RULE>
 
 # KiCad Design Verification
@@ -20,6 +30,40 @@ different parameters — do NOT fall back to manual file editing.
 Systematic workflows for fixing ERC and DRC violations. Run these
 checks after completing schematic capture or PCB layout — never skip
 them.
+
+## MCP Tools for This Skill
+
+These are the kicad MCP tools you should be using during verification:
+
+**Schematic checks:**
+- `run_erc` — run electrical rules check, returns all violations
+- `list_unconnected_pins` — find unconnected pins by component
+- `get_net_connections` — trace a net to debug connectivity issues
+
+**Schematic fixes:**
+- `add_power_symbol` — place PWR_FLAG to fix "power pin not driven"
+- `connect_pins` — wire two pins together
+- `wire_pins_to_net` — connect pins to a named net
+- `no_connect_pin` — mark intentionally unused pins
+- `remove_label` — remove misplaced labels
+
+**PCB checks:**
+- `run_drc` — run design rules check, returns all violations
+- `get_board_info` — verify board setup and design rules
+- `list_pcb_items` — inspect board contents
+
+**PCB fixes:**
+- `add_trace` — route missing connections
+- `add_via` — add vias for layer transitions
+- `move_footprint` — fix clearance violations by repositioning
+
+**Export (post-verification):**
+- `export_gerbers` — Gerber manufacturing files
+- `export_positions` — pick-and-place file
+- `export_bom` — bill of materials
+- `export_3d` — 3D model for mechanical review
+- `export_schematic` — schematic PDF/SVG
+- `export_pcb` — PCB PDF/SVG
 
 ## ERC Workflow (Schematic)
 

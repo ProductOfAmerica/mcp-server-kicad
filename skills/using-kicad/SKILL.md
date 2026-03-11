@@ -13,6 +13,16 @@ NEVER use the Read, Write, or Edit tools on KiCad files (.kicad_sch,
 KiCad file manipulation MUST go through the kicad MCP tools. NEVER
 run kicad-cli commands via Bash. If an MCP tool returns an error, try
 different parameters — do NOT fall back to manual file editing.
+
+EVERY KiCad operation has a corresponding MCP tool. Do NOT claim a
+tool does not exist without first listing all available tools. Key
+tools that MUST be used instead of file writes:
+- `add_symbol` — create custom symbol definitions in .kicad_sym files
+- `create_symbol_library` — create new .kicad_sym library files
+- `create_schematic` — create new .kicad_sch files
+- `create_project` — create new .kicad_pro project files
+If you find yourself thinking "there's no MCP tool for this," you are
+wrong. Check the tool list again.
 </CRITICAL-RULE>
 
 <SUBAGENT-STOP>
@@ -86,16 +96,37 @@ the user is working in.
 
 The KiCad MCP server gives you tools to drive KiCad programmatically.
 You do not need the user to click anything in KiCad — the tools do it
-for you. Key tool groups:
+for you. Tool groups (59 tools total):
 
-- **Schematic:** `place_symbol`, `connect_pins`, `wire_pins_to_net`,
-  `add_power_symbol`, `no_connect_pin`, `run_erc`
-- **PCB:** `place_footprint`, `add_trace`, `add_via`, `add_zone`,
-  `run_drc`
-- **Libraries:** `list_lib_symbols`, `get_symbol_info`,
-  `list_lib_footprints`, `get_footprint_info`
-- **Export:** `export_gerbers`, `export_bom`, `export_positions`,
-  `export_3d`
+- **Project:** `create_project`, `create_schematic`,
+  `create_symbol_library`, `create_sym_lib_table`,
+  `add_hierarchical_sheet`, `run_jobset`, `get_version`
+- **Symbol Authoring:** `add_symbol` (create custom symbol
+  definitions), `list_lib_symbols`, `get_symbol_info`,
+  `export_symbol_svg`, `upgrade_symbol_lib`
+- **Schematic — Place & Edit:** `place_component`, `move_component`,
+  `remove_component`, `set_component_property`, `add_lib_symbol`
+- **Schematic — Wiring:** `connect_pins`, `wire_pins_to_net`,
+  `add_wires`, `add_label`, `add_global_label`, `add_junctions`,
+  `no_connect_pin`, `remove_label`, `remove_wire`, `remove_junction`
+- **Schematic — Power:** `add_power_symbol`,
+  `auto_place_decoupling_cap`
+- **Schematic — Inspect:** `list_schematic_items`, `get_symbol_pins`,
+  `get_pin_positions`, `get_net_connections`,
+  `list_unconnected_pins`, `add_text`
+- **Schematic — Export:** `run_erc`, `export_schematic`,
+  `export_netlist`, `export_bom`
+- **PCB — Place & Edit:** `place_footprint`, `move_footprint`,
+  `remove_footprint`
+- **PCB — Route:** `add_trace`, `add_via`
+- **PCB — Draw:** `add_pcb_text`, `add_pcb_line`
+- **PCB — Inspect:** `list_pcb_items`, `get_board_info`,
+  `get_footprint_pads`
+- **PCB — Export:** `run_drc`, `export_pcb`, `export_gerbers`,
+  `export_3d`, `export_positions`, `export_ipc2581`
+- **Footprint Libraries:** `list_lib_footprints`,
+  `get_footprint_info`, `export_footprint_svg`,
+  `upgrade_footprint_lib`
 
 Always read the skill for conventions, spacing, and strategy before
 using these tools.

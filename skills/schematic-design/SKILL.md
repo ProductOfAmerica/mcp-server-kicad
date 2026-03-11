@@ -14,6 +14,16 @@ NEVER use the Read, Write, or Edit tools on KiCad files (.kicad_sch,
 KiCad file manipulation MUST go through the kicad MCP tools. NEVER
 run kicad-cli commands via Bash. If an MCP tool returns an error, try
 different parameters — do NOT fall back to manual file editing.
+
+EVERY KiCad operation has a corresponding MCP tool. Do NOT claim a
+tool does not exist without first listing all available tools. Key
+tools that MUST be used instead of file writes:
+- `add_symbol` — create custom symbol definitions in .kicad_sym files
+- `create_symbol_library` — create new .kicad_sym library files
+- `create_schematic` — create new .kicad_sch files
+- `create_project` — create new .kicad_pro project files
+If you find yourself thinking "there's no MCP tool for this," you are
+wrong. Check the tool list again.
 </CRITICAL-RULE>
 
 # KiCad Schematic Design Conventions
@@ -97,6 +107,70 @@ Net labels everywhere turns the schematic into a disconnected parts list.
 - Use **uppercase descriptive names** for nets: VIN_PROT, 5V_REL, SPI_MOSI.
 - Active-low signals: suffix with `_N` (e.g., RESET_N, CS_N).
 - Do not use generic names like NET1 or WIRE3.
+
+## MCP Tools for This Skill
+
+These are the kicad MCP tools you should be using during schematic design:
+
+**Reading / inspection:**
+- `list_schematic_items` — list symbols, wires, labels, etc. on a sheet
+- `get_symbol_pins` — get pin names and types for a symbol
+- `get_pin_positions` — get placed pin coordinates (for wiring)
+- `get_net_connections` — trace a net to see what's connected
+- `list_unconnected_pins` — find pins that need wiring or no-connect
+
+**Placing components:**
+- `place_component` — place a symbol instance on the schematic
+- `move_component` — reposition a placed component
+- `remove_component` — delete a placed component
+- `set_component_property` — change reference, value, footprint, etc.
+- `add_lib_symbol` — load a symbol from a library into the schematic
+
+**Wiring and connectivity:**
+- `connect_pins` — direct Manhattan wire between two pins
+- `wire_pins_to_net` — connect multiple pins to a named net label
+- `add_wires` — add raw wire segments by coordinate
+- `add_label` — place a net label
+- `add_global_label` — place a global (cross-sheet) label
+- `add_junctions` — add junction dots at wire intersections
+- `no_connect_pin` — mark a pin as intentionally unconnected
+- `remove_label` / `remove_wire` / `remove_junction` — cleanup
+
+**Power and decoupling:**
+- `add_power_symbol` — place VCC, GND, +3V3, PWR_FLAG, etc.
+- `auto_place_decoupling_cap` — auto-place a decoupling cap near an IC
+
+**Annotations and hierarchy:**
+- `add_text` — add text annotations to the sheet
+- `add_hierarchical_sheet` — add a sub-sheet reference
+
+**Verification and export:**
+- `run_erc` — run electrical rules check
+- `export_schematic` — export schematic as PDF/SVG
+- `export_netlist` — generate netlist for PCB import
+- `export_bom` — export bill of materials
+
+**Symbol authoring (when a part isn't in KiCad's libraries):**
+- `create_symbol_library` — create a project-local .kicad_sym file
+- `add_symbol` — define a custom symbol with pins, footprint, datasheet
+- `list_lib_symbols` / `get_symbol_info` — browse available symbols
+
+## Custom Symbols
+
+When a part is not in KiCad's built-in libraries, create a custom
+symbol using MCP tools — NEVER by writing .kicad_sym files directly:
+
+1. `create_symbol_library` — create a project-local .kicad_sym file
+   (if it doesn't exist yet)
+2. `add_symbol` — define the symbol with pin names, pin types, pin
+   numbers, footprint, and datasheet. The tool handles body
+   rectangles, property placement, and s-expression formatting.
+3. `add_lib_symbol` — load the custom symbol into the schematic so
+   it can be placed with `place_symbol`
+
+The `add_symbol` tool accepts full pin definitions including
+electrical type (power_in, power_out, input, output, passive,
+bidirectional, open_collector, etc.), position, rotation, and length.
 
 ## Verification
 

@@ -14,6 +14,16 @@ NEVER use the Read, Write, or Edit tools on KiCad files (.kicad_sch,
 KiCad file manipulation MUST go through the kicad MCP tools. NEVER
 run kicad-cli commands via Bash. If an MCP tool returns an error, try
 different parameters — do NOT fall back to manual file editing.
+
+EVERY KiCad operation has a corresponding MCP tool. Do NOT claim a
+tool does not exist without first listing all available tools. Key
+tools that MUST be used instead of file writes:
+- `add_symbol` — create custom symbol definitions in .kicad_sym files
+- `create_symbol_library` — create new .kicad_sym library files
+- `create_schematic` — create new .kicad_sch files
+- `create_project` — create new .kicad_pro project files
+If you find yourself thinking "there's no MCP tool for this," you are
+wrong. Check the tool list again.
 </CRITICAL-RULE>
 
 # Circuit Design
@@ -122,10 +132,18 @@ KiCad's libraries:
    - `power.kicad_sym` — VCC, GND, +3V3, +5V, etc.
 2. Use `get_symbol_info` to check pin names and pin count before
    committing to a specific part.
-3. If an exact part is not in the library, use a **generic symbol**
-   with the correct pin count and set the value property to the
-   actual part number. For example, use the generic `R` symbol from
-   Device.kicad_sym for any resistor.
+3. If an exact part is not in the library, you have two options:
+   - **Generic symbol**: Use a generic symbol with the correct pin
+     count and set the value property to the actual part number. For
+     example, use the generic `R` symbol from Device.kicad_sym for
+     any resistor.
+   - **Custom symbol via `add_symbol`**: For ICs and complex parts
+     that have no suitable generic, use the `add_symbol` MCP tool to
+     create a custom symbol definition in a project-local .kicad_sym
+     library. Provide pin names, pin types, pin numbers, footprint,
+     and datasheet URL. Use `create_symbol_library` first if the
+     library file does not exist. NEVER write .kicad_sym files with
+     the Write or Edit tools — always use `add_symbol`.
 
 ## Output: BOM Table
 
@@ -148,6 +166,27 @@ begins.** This includes:
 - Pull-up/pull-down resistors
 - Test points (if needed)
 - Mounting holes (if needed)
+
+## MCP Tools for This Skill
+
+These are the kicad MCP tools you should be using during circuit design:
+
+**Library browsing (verify parts exist):**
+- `list_lib_symbols` — list symbols in a .kicad_sym library
+- `get_symbol_info` — get pin names, types, and properties for a symbol
+
+**Custom symbol creation (when parts aren't in built-in libs):**
+- `create_symbol_library` — create a new .kicad_sym library file
+- `add_symbol` — define a custom symbol with pins, footprint, datasheet
+
+**Project setup:**
+- `create_project` — create a new KiCad project (.kicad_pro)
+- `create_schematic` — create a new schematic sheet
+- `create_sym_lib_table` — register symbol libraries with the project
+
+**Footprint verification:**
+- `list_lib_footprints` — list footprints in a .pretty directory
+- `get_footprint_info` — check pad dimensions and pin mapping
 
 ## Handoff to Schematic Design
 

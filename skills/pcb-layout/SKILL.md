@@ -13,12 +13,56 @@ NEVER use the Read, Write, or Edit tools on KiCad files (.kicad_sch,
 KiCad file manipulation MUST go through the kicad MCP tools. NEVER
 run kicad-cli commands via Bash. If an MCP tool returns an error, try
 different parameters — do NOT fall back to manual file editing.
+
+EVERY KiCad operation has a corresponding MCP tool. Do NOT claim a
+tool does not exist without first listing all available tools. Key
+tools that MUST be used instead of file writes:
+- `add_symbol` — create custom symbol definitions in .kicad_sym files
+- `create_symbol_library` — create new .kicad_sym library files
+- `create_schematic` — create new .kicad_sch files
+- `create_project` — create new .kicad_pro project files
+If you find yourself thinking "there's no MCP tool for this," you are
+wrong. Check the tool list again.
 </CRITICAL-RULE>
 
 # KiCad PCB Layout
 
 Place footprints and route traces to produce a manufacturable board.
 This skill assumes you have a completed schematic with a netlist.
+
+## MCP Tools for This Skill
+
+These are the kicad MCP tools you should be using during PCB layout:
+
+**Reading / inspection:**
+- `list_pcb_items` — list footprints, traces, vias, zones, etc.
+- `get_board_info` — get board outline, layer count, design rules
+- `get_footprint_pads` — get pad positions and net assignments
+
+**Placing and moving footprints:**
+- `place_footprint` — place a footprint on the board
+- `move_footprint` — reposition a placed footprint
+- `remove_footprint` — delete a placed footprint
+
+**Routing:**
+- `add_trace` — add a trace segment with layer, width, coordinates
+- `add_via` — add a via at a coordinate
+
+**Drawing and annotation:**
+- `add_pcb_text` — add silkscreen text or other layer text
+- `add_pcb_line` — draw lines (board outline on Edge.Cuts, etc.)
+
+**Verification and export:**
+- `run_drc` — run design rules check
+- `export_pcb` — export PCB as PDF/SVG
+- `export_gerbers` — export Gerber manufacturing files
+- `export_3d` — export 3D model (STEP/VRML)
+- `export_positions` — export pick-and-place file
+- `export_ipc2581` — export IPC-2581 data
+
+**Footprint libraries:**
+- `list_lib_footprints` — browse .pretty library directories
+- `get_footprint_info` — check pad dimensions and pin mapping
 
 ## Layout Process
 
