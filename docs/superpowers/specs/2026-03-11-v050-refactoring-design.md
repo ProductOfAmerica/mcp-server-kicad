@@ -14,20 +14,34 @@ Official plugins ship 1 MCP server. We ship 5 (`kicad-schematic`, `kicad-pcb`, `
 
 Create `mcp_server_kicad/server.py` containing a single `FastMCP("kicad")` instance that registers all tools from all 5 modules.
 
-**Registration pattern:** Each module exposes a `register(mcp)` function that accepts an external `FastMCP` instance and registers its tools on it. The existing module-level `mcp` and `main()` remain for backwards compatibility.
+**Registration pattern:** Each module exposes a `register(mcp, has_cli)` function that accepts an external `FastMCP` instance and registers its tools on it. The existing module-level `mcp` and `main()` remain for backwards compatibility.
+
+**Tool name uniqueness:** All 59 tool names are already globally unique across the 5 modules. This invariant must be maintained; if a conflict arises, use the `name` parameter of `mcp.tool()` to disambiguate.
+
+**Instructions string:** The unified `FastMCP("kicad")` instance gets a new combined instructions string summarizing all 5 modules' capabilities. Each standalone module's instructions remain unchanged for backwards compat.
 
 **Entry points:**
 - New: `mcp-server-kicad = "mcp_server_kicad.server:main"` (unified)
 - Kept: all 5 existing entry points unchanged
 
 **Config updates:**
-- `.mcp.json`: single `kicad` server replacing 5 entries
+- `.mcp.json`: single `kicad` server:
+  ```json
+  {
+    "kicad": {
+      "command": "uvx",
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad"]
+    }
+  }
+  ```
 - `.claude-plugin/plugin.json`: version bump to 0.5.0
 - `pyproject.toml`: add unified entry point, bump version
 
-## Change 2: Tool Merges (64 -> 58)
+## Change 2: Tool Merges (65 -> 59)
 
 Six tools are removed, with their functionality absorbed into existing tools.
+
+Actual tool counts by module: schematic (30), pcb (19), symbol (5), footprint (4), project (7) = 65 total. After removing 6: 59.
 
 ### 2a. Remove `add_no_connect(x, y)`
 
@@ -40,6 +54,8 @@ Six tools are removed, with their functionality absorbed into existing tools.
 **Rationale:** `add_power_rail` is just `add_power_symbol()` + `wire_pins_to_net()` combined. The LLM can call those two tools sequentially.
 
 **Action:** Delete `add_power_rail` function and its tests. No changes to `add_power_symbol` or `wire_pins_to_net`.
+
+**Note:** `add_power_rail` auto-derives the net name from `lib_id` (e.g. `"power:VCC"` -> `"VCC"`). Skills/instructions should guide the LLM to extract the net name from `lib_id` when calling `wire_pins_to_net` separately.
 
 ### 2c. Merge `get_schematic_info()` into `list_schematic_items(item_type="summary")`
 
@@ -56,7 +72,7 @@ Six tools are removed, with their functionality absorbed into existing tools.
 
 **Action:**
 - Add optional `layers: list[str] | None = None` parameter to `export_gerbers`
-- When `layers` has exactly 1 entry: use `kicad-cli pcb export gerber --layers <layer>` (singular subcommand), return single-file metadata
+- When `layers` has exactly 1 entry: use `kicad-cli pcb export gerber --layers <layer>` (singular subcommand), return single-file metadata. `include_drill` is ignored in single-layer mode.
 - When `layers` has multiple entries or is None: use `kicad-cli pcb export gerbers` (plural subcommand) with `--layers` filter if provided, return directory metadata
 - Delete `export_gerber` function
 - Update tests
@@ -94,22 +110,23 @@ Six tools are removed, with their functionality absorbed into existing tools.
 
 At startup, check `shutil.which("kicad-cli")`. If not found, skip registering CLI-dependent tools.
 
-**Implementation:** In each module's `register(mcp)` function, accept a `has_cli: bool` parameter. Tools annotated with `_EXPORT` plus `run_erc`, `run_drc`, `run_jobset`, and `get_version` are only registered when `has_cli=True`.
+**Implementation:** In each module's `register(mcp, has_cli)` function, accept a `has_cli: bool` parameter. All tools that call `_run_cli()` are only registered when `has_cli=True`. This includes tools with various annotations (`_EXPORT`, `_READ_ONLY`, `_DESTRUCTIVE`) — the criterion is `_run_cli()` usage, not annotation type.
 
-**Affected tools by module:**
+**Affected tools by module (all tools that call `_run_cli()`):**
 
-Schematic (6): `export_schematic`, `export_netlist`, `export_bom`, `run_erc`
-PCB (9 after merges): `export_pcb`, `export_gerbers`, `export_3d`, `export_positions`, `export_ipc2581`, `run_drc`
+Schematic (5): `export_schematic`, `export_netlist`, `export_bom`, `run_erc`, `list_unconnected_pins`
+PCB (6 after merges): `export_pcb`, `export_gerbers`, `export_3d`, `export_positions`, `export_ipc2581`, `run_drc`
 Symbol (2): `export_symbol_svg`, `upgrade_symbol_lib`
 Footprint (2): `export_footprint_svg`, `upgrade_footprint_lib`
 Project (2): `run_jobset`, `get_version`
+Total: 17 CLI-dependent tools
 
 **Detection:** One-time `shutil.which("kicad-cli")` check in `server.py` `main()` and in each module's `main()`.
 
 ## Version & Documentation Updates
 
 - Bump version to 0.5.0 in `pyproject.toml` and `.claude-plugin/plugin.json`
-- Update README.md tool table to reflect 58 tools and merged names
+- Update README.md tool table to reflect 59 tools and merged names
 - Update skills/ files that reference removed tool names (`add_no_connect`, `add_power_rail`, `get_schematic_info`, `export_gerber`, `export_pcb_dxf`, `render_3d`)
 
 ## Constraints
