@@ -959,9 +959,7 @@ class TestPageBoundary:
         assert "Placed" in result
 
     def test_add_label_out_of_bounds(self, scratch_sch):
-        result = schematic.add_label(
-            text="OOB", x=350, y=100, schematic_path=str(scratch_sch)
-        )
+        result = schematic.add_label(text="OOB", x=350, y=100, schematic_path=str(scratch_sch))
         assert "Error" in result
         assert "outside" in result
 
@@ -995,9 +993,7 @@ class TestPageBoundary:
         assert "outside" in result
 
     def test_add_text_out_of_bounds(self, scratch_sch):
-        result = schematic.add_text(
-            text="OOB", x=350, y=100, schematic_path=str(scratch_sch)
-        )
+        result = schematic.add_text(text="OOB", x=350, y=100, schematic_path=str(scratch_sch))
         assert "Error" in result
         assert "outside" in result
 
