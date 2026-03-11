@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import shutil
+from pathlib import Path
 
 import pytest
-from conftest import assert_erc_clean, reparse
+from conftest import assert_erc_clean, build_r_symbol, new_schematic, reparse
 from kiutils.items.schitems import Connection
 
 from mcp_server_kicad import schematic
@@ -60,6 +61,7 @@ class TestPlaceComponent:
             x=150,
             y=150,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "R2" in result
 
@@ -82,6 +84,7 @@ class TestPlaceComponent:
             x=150,
             y=150,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert_erc_clean(scratch_sch)
 
@@ -95,6 +98,7 @@ class TestPlaceComponent:
             y=200,
             rotation=rotation,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(scratch_sch))
         r3 = _find_symbol(sch, "R3")
@@ -110,6 +114,7 @@ class TestPlaceComponent:
             y=200,
             mirror="x",
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(scratch_sch))
         r4 = _find_symbol(sch, "R4")
@@ -125,6 +130,7 @@ class TestPlaceComponent:
             y=200,
             mirror="y",
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(scratch_sch))
         r5 = _find_symbol(sch, "R5")
@@ -140,6 +146,7 @@ class TestPlaceComponent:
             y=150,
             symbol_lib_path=str(scratch_sym_lib),
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(scratch_sch))
 
@@ -159,6 +166,7 @@ class TestPlaceComponent:
             x=200,
             y=150,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(scratch_sch))
         r6 = _find_symbol(sch, "R6")
@@ -177,6 +185,7 @@ class TestPlaceComponent:
             x=127,
             y=127,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(scratch_sch))
         r7 = _find_symbol(sch, "R7")
@@ -197,6 +206,7 @@ class TestPlaceComponent:
             x=100,  # 100 / 1.27 = 78.74 -> 79 -> 100.33
             y=200,  # 200 / 1.27 = 157.48 -> 157 -> 199.39
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(scratch_sch))
         r8 = _find_symbol(sch, "R8")
@@ -214,6 +224,7 @@ class TestPlaceComponent:
             x=101.6,
             y=101.6,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(scratch_sch))
         r9 = _find_symbol(sch, "R9")
@@ -231,6 +242,7 @@ class TestPlaceComponent:
             x=100,
             y=100,
             schematic_path=str(empty_sch),
+            project_path=str(empty_sch.with_suffix(".kicad_pro")),
         )
         assert "R1" in result
         sch = reparse(str(empty_sch))
@@ -248,6 +260,7 @@ class TestPlaceComponent:
             x=100,
             y=100,
             schematic_path=str(empty_sch),
+            project_path=str(empty_sch.with_suffix(".kicad_pro")),
         )
         # This should NOT raise "Lib symbol not found"
         result = schematic.wire_pins_to_net(
@@ -270,6 +283,7 @@ class TestPlaceComponent:
             x=150,
             y=150,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         sch_after = reparse(str(scratch_sch))
         assert len(sch_after.libSymbols) == lib_count_before
@@ -284,12 +298,69 @@ class TestPlaceComponent:
             x=100,
             y=100,
             schematic_path=str(empty_sch),
+            project_path=str(empty_sch.with_suffix(".kicad_pro")),
         )
         # Should mention the symbol wasn't found and list alternatives
         assert "not found" in result.lower() or "Q_PMOS_GSD" in result
         # Should suggest similar symbols if the library was found
         if "Device" in result:
             assert "Q_PMOS" in result or "available" in result.lower()
+
+    def test_sub_sheet_instances_use_root_project(self, tmp_path: Path):
+        """Components in sub-sheets must use root project name and full hierarchy path."""
+        from kiutils.items.common import Effects, Font, Position, Property
+        from kiutils.items.schitems import HierarchicalSheet
+
+        root_sch = new_schematic()
+        root_sch.libSymbols.append(build_r_symbol())
+        root_path = tmp_path / "myproject.kicad_sch"
+        root_sch.filePath = str(root_path)
+
+        sheet = HierarchicalSheet()
+        sheet.uuid = "aaaaaaaa-1111-2222-3333-444444444444"
+        sheet.position = Position(X=25.4, Y=25.4)
+        sheet.width = 25.4
+        sheet.height = 10.16
+        sheet.sheetName = Property(
+            key="Sheetname",
+            value="Sub",
+            id=0,
+            effects=Effects(font=Font(height=1.27, width=1.27)),
+            position=Position(X=25.4, Y=24.13, angle=0),
+        )
+        sheet.fileName = Property(
+            key="Sheetfile",
+            value="sub.kicad_sch",
+            id=1,
+            effects=Effects(font=Font(height=1.27, width=1.27)),
+            position=Position(X=25.4, Y=36.83, angle=0),
+        )
+        root_sch.sheets.append(sheet)
+        root_sch.to_file()
+
+        child_sch = new_schematic()
+        child_sch.libSymbols.append(build_r_symbol())
+        child_path = tmp_path / "sub.kicad_sch"
+        child_sch.filePath = str(child_path)
+        child_sch.to_file()
+
+        pro_path = str(tmp_path / "myproject.kicad_pro")
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R1",
+            value="10K",
+            x=100,
+            y=100,
+            schematic_path=str(child_path),
+            project_path=pro_path,
+        )
+
+        child_sch = reparse(str(child_path))
+        r1 = _find_symbol(child_sch, "R1")
+        assert r1 is not None
+        inst = r1.instances[0]
+        assert inst.name == "myproject"
+        assert inst.paths[0].sheetInstancePath == f"/{root_sch.uuid}/{sheet.uuid}"
 
 
 # ===========================================================================
@@ -716,6 +787,7 @@ class TestPageBoundary:
             x=150,
             y=100,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Placed" in result
 
@@ -727,6 +799,7 @@ class TestPageBoundary:
             x=350,
             y=100,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Error" in result
         assert "outside" in result
@@ -739,6 +812,7 @@ class TestPageBoundary:
             x=100,
             y=250,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Error" in result
         assert "outside" in result
@@ -752,6 +826,7 @@ class TestPageBoundary:
             x=297,
             y=210,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Placed" in result
 
@@ -770,6 +845,7 @@ class TestReferenceValidation:
             x=130,
             y=130,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Placed" in result
 
@@ -781,6 +857,7 @@ class TestReferenceValidation:
             x=100,
             y=100,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Error" in result
         assert "valid" in result.lower()
@@ -793,6 +870,7 @@ class TestReferenceValidation:
             x=100,
             y=100,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Error" in result
 
@@ -804,6 +882,7 @@ class TestReferenceValidation:
             x=100,
             y=100,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Error" in result
 
@@ -816,5 +895,6 @@ class TestReferenceValidation:
             x=130,
             y=100,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Placed" in result

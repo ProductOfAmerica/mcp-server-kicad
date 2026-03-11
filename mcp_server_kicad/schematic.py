@@ -35,6 +35,7 @@ from mcp_server_kicad._shared import (
     _file_meta,
     _gen_uuid,
     _load_sch,
+    _resolve_hierarchy_path,
     _resolve_system_lib,
     _run_cli,
     _snap_grid,
@@ -533,6 +534,7 @@ def place_component(
     symbol_lib_path: str = "",
     mirror: str = "",
     schematic_path: str = SCH_PATH,
+    project_path: str = "",
 ) -> str:
     """Place a component in the schematic.
 
@@ -546,6 +548,7 @@ def place_component(
         symbol_lib_path: Path to .kicad_sym file if using custom library
         mirror: Mirror axis ("x", "y", or "" for none)
         schematic_path: Path to .kicad_sch file
+        project_path: Path to .kicad_pro file (for correct hierarchy resolution in sub-sheets)
     """
     # Validate reference designator
     if not _VALID_REF_RE.match(reference):
@@ -656,13 +659,19 @@ def place_component(
         sym.pins = {pn: _gen_uuid() for pn in sorted(pin_nums)}
 
     # Instances block — required by KiCad 9 for proper annotation
-    project_name = Path(sch.filePath).stem if sch.filePath else ""
+    if project_path:
+        project_name, sheet_path = _resolve_hierarchy_path(
+            project_path, schematic_path, sch.uuid
+        )
+    else:
+        project_name = Path(sch.filePath).stem if sch.filePath else ""
+        sheet_path = f"/{sch.uuid}"
     sym.instances = [
         SymbolProjectInstance(
             name=project_name,
             paths=[
                 SymbolProjectPath(
-                    sheetInstancePath=f"/{sch.uuid}",
+                    sheetInstancePath=sheet_path,
                     reference=reference,
                     unit=1,
                 ),

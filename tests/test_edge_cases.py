@@ -21,6 +21,7 @@ class TestDuplicateReference:
             x=200,
             y=200,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Placed" in result
 
@@ -45,6 +46,7 @@ class TestInvalidRotation:
             y=150,
             rotation=45,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Placed" in result
 
@@ -66,6 +68,7 @@ class TestInvalidRotation:
             y=160,
             rotation=-90,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Placed" in result
 
@@ -103,6 +106,7 @@ class TestLargeCoordinates:
             x=99999.8,
             y=99999.8,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Error" in result
         assert "outside" in result

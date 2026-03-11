@@ -115,6 +115,7 @@ class TestWriteToolsNative:
             x=150,
             y=150,
             schematic_path=str(kicad_native_sch),
+            project_path=str(kicad_native_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(kicad_native_sch))
 
@@ -138,6 +139,7 @@ class TestWriteToolsNative:
             x=200,
             y=200,
             schematic_path=str(kicad_native_sch),
+            project_path=str(kicad_native_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(kicad_native_sch))
 
@@ -163,6 +165,7 @@ class TestWriteToolsNative:
             x=250,
             y=250,
             schematic_path=str(kicad_native_sch),
+            project_path=str(kicad_native_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(kicad_native_sch))
         r_symbols = [ls for ls in sch.libSymbols if ls.entryName == "R"]
@@ -212,6 +215,7 @@ class TestWriteToolsNative:
             x=152.4,
             y=152.4,
             schematic_path=str(kicad_native_sch),
+            project_path=str(kicad_native_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(kicad_native_sch))
 
@@ -240,6 +244,7 @@ class TestWriteToolsNative:
             x=150,  # not on 1.27mm grid
             y=150,
             schematic_path=str(kicad_native_sch),
+            project_path=str(kicad_native_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(kicad_native_sch))
 

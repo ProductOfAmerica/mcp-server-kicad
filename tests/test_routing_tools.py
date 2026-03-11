@@ -428,6 +428,7 @@ class TestGetNetConnections:
             x=200,
             y=100,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         schematic.wire_pins_to_net(
             pins=[{"reference": "R1", "pin": "1"}],
@@ -474,6 +475,7 @@ class TestWirePinsToNet:
             x=200,
             y=100,
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         result = schematic.wire_pins_to_net(
             pins=[

@@ -119,6 +119,7 @@ __all__ = [
     "_snap_grid",
     "_SYSTEM_SYM_DIRS",
     "_resolve_system_lib",
+    "_resolve_hierarchy_path",
 ]
 
 
@@ -233,6 +234,42 @@ _GRID_MM = 1.27
 def _snap_grid(val: float, grid: float = _GRID_MM) -> float:
     """Snap *val* to the nearest multiple of *grid*."""
     return round(round(val / grid) * grid, 4)
+
+
+def _resolve_hierarchy_path(
+    project_path: str, schematic_path: str, sch_uuid: str
+) -> tuple[str, str]:
+    """Derive the project name and full sheet-instance path for a schematic.
+
+    Args:
+        project_path: Path to the ``.kicad_pro`` file (used for project name
+            and to locate the root schematic).
+        schematic_path: Path to the ``.kicad_sch`` being edited.
+        sch_uuid: UUID of the schematic being edited (already loaded by caller).
+
+    Returns:
+        ``(project_name, sheetInstancePath)`` tuple.  For the root schematic
+        the path is ``/{root_uuid}``.  For a sub-sheet it is
+        ``/{root_uuid}/{sheet_uuid}`` where *sheet_uuid* is the hierarchical
+        sheet block's UUID in the parent.
+    """
+    pro = Path(project_path)
+    project_name = pro.stem
+    root_sch_path = pro.with_suffix(".kicad_sch")
+
+    # Root schematic — simple case
+    if Path(schematic_path).resolve() == root_sch_path.resolve():
+        return project_name, f"/{sch_uuid}"
+
+    # Sub-sheet — find its sheet block UUID in the root schematic
+    root_sch = _load_sch(str(root_sch_path))
+    target_name = Path(schematic_path).name
+    for sheet in root_sch.sheets:
+        if sheet.fileName.value == target_name:
+            return project_name, f"/{root_sch.uuid}/{sheet.uuid}"
+
+    # Fallback: couldn't find sheet in root — use own UUID
+    return project_name, f"/{sch_uuid}"
 
 
 # ---------------------------------------------------------------------------
