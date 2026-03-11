@@ -52,7 +52,7 @@ schematic-plan (BOM -> placement & wiring plan artifact)
     |  HARD GATE: user approves plan
     |
     v
-schematic-execute (plan -> mechanical execution)
+schematic-design (plan -> mechanical execution)
     |
     |  Reads specs/schematic-plan.md
     |  Executes place_component/wire calls per plan
@@ -85,7 +85,7 @@ Export (Gerbers, BOM, pick-and-place, 3D)
 |-------|-------------|-----------|----------|
 | circuit-design | Component Creation + Library | PDR | Design Inputs (8.3.3) |
 | schematic-plan | — | Between PDR and CDR | Design Controls (8.3.4) |
-| schematic-execute | Schematic Capture | CDR | Design Outputs (8.3.5) |
+| schematic-design | Schematic Capture | CDR | Design Outputs (8.3.5) |
 | verification (ERC) | ERC Gate | CDR exit criteria | Design Verification (8.3.4) |
 | pcb-layout | PCB Layout | — | Design Outputs (8.3.5) |
 | verification (DRC) | DRC Gate | MRR | Design Verification (8.3.4) |
@@ -107,16 +107,23 @@ session start for any electronics/KiCad conversation.
 
 **Phase enforcement:**
 - schematic-plan requires specs/bom.md to exist
-- schematic-execute requires specs/schematic-plan.md to exist
+- schematic-design requires specs/schematic-plan.md to exist
 - pcb-layout requires ERC to have passed
 - export requires DRC to have passed
 
 **Entry points:**
 - New design from scratch: start at circuit-design, full pipeline
-- Modifying existing schematic: enter at schematic-execute directly
+- Modifying existing schematic: enter at schematic-design directly
+  (modification mode — plan artifact not required, user instructions
+  serve as the plan; pre-flight verifies the schematic file exists
+  and lists current components)
 - Running checks on existing work: enter at verification directly
-- User provides complete plan/spec: enter at schematic-plan or
-  schematic-execute depending on plan content
+- User provides their own BOM: circuit-design runs in
+  validation-only mode — resolves every lib_id, fills in missing
+  fields, writes specs/bom.md, runs the BOM reviewer. Skips
+  topology selection but does NOT skip lib_id validation.
+- User provides complete placement plan: enter at schematic-design
+  with the plan as input
 
 **Rationalization prevention table:**
 
@@ -126,7 +133,7 @@ session start for any electronics/KiCad conversation.
 | "The plan is simple enough to do in my head" | That's what caused 9 wasted tool calls last time. Write the plan. |
 | "I'll just fix the page size when it fails" | Pre-calculate it. Reactive fixes waste tokens. |
 | "ERC will probably pass, start PCB layout" | Run ERC. "Probably" is not evidence. |
-| "This is just a small change, no need for the full pipeline" | Small changes to existing schematics can use schematic-execute directly. New designs go through the pipeline. |
+| "This is just a small change, no need for the full pipeline" | Small changes to existing schematics can use schematic-design directly. New designs go through the pipeline. |
 
 ### 2. `circuit-design` — Requirements to Validated BOM
 
@@ -184,10 +191,17 @@ actual KiCad libraries, not guessed from training data.
 ### 3. `schematic-plan` — BOM to Placement & Wiring Plan (NEW)
 
 New skill. Pure planning — no file modifications. Only inspection
-MCP tools (`list_lib_symbols`, `get_symbol_pins`, `get_symbol_info`).
+MCP tools (`list_lib_symbols`, `get_symbol_info`). Note:
+`get_symbol_pins` requires a schematic with placed symbols and cannot
+be used during planning. Use `get_symbol_info` instead — it reads
+pin definitions directly from library files.
 
-**Inputs:** `specs/bom.md`
-**Outputs:** `specs/schematic-plan.md`
+**Inputs:** `specs/bom.md` (relative to KiCad project directory)
+**Outputs:** `specs/schematic-plan.md` (relative to KiCad project directory)
+
+All artifact paths (`specs/bom.md`, `specs/schematic-plan.md`) are
+relative to the KiCad project directory — the directory containing
+the `.kicad_pro` file.
 
 **Planning steps:**
 
@@ -227,7 +241,10 @@ Assign exact (x, y) per component within its stage bounding box:
 ```
 
 **Step 4: Wiring plan.**
-For each net, specify tool and connections:
+For each net, specify tool and connections. Available tools:
+- `connect_pins` — direct Manhattan wire between two adjacent pins
+- `wire_pins_to_net` — connect one or more pins to a named net label
+  (subsumes the old `wire_pin_to_label` for single-pin cases)
 
 ```markdown
 ## Wiring
@@ -245,14 +262,25 @@ List pins needing no-connect flags and nets needing PWR_FLAG.
 **Schematic plan reviewer subagent dispatched after artifact is
 written.**
 
-**Hard gate: user approves plan before schematic-execute can start.**
+**Hard gate: user approves plan before schematic-design can start.**
 
-### 4. `schematic-execute` — Mechanical Plan Execution
+### 4. `schematic-design` — Mechanical Plan Execution
 
-Replaces current `schematic-design`. Reads the plan and executes
-mechanically. All intelligence happened in prior phases.
+Refactored from the current `schematic-design` skill. The skill file
+stays at `skills/schematic-design/SKILL.md` to preserve the
+`/kicad:schematic-design` invocation name (no breaking change). The
+content is rewritten to be a plan executor.
 
-**Pre-flight checks:**
+**Two modes:**
+
+- **Plan mode (new designs):** Reads `specs/schematic-plan.md` and
+  executes mechanically. All intelligence happened in prior phases.
+- **Modification mode (existing schematics):** No plan artifact
+  required. User instructions serve as the plan. Pre-flight verifies
+  the schematic file exists and lists current components. The
+  existing spacing/wiring/naming conventions guide the work.
+
+**Pre-flight checks (plan mode):**
 1. Verify `specs/schematic-plan.md` exists and has been approved
 2. Read page size from plan, call `set_page_size` immediately if
    not A4
@@ -275,7 +303,7 @@ mechanically. All intelligence happened in prior phases.
 
 | Situation | Response |
 |-----------|----------|
-| Symbol not found | STOP. Report error. The plan's BOM validation should have caught this. |
+| Symbol not found | STOP. Do not fuzzy-match or substitute. Report the error. If a previously-verified symbol is missing, instruct the user to re-run from circuit-design to re-validate the BOM. |
 | Position outside page bounds | STOP. Report error. The plan's page calculation should have prevented this. |
 | connect_pins fails | Try wire_pins_to_net. If that fails, report and continue. |
 | ERC violations | Report violations. Invoke verification skill. |
@@ -304,7 +332,7 @@ pre-manufacturing checklist).
   `violation_count: 0`. No claims without fresh evidence.
 - **Re-run after fixes:** Previous results are stale after fixes.
   Loop until zero.
-- **Two gate points:** Invoked after schematic-execute (ERC) and
+- **Two gate points:** Invoked after schematic-design (ERC) and
   after pcb-layout (DRC). Same skill, different context.
 
 ### 6. `pcb-layout` — Pre-flight Checks Added
@@ -331,6 +359,18 @@ Two reviewer agent prompts, dispatched via the Agent tool at gate
 checkpoints. Both follow superpowers' distrust pattern — they
 independently verify claims using MCP tools rather than trusting the
 author.
+
+**Invocation pattern:** The orchestrating skill reads the reviewer
+prompt file and passes its content as the Agent tool's `prompt`
+parameter, along with the artifact path and project path. The
+reviewer subagent has access to all KiCad MCP tools. Example:
+
+```
+Agent(
+  prompt="<contents of agents/bom-reviewer.md>\n\nBOM path: /path/to/specs/bom.md",
+  subagent_type="general-purpose"
+)
+```
 
 ### BOM Reviewer (`agents/bom-reviewer.md`)
 
@@ -372,7 +412,8 @@ Dispatched after schematic-plan writes `specs/schematic-plan.md`.
 6. Inter-stage gaps >= 25.4mm.
 7. No component overlaps (bounding box collision check).
 8. Pin names in wiring table match actual pins (via
-   `get_symbol_pins`).
+   `get_symbol_info` on the library file — not `get_symbol_pins`,
+   which requires a placed schematic).
 9. Every net accounts for all pins that should be on it.
 10. Page size is smallest standard size that fits (not over-sized).
 
@@ -388,22 +429,27 @@ Issues (if any):
 ```
 
 ### Reviewer behavior rules (both):
-- Max 5 iterations. After 5 fix-and-resubmit cycles, surface to
-  the user.
+- Max 5 iterations per reviewer invocation (BOM reviewer and
+  schematic-plan reviewer each get 5 independently). After 5
+  fix-and-resubmit cycles, present the user with the current
+  artifact and remaining issues. Ask whether to continue fixing,
+  proceed with known issues, or abort.
 - Do not fix, only report. The planning skill fixes issues.
 - Distrust the author. Independently verify by calling MCP tools.
 - Binary outcome: APPROVED or ISSUES_FOUND. No warnings.
 
 ## Skill Count
 
-7 skills total (up from 5):
+6 skills total (up from 5):
 1. `using-kicad` (modified — pipeline enforcer)
 2. `circuit-design` (modified — exit gate + BOM artifact)
 3. `schematic-plan` (NEW)
-4. `schematic-execute` (refactored from schematic-design)
+4. `schematic-design` (refactored — plan executor + modification mode)
 5. `pcb-layout` (modified — pre-flight checks)
 6. `verification` (modified — hard gate enforcement)
-7. (pcb-plan — future, when needed)
+
+Future consideration: `pcb-plan` using the same artifact/reviewer
+pattern when PCB layout hits the same class of failures.
 
 Plus 2 agent prompts (not skills):
 - `agents/bom-reviewer.md`
@@ -421,7 +467,7 @@ The two RUN.txt failures would both be caught before any tool calls:
 2. **Components at y=228.6 on A4 page** — caught by the schematic
    plan reviewer. The reviewer checks every coordinate against the
    declared page size and reports the overflow. Page size is corrected
-   in the plan before schematic-execute starts.
+   in the plan before schematic-design starts.
 
 Both failures become plan-time errors (cheap to fix) instead of
 execution-time errors (9 wasted tool calls).
