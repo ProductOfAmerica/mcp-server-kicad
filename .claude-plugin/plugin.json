@@ -6,12 +6,16 @@
   },
   "repository": "https://github.com/ProductOfAmerica/mcp-server-kicad",
   "homepage": "https://github.com/ProductOfAmerica/mcp-server-kicad",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "license": "MIT",
   "mcpServers": {
     "kicad": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad"]
+      "args": [
+        "--from",
+        "mcp-server-kicad",
+        "mcp-server-kicad"
+      ]
     }
   },
   "keywords": [
