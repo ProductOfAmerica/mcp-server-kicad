@@ -8,6 +8,14 @@ description: >
   or "how should I power this."
 ---
 
+<CRITICAL-RULE>
+NEVER use the Read, Write, or Edit tools on KiCad files (.kicad_sch,
+.kicad_pcb, .kicad_sym, .kicad_mod, .kicad_pro, .kicad_prl). ALL
+KiCad file manipulation MUST go through the kicad MCP tools. NEVER
+run kicad-cli commands via Bash. If an MCP tool returns an error, try
+different parameters — do NOT fall back to manual file editing.
+</CRITICAL-RULE>
+
 # Circuit Design
 
 Design the circuit completely — every component, every value, every
