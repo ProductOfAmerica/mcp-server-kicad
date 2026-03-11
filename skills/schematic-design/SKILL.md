@@ -1,11 +1,10 @@
 ---
 name: schematic-design
 description: >
-  Use when designing a KiCad schematic from scratch, laying out components
-  on a schematic sheet, placing symbols and wiring them together, or when
-  the user asks about schematic layout, component placement, or wiring
-  strategy. Provides conventions for placement spacing, signal flow
-  direction, wiring tool selection, and functional stage organization.
+  Use when executing a schematic placement plan (plan mode) or
+  modifying an existing schematic (modification mode). In plan mode,
+  reads specs/schematic-plan.md and executes mechanically. In
+  modification mode, validates new component lib_ids before placement.
 ---
 
 <CRITICAL-RULE>
@@ -26,101 +25,127 @@ If you find yourself thinking "there's no MCP tool for this," you are
 wrong. Check the tool list again.
 </CRITICAL-RULE>
 
-# KiCad Schematic Design Conventions
+# KiCad Schematic Design — Plan Executor
 
-Follow these conventions when placing components and wiring a new schematic.
+This skill executes schematic plans mechanically. All intelligence
+(component selection, coordinate calculation, wiring decisions)
+happened in prior phases. This skill reads a plan and executes it.
 
-## Signal Flow and Stage Layout
+## Two Modes
 
-- **Left-to-right** signal flow: inputs on the left, outputs on the right.
-- **Top-to-bottom** voltage flow: higher voltages near the top of the sheet,
-  lower voltages and ground toward the bottom.
-- Group components into **functional stages** along the signal path.
-  Example: input protection → buck regulation → LDO → output.
-- Arrange stages as **vertical bands** (left-to-right) or **horizontal rows**
-  (top-to-bottom by voltage), depending on the design. A power supply with
-  cascading voltage levels flows naturally top-to-bottom; a signal chain
-  flows left-to-right.
-- Within each stage, place the main active component (IC, MOSFET) on the
-  signal path. Place supporting passives (bypass caps, resistors) directly
-  adjacent — input-side passives to the left, output-side to the right.
+### Plan Mode (new designs)
 
-## Placement Spacing
+Reads `specs/schematic-plan.md` and executes mechanically. The plan
+file is the sole source of truth — ignore prior conversation context
+about how the plan was created. Read the plan, execute the plan.
+
+**Pre-flight checks:**
+1. Verify `specs/schematic-plan.md` exists and its reviewer returned
+   APPROVED
+2. Read page size from plan, call `set_page_size` immediately if
+   not A4
+3. Verify project/schematic files exist (create if needed)
+4. If plan references custom symbol library, verify it exists via
+   `list_lib_symbols`
+
+**Execution order:**
+1. Project setup (`create_project`, `create_schematic`, etc.)
+2. Set page size (if plan specifies non-A4)
+3. Register symbol libraries (`create_sym_lib_table`)
+4. Create custom symbols (`add_symbol`)
+5. Place all components (`place_component` per coordinate table)
+6. Wire all connections per wiring table — group all pins for the
+   same net into a single `wire_pins_to_net` call
+7. Add no-connect flags
+8. Add power flags
+9. Add hierarchical sheets (if applicable)
+10. Run ERC
+
+### Modification Mode (existing schematics)
+
+No plan artifact required. User instructions serve as the plan.
+
+**Pre-flight checks:**
+1. Verify the schematic file exists
+2. List current components via `list_schematic_items`
+3. For each new component to be added, call `list_lib_symbols` to
+   verify its lib_id exists before placement
+
+Follow existing spacing/wiring/naming conventions in the schematic.
+
+## Error Handling — Escalate, Don't Improvise
+
+| Situation | Response |
+|-----------|----------|
+| Symbol not found | STOP. Do not fuzzy-match or substitute. Report the error. If a previously-verified symbol is missing, instruct the user to re-run from circuit-design to re-validate the BOM. |
+| Position outside page bounds | STOP. Report error. The plan's page calculation should have prevented this. Instruct the user to re-run schematic-plan. |
+| connect_pins fails | Try wire_pins_to_net for that connection. If that fails, report and continue with remaining wiring. |
+| ERC violations | Report violations. Invoke verification skill. |
+
+## Rationalization Prevention
+
+| Thought | Reality |
+|---------|---------|
+| "This pin name is close enough" | Use the exact pin name from the plan. The plan was verified against `get_symbol_info`. |
+| "I can adjust the coordinates slightly" | Use the exact coordinates from the plan. The plan was verified against page bounds. |
+| "I'll add an extra component not in the plan" | Do not improvise. If the design needs changes, go back to schematic-plan. |
+| "The plan is probably outdated, I'll adapt" | The plan is the source of truth. If it's wrong, re-plan. Don't patch on the fly. |
+
+## Exit Gate
+
+Run `run_erc`. Zero violations → proceed to pcb-layout.
+Violations → invoke verification skill.
+
+**Commit strategy:** Commit after schematic-design completes and
+ERC passes (not after each chunk). If ERC fails, fix violations via
+verification skill, then commit the clean state. Do not commit
+intermediate broken states.
+
+## Placement Spacing Reference
 
 All coordinates are on the 1.27mm grid (auto-snapped by the tools).
-Reference designators and values are placed 3.81mm above/below the
-component center, so each component's text zone spans ~7.62mm vertically.
 
-Minimum spacing:
-- **Vertical between components**: 10.16mm (8 grid units). Prevents
-  reference/value text overlap. Use 12.7mm (10 grid units) for comfort.
-- **Horizontal between passives in a row**: 12.7mm (10 grid units).
-- **IC to its supporting passives**: 25.4mm (20 grid units) horizontal.
-  Input caps 25.4mm to the left, output caps 25.4mm to the right.
-- **Between functional stages**: 25.4–50.8mm gap (vertical or horizontal,
-  depending on layout direction).
+Minimum spacing (for modification mode and plan verification):
+- **Vertical between components**: 10.16mm (8 grid units)
+- **Horizontal between passives in a row**: 12.7mm (10 grid units)
+- **IC to its supporting passives**: 25.4mm (20 grid units) horizontal
+- **Between functional stages**: 25.4–50.8mm gap
 
-Starting position: on the default A4 landscape sheet (297x210mm), place the
-first component (input connector or leftmost element) at approximately
-**(25, 50)** to clear the page margin (10mm) and leave room for sheet
-labels. Scale proportionally for other page sizes.
+Title block clearance: ~108x32mm at bottom-right corner. On A4
+landscape (297x210mm), keep components within X < 180mm and
+Y < 175mm.
 
-If components won't fit on the default A4 sheet, use `set_page_size` to
-resize before placement. Available standard sizes: A5, A4, A3, A2, A1, A0,
-A, B, C, D, E, or "User" for custom dimensions. The placement tools will
-tell you if a position is outside the current sheet boundary and suggest
-using `set_page_size`.
-
-Title block clearance: the title block occupies ~108x32mm at the
-bottom-right corner. On A4 landscape (297x210mm), keep components
-within X < 180mm and Y < 175mm to stay clear.
-
-## Wiring Strategy
+## Wiring Strategy Reference
 
 **Use `connect_pins`** (direct Manhattan wire) when:
-- Two pins are within ~25mm of each other.
-- The wire path is visually obvious (one L-shaped segment).
-- Example: fuse output to adjacent TVS cathode, decoupling cap to IC
-  power pin.
-
-**Use `wire_pin_to_label`** (single pin to net label) when:
-- Connecting one pin to a named net that other components also reference.
-- Example: connecting an IC's VCC pin to the 5V_REL rail.
+- Two pins are within ~25mm of each other
+- The wire path is visually obvious (one L-shaped segment)
 
 **Use `wire_pins_to_net`** (batch: multiple pins to one net label) when:
-- A net connects 3 or more components that are not all adjacent.
-- The net spans across functional stages (e.g., a 5V rail feeding
-  multiple ICs).
-- Power and ground rails — always use net labels, never daisy-chain.
-
-**Do NOT default to `wire_pins_to_net` for everything.** Direct wires
-between adjacent components produce cleaner, more readable schematics.
-Net labels everywhere turns the schematic into a disconnected parts list.
+- A net connects 3 or more components that are not all adjacent
+- The net spans across functional stages
+- Power and ground rails — always use net labels, never daisy-chain
 
 ## Power and Ground
 
-- Use `add_power_symbol` for VCC, GND, and named power rails.
-  Power symbols pointing **up** for positive rails, **down** for ground.
+- Use `add_power_symbol` for VCC, GND, and named power rails
 - Use `wire_pins_to_net` for custom power nets (VIN_PROT, 5V_REL, etc.)
-  that don't have standard power symbols.
-- Place **decoupling capacitors visually adjacent** to the IC they serve,
-  connected via the same net label — not with long wires across the sheet.
+- Place decoupling capacitors visually adjacent to the IC they serve
 - Add `PWR_FLAG` on every power net that would otherwise trigger
-  "power pin not driven" ERC errors (regulator outputs, battery terminals).
+  "power pin not driven" ERC errors
 
 ## Naming
 
-- Use **uppercase descriptive names** for nets: VIN_PROT, 5V_REL, SPI_MOSI.
-- Active-low signals: suffix with `_N` (e.g., RESET_N, CS_N).
-- Do not use generic names like NET1 or WIRE3.
+- Use **uppercase descriptive names** for nets: VIN_PROT, 5V_REL,
+  SPI_MOSI
+- Active-low signals: suffix with `_N` (e.g., RESET_N, CS_N)
+- Do not use generic names like NET1 or WIRE3
 
 ## MCP Tools for This Skill
 
-These are the kicad MCP tools you should be using during schematic design:
-
 **Reading / inspection:**
 - `list_schematic_items` — list symbols, wires, labels, etc. on a sheet
-- `get_symbol_pins` — get pin names and types for a symbol
+- `get_symbol_pins` — get pin names and types for a placed symbol
 - `get_pin_positions` — get placed pin coordinates (for wiring)
 - `get_net_connections` — trace a net to see what's connected
 - `list_unconnected_pins` — find pins that need wiring or no-connect
@@ -130,7 +155,7 @@ These are the kicad MCP tools you should be using during schematic design:
 - `move_component` — reposition a placed component
 - `remove_component` — delete a placed component
 - `set_component_property` — change reference, value, footprint, etc.
-- `set_page_size` — resize the schematic sheet (A5–A0, A–E, or custom)
+- `set_page_size` — resize the schematic sheet
 - `add_lib_symbol` — load a symbol from a library into the schematic
 
 **Wiring and connectivity:**
@@ -142,9 +167,6 @@ These are the kicad MCP tools you should be using during schematic design:
 - `add_junctions` — add junction dots at wire intersections
 - `no_connect_pin` — mark a pin as intentionally unconnected
 - `remove_label` / `remove_wire` / `remove_junction` — cleanup
-  - To find wire coordinates for `remove_wire`, first call
-    `list_schematic_items(item_type="wires")` which returns x1/y1/x2/y2
-    for every wire segment.
 
 **Power and decoupling:**
 - `add_power_symbol` — place VCC, GND, +3V3, PWR_FLAG, etc.
@@ -173,24 +195,13 @@ symbol using MCP tools — NEVER by writing .kicad_sym files directly:
 1. `create_symbol_library` — create a project-local .kicad_sym file
    (if it doesn't exist yet)
 2. `add_symbol` — define the symbol with pin names, pin types, pin
-   numbers, footprint, and datasheet. The tool handles body
-   rectangles, property placement, and s-expression formatting.
-3. `add_lib_symbol` — load the custom symbol into the schematic so
-   it can be placed with `place_symbol`
-
-The `add_symbol` tool accepts full pin definitions including
-electrical type (power_in, power_out, input, output, passive,
-bidirectional, open_collector, etc.), position, rotation, and length.
+   numbers, footprint, and datasheet
+3. `add_lib_symbol` — load the custom symbol into the schematic
 
 ## Verification
 
 After completing placement and wiring:
-1. Run `run_erc` to check for violations. For hierarchical designs, you
-   can run ERC on any sub-sheet — the tool automatically redirects to the
-   root schematic and filters results to the target sheet, avoiding false
-   positives from missing hierarchy context.
-2. Fix "power pin not driven" with PWR_FLAG symbols. Note: `wire_pins_to_net`
-   auto-inserts PWR_FLAG on power_in nets that lack a power source, using the
-   system library version to avoid ERC mismatch warnings.
-3. Fix unconnected pins with `wire_pins_to_net` or `no_connect_pin`.
-4. Re-run ERC until clean.
+1. Run `run_erc` to check for violations
+2. Fix "power pin not driven" with PWR_FLAG symbols
+3. Fix unconnected pins with `wire_pins_to_net` or `no_connect_pin`
+4. Re-run ERC until clean
