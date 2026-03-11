@@ -158,6 +158,27 @@ If an exact part is not in the library:
   project-local .kicad_sym library. NEVER write .kicad_sym files
   with the Write or Edit tools — always use `add_symbol`.
 
+## MCP Tools for This Skill
+
+These are the kicad MCP tools you should be using during circuit design:
+
+**Library browsing (verify parts exist):**
+- `list_lib_symbols` — list symbols in a .kicad_sym library
+- `get_symbol_info` — get pin names, types, and properties for a symbol
+
+**Custom symbol creation (when parts aren't in built-in libs):**
+- `create_symbol_library` — create a new .kicad_sym library file
+- `add_symbol` — define a custom symbol with pins, footprint, datasheet
+
+**Project setup:**
+- `create_project` — create a new KiCad project (.kicad_pro)
+- `create_schematic` — create a new schematic sheet
+- `create_sym_lib_table` — register symbol libraries with the project
+
+**Footprint verification:**
+- `list_lib_footprints` — list footprints in a .pretty directory
+- `get_footprint_info` — check pad dimensions and pin mapping
+
 ## Output: BOM Artifact (`specs/bom.md`)
 
 Write the validated BOM to `specs/bom.md` in the KiCad project
