@@ -215,9 +215,12 @@ def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, floa
 
 
 def _point_on_wire_interior(
-    px: float, py: float,
-    ax: float, ay: float,
-    bx: float, by: float,
+    px: float,
+    py: float,
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
     tol: float = 0.01,
 ) -> bool:
     """Check if point (px, py) lies on the interior of wire segment (a->b).
@@ -250,8 +253,7 @@ def _auto_junctions(sch, new_points: list[tuple[float, float]], tol: float = 0.0
     for px, py in new_points:
         # Skip if junction already exists here
         if any(
-            abs(j.position.X - px) < tol and abs(j.position.Y - py) < tol
-            for j in sch.junctions
+            abs(j.position.X - px) < tol and abs(j.position.Y - py) < tol for j in sch.junctions
         ):
             continue
 
@@ -289,9 +291,7 @@ def get_schematic_info(schematic_path: str = SCH_PATH) -> str:
     sch = _load_sch(schematic_path)
     page_w, page_h = _get_page_size(sch)
     wire_count = sum(
-        1
-        for g in sch.graphicalItems
-        if isinstance(g, Connection) and g.type == "wire"
+        1 for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"
     )
     return (
         f"Page: {sch.paper.paperSize} ({page_w}x{page_h}mm)\n"
@@ -1343,8 +1343,7 @@ def wire_pins_to_net(
                     break
             if not resolved:
                 warnings.append(
-                    f"{ref}:{pin_name} stub collides with existing net; "
-                    "no safe direction found"
+                    f"{ref}:{pin_name} stub collides with existing net; no safe direction found"
                 )
 
         # Wire stub

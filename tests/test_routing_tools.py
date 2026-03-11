@@ -517,15 +517,15 @@ class TestConnectPinsNoSnap:
         # TestPart U1 at (100,100): pin IN at (94.92, 100), pin OUT at (105.08, 100)
         # These pin positions are NOT on the 1.27mm grid.
         result = schematic.connect_pins(
-            ref1="U1", pin1="IN", ref2="U1", pin2="OUT",
+            ref1="U1",
+            pin1="IN",
+            ref2="U1",
+            pin2="OUT",
             schematic_path=path,
         )
         assert "Connected" in result
         sch = reparse(path)
-        wires = [
-            g for g in sch.graphicalItems
-            if isinstance(g, Connection) and g.type == "wire"
-        ]
+        wires = [g for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"]
         # Collect all wire endpoints
         endpoints = set()
         for w in wires:
@@ -552,6 +552,7 @@ class TestStubCollision:
         # Place R2 close to R1
         from conftest import _default_effects as _de
         from conftest import _gen_uuid as _gu
+
         r2 = SchematicSymbol()
         r2.libId = "Device:R"
         r2.libName = "R"
@@ -561,16 +562,34 @@ class TestStubCollision:
         r2.inBom = True
         r2.onBoard = True
         r2.properties = [
-            Property(key="Reference", value="R2", id=0, effects=_de(),
-                     position=Position(X=100, Y=103.81, angle=0)),
-            Property(key="Value", value="10K", id=1, effects=_de(),
-                     position=Position(X=100, Y=111.43, angle=0)),
-            Property(key="Footprint", value="", id=2,
-                     effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                     position=Position(X=100, Y=107.62, angle=0)),
-            Property(key="Datasheet", value="~", id=3,
-                     effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                     position=Position(X=100, Y=107.62, angle=0)),
+            Property(
+                key="Reference",
+                value="R2",
+                id=0,
+                effects=_de(),
+                position=Position(X=100, Y=103.81, angle=0),
+            ),
+            Property(
+                key="Value",
+                value="10K",
+                id=1,
+                effects=_de(),
+                position=Position(X=100, Y=111.43, angle=0),
+            ),
+            Property(
+                key="Footprint",
+                value="",
+                id=2,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=107.62, angle=0),
+            ),
+            Property(
+                key="Datasheet",
+                value="~",
+                id=3,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=107.62, angle=0),
+            ),
         ]
         r2.pins = {"1": _gu(), "2": _gu()}
         sch.schematicSymbols.append(r2)
@@ -763,10 +782,9 @@ class TestAutoJunctions:
         sch_after2 = reparse(sch_path)
         assert len(sch_after2.junctions) >= 1
         junc_positions = [(j.position.X, j.position.Y) for j in sch_after2.junctions]
-        assert any(
-            abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02
-            for x, y in junc_positions
-        ), f"Expected junction near (100, 96.19), got {junc_positions}"
+        assert any(abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02 for x, y in junc_positions), (
+            f"Expected junction near (100, 96.19), got {junc_positions}"
+        )
 
     def test_no_junction_at_wire_endpoint(self, tmp_path):
         """No junction added when new wire meets existing wire at its endpoint."""
@@ -841,8 +859,7 @@ class TestAutoJunctions:
         # Count junctions near (100, 96.19)
         junc_positions = [(j.position.X, j.position.Y) for j in sch_after2.junctions]
         near_count = sum(
-            1 for x, y in junc_positions
-            if abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02
+            1 for x, y in junc_positions if abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02
         )
         assert near_count == 1, f"Expected 1 junction near (100, 96.19), got {near_count}"
 
@@ -882,7 +899,6 @@ class TestAutoJunctions:
 
         sch_after = reparse(sch_path)
         junc_positions = [(j.position.X, j.position.Y) for j in sch_after.junctions]
-        assert any(
-            abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02
-            for x, y in junc_positions
-        ), f"Expected junction near (100, 96.19), got {junc_positions}"
+        assert any(abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02 for x, y in junc_positions), (
+            f"Expected junction near (100, 96.19), got {junc_positions}"
+        )

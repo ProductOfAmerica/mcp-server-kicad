@@ -237,8 +237,17 @@ class TestAddSymbol:
         lib_path = tmp_path / "power.kicad_sym"
         symbol.add_symbol(
             name="VCC_3V3",
-            pins=[{"number": "1", "name": "VCC_3V3", "type": "power_in",
-                   "x": 0, "y": 0, "rotation": 90, "length": 0}],
+            pins=[
+                {
+                    "number": "1",
+                    "name": "VCC_3V3",
+                    "type": "power_in",
+                    "x": 0,
+                    "y": 0,
+                    "rotation": 90,
+                    "length": 0,
+                }
+            ],
             is_power=True,
             in_bom=False,
             reference_prefix="#PWR",
@@ -270,15 +279,9 @@ class TestAddSymbol:
         """Add multiple symbols to the same library sequentially."""
         lib_path = tmp_path / "multi.kicad_sym"
 
-        symbol.add_symbol(
-            name="PartA", pins=_two_pin_passive(), symbol_lib_path=str(lib_path)
-        )
-        symbol.add_symbol(
-            name="PartB", pins=_two_pin_passive(), symbol_lib_path=str(lib_path)
-        )
-        symbol.add_symbol(
-            name="PartC", pins=_two_pin_passive(), symbol_lib_path=str(lib_path)
-        )
+        symbol.add_symbol(name="PartA", pins=_two_pin_passive(), symbol_lib_path=str(lib_path))
+        symbol.add_symbol(name="PartB", pins=_two_pin_passive(), symbol_lib_path=str(lib_path))
+        symbol.add_symbol(name="PartC", pins=_two_pin_passive(), symbol_lib_path=str(lib_path))
 
         listing = symbol.list_lib_symbols(str(lib_path))
         assert "PartA" in listing

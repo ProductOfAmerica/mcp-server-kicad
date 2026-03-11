@@ -190,8 +190,7 @@ def add_symbol(
                 return f"Error: pin {i} missing required key '{key}'."
         if p["type"] not in _VALID_PIN_TYPES:
             return (
-                f"Error: pin {i} has invalid type '{p['type']}'. "
-                f"Valid: {sorted(_VALID_PIN_TYPES)}"
+                f"Error: pin {i} has invalid type '{p['type']}'. Valid: {sorted(_VALID_PIN_TYPES)}"
             )
 
     # Load or create library
