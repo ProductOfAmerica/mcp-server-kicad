@@ -25,6 +25,12 @@ If you find yourself thinking "there's no MCP tool for this," you are
 wrong. Check the tool list again.
 </CRITICAL-RULE>
 
+<HARD-GATE>
+No phase proceeds past verification without zero violations.
+"Probably clean" is not evidence. Run the check, show the output,
+confirm violation_count = 0.
+</HARD-GATE>
+
 # KiCad Design Verification
 
 Systematic workflows for fixing ERC and DRC violations. Run these
@@ -147,6 +153,17 @@ After fixing all violations, run `run_erc` again. Repeat until the
 violation count is zero. Do not leave warnings unaddressed — each
 one is either a real problem or needs an explicit no-connect.
 
+**Verification-before-completion:** Before claiming ERC is clean, you
+must show actual tool output with `violation_count: 0`. No claims
+without fresh evidence. Previous results are stale after fixes.
+
+**Stuck escalation:** If ERC violations cannot be resolved (e.g.,
+requires a design change that invalidates the schematic plan), report
+the situation to the user. Options:
+- Re-run from schematic-plan with updated constraints
+- Accept known violations with explicit user approval
+- Abort
+
 ## DRC Workflow (PCB)
 
 ### Step 1: Run DRC
@@ -196,6 +213,25 @@ A trace is narrower than the design rule minimum.
 
 Repeat until zero violations. Manufacturing houses will reject boards
 with DRC errors.
+
+**Verification-before-completion:** Before claiming DRC is clean, you
+must show actual tool output with `violation_count: 0`. No claims
+without fresh evidence. Previous results are stale after fixes.
+
+**Stuck escalation:** If DRC violations cannot be resolved (e.g.,
+requires a design change), report the situation to the user. Options:
+- Re-run from pcb-layout with adjusted placement
+- Accept known violations with explicit user approval
+- Abort
+
+## Two Gate Points
+
+This skill is invoked at two points in the pipeline:
+- **After schematic-design:** ERC gate — blocks PCB layout until clean
+- **After pcb-layout:** DRC gate — blocks export until clean
+
+Same skill, different context. The pipeline orchestrator (`using-kicad`)
+determines which gate you're at.
 
 ## Pre-Manufacturing Checklist
 
