@@ -135,6 +135,9 @@ These are the kicad MCP tools you should be using during schematic design:
 - `add_junctions` — add junction dots at wire intersections
 - `no_connect_pin` — mark a pin as intentionally unconnected
 - `remove_label` / `remove_wire` / `remove_junction` — cleanup
+  - To find wire coordinates for `remove_wire`, first call
+    `list_schematic_items(item_type="wires")` which returns x1/y1/x2/y2
+    for every wire segment.
 
 **Power and decoupling:**
 - `add_power_symbol` — place VCC, GND, +3V3, PWR_FLAG, etc.

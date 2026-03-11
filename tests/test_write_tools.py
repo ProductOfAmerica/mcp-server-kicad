@@ -306,6 +306,73 @@ class TestPlaceComponent:
         if "Device" in result:
             assert "Q_PMOS" in result or "available" in result.lower()
 
+    def test_fuzzy_match_no_substring_noise(self, tmp_path: Path):
+        """Short name 'D' must not suggest unrelated 'Q_PMOS_GSD'.
+
+        Regression: old substring matching matched 'D' against 'Q_PMOS_GSD'
+        because 'd' appeared inside 'gsd'.
+        """
+        from kiutils.symbol import Symbol, SymbolLib
+
+        lib = SymbolLib(version="20231120", generator="kicad_symbol_editor")
+        for name in ["Q_PMOS_GSD", "D_Schottky", "LED", "D_TVS"]:
+            s = Symbol()
+            s.entryName = name
+            lib.symbols.append(s)
+        lib_path = tmp_path / "TestLib.kicad_sym"
+        lib.filePath = str(lib_path)
+        lib.to_file()
+
+        sch_path = tmp_path / "test.kicad_sch"
+        from conftest import new_schematic
+
+        sch = new_schematic()
+        sch.filePath = str(sch_path)
+        sch.to_file()
+
+        result = schematic.place_component(
+            lib_id="TestLib:D",
+            reference="D1",
+            value="test",
+            x=100,
+            y=100,
+            schematic_path=str(sch_path),
+            symbol_lib_path=str(lib_path),
+        )
+        assert "not found" in result.lower()
+        # Old substring matching would include Q_PMOS_GSD; difflib should not
+        assert "Q_PMOS_GSD" not in result
+
+    def test_no_matches_suggests_cross_library_search(self, tmp_path: Path):
+        """When no close matches found, suggest list_lib_symbols."""
+        from kiutils.symbol import Symbol, SymbolLib
+
+        lib = SymbolLib(version="20231120", generator="kicad_symbol_editor")
+        for name in ["Q_PMOS_GSD", "Q_NMOS_GSD"]:
+            s = Symbol()
+            s.entryName = name
+            lib.symbols.append(s)
+        lib_path = tmp_path / "TestLib.kicad_sym"
+        lib.filePath = str(lib_path)
+        lib.to_file()
+
+        sch_path = tmp_path / "test.kicad_sch"
+        sch = new_schematic()
+        sch.filePath = str(sch_path)
+        sch.to_file()
+
+        result = schematic.place_component(
+            lib_id="TestLib:TOTALLY_UNRELATED",
+            reference="U1",
+            value="test",
+            x=100,
+            y=100,
+            schematic_path=str(sch_path),
+            symbol_lib_path=str(lib_path),
+        )
+        assert "not found" in result.lower()
+        assert "list_lib_symbols" in result
+
     def test_sub_sheet_instances_use_root_project(self, tmp_path: Path):
         """Components in sub-sheets must use root project name and full hierarchy path."""
         from kiutils.items.common import Effects, Font, Position, Property
@@ -568,7 +635,10 @@ class TestRemoveLabel:
 
     def test_remove_by_text_and_position(self, scratch_sch):
         """Remove only the label at a specific position."""
-        # Add a second label with the same text at a different location
+        # Use grid-aligned coordinates (199.39 = 157 * 1.27mm grid)
+        # add_label snaps inputs to grid, so remove_label must use the
+        # actual stored position (no longer auto-snapped).
+        snapped = round(200 / 1.27) * 1.27  # 199.39
         schematic.add_label(
             text="TEST_NET",
             x=200,
@@ -577,8 +647,8 @@ class TestRemoveLabel:
         )
         result = schematic.remove_label(
             text="TEST_NET",
-            x=200,
-            y=200,
+            x=snapped,
+            y=snapped,
             schematic_path=str(scratch_sch),
         )
         assert "Removed 1" in result
@@ -593,6 +663,62 @@ class TestRemoveLabel:
             schematic_path=str(scratch_sch),
         )
         assert "not found" in result.lower() or "0" in result
+
+    def test_remove_off_grid_label_by_exact_position(self, scratch_sch):
+        """Label at non-grid position (50, 50) is removable by its exact coords.
+
+        Regression: old code snapped filter coords to the 1.27mm grid,
+        so (50, 50) became (49.53, 49.53) which didn't match the stored
+        position, making the label impossible to remove by position.
+        """
+        result = schematic.remove_label(
+            text="TEST_NET",
+            x=50,
+            y=50,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Removed 1" in result
+        sch = reparse(str(scratch_sch))
+        assert not any(lbl.text == "TEST_NET" for lbl in sch.labels)
+
+    def test_no_over_deletion_near_same_grid_point(self, scratch_sch):
+        """Two labels >0.1mm apart but near the same grid point: only the
+        targeted one is removed.
+
+        Regression: old code snapped filter coords to the grid, so both
+        labels (within 0.1mm of the snap point) matched and were deleted.
+        """
+        from kiutils.items.common import Position
+        from kiutils.items.schitems import LocalLabel
+
+        sch = reparse(str(scratch_sch))
+        # Place two labels at off-grid positions that both snap to 49.53
+        # but are 0.16mm apart (> 0.1mm tolerance).
+        sch.labels.append(
+            LocalLabel(
+                text="SNAP_A",
+                position=Position(X=49.45, Y=100.33, angle=0),
+            )
+        )
+        sch.labels.append(
+            LocalLabel(
+                text="SNAP_A",
+                position=Position(X=49.61, Y=100.33, angle=0),
+            )
+        )
+        sch.to_file()
+
+        result = schematic.remove_label(
+            text="SNAP_A",
+            x=49.45,
+            y=100.33,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Removed 1" in result
+        sch = reparse(str(scratch_sch))
+        remaining = [lbl for lbl in sch.labels if lbl.text == "SNAP_A"]
+        assert len(remaining) == 1
+        assert abs(remaining[0].position.X - 49.61) < 0.01
 
 
 # ===========================================================================
@@ -832,6 +958,49 @@ class TestPageBoundary:
         )
         assert "Placed" in result
 
+    def test_add_label_out_of_bounds(self, scratch_sch):
+        result = schematic.add_label(
+            text="OOB", x=350, y=100, schematic_path=str(scratch_sch)
+        )
+        assert "Error" in result
+        assert "outside" in result
+
+    def test_add_wires_out_of_bounds(self, scratch_sch):
+        result = schematic.add_wires(
+            wires=[{"x1": 350, "y1": 100, "x2": 360, "y2": 100}],
+            schematic_path=str(scratch_sch),
+        )
+        assert "Error" in result
+        assert "outside" in result
+
+    def test_add_junctions_out_of_bounds(self, scratch_sch):
+        result = schematic.add_junctions(
+            points=[{"x": 350, "y": 100}], schematic_path=str(scratch_sch)
+        )
+        assert "Error" in result
+        assert "outside" in result
+
+    def test_move_component_out_of_bounds(self, scratch_sch):
+        result = schematic.move_component(
+            reference="R1", x=350, y=100, schematic_path=str(scratch_sch)
+        )
+        assert "Error" in result
+        assert "outside" in result
+
+    def test_add_global_label_out_of_bounds(self, scratch_sch):
+        result = schematic.add_global_label(
+            text="OOB", x=350, y=100, schematic_path=str(scratch_sch)
+        )
+        assert "Error" in result
+        assert "outside" in result
+
+    def test_add_text_out_of_bounds(self, scratch_sch):
+        result = schematic.add_text(
+            text="OOB", x=350, y=100, schematic_path=str(scratch_sch)
+        )
+        assert "Error" in result
+        assert "outside" in result
+
 
 # ===========================================================================
 # TestReferenceValidation (Bug 4)
@@ -851,18 +1020,18 @@ class TestReferenceValidation:
         )
         assert "Placed" in result
 
-    def test_invalid_ref_c5b(self, scratch_sch):
+    def test_letter_suffix_ref_accepted(self, scratch_sch):
+        """KiCad accepts letter suffixes after the number (e.g. C5B, R1A)."""
         result = schematic.place_component(
             lib_id="Device:R",
             reference="C5B",
             value="1K",
-            x=100,
+            x=130,
             y=100,
             schematic_path=str(scratch_sch),
             project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
-        assert "Error" in result
-        assert "valid" in result.lower()
+        assert "Placed" in result
 
     def test_empty_ref_rejected(self, scratch_sch):
         result = schematic.place_component(
@@ -900,3 +1069,16 @@ class TestReferenceValidation:
             project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Placed" in result
+
+    def test_lowercase_ref_rejected(self, scratch_sch):
+        """Lowercase references like 'r1' should still be rejected."""
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="r1",
+            value="1K",
+            x=100,
+            y=100,
+            schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+        )
+        assert "Error" in result

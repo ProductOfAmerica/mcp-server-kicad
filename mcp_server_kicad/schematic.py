@@ -1,5 +1,6 @@
 """KiCad Schematic MCP Server — schematic manipulation, ERC analysis, and schematic export tools."""
 
+import difflib
 import json
 import math
 import os
@@ -61,6 +62,10 @@ mcp = FastMCP(
         "3. Wire using wire_pin_to_label (pin-to-net) or connect_pins (pin-to-pin)\n"
         "4. For bulk wiring, use wire_pins_to_net (multiple pins to one net)\n"
         "5. Verify with list_labels and get_net_connections\n\n"
+        "CLEANUP WORKFLOW:\n"
+        "- To find existing wires before removal, use"
+        " list_schematic_items(item_type='wires') which returns x1/y1/x2/y2"
+        " endpoints for every wire segment. Pass those coordinates to remove_wire.\n\n"
         "ERC WORKFLOW:\n"
         "1. Run run_erc to get violations\n"
         "2. Fix 'power pin not driven' with add_power_symbol (lib_id='power:PWR_FLAG')\n"
@@ -86,7 +91,7 @@ _PAGE_SIZES: dict[str, tuple[float, float]] = {
     "E": (1117.6, 863.6),
 }
 
-_VALID_REF_RE = re.compile(r"^#?[A-Z]+[0-9]+$")
+_VALID_REF_RE = re.compile(r"^#?[A-Z]+[0-9]+[A-Z]*$")
 
 
 def _get_page_size(sch) -> tuple[float, float]:
@@ -101,6 +106,17 @@ def _get_page_size(sch) -> tuple[float, float]:
     if getattr(paper, "portrait", False):
         w, h = h, w
     return w, h
+
+
+def _validate_position(x: float, y: float, sch) -> str | None:
+    """Return an error string if (x, y) is outside the sheet boundary, else None."""
+    page_w, page_h = _get_page_size(sch)
+    if x < 0 or x > page_w or y < 0 or y > page_h:
+        return (
+            f"Error: position ({x}, {y}) is outside the sheet boundary "
+            f"({page_w}x{page_h}mm). Use coordinates within the drawable area."
+        )
+    return None
 
 
 def _find_lib_symbol(sch, lib_id: str):
@@ -165,11 +181,11 @@ def _transform_pin_pos(
     else:
         abs_pin_angle = -pin_angle + comp_angle_deg
 
-    # Apply rotation (KiCad rotates CCW)
+    # Apply rotation (KiCad rotates CW in the Y-down coordinate system)
     cos_a = math.cos(angle_rad)
     sin_a = math.sin(angle_rad)
-    final_x = cx + px * cos_a - py * sin_a
-    final_y = cy + px * sin_a + py * cos_a
+    final_x = cx + px * cos_a + py * sin_a
+    final_y = cy - px * sin_a + py * cos_a
 
     # Outward direction (away from body)
     outward = (abs_pin_angle + 180) % 360
@@ -545,18 +561,15 @@ def place_component(
     if not _VALID_REF_RE.match(reference):
         return (
             f"Error: '{reference}' is not a valid KiCad reference designator. "
-            "Must match pattern [A-Z]+[0-9]+ (e.g. 'R1', 'U2', 'C10')."
+            "Must match pattern [A-Z]+[0-9]+[A-Z]* (e.g. 'R1', 'U2', 'C5B')."
         )
 
     sch = _load_sch(schematic_path)
 
     # Validate position against page boundaries
-    page_w, page_h = _get_page_size(sch)
-    if x < 0 or x > page_w or y < 0 or y > page_h:
-        return (
-            f"Error: position ({x}, {y}) is outside the sheet boundary "
-            f"({page_w}x{page_h}mm). Use coordinates within the drawable area."
-        )
+    err = _validate_position(x, y, sch)
+    if err:
+        return err
 
     # Snap placement to grid
     x = _snap_grid(x)
@@ -581,15 +594,13 @@ def place_component(
     if not _find_lib_symbol(sch, lib_id) and ":" in lib_id:
         if _loaded_sym_lib is not None:
             available = [s.entryName for s in _loaded_sym_lib.symbols]
-            similar = [
-                n
-                for n in available
-                if symbol_name.lower() in n.lower() or n.lower() in symbol_name.lower()
-            ]
+            similar = difflib.get_close_matches(symbol_name, available, n=5, cutoff=0.4)
+            lib_prefix = lib_id.split(":")[0]
             hint = ""
             if similar:
-                hint = f" Similar: {', '.join(similar[:5])}"
-            lib_prefix = lib_id.split(":")[0]
+                hint = f" Similar: {', '.join(similar)}"
+            else:
+                hint = " Try list_lib_symbols to search across all libraries."
             return f"Error: symbol '{symbol_name}' not found in {lib_prefix} library.{hint}"
 
     # Create instance — set libName to match the lib_symbol's name as stored
@@ -716,9 +727,8 @@ def remove_label(
     """
     sch = _load_sch(schematic_path)
     tol = 0.1
-    # Snap filter coordinates the same way add_label snaps placement coords
     if x is not None and y is not None:
-        x, y = _snap_grid(x), _snap_grid(y)
+        pass  # Compare directly against stored positions — no grid snapping
     removed = []
     remaining = []
     for lbl in sch.labels:
@@ -749,6 +759,7 @@ def remove_wire(
     """Remove a wire segment by its endpoint coordinates.
 
     Matches wires with endpoints within 0.1mm tolerance (in either order).
+    Use list_schematic_items(item_type="wires") to get wire coordinates first.
 
     Args:
         x1: Start X
@@ -820,6 +831,10 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
     """
     sch = _load_sch(schematic_path)
     for w in wires:
+        for xk, yk in [("x1", "y1"), ("x2", "y2")]:
+            err = _validate_position(w[xk], w[yk], sch)
+            if err:
+                return err
         wire = Connection(
             type="wire",
             points=[
@@ -848,6 +863,9 @@ def add_label(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
+    err = _validate_position(x, y, sch)
+    if err:
+        return err
     x, y = _snap_grid(x), _snap_grid(y)
     label = LocalLabel(
         text=text,
@@ -870,6 +888,9 @@ def add_junctions(points: list[dict], schematic_path: str = SCH_PATH) -> str:
     """
     sch = _load_sch(schematic_path)
     for p in points:
+        err = _validate_position(p["x"], p["y"], sch)
+        if err:
+            return err
         junc = Junction(
             position=Position(X=_snap_grid(p["x"]), Y=_snap_grid(p["y"])),
             diameter=0,
@@ -920,6 +941,9 @@ def move_component(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
+    err = _validate_position(x, y, sch)
+    if err:
+        return err
     x, y = _snap_grid(x), _snap_grid(y)
     for sym in sch.schematicSymbols:
         if any(p.key == "Reference" and p.value == reference for p in sym.properties):
@@ -992,6 +1016,9 @@ def add_global_label(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
+    err = _validate_position(x, y, sch)
+    if err:
+        return err
     x, y = _snap_grid(x), _snap_grid(y)
     gl = GlobalLabel(
         text=text,
@@ -1166,6 +1193,9 @@ def add_text(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
+    err = _validate_position(x, y, sch)
+    if err:
+        return err
     t = Text(
         text=text,
         position=Position(X=x, Y=y, angle=rotation),
