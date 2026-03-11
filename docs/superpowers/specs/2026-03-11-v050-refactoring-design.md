@@ -55,7 +55,7 @@ Actual tool counts by module: schematic (30), pcb (19), symbol (5), footprint (4
 
 **Action:** Delete `add_power_rail` function and its tests. No changes to `add_power_symbol` or `wire_pins_to_net`.
 
-**Note:** `add_power_rail` auto-derives the net name from `lib_id` (e.g. `"power:VCC"` -> `"VCC"`). Skills/instructions should guide the LLM to extract the net name from `lib_id` when calling `wire_pins_to_net` separately.
+**Note:** `add_power_rail` auto-derives the net name from `lib_id` (e.g. `"power:VCC"` -> `"VCC"`) and forwards `project_path` to `add_power_symbol`. Skills/instructions should guide the LLM to: (1) extract the net name from `lib_id` when calling `wire_pins_to_net` separately, and (2) pass `project_path` to `add_power_symbol` when working in sub-sheets.
 
 ### 2c. Merge `get_schematic_info()` into `list_schematic_items(item_type="summary")`
 
