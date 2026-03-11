@@ -6,7 +6,7 @@
   },
   "repository": "https://github.com/ProductOfAmerica/mcp-server-kicad",
   "homepage": "https://github.com/ProductOfAmerica/mcp-server-kicad",
-  "version": "0.5.12",
+  "version": "0.6.0",
   "license": "MIT",
   "mcpServers": {
     "kicad": {
