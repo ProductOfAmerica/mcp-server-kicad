@@ -25,6 +25,39 @@ from kiutils.items.schitems import (
 from kiutils.items.zones import Zone
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
+from mcp.types import ToolAnnotations
+
+# ---------------------------------------------------------------------------
+# Tool annotation presets
+# ---------------------------------------------------------------------------
+
+_READ_ONLY = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
+
+_ADDITIVE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=False,
+    idempotentHint=False,
+    openWorldHint=False,
+)
+
+_DESTRUCTIVE = ToolAnnotations(
+    readOnlyHint=False,
+    destructiveHint=True,
+    idempotentHint=False,
+    openWorldHint=False,
+)
+
+_EXPORT = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
 
 # ---------------------------------------------------------------------------
 # Re-exports (for convenient "from _shared import ..." in server modules)
@@ -65,6 +98,11 @@ __all__ = [
     "PCB_PATH",
     "FP_LIB_PATH",
     "OUTPUT_DIR",
+    # tool annotation presets
+    "_READ_ONLY",
+    "_ADDITIVE",
+    "_DESTRUCTIVE",
+    "_EXPORT",
     # helpers
     "_cwd",
     "_resolve_config",

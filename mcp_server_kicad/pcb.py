@@ -16,6 +16,10 @@ from mcp_server_kicad._shared import (
     Position,
     Segment,
     Via,
+    _ADDITIVE,
+    _DESTRUCTIVE,
+    _EXPORT,
+    _READ_ONLY,
     _default_effects,
     _file_meta,
     _fp_ref,
@@ -52,7 +56,7 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_pcb_items(item_type: str, pcb_path: str = PCB_PATH) -> str:
     """List PCB items by type.
 
@@ -165,7 +169,7 @@ def list_pcb_items(item_type: str, pcb_path: str = PCB_PATH) -> str:
         )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_board_info(pcb_path: str = PCB_PATH) -> str:
     """Get board summary: footprint count, trace count, net count, thickness."""
     board = _load_board(pcb_path)
@@ -181,7 +185,7 @@ def get_board_info(pcb_path: str = PCB_PATH) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
     """Get pad info for a placed footprint on the PCB.
 
@@ -211,7 +215,7 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def place_footprint(
     reference: str,
     value: str,
@@ -258,7 +262,7 @@ def place_footprint(
     return f"Placed {reference} ({value}) at ({x}, {y}) on {layer}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def move_footprint(
     reference: str,
     x: float,
@@ -291,7 +295,7 @@ def move_footprint(
     return f"Footprint {reference} not found."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE)
 def remove_footprint(reference: str, pcb_path: str = PCB_PATH) -> str:
     """Remove a footprint by reference designator.
 
@@ -312,7 +316,7 @@ def remove_footprint(reference: str, pcb_path: str = PCB_PATH) -> str:
     return f"Removed {reference}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_trace(
     x1: float,
     y1: float,
@@ -348,7 +352,7 @@ def add_trace(
     return f"Trace: ({x1}, {y1}) -> ({x2}, {y2}) w={width} {layer}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_via(
     x: float,
     y: float,
@@ -382,7 +386,7 @@ def add_via(
     return f"Via at ({x}, {y}) size={size} drill={drill}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_pcb_text(
     text: str,
     x: float,
@@ -413,7 +417,7 @@ def add_pcb_text(
     return f"Text '{text}' at ({x}, {y}) on {layer}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_pcb_line(
     x1: float,
     y1: float,
@@ -451,7 +455,7 @@ def add_pcb_line(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
     """Run Design Rules Check (DRC) on a PCB.
 
@@ -491,7 +495,7 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_pcb(
     format: str = "pdf",
     pcb_path: str = PCB_PATH,
@@ -536,7 +540,7 @@ def export_pcb(
         return json.dumps({"error": str(e), "format": fmt}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_gerbers(
     pcb_path: str = PCB_PATH,
     output_dir: str = OUTPUT_DIR,
@@ -570,7 +574,7 @@ def export_gerbers(
         return json.dumps({"error": str(e)}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_gerber(
     pcb_path: str = PCB_PATH,
     layer: str = "F.Cu",
@@ -594,7 +598,7 @@ def export_gerber(
         return json.dumps({"error": str(e), "format": "gerber", "layer": layer}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_3d(
     format: str = "step",
     pcb_path: str = PCB_PATH,
@@ -621,7 +625,7 @@ def export_3d(
         return json.dumps({"error": str(e), "format": fmt}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_positions(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
     """Export component position file (pick and place).
 
@@ -642,7 +646,7 @@ def export_positions(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> 
         return json.dumps({"error": str(e)}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def render_3d(
     pcb_path: str = PCB_PATH,
     output_dir: str = OUTPUT_DIR,
@@ -688,7 +692,7 @@ def render_3d(
         return json.dumps({"error": str(e), "format": "png"}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_pcb_dxf(
     pcb_path: str = PCB_PATH,
     output: str = "",
@@ -731,7 +735,7 @@ def export_pcb_dxf(
     return json.dumps({**_file_meta(out), "layers": layers})
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_ipc2581(
     pcb_path: str = PCB_PATH,
     output: str = "",

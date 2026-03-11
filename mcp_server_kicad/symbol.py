@@ -14,6 +14,10 @@ from mcp_server_kicad._shared import (
     OUTPUT_DIR,
     SYM_LIB_PATH,
     SymbolLib,
+    _ADDITIVE,
+    _DESTRUCTIVE,
+    _EXPORT,
+    _READ_ONLY,
     _run_cli,
 )
 
@@ -53,7 +57,7 @@ _VALID_PIN_TYPES = {
 # ── Library browsing ──────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_lib_symbols(symbol_lib_path: str = SYM_LIB_PATH) -> str:
     """List all symbols in a .kicad_sym library file.
 
@@ -68,7 +72,7 @@ def list_lib_symbols(symbol_lib_path: str = SYM_LIB_PATH) -> str:
     return "\n".join(lines) if lines else "No symbols found."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> str:
     """Get detailed pin and property info for a symbol in a library.
 
@@ -128,7 +132,7 @@ def _auto_body_rect(pins_data: list[dict]) -> tuple[float, float, float, float]:
     return (round(min_x, 4), round(min_y, 4), round(max_x, 4), round(max_y, 4))
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_symbol(
     name: str,
     pins: list[dict],
@@ -300,7 +304,7 @@ def add_symbol(
 # ── Export & upgrade (wraps kicad-cli) ────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_symbol_svg(symbol_lib_path: str = SYM_LIB_PATH, output_dir: str = OUTPUT_DIR) -> str:
     """Export symbol library to SVG images.
 
@@ -326,7 +330,7 @@ def export_symbol_svg(symbol_lib_path: str = SYM_LIB_PATH, output_dir: str = OUT
         return json.dumps({"error": str(e), "format": "svg"}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE)
 def upgrade_symbol_lib(symbol_lib_path: str) -> str:
     """Upgrade a symbol library to current KiCad format.
 

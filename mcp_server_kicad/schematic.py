@@ -26,6 +26,10 @@ from mcp_server_kicad._shared import (
     SymbolProjectInstance,
     SymbolProjectPath,
     Text,
+    _ADDITIVE,
+    _DESTRUCTIVE,
+    _EXPORT,
+    _READ_ONLY,
     _default_effects,
     _default_stroke,
     _file_meta,
@@ -215,7 +219,7 @@ def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, floa
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_schematic_info(schematic_path: str = SCH_PATH) -> str:
     """Get schematic summary: page size, component count, label count, wire count.
 
@@ -238,7 +242,7 @@ def get_schematic_info(schematic_path: str = SCH_PATH) -> str:
     )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
     """List schematic items by type.
 
@@ -298,7 +302,7 @@ def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
         )
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
     """Get pin info for a symbol in the schematic's lib_symbols.
 
@@ -322,7 +326,7 @@ def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
     return f"'{symbol_name}' not found."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
     """Get absolute pin positions for a placed component (accounts for rotation/mirror).
 
@@ -369,7 +373,7 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_net_connections(
     label_text: str,
     schematic_path: str = SCH_PATH,
@@ -458,7 +462,7 @@ def get_net_connections(
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def place_component(
     lib_id: str,
     reference: str,
@@ -611,7 +615,7 @@ def place_component(
     return f"Placed {reference} ({value}) at ({x}, {y})"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE)
 def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
     """Remove a component by reference designator.
 
@@ -632,7 +636,7 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
     return f"Removed {reference}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE)
 def remove_label(
     text: str,
     x: float | None = None,
@@ -675,7 +679,7 @@ def remove_label(
     return f"Removed {len(removed)} label(s) '{text}'."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE)
 def remove_wire(
     x1: float,
     y1: float,
@@ -724,7 +728,7 @@ def remove_wire(
     return f"Removed {len(removed)} wire(s)."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE)
 def remove_junction(
     x: float,
     y: float,
@@ -747,7 +751,7 @@ def remove_junction(
     return f"Junction at ({x}, {y}) not found."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
     """Add multiple wires at once. Each wire dict has keys: x1, y1, x2, y2.
 
@@ -771,7 +775,7 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
     return f"Added {len(wires)} wires"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_label(
     text: str, x: float, y: float, rotation: float = 0, schematic_path: str = SCH_PATH
 ) -> str:
@@ -797,7 +801,7 @@ def add_label(
     return f"Label '{text}' at ({x}, {y})"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_junctions(points: list[dict], schematic_path: str = SCH_PATH) -> str:
     """Add multiple junctions. Each point dict has keys: x, y.
 
@@ -818,7 +822,7 @@ def add_junctions(points: list[dict], schematic_path: str = SCH_PATH) -> str:
     return f"Added {len(points)} junctions"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str = SCH_PATH) -> str:
     """Load a symbol definition from a .kicad_sym library into the schematic.
 
@@ -839,7 +843,7 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
     return f"'{symbol_name}' not found in {symbol_lib_path}."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def move_component(
     reference: str,
     x: float,
@@ -869,7 +873,7 @@ def move_component(
     return f"Component {reference} not found."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def set_component_property(
     reference: str,
     key: str,
@@ -909,7 +913,7 @@ def set_component_property(
     return f"Component {reference} not found."
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_global_label(
     text: str,
     x: float,
@@ -942,7 +946,7 @@ def add_global_label(
     return f"Global label '{text}' ({shape}) at ({x}, {y})"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_no_connect(x: float, y: float, schematic_path: str = SCH_PATH) -> str:
     """Add a no-connect flag on an unused pin.
 
@@ -959,7 +963,7 @@ def add_no_connect(x: float, y: float, schematic_path: str = SCH_PATH) -> str:
     return f"No-connect at ({x}, {y})"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_power_symbol(
     lib_id: str,
     reference: str,
@@ -1033,7 +1037,7 @@ def add_power_symbol(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_power_rail(
     lib_id: str,
     reference: str,
@@ -1086,7 +1090,7 @@ def add_power_rail(
     return result
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def auto_place_decoupling_cap(
     lib_id: str,
     reference: str,
@@ -1148,7 +1152,7 @@ def auto_place_decoupling_cap(
     return f"{result} | pin 1->{power_net} | pin 2->{ground_net}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_text(
     text: str,
     x: float,
@@ -1193,7 +1197,7 @@ _DIR_OFFSETS = {
 _ANGLE_TO_DIR = {0: "right", 90: "down", 180: "left", 270: "up"}
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def wire_pins_to_net(
     pins: list[dict],
     label_text: str,
@@ -1311,7 +1315,7 @@ def wire_pins_to_net(
     return msg
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def connect_pins(
     ref1: str,
     pin1: str,
@@ -1373,7 +1377,7 @@ def connect_pins(
     return f"Connected {ref1}:{pin1} -> {ref2}:{pin2} via {n} wire segment{'s' if n > 1 else ''}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def no_connect_pin(
     reference: str,
     pin_name: str,
@@ -1447,7 +1451,7 @@ def _parse_unconnected_pins(erc_report: dict) -> list[dict]:
     return results
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_unconnected_pins(
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
@@ -1491,7 +1495,7 @@ def list_unconnected_pins(
     return json.dumps({"unconnected_count": len(pins), "pins": pins}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str:
     """Run Electrical Rules Check (ERC) on a schematic.
 
@@ -1532,7 +1536,7 @@ def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str
 # ---------------------------------------------------------------------------
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_schematic(
     format: str = "pdf",
     schematic_path: str = SCH_PATH,
@@ -1579,7 +1583,7 @@ def export_schematic(
         return json.dumps(meta, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_netlist(
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
@@ -1601,7 +1605,7 @@ def export_netlist(
     return json.dumps(meta, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_bom(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str:
     """Export Bill of Materials (BOM) as CSV.
 

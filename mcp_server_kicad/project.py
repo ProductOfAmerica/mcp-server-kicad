@@ -21,7 +21,15 @@ from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp import FastMCP
 
-from mcp_server_kicad._shared import _gen_uuid, _load_sch, _run_cli, _snap_grid
+from mcp_server_kicad._shared import (
+    _ADDITIVE,
+    _EXPORT,
+    _READ_ONLY,
+    _gen_uuid,
+    _load_sch,
+    _run_cli,
+    _snap_grid,
+)
 
 # KiCad 9 file format constants
 _KICAD_SCH_VERSION = 20250114
@@ -265,7 +273,7 @@ add_hierarchical_sheet = _add_hierarchical_sheet
 # ── MCP tool wrappers ─────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def create_project(directory: str, name: str) -> str:  # noqa: F811
     """Create a KiCad 9 project (.kicad_pro + .kicad_prl + .kicad_sch).
 
@@ -276,7 +284,7 @@ def create_project(directory: str, name: str) -> str:  # noqa: F811
     return _create_project(directory, name)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def create_schematic(schematic_path: str) -> str:  # noqa: F811
     """Create a valid empty KiCad 9 schematic file.
 
@@ -286,7 +294,7 @@ def create_schematic(schematic_path: str) -> str:  # noqa: F811
     return _create_schematic(schematic_path)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def create_symbol_library(symbol_lib_path: str) -> str:  # noqa: F811
     """Create a valid empty KiCad 9 symbol library.
 
@@ -296,7 +304,7 @@ def create_symbol_library(symbol_lib_path: str) -> str:  # noqa: F811
     return _create_symbol_library(symbol_lib_path)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def create_sym_lib_table(directory: str, entries: list[dict]) -> str:  # noqa: F811
     """Create a sym-lib-table file in the given directory.
 
@@ -310,7 +318,7 @@ def create_sym_lib_table(directory: str, entries: list[dict]) -> str:  # noqa: F
     return _create_sym_lib_table(directory, entries)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_ADDITIVE)
 def add_hierarchical_sheet(  # noqa: F811
     parent_schematic_path: str,
     sheet_name: str,
@@ -337,7 +345,7 @@ def add_hierarchical_sheet(  # noqa: F811
     return _add_hierarchical_sheet(parent_schematic_path, sheet_name, sheet_file, pins, x, y)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def run_jobset(jobset_path: str) -> str:
     """Run a KiCad jobset file.
 
@@ -351,7 +359,7 @@ def run_jobset(jobset_path: str) -> str:
         return f"Jobset failed: {e}"
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_version() -> str:
     """Get KiCad version information including build details and library versions."""
     try:

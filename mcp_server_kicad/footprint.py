@@ -10,6 +10,9 @@ from mcp_server_kicad._shared import (
     FP_LIB_PATH,
     OUTPUT_DIR,
     Footprint,
+    _DESTRUCTIVE,
+    _EXPORT,
+    _READ_ONLY,
     _run_cli,
 )
 
@@ -32,7 +35,7 @@ mcp = FastMCP(
 # ── Library browsing ──────────────────────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def list_lib_footprints(pretty_dir: str = FP_LIB_PATH) -> str:
     """List all footprints in a .pretty library directory.
 
@@ -49,7 +52,7 @@ def list_lib_footprints(pretty_dir: str = FP_LIB_PATH) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_READ_ONLY)
 def get_footprint_info(footprint_path: str) -> str:
     """Get pad and outline details for a footprint .kicad_mod file.
 
@@ -71,7 +74,7 @@ def get_footprint_info(footprint_path: str) -> str:
 # ── Export & upgrade (wraps kicad-cli) ────────────────────────────
 
 
-@mcp.tool()
+@mcp.tool(annotations=_EXPORT)
 def export_footprint_svg(footprint_path: str, output_dir: str = OUTPUT_DIR) -> str:
     """Export footprint to SVG.
 
@@ -97,7 +100,7 @@ def export_footprint_svg(footprint_path: str, output_dir: str = OUTPUT_DIR) -> s
         return json.dumps({"error": str(e), "format": "svg"}, indent=2)
 
 
-@mcp.tool()
+@mcp.tool(annotations=_DESTRUCTIVE)
 def upgrade_footprint_lib(footprint_path: str) -> str:
     """Upgrade a footprint library to current KiCad format.
 
