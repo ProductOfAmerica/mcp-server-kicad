@@ -14,11 +14,14 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import uuid as _uuid
 from pathlib import Path
 
 import pytest
+
+HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 from kiutils.board import Board
 from kiutils.footprint import Footprint, Pad
 from kiutils.items.brditems import Segment
@@ -310,9 +313,50 @@ def assert_erc_clean(path: str | Path) -> None:
     )
 
 
+def assert_kicad_parseable(path: str | Path) -> None:
+    """Assert that kicad-cli can parse the file without errors.
+
+    Unlike ``assert_erc_clean``, this ignores ERC violations — it only
+    fails when the file itself is malformed (missing S-expression fields,
+    invalid syntax, etc.).
+    """
+    try:
+        run_erc(path)
+    except RuntimeError as exc:
+        pytest.fail(f"kicad-cli cannot parse {Path(path).name}: {exc}")
+
+
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _validate_kicad_output(request, tmp_path: Path):
+    """After each test, validate all .kicad_sch files via kicad-cli.
+
+    Catches format-level bugs (e.g. kiutils omitting required fields)
+    that kiutils round-trip tests miss because kiutils reads back its
+    own malformed output without error.
+
+    Tests that intentionally produce invalid files can opt out with::
+
+        @pytest.mark.no_kicad_validation
+    """
+    yield
+    if request.node.get_closest_marker("no_kicad_validation"):
+        return
+    if not HAS_KICAD_CLI:
+        return
+    for sch_file in tmp_path.rglob("*.kicad_sch"):
+        # Skip dummy/empty files (e.g. config tests that create placeholder paths)
+        if sch_file.stat().st_size == 0:
+            continue
+        # Skip files that aren't real KiCad schematics
+        header = sch_file.read_text(errors="ignore")[:20]
+        if not header.startswith("(kicad_sch"):
+            continue
+        assert_kicad_parseable(sch_file)
 
 
 @pytest.fixture()
@@ -422,8 +466,6 @@ def kicad_native_sch(tmp_path: Path) -> Path:
     """
     src = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
     dst = tmp_path / "kicad_native.kicad_sch"
-    import shutil
-
     shutil.copy2(src, dst)
     return dst
 

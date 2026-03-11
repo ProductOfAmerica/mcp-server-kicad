@@ -33,6 +33,7 @@ class TestDuplicateReference:
         assert len(r1_syms) == 2
 
 
+@pytest.mark.no_kicad_validation
 class TestInvalidRotation:
     def test_non_standard_rotation_45(self, scratch_sch: Path) -> None:
         """A 45-degree rotation is non-standard but should not crash."""

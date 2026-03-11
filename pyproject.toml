@@ -43,6 +43,9 @@ packages = ["mcp_server_kicad"]
 
 [tool.pytest.ini_options]
 pythonpath = ["tests"]
+markers = [
+    "no_kicad_validation: skip kicad-cli parseability check (for tests that intentionally produce invalid files)",
+]
 
 [tool.ruff]
 target-version = "py310"
