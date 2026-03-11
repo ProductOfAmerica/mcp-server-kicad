@@ -199,14 +199,14 @@ def _add_hierarchical_sheet(
         value=sheet_name,
         id=0,
         effects=Effects(font=Font(height=1.27, width=1.27)),
-        position=Position(X=x, Y=y - 1.27),
+        position=Position(X=x, Y=y - 1.27, angle=0),
     )
     sheet.fileName = Property(
         key="Sheetfile",
         value=child_path.name,
         id=1,
         effects=Effects(font=Font(height=1.27, width=1.27)),
-        position=Position(X=x, Y=y + sheet_height + 1.27),
+        position=Position(X=x, Y=round(y + sheet_height + 1.27, 4), angle=0),
     )
 
     # Build pins on the sheet block (positioned along left edge)
