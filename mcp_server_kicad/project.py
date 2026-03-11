@@ -228,8 +228,10 @@ def _add_hierarchical_sheet(
     sheet.pins = sheet_pins
 
     # Add instances block for the sheet
-    project_name = Path(project_path).stem if project_path else (
-        Path(parent_sch.filePath).stem if parent_sch.filePath else ""
+    project_name = (
+        Path(project_path).stem
+        if project_path
+        else (Path(parent_sch.filePath).stem if parent_sch.filePath else "")
     )
     sheet.instances = [
         HierarchicalSheetProjectInstance(

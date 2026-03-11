@@ -1,6 +1,7 @@
-from dataclasses import dataclass
 import abc
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
+
 from kiutils.utils.strings import dequote as dequote
 
 @dataclass

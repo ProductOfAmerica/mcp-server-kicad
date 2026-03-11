@@ -1,8 +1,5 @@
-raise SystemExit(
-    "Usage: Run one of the five servers:\n"
-    "  python -m mcp_server_kicad.schematic\n"
-    "  python -m mcp_server_kicad.pcb\n"
-    "  python -m mcp_server_kicad.symbol\n"
-    "  python -m mcp_server_kicad.footprint\n"
-    "  python -m mcp_server_kicad.project"
-)
+"""Allow running as `python -m mcp_server_kicad`."""
+
+from mcp_server_kicad.server import main
+
+main()

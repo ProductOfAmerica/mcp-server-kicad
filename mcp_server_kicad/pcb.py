@@ -501,18 +501,54 @@ def export_pcb(
     pcb_path: str = PCB_PATH,
     output_dir: str = OUTPUT_DIR,
     layers: list[str] | None = None,
+    output_units: str = "in",
+    exclude_refdes: bool = False,
+    exclude_value: bool = False,
+    use_contours: bool = False,
+    include_border_title: bool = False,
 ) -> str:
-    """Export PCB to PDF or SVG format.
+    """Export PCB to PDF, SVG, or DXF format.
 
     Args:
-        format: Output format - "pdf" or "svg"
+        format: Output format - "pdf", "svg", or "dxf"
         pcb_path: Path to .kicad_pcb file
         output_dir: Directory for output files
-        layers: Optional list of layer names to include
+        layers: Optional list of layer names to include (required for DXF)
+        output_units: DXF output units - "in" or "mm" (DXF only)
+        exclude_refdes: Exclude reference designators (DXF only)
+        exclude_value: Exclude component values (DXF only)
+        use_contours: Use board outline contours (DXF only)
+        include_border_title: Include border and title block (DXF only)
     """
     fmt = format.lower()
-    if fmt not in ("pdf", "svg"):
-        return json.dumps({"error": f"Unknown format: {format}. Use: pdf, svg"})
+    if fmt not in ("pdf", "svg", "dxf"):
+        return json.dumps({"error": f"Unknown format: {format}. Use: pdf, svg, dxf"})
+
+    if fmt == "dxf":
+        if not layers:
+            return json.dumps({"error": "layers parameter is required for DXF export"})
+        out_dir = output_dir or str(Path(pcb_path).parent)
+        out_path = str(Path(out_dir) / (Path(pcb_path).stem + ".dxf"))
+        args = ["pcb", "export", "dxf", pcb_path, "-o", out_path, "-l", ",".join(layers)]
+        if output_units != "in":
+            args += ["--output-units", output_units]
+        if exclude_refdes:
+            args.append("--exclude-refdes")
+        if exclude_value:
+            args.append("--exclude-value")
+        if use_contours:
+            args.append("--use-contours")
+        if include_border_title:
+            args.append("--include-border-title")
+        try:
+            result = _run_cli(args, check=False)
+            if result.returncode != 0:
+                return json.dumps({"error": result.stderr.strip()})
+            return json.dumps({**_file_meta(out_path), "format": "dxf", "layers": layers})
+        except (RuntimeError, FileNotFoundError) as e:
+            return json.dumps({"error": str(e), "format": "dxf"}, indent=2)
+
+    # PDF / SVG path
     try:
         out_dir = output_dir or str(Path(pcb_path).parent)
         ext = ".pdf" if fmt == "pdf" else ".svg"
@@ -545,18 +581,41 @@ def export_gerbers(
     pcb_path: str = PCB_PATH,
     output_dir: str = OUTPUT_DIR,
     include_drill: bool = True,
+    layers: list[str] | None = None,
 ) -> str:
-    """Export Gerber files for all copper and mask layers, optionally including drill files.
+    """Export Gerber files for manufacturing.
+
+    When layers contains exactly one layer, exports a single Gerber file.
+    Otherwise exports all layers (or the specified subset) plus optional drill files.
 
     Args:
         pcb_path: Path to .kicad_pcb file
         output_dir: Output directory for gerber files
-        include_drill: Also export drill files (default: True)
+        include_drill: Also export drill files (default: True, ignored in single-layer mode)
+        layers: Optional list of layer names. Single layer = single file output.
     """
+    # Single-layer mode: one file, like the old export_gerber
+    if layers and len(layers) == 1:
+        try:
+            layer = layers[0]
+            out_dir = output_dir or str(Path(pcb_path).parent)
+            out_path = str(Path(out_dir) / f"{Path(pcb_path).stem}-{layer.replace('.', '_')}.gbr")
+            _run_cli(["pcb", "export", "gerber", "--layers", layer, "--output", out_path, pcb_path])
+            meta = _file_meta(out_path)
+            meta.update({"format": "gerber", "layer": layer})
+            return json.dumps(meta, indent=2)
+        except (RuntimeError, FileNotFoundError) as e:
+            return json.dumps({"error": str(e), "format": "gerber", "layer": layer}, indent=2)
+
     try:
+        # Multi-layer mode: directory of files
         out = output_dir or str(Path(pcb_path).parent / "gerbers")
         os.makedirs(out, exist_ok=True)
-        _run_cli(["pcb", "export", "gerbers", "--output", out, pcb_path])
+        cmd = ["pcb", "export", "gerbers"]
+        if layers:
+            cmd += ["--layers", ",".join(layers)]
+        cmd += ["--output", out, pcb_path]
+        _run_cli(cmd)
         files = sorted(Path(out).glob("*"))
         result = {
             "path": out,
@@ -575,45 +634,58 @@ def export_gerbers(
 
 
 @mcp.tool(annotations=_EXPORT)
-def export_gerber(
-    pcb_path: str = PCB_PATH,
-    layer: str = "F.Cu",
-    output_dir: str = OUTPUT_DIR,
-) -> str:
-    """Export a single Gerber file for one layer.
-
-    Args:
-        pcb_path: Path to .kicad_pcb file
-        layer: Layer name (e.g. "F.Cu", "B.Cu", "F.SilkS")
-        output_dir: Output directory
-    """
-    try:
-        out_dir = output_dir or str(Path(pcb_path).parent)
-        out_path = str(Path(out_dir) / f"{Path(pcb_path).stem}-{layer.replace('.', '_')}.gbr")
-        _run_cli(["pcb", "export", "gerber", "--layers", layer, "--output", out_path, pcb_path])
-        meta = _file_meta(out_path)
-        meta.update({"format": "gerber", "layer": layer})
-        return json.dumps(meta, indent=2)
-    except (RuntimeError, FileNotFoundError) as e:
-        return json.dumps({"error": str(e), "format": "gerber", "layer": layer}, indent=2)
-
-
-@mcp.tool(annotations=_EXPORT)
 def export_3d(
     format: str = "step",
     pcb_path: str = PCB_PATH,
     output_dir: str = OUTPUT_DIR,
+    width: int = 1600,
+    height: int = 900,
+    side: str = "top",
+    quality: str = "basic",
 ) -> str:
-    """Export PCB 3D model in STEP, STL, or GLB format.
+    """Export PCB 3D model or render 3D view to image.
 
     Args:
-        format: Output format - "step", "stl", or "glb"
+        format: Output format - "step", "stl", "glb", or "render" (PNG image)
         pcb_path: Path to .kicad_pcb file
         output_dir: Output directory
+        width: Image width in pixels (render only)
+        height: Image height in pixels (render only)
+        side: View side: top, bottom, left, right, front, back (render only)
+        quality: Render quality: basic, high (render only)
     """
     fmt = format.lower()
-    if fmt not in ("step", "stl", "glb"):
-        return json.dumps({"error": f"Unknown format: {format}. Use: step, stl, glb"})
+    if fmt not in ("step", "stl", "glb", "render"):
+        return json.dumps({"error": f"Unknown format: {format}. Use: step, stl, glb, render"})
+
+    if fmt == "render":
+        try:
+            out_dir = output_dir or str(Path(pcb_path).parent)
+            out_path = str(Path(out_dir) / (Path(pcb_path).stem + f"-3d-{side}.png"))
+            _run_cli(
+                [
+                    "pcb",
+                    "render",
+                    "--width",
+                    str(width),
+                    "--height",
+                    str(height),
+                    "--side",
+                    side,
+                    "--quality",
+                    quality,
+                    "--output",
+                    out_path,
+                    pcb_path,
+                ]
+            )
+            meta = _file_meta(out_path)
+            meta.update({"format": "png", "width": width, "height": height, "side": side})
+            return json.dumps(meta, indent=2)
+        except (RuntimeError, FileNotFoundError) as e:
+            return json.dumps({"error": str(e), "format": "png"}, indent=2)
+
+    # STEP / STL / GLB path
     try:
         out_dir = output_dir or str(Path(pcb_path).parent)
         out_path = str(Path(out_dir) / (Path(pcb_path).stem + f".{fmt}"))
@@ -644,95 +716,6 @@ def export_positions(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> 
         return json.dumps(meta, indent=2)
     except (RuntimeError, FileNotFoundError) as e:
         return json.dumps({"error": str(e)}, indent=2)
-
-
-@mcp.tool(annotations=_EXPORT)
-def render_3d(
-    pcb_path: str = PCB_PATH,
-    output_dir: str = OUTPUT_DIR,
-    width: int = 1600,
-    height: int = 900,
-    side: str = "top",
-    quality: str = "basic",
-) -> str:
-    """Render PCB 3D view to image.
-
-    Args:
-        pcb_path: Path to .kicad_pcb file
-        output_dir: Output directory
-        width: Image width in pixels
-        height: Image height in pixels
-        side: View side: top, bottom, left, right, front, back
-        quality: Render quality: basic, high
-    """
-    try:
-        out_dir = output_dir or str(Path(pcb_path).parent)
-        out_path = str(Path(out_dir) / (Path(pcb_path).stem + f"-3d-{side}.png"))
-        _run_cli(
-            [
-                "pcb",
-                "render",
-                "--width",
-                str(width),
-                "--height",
-                str(height),
-                "--side",
-                side,
-                "--quality",
-                quality,
-                "--output",
-                out_path,
-                pcb_path,
-            ]
-        )
-        meta = _file_meta(out_path)
-        meta.update({"format": "png", "width": width, "height": height, "side": side})
-        return json.dumps(meta, indent=2)
-    except (RuntimeError, FileNotFoundError) as e:
-        return json.dumps({"error": str(e), "format": "png"}, indent=2)
-
-
-@mcp.tool(annotations=_EXPORT)
-def export_pcb_dxf(
-    pcb_path: str = PCB_PATH,
-    output: str = "",
-    layers: str = "",
-    output_units: str = "in",
-    exclude_refdes: bool = False,
-    exclude_value: bool = False,
-    use_contours: bool = False,
-    include_border_title: bool = False,
-) -> str:
-    """Export PCB layers to DXF format for mechanical CAD exchange.
-
-    Args:
-        pcb_path: Path to .kicad_pcb file
-        output: Output file path
-        layers: Comma-separated layer names (required)
-        output_units: Output units - "in" or "mm"
-        exclude_refdes: Exclude reference designators
-        exclude_value: Exclude component values
-        use_contours: Use board outline contours
-        include_border_title: Include border and title block
-    """
-    if not layers:
-        return json.dumps({"error": "layers parameter is required"})
-    out = output or str(Path(OUTPUT_DIR) / (Path(pcb_path).stem + ".dxf"))
-    args = ["pcb", "export", "dxf", pcb_path, "-o", out, "-l", layers]
-    if output_units != "in":
-        args += ["--output-units", output_units]
-    if exclude_refdes:
-        args.append("--exclude-refdes")
-    if exclude_value:
-        args.append("--exclude-value")
-    if use_contours:
-        args.append("--use-contours")
-    if include_border_title:
-        args.append("--include-border-title")
-    result = _run_cli(args, check=False)
-    if result.returncode != 0:
-        return json.dumps({"error": result.stderr.strip()})
-    return json.dumps({**_file_meta(out), "layers": layers})
 
 
 @mcp.tool(annotations=_EXPORT)

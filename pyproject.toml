@@ -25,6 +25,7 @@ Repository = "https://github.com/ProductOfAmerica/mcp-server-kicad"
 Issues = "https://github.com/ProductOfAmerica/mcp-server-kicad/issues"
 
 [project.scripts]
+mcp-server-kicad = "mcp_server_kicad.server:main"
 mcp-server-kicad-schematic = "mcp_server_kicad.schematic:main"
 mcp-server-kicad-pcb = "mcp_server_kicad.pcb:main"
 mcp-server-kicad-symbol = "mcp_server_kicad.symbol:main"
@@ -50,6 +51,7 @@ markers = [
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+exclude = ["typings"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]

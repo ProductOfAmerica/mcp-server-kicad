@@ -1,7 +1,11 @@
 from dataclasses import dataclass
+
+from kiutils.items.common import Image as Image
+from kiutils.items.common import PageSettings as PageSettings
+from kiutils.items.common import TitleBlock as TitleBlock
 from kiutils.items.schitems import *
-from kiutils.items.common import Image as Image, PageSettings as PageSettings, TitleBlock as TitleBlock
-from kiutils.misc.config import KIUTILS_CREATE_NEW_GENERATOR_STR as KIUTILS_CREATE_NEW_GENERATOR_STR, KIUTILS_CREATE_NEW_VERSION_STR as KIUTILS_CREATE_NEW_VERSION_STR
+from kiutils.misc.config import KIUTILS_CREATE_NEW_GENERATOR_STR as KIUTILS_CREATE_NEW_GENERATOR_STR
+from kiutils.misc.config import KIUTILS_CREATE_NEW_VERSION_STR as KIUTILS_CREATE_NEW_VERSION_STR
 from kiutils.symbol import Symbol as Symbol
 from kiutils.utils import sexpr as sexpr
 

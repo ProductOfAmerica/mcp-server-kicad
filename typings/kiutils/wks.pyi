@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+
 from kiutils.items.common import Justify as Justify
-from kiutils.misc.config import KIUTILS_CREATE_NEW_GENERATOR_STR as KIUTILS_CREATE_NEW_GENERATOR_STR, KIUTILS_CREATE_NEW_VERSION_STR as KIUTILS_CREATE_NEW_VERSION_STR
+from kiutils.misc.config import KIUTILS_CREATE_NEW_GENERATOR_STR as KIUTILS_CREATE_NEW_GENERATOR_STR
+from kiutils.misc.config import KIUTILS_CREATE_NEW_VERSION_STR as KIUTILS_CREATE_NEW_VERSION_STR
 from kiutils.utils import sexpr as sexpr
 from kiutils.utils.strings import dequote as dequote
 

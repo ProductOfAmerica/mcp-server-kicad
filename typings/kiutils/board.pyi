@@ -1,11 +1,17 @@
 from dataclasses import dataclass
-from kiutils.items.brditems import *
-from kiutils.items.gritems import *
+
 from kiutils.footprint import Footprint as Footprint
-from kiutils.items.common import Group as Group, Image as Image, Net as Net, PageSettings as PageSettings, TitleBlock as TitleBlock
+from kiutils.items.brditems import *
+from kiutils.items.common import Group as Group
+from kiutils.items.common import Image as Image
+from kiutils.items.common import Net as Net
+from kiutils.items.common import PageSettings as PageSettings
+from kiutils.items.common import TitleBlock as TitleBlock
 from kiutils.items.dimensions import Dimension as Dimension
+from kiutils.items.gritems import *
 from kiutils.items.zones import Zone as Zone
-from kiutils.misc.config import KIUTILS_CREATE_NEW_GENERATOR_STR as KIUTILS_CREATE_NEW_GENERATOR_STR, KIUTILS_CREATE_NEW_VERSION_STR as KIUTILS_CREATE_NEW_VERSION_STR
+from kiutils.misc.config import KIUTILS_CREATE_NEW_GENERATOR_STR as KIUTILS_CREATE_NEW_GENERATOR_STR
+from kiutils.misc.config import KIUTILS_CREATE_NEW_VERSION_STR as KIUTILS_CREATE_NEW_VERSION_STR
 from kiutils.utils import sexpr as sexpr
 from kiutils.utils.strings import dequote as dequote
 

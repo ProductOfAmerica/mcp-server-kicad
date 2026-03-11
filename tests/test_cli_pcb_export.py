@@ -30,9 +30,18 @@ class TestExportGerbers:
         assert "drill_files" not in data
 
 
-class TestExportGerber:
+class TestExportGerberSingleLayer:
     def test_returns_json(self, scratch_pcb, tmp_path):
-        result = pcb.export_gerber(str(scratch_pcb), "F.Cu", str(tmp_path))
+        result = pcb.export_gerbers(str(scratch_pcb), str(tmp_path), layers=["F.Cu"])
+        data = _parse_result(result)
+        assert "format" in data or "error" in data
+
+
+class TestExportGerbersLayerFilter:
+    def test_multi_layer_filter(self, scratch_pcb, tmp_path):
+        result = pcb.export_gerbers(
+            str(scratch_pcb), str(tmp_path / "gerbers"), layers=["F.Cu", "B.Cu"]
+        )
         data = _parse_result(result)
         assert "format" in data or "error" in data
 
@@ -89,9 +98,9 @@ class TestExportGlb:
         assert "format" in data or "error" in data
 
 
-class TestRender3d:
+class TestExport3dRender:
     def test_returns_json(self, scratch_pcb, tmp_path):
-        result = pcb.render_3d(str(scratch_pcb), str(tmp_path))
+        result = pcb.export_3d(format="render", pcb_path=str(scratch_pcb), output_dir=str(tmp_path))
         data = _parse_result(result)
         assert "format" in data or "error" in data
 

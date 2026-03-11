@@ -41,7 +41,6 @@ def test_symbol_destructive(tool_name):
 @pytest.mark.parametrize(
     "tool_name",
     [
-        "get_schematic_info",
         "list_schematic_items",
         "get_symbol_pins",
         "get_pin_positions",
@@ -64,9 +63,7 @@ def test_schematic_read_only(tool_name):
         "move_component",
         "set_component_property",
         "add_global_label",
-        "add_no_connect",
         "add_power_symbol",
-        "add_power_rail",
         "auto_place_decoupling_cap",
         "add_text",
         "wire_pins_to_net",
@@ -145,11 +142,8 @@ def test_pcb_destructive(tool_name):
         "run_drc",
         "export_pcb",
         "export_gerbers",
-        "export_gerber",
         "export_3d",
         "export_positions",
-        "render_3d",
-        "export_pcb_dxf",
         "export_ipc2581",
     ],
 )

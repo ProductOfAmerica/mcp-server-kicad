@@ -1,6 +1,10 @@
 from dataclasses import dataclass
+
+from kiutils.items.common import Effects as Effects
+from kiutils.items.common import Font as Font
+from kiutils.items.common import Position as Position
+from kiutils.items.common import Property as Property
 from kiutils.items.syitems import *
-from kiutils.items.common import Effects as Effects, Font as Font, Position as Position, Property as Property
 from kiutils.misc.config import KIUTILS_CREATE_NEW_VERSION_STR as KIUTILS_CREATE_NEW_VERSION_STR
 from kiutils.utils import sexpr as sexpr
 from kiutils.utils.strings import dequote as dequote

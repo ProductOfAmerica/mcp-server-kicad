@@ -222,13 +222,13 @@ class TestGetPinPositions:
 
 
 # ---------------------------------------------------------------------------
-# Tests: get_schematic_info (Bug 5)
+# Tests: list_schematic_items(item_type="summary")
 # ---------------------------------------------------------------------------
 
 
-class TestGetSchematicInfo:
+class TestListSchematicItemsSummary:
     def test_returns_page_and_counts(self, scratch_sch: Path) -> None:
-        result = schematic.get_schematic_info(str(scratch_sch))
+        result = schematic.list_schematic_items("summary", str(scratch_sch))
         assert "A4" in result
         assert "297" in result
         assert "210" in result
@@ -237,7 +237,7 @@ class TestGetSchematicInfo:
         assert "Wires:" in result
 
     def test_empty_schematic(self, empty_sch: Path) -> None:
-        result = schematic.get_schematic_info(str(empty_sch))
+        result = schematic.list_schematic_items("summary", str(empty_sch))
         assert "A4" in result
         assert "Components: 0" in result
         assert "Labels: 0" in result

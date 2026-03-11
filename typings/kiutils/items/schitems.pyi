@@ -1,5 +1,12 @@
 from dataclasses import dataclass
-from kiutils.items.common import ColorRGBA as ColorRGBA, Effects as Effects, Fill as Fill, Position as Position, ProjectInstance as ProjectInstance, Property as Property, Stroke as Stroke
+
+from kiutils.items.common import ColorRGBA as ColorRGBA
+from kiutils.items.common import Effects as Effects
+from kiutils.items.common import Fill as Fill
+from kiutils.items.common import Position as Position
+from kiutils.items.common import ProjectInstance as ProjectInstance
+from kiutils.items.common import Property as Property
+from kiutils.items.common import Stroke as Stroke
 from kiutils.utils.strings import dequote as dequote
 
 @dataclass

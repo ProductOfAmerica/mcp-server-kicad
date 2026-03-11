@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+
 from kiutils.utils import sexpr as sexpr
 from kiutils.utils.strings import dequote as dequote
 

@@ -1,4 +1,4 @@
-"""Tests for PCB DXF export tool."""
+"""Tests for PCB DXF export via export_pcb(format='dxf')."""
 
 import json
 import shutil
@@ -13,30 +13,26 @@ pytestmark = pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad
 class TestExportPcbDxf:
     def test_export_runs(self, scratch_pcb, tmp_path):
         result = json.loads(
-            pcb.export_pcb_dxf(
+            pcb.export_pcb(
+                format="dxf",
                 pcb_path=str(scratch_pcb),
-                output=str(tmp_path / "board.dxf"),
-                layers="F.Cu",
+                output_dir=str(tmp_path),
+                layers=["F.Cu"],
             )
         )
         assert "path" in result or "error" in result
 
-    def test_missing_layers_returns_error(self, scratch_pcb, tmp_path):
-        result = json.loads(
-            pcb.export_pcb_dxf(
-                pcb_path=str(scratch_pcb),
-                output=str(tmp_path / "board.dxf"),
-                layers="",
-            )
-        )
+    def test_missing_layers_returns_error(self):
+        result = json.loads(pcb.export_pcb(format="dxf"))
         assert "error" in result
 
     def test_with_mm_units(self, scratch_pcb, tmp_path):
         result = json.loads(
-            pcb.export_pcb_dxf(
+            pcb.export_pcb(
+                format="dxf",
                 pcb_path=str(scratch_pcb),
-                output=str(tmp_path / "board_mm.dxf"),
-                layers="F.Cu",
+                output_dir=str(tmp_path),
+                layers=["F.Cu"],
                 output_units="mm",
             )
         )
@@ -44,10 +40,11 @@ class TestExportPcbDxf:
 
     def test_with_options(self, scratch_pcb, tmp_path):
         result = json.loads(
-            pcb.export_pcb_dxf(
+            pcb.export_pcb(
+                format="dxf",
                 pcb_path=str(scratch_pcb),
-                output=str(tmp_path / "board_opts.dxf"),
-                layers="F.Cu",
+                output_dir=str(tmp_path),
+                layers=["F.Cu"],
                 exclude_refdes=True,
                 exclude_value=True,
             )

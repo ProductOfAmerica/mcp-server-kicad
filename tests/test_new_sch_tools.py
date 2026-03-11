@@ -97,15 +97,6 @@ class TestListGlobalLabels:
         assert "VCC" in texts
 
 
-class TestAddNoConnect:
-    def test_basic(self, scratch_sch):
-        # 76.2 == 60*1.27, on grid
-        result = schematic.add_no_connect(76.2, 76.2, schematic_path=str(scratch_sch))
-        assert "76.2" in result
-        sch = reparse(str(scratch_sch))
-        assert len(sch.noConnects) == 1
-
-
 class TestAddPowerSymbol:
     def test_basic(self, scratch_sch):
         result = schematic.add_power_symbol(

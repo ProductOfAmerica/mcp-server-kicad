@@ -1,11 +1,18 @@
 from dataclasses import dataclass
+
+from kiutils.items.common import Coordinate as Coordinate
+from kiutils.items.common import Font as Font
+from kiutils.items.common import Group as Group
+from kiutils.items.common import Image as Image
+from kiutils.items.common import Net as Net
+from kiutils.items.common import Position as Position
 from kiutils.items.fpitems import *
 from kiutils.items.gritems import *
-from kiutils.items.common import Coordinate as Coordinate, Font as Font, Group as Group, Image as Image, Net as Net, Position as Position
 from kiutils.items.zones import Zone as Zone
 from kiutils.misc.config import KIUTILS_CREATE_NEW_VERSION_STR as KIUTILS_CREATE_NEW_VERSION_STR
 from kiutils.utils import sexpr as sexpr
-from kiutils.utils.strings import dequote as dequote, remove_prefix as remove_prefix
+from kiutils.utils.strings import dequote as dequote
+from kiutils.utils.strings import remove_prefix as remove_prefix
 
 @dataclass
 class Attributes:

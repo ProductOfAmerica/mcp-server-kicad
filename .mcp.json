@@ -1,22 +1,6 @@
 {
-  "kicad-schematic": {
+  "kicad": {
     "command": "uvx",
-    "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-schematic"]
-  },
-  "kicad-pcb": {
-    "command": "uvx",
-    "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-pcb"]
-  },
-  "kicad-symbol": {
-    "command": "uvx",
-    "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-symbol"]
-  },
-  "kicad-footprint": {
-    "command": "uvx",
-    "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-footprint"]
-  },
-  "kicad-project": {
-    "command": "uvx",
-    "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-project"]
+    "args": ["--from", "mcp-server-kicad", "mcp-server-kicad"]
   }
 }

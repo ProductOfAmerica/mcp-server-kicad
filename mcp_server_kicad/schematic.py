@@ -283,36 +283,27 @@ def _auto_junctions(sch, new_points: list[tuple[float, float]], tol: float = 0.0
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def get_schematic_info(schematic_path: str = SCH_PATH) -> str:
-    """Get schematic summary: page size, component count, label count, wire count.
-
-    Args:
-        schematic_path: Path to .kicad_sch file
-    """
-    sch = _load_sch(schematic_path)
-    page_w, page_h = _get_page_size(sch)
-    wire_count = sum(
-        1 for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"
-    )
-    return (
-        f"Page: {sch.paper.paperSize} ({page_w}x{page_h}mm)\n"
-        f"Components: {len(sch.schematicSymbols)}\n"
-        f"Labels: {len(sch.labels)}\n"
-        f"Global labels: {len(sch.globalLabels)}\n"
-        f"Wires: {wire_count}"
-    )
-
-
-@mcp.tool(annotations=_READ_ONLY)
 def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
     """List schematic items by type.
 
     Args:
-        item_type: One of "components", "labels", "wires", "global_labels"
+        item_type: One of "summary", "components", "labels", "wires", "global_labels"
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
-    if item_type == "components":
+    if item_type == "summary":
+        page_w, page_h = _get_page_size(sch)
+        wire_count = sum(
+            1 for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"
+        )
+        return (
+            f"Page: {sch.paper.paperSize} ({page_w}x{page_h}mm)\n"
+            f"Components: {len(sch.schematicSymbols)}\n"
+            f"Labels: {len(sch.labels)}\n"
+            f"Global labels: {len(sch.globalLabels)}\n"
+            f"Wires: {wire_count}"
+        )
+    elif item_type == "components":
         items = []
         for sym in sch.schematicSymbols:
             ref = next((p.value for p in sym.properties if p.key == "Reference"), "?")
@@ -358,7 +349,7 @@ def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
         return json.dumps(
             {
                 "error": f"Unknown item_type: {item_type}. "
-                "Use: components, labels, wires, global_labels"
+                "Use: summary, components, labels, wires, global_labels"
             }
         )
 
@@ -661,9 +652,7 @@ def place_component(
     # Instances block — required by KiCad 9 for proper annotation
     assert sch.uuid is not None, "Schematic must have a UUID before placing components"
     if project_path:
-        project_name, sheet_path = _resolve_hierarchy_path(
-            project_path, schematic_path, sch.uuid
-        )
+        project_name, sheet_path = _resolve_hierarchy_path(project_path, schematic_path, sch.uuid)
     else:
         project_name = Path(sch.filePath).stem if sch.filePath else ""
         sheet_path = f"/{sch.uuid}"
@@ -1017,23 +1006,6 @@ def add_global_label(
 
 
 @mcp.tool(annotations=_ADDITIVE)
-def add_no_connect(x: float, y: float, schematic_path: str = SCH_PATH) -> str:
-    """Add a no-connect flag on an unused pin.
-
-    Args:
-        x: X position
-        y: Y position
-        schematic_path: Path to .kicad_sch file
-    """
-    sch = _load_sch(schematic_path)
-    x, y = _snap_grid(x), _snap_grid(y)
-    nc = NoConnect(position=Position(X=x, Y=y), uuid=_gen_uuid())
-    sch.noConnects.append(nc)
-    sch.to_file()
-    return f"No-connect at ({x}, {y})"
-
-
-@mcp.tool(annotations=_ADDITIVE)
 def add_power_symbol(
     lib_id: str,
     reference: str,
@@ -1107,62 +1079,6 @@ def add_power_symbol(
             project_path=project_path,
         )
         result += f" + {flg_ref}"
-
-    return result
-
-
-@mcp.tool(annotations=_ADDITIVE)
-def add_power_rail(
-    lib_id: str,
-    reference: str,
-    pins: list[dict],
-    x: float,
-    y: float,
-    rotation: float = 0,
-    symbol_lib_path: str = "",
-    schematic_path: str = SCH_PATH,
-    project_path: str = "",
-) -> str:
-    """Place a power symbol and wire listed pins to that net.
-
-    Combines add_power_symbol + batch wire_pin_to_label. Each pin
-    gets a stub wire + label with the power net name.
-
-    Args:
-        lib_id: Power symbol (e.g. "power:VCC", "power:GND")
-        reference: Power reference (e.g. "#PWR01")
-        pins: List of {"reference": "C1", "pin": "2"} to connect
-        x: Power symbol X position
-        y: Power symbol Y position
-        rotation: Power symbol rotation (default 0)
-        symbol_lib_path: Path to power .kicad_sym if needed
-        schematic_path: Path to .kicad_sch file
-        project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
-    """
-    result = add_power_symbol(
-        lib_id=lib_id,
-        reference=reference,
-        x=x,
-        y=y,
-        rotation=rotation,
-        symbol_lib_path=symbol_lib_path,
-        schematic_path=schematic_path,
-        project_path=project_path,
-    )
-    if result.startswith("Error"):
-        return result
-
-    net_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-
-    if pins:
-        wire_result = wire_pins_to_net(
-            pins=pins,
-            label_text=net_name,
-            schematic_path=schematic_path,
-        )
-        result += f" | {wire_result}"
-    else:
-        result += f" | Wired 0 pins to '{net_name}'."
 
     return result
 
@@ -1475,7 +1391,7 @@ def no_connect_pin(
 ) -> str:
     """Place a no-connect flag on a component pin.
 
-    Combines get_pin_positions + add_no_connect into one call.
+    Resolves pin position and places a no-connect flag.
 
     Args:
         reference: Component reference (e.g. "U2")

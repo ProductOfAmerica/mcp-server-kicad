@@ -1,5 +1,9 @@
 from dataclasses import dataclass
-from kiutils.items.common import Effects as Effects, Fill as Fill, Position as Position, Stroke as Stroke
+
+from kiutils.items.common import Effects as Effects
+from kiutils.items.common import Fill as Fill
+from kiutils.items.common import Position as Position
+from kiutils.items.common import Stroke as Stroke
 from kiutils.utils.strings import dequote as dequote
 
 @dataclass

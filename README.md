@@ -103,13 +103,13 @@ The servers resolve file paths in this order:
 
 ## Available Tools
 
-### Schematic Server (29 tools)
+### Schematic Tools (27 tools)
 
 #### Read Tools
 
 | Tool | Description |
 |------|-------------|
-| `list_schematic_items` | List schematic items by type (components, labels, wires, global_labels) |
+| `list_schematic_items` | List schematic items by type (components, labels, wires, global_labels, summary) |
 | `get_symbol_pins` | Get pin info for a symbol in the schematic's lib_symbols |
 | `get_pin_positions` | Get absolute pin positions for a placed component (accounts for rotation/mirror) |
 | `get_net_connections` | Get all connections for a named net |
@@ -128,11 +128,15 @@ The servers resolve file paths in this order:
 | `move_component` | Move a placed component to a new position |
 | `set_component_property` | Set any property (Value, Reference, Footprint, etc.) on a placed component |
 | `add_global_label` | Add a global net label visible across all sheets |
-| `add_no_connect` | Add a no-connect flag on an unused pin |
 | `add_power_symbol` | Place a power symbol (VCC, GND, +3V3, etc.) with auto PWR_FLAG |
 | `add_text` | Add a text annotation to the schematic |
 | `wire_pins_to_net` | Wire one or more pins to a named net |
 | `auto_place_decoupling_cap` | Automatically place a decoupling capacitor near an IC |
+| `connect_pins` | Wire two component pins together |
+| `no_connect_pin` | Place a no-connect flag on an unused pin |
+| `remove_label` | Remove a net label |
+| `remove_wire` | Remove a wire segment |
+| `remove_junction` | Remove a junction dot |
 
 #### ERC Analysis
 
@@ -148,7 +152,7 @@ The servers resolve file paths in this order:
 | `export_netlist` | Export schematic netlist |
 | `export_bom` | Export Bill of Materials (BOM) as CSV |
 
-### PCB Server (19 tools)
+### PCB Tools (16 tools)
 
 #### Read Tools
 
@@ -180,25 +184,23 @@ The servers resolve file paths in this order:
 
 | Tool | Description |
 |------|-------------|
-| `export_pcb` | Export PCB layers to PDF or SVG |
-| `export_gerbers` | Export Gerber files for all layers (optionally including drill files) |
-| `export_gerber` | Export a single Gerber file for one layer |
-| `export_3d` | Export PCB 3D model in STEP, STL, or GLB format |
+| `export_pcb` | Export PCB layers to PDF, SVG, or DXF |
+| `export_gerbers` | Export Gerber files (all layers or specific layer list) |
+| `export_3d` | Export PCB 3D model (STEP/STL/GLB) or render 3D view to PNG |
 | `export_positions` | Export component position file (pick and place) |
-| `render_3d` | Render PCB 3D view to image |
-| `export_pcb_dxf` | Export PCB layers to DXF for mechanical CAD exchange |
 | `export_ipc2581` | Export PCB in IPC-2581 format for manufacturing data exchange |
 
-### Symbol Server (4 tools)
+### Symbol Tools (5 tools)
 
 | Tool | Description |
 |------|-------------|
 | `list_lib_symbols` | List all symbols in a .kicad_sym library file |
 | `get_symbol_info` | Get detailed pin and property info for a symbol in a library |
+| `add_symbol` | Add a new symbol to a .kicad_sym library |
 | `export_symbol_svg` | Export symbol library to SVG images |
 | `upgrade_symbol_lib` | Upgrade a symbol library to current KiCad format |
 
-### Footprint Server (4 tools)
+### Footprint Tools (4 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -207,7 +209,7 @@ The servers resolve file paths in this order:
 | `export_footprint_svg` | Export footprint to SVG |
 | `upgrade_footprint_lib` | Upgrade a footprint library to current KiCad format |
 
-### Project Server (7 tools)
+### Project Tools (7 tools)
 
 | Tool | Description |
 |------|-------------|
@@ -230,7 +232,7 @@ The servers resolve file paths in this order:
 Use the [MCP Inspector](https://github.com/modelcontextprotocol/inspector) to test and debug the servers interactively:
 
 ```bash
-npx @modelcontextprotocol/inspector mcp-server-kicad-schematic
+npx @modelcontextprotocol/inspector mcp-server-kicad
 ```
 
 ## Contributing

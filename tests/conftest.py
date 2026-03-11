@@ -20,8 +20,6 @@ import uuid as _uuid
 from pathlib import Path
 
 import pytest
-
-HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 from kiutils.board import Board
 from kiutils.footprint import Footprint, Pad
 from kiutils.items.brditems import Segment
@@ -40,6 +38,8 @@ from kiutils.items.schitems import Connection, LocalLabel, SchematicSymbol
 from kiutils.items.syitems import SyRect
 from kiutils.schematic import Schematic
 from kiutils.symbol import Symbol, SymbolLib, SymbolPin
+
+HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
 # ---------------------------------------------------------------------------
 # Constants

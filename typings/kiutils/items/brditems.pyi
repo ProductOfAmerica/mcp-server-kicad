@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+
 from kiutils.items.common import Position as Position
 from kiutils.utils.strings import dequote as dequote
 
