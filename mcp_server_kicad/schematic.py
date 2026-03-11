@@ -1041,6 +1041,7 @@ def add_power_symbol(
     rotation: float = 0,
     symbol_lib_path: str = "",
     schematic_path: str = SCH_PATH,
+    project_path: str = "",
 ) -> str:
     """Place a power symbol (VCC, GND, +3V3, etc.).
 
@@ -1058,6 +1059,7 @@ def add_power_symbol(
         rotation: Rotation in degrees
         symbol_lib_path: Path to power symbol .kicad_sym if not in schematic
         schematic_path: Path to .kicad_sch file
+        project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
     result = place_component(
         lib_id=lib_id,
@@ -1068,6 +1070,7 @@ def add_power_symbol(
         rotation=rotation,
         symbol_lib_path=symbol_lib_path,
         schematic_path=schematic_path,
+        project_path=project_path,
     )
 
     # Don't auto-add PWR_FLAG if we just placed one
@@ -1100,6 +1103,7 @@ def add_power_symbol(
             rotation=0,
             symbol_lib_path=pwr_lib,
             schematic_path=schematic_path,
+            project_path=project_path,
         )
         result += f" + {flg_ref}"
 
@@ -1116,6 +1120,7 @@ def add_power_rail(
     rotation: float = 0,
     symbol_lib_path: str = "",
     schematic_path: str = SCH_PATH,
+    project_path: str = "",
 ) -> str:
     """Place a power symbol and wire listed pins to that net.
 
@@ -1131,6 +1136,7 @@ def add_power_rail(
         rotation: Power symbol rotation (default 0)
         symbol_lib_path: Path to power .kicad_sym if needed
         schematic_path: Path to .kicad_sch file
+        project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
     result = add_power_symbol(
         lib_id=lib_id,
@@ -1140,6 +1146,7 @@ def add_power_rail(
         rotation=rotation,
         symbol_lib_path=symbol_lib_path,
         schematic_path=schematic_path,
+        project_path=project_path,
     )
     if result.startswith("Error"):
         return result
@@ -1171,6 +1178,7 @@ def auto_place_decoupling_cap(
     rotation: float = 0,
     symbol_lib_path: str = "",
     schematic_path: str = SCH_PATH,
+    project_path: str = "",
 ) -> str:
     """Place a decoupling capacitor and wire it to power/ground nets.
 
@@ -1188,6 +1196,7 @@ def auto_place_decoupling_cap(
         rotation: Rotation in degrees (default 0)
         symbol_lib_path: Path to .kicad_sym if using custom lib
         schematic_path: Path to .kicad_sch file
+        project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
     result = place_component(
         lib_id=lib_id,
@@ -1198,6 +1207,7 @@ def auto_place_decoupling_cap(
         rotation=rotation,
         symbol_lib_path=symbol_lib_path,
         schematic_path=schematic_path,
+        project_path=project_path,
     )
     if result.startswith("Error"):
         return result

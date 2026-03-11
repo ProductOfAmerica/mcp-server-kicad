@@ -109,7 +109,12 @@ class TestAddNoConnect:
 class TestAddPowerSymbol:
     def test_basic(self, scratch_sch):
         result = schematic.add_power_symbol(
-            "power:VCC", "VCC1", 100, 80, schematic_path=str(scratch_sch)
+            "power:VCC",
+            "VCC1",
+            100,
+            80,
+            schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "VCC1" in result
         sch = reparse(str(scratch_sch))
@@ -128,6 +133,7 @@ class TestAddPowerSymbol:
             63.5,
             symbol_lib_path=str(scratch_power_lib),
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "#FLG01" in result
 
@@ -152,6 +158,7 @@ class TestAddPowerSymbol:
             63.5,
             symbol_lib_path=str(scratch_power_lib),
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         schematic.add_power_symbol(
             "power:GND",
@@ -160,6 +167,7 @@ class TestAddPowerSymbol:
             114.3,
             symbol_lib_path=str(scratch_power_lib),
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
 
         sch = reparse(str(scratch_sch))

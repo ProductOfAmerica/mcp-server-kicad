@@ -159,6 +159,7 @@ def _add_hierarchical_sheet(
     pins: list[dict],
     x: float = 25.4,
     y: float = 25.4,
+    project_path: str = "",
 ) -> str:
     """Add a hierarchical sheet to a parent schematic with matching labels in the child.
 
@@ -170,6 +171,7 @@ def _add_hierarchical_sheet(
               (direction: input, output, bidirectional, tri_state, passive)
         x: X position of sheet block in parent
         y: Y position of sheet block in parent
+        project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
     child_path = Path(sheet_file)
     if not child_path.exists():
@@ -226,7 +228,9 @@ def _add_hierarchical_sheet(
     sheet.pins = sheet_pins
 
     # Add instances block for the sheet
-    project_name = Path(parent_sch.filePath).stem if parent_sch.filePath else ""
+    project_name = Path(project_path).stem if project_path else (
+        Path(parent_sch.filePath).stem if parent_sch.filePath else ""
+    )
     sheet.instances = [
         HierarchicalSheetProjectInstance(
             name=project_name,
@@ -326,6 +330,7 @@ def add_hierarchical_sheet(  # noqa: F811
     pins: list[dict],
     x: float = 25.4,
     y: float = 25.4,
+    project_path: str = "",
 ) -> str:
     """Add a hierarchical sheet to a parent schematic with matching labels in the child.
 
@@ -341,8 +346,11 @@ def add_hierarchical_sheet(  # noqa: F811
               Direction: input, output, bidirectional, tri_state, passive.
         x: X position of sheet block (default 25.4)
         y: Y position of sheet block (default 25.4)
+        project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
-    return _add_hierarchical_sheet(parent_schematic_path, sheet_name, sheet_file, pins, x, y)
+    return _add_hierarchical_sheet(
+        parent_schematic_path, sheet_name, sheet_file, pins, x, y, project_path
+    )
 
 
 @mcp.tool(annotations=_EXPORT)

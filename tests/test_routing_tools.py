@@ -646,6 +646,7 @@ class TestAddPowerRail:
             y=50,
             symbol_lib_path=str(scratch_power_lib),
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "#PWR01" in result
         assert "1 pin" in result
@@ -670,6 +671,7 @@ class TestAddPowerRail:
             y=200,
             symbol_lib_path=str(scratch_power_lib),
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "#PWR02" in result
         assert "0 pin" in result
@@ -691,6 +693,7 @@ class TestAutoPlaceDecouplingCap:
             power_net="VCC",
             ground_net="GND",
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "C1" in result
         assert "VCC" in result
@@ -721,6 +724,7 @@ class TestAutoPlaceDecouplingCap:
             power_net="+3V3",
             ground_net="PGND",
             schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "C2" in result
         sch = reparse(str(scratch_sch))

@@ -651,6 +651,7 @@ class TestAddPowerSymbol:
             y=100,
             symbol_lib_path=str(scratch_power_lib),
             schematic_path=str(empty_sch),
+            project_path=str(empty_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(empty_sch))
         flg_refs = [
@@ -671,6 +672,7 @@ class TestAddPowerSymbol:
             y=100,
             symbol_lib_path=str(scratch_power_lib),
             schematic_path=str(empty_sch),
+            project_path=str(empty_sch.with_suffix(".kicad_pro")),
         )
         sch = reparse(str(empty_sch))
         refs = [

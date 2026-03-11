@@ -141,6 +141,7 @@ class TestAddHierarchicalSheet:
             sheet_name="Power",
             sheet_file=str(child),
             pins=pins,
+            project_path=str(tmp_path / "root.kicad_pro"),
         )
         assert "Power" in result
         assert "3 pins" in result
@@ -163,6 +164,7 @@ class TestAddHierarchicalSheet:
             sheet_name="Power",
             sheet_file=str(child),
             pins=pins,
+            project_path=str(tmp_path / "root.kicad_pro"),
         )
         child_sch = Schematic.from_file(str(child))
         assert len(child_sch.hierarchicalLabels) == 2
@@ -177,6 +179,7 @@ class TestAddHierarchicalSheet:
             sheet_name="Sub",
             sheet_file=str(child),
             pins=pins,
+            project_path=str(tmp_path / "root.kicad_pro"),
         )
         sch = Schematic.from_file(str(parent))
         assert sch.sheets[0].pins[0].connectionType == "bidirectional"
@@ -192,6 +195,7 @@ class TestAddHierarchicalSheet:
             sheet_name="Missing",
             sheet_file=str(tmp_path / "nonexistent.kicad_sch"),
             pins=[],
+            project_path=str(tmp_path / "root.kicad_pro"),
         )
         assert "not found" in result or "does not exist" in result
 
@@ -204,6 +208,7 @@ class TestAddHierarchicalSheet:
             pins=[{"name": "A", "direction": "input"}],
             x=50.8,
             y=76.2,
+            project_path=str(tmp_path / "root.kicad_pro"),
         )
         sch = Schematic.from_file(str(parent))
         sheet = sch.sheets[0]
