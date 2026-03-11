@@ -197,8 +197,11 @@ class TestWirePinToLabel:
         )
         sch = reparse(path)
         wire = [g for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"][0]
+        # Pin end is at exact pin position (not snapped); label end is snapped.
+        # The actual stub length may differ slightly from the requested value
+        # due to label-end grid snapping, but should be within one grid step.
         dx = abs(wire.points[1].X - wire.points[0].X)
-        assert abs(dx - 5.08) < 0.02
+        assert abs(dx - 5.08) < 1.27
 
     def test_bad_reference(self, scratch_sch):
         result = schematic.wire_pins_to_net(
@@ -216,8 +219,8 @@ class TestWirePinToLabel:
         )
         assert "error" in result.lower() or "not found" in result.lower()
 
-    def test_warns_on_conflicting_label(self, scratch_sch):
-        """Warn when a different net label already exists at the endpoint."""
+    def test_avoids_conflicting_label(self, scratch_sch):
+        """Auto-redirect stub when a different net label would collide."""
         # Wire R1 pin 1 to "NET_A"
         schematic.wire_pins_to_net(
             pins=[{"reference": "R1", "pin": "1"}],
@@ -232,8 +235,19 @@ class TestWirePinToLabel:
             direction="up",
             schematic_path=str(scratch_sch),
         )
-        # Should contain a warning about conflicting label
-        assert "warning" in result.lower() or "conflict" in result.lower()
+        # Should succeed — collision auto-resolved by picking a different direction
+        assert "Wired" in result
+        # Verify both labels exist with different positions
+        sch = reparse(str(scratch_sch))
+        net_a = [lbl for lbl in sch.labels if lbl.text == "NET_A"]
+        net_b = [lbl for lbl in sch.labels if lbl.text == "NET_B"]
+        assert len(net_a) == 1
+        assert len(net_b) == 1
+        # Labels should NOT be at the same position (collision was avoided)
+        assert (
+            abs(net_a[0].position.X - net_b[0].position.X) > 0.1
+            or abs(net_a[0].position.Y - net_b[0].position.Y) > 0.1
+        )
 
 
 def _make_two_parts_sch(tmp_path: Path) -> str:
@@ -489,6 +503,108 @@ class TestWirePinsToNet:
             schematic_path=str(scratch_sch),
         )
         assert "error" in result.lower() or "not found" in result.lower()
+
+
+# ===========================================================================
+# TestConnectPinsNoSnap (Bug 2)
+# ===========================================================================
+
+
+class TestConnectPinsNoSnap:
+    def test_wire_reaches_non_grid_pin(self, tmp_path):
+        """Wire endpoints must land exactly on pin positions, not snapped."""
+        path = _make_test_part_sch(tmp_path)
+        # TestPart U1 at (100,100): pin IN at (94.92, 100), pin OUT at (105.08, 100)
+        # These pin positions are NOT on the 1.27mm grid.
+        result = schematic.connect_pins(
+            ref1="U1", pin1="IN", ref2="U1", pin2="OUT",
+            schematic_path=path,
+        )
+        assert "Connected" in result
+        sch = reparse(path)
+        wires = [
+            g for g in sch.graphicalItems
+            if isinstance(g, Connection) and g.type == "wire"
+        ]
+        # Collect all wire endpoints
+        endpoints = set()
+        for w in wires:
+            for pt in w.points:
+                endpoints.add((round(pt.X, 4), round(pt.Y, 4)))
+        # Exact pin positions must appear (not snapped versions)
+        assert (94.92, 100.0) in endpoints
+        assert (105.08, 100.0) in endpoints
+
+
+# ===========================================================================
+# TestStubCollision (Bug 3)
+# ===========================================================================
+
+
+class TestStubCollision:
+    def test_avoids_stub_collision_different_nets(self, tmp_path):
+        """Two adjacent pins wired to different nets shouldn't collide."""
+        # Create schematic with R1 at (100,100) and R2 very close at (100,105.08)
+        sch = new_schematic()
+        sch.libSymbols.append(build_r_symbol())
+        sch.schematicSymbols.append(place_r1(100, 100))
+
+        # Place R2 close to R1
+        from conftest import _default_effects as _de, _gen_uuid as _gu
+        r2 = SchematicSymbol()
+        r2.libId = "Device:R"
+        r2.libName = "R"
+        r2.position = Position(X=100, Y=107.62, angle=0)
+        r2.uuid = _gu()
+        r2.unit = 1
+        r2.inBom = True
+        r2.onBoard = True
+        r2.properties = [
+            Property(key="Reference", value="R2", id=0, effects=_de(),
+                     position=Position(X=100, Y=103.81, angle=0)),
+            Property(key="Value", value="10K", id=1, effects=_de(),
+                     position=Position(X=100, Y=111.43, angle=0)),
+            Property(key="Footprint", value="", id=2,
+                     effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                     position=Position(X=100, Y=107.62, angle=0)),
+            Property(key="Datasheet", value="~", id=3,
+                     effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                     position=Position(X=100, Y=107.62, angle=0)),
+        ]
+        r2.pins = {"1": _gu(), "2": _gu()}
+        sch.schematicSymbols.append(r2)
+
+        path = str(tmp_path / "adjacent.kicad_sch")
+        sch.filePath = path
+        sch.to_file()
+
+        # Wire R1 pin 2 to NET_A (down)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "2"}],
+            label_text="NET_A",
+            direction="down",
+            schematic_path=path,
+        )
+        # Wire R2 pin 1 to NET_B (up — toward R1, could collide)
+        result = schematic.wire_pins_to_net(
+            pins=[{"reference": "R2", "pin": "1"}],
+            label_text="NET_B",
+            direction="up",
+            schematic_path=path,
+        )
+        assert "Wired" in result
+
+        # Verify the two labels are at different positions (collision avoided)
+        sch2 = reparse(path)
+        lbl_a = [l for l in sch2.labels if l.text == "NET_A"]
+        lbl_b = [l for l in sch2.labels if l.text == "NET_B"]
+        assert len(lbl_a) == 1
+        assert len(lbl_b) == 1
+        # They should not overlap
+        assert (
+            abs(lbl_a[0].position.X - lbl_b[0].position.X) > 0.1
+            or abs(lbl_a[0].position.Y - lbl_b[0].position.Y) > 0.1
+        )
 
 
 # ===========================================================================

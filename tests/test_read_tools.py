@@ -219,3 +219,26 @@ class TestGetPinPositions:
     def test_unknown_reference(self, scratch_sch: Path) -> None:
         result = schematic.get_pin_positions("X99", str(scratch_sch))
         assert "not found" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_schematic_info (Bug 5)
+# ---------------------------------------------------------------------------
+
+
+class TestGetSchematicInfo:
+    def test_returns_page_and_counts(self, scratch_sch: Path) -> None:
+        result = schematic.get_schematic_info(str(scratch_sch))
+        assert "A4" in result
+        assert "297" in result
+        assert "210" in result
+        assert "Components:" in result
+        assert "Labels:" in result
+        assert "Wires:" in result
+
+    def test_empty_schematic(self, empty_sch: Path) -> None:
+        result = schematic.get_schematic_info(str(empty_sch))
+        assert "A4" in result
+        assert "Components: 0" in result
+        assert "Labels: 0" in result
+        assert "Wires: 0" in result

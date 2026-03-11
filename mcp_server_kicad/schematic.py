@@ -3,6 +3,7 @@
 import json
 import math
 import os
+import re
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
@@ -63,6 +64,38 @@ mcp = FastMCP(
         "5. If blocked, report the error — do NOT edit the schematic file manually"
     ),
 )
+
+
+# Standard KiCad page sizes in mm (width, height) — landscape orientation
+_PAGE_SIZES: dict[str, tuple[float, float]] = {
+    "A5": (210, 148),
+    "A4": (297, 210),
+    "A3": (420, 297),
+    "A2": (594, 420),
+    "A1": (841, 594),
+    "A0": (1189, 841),
+    "A": (279.4, 215.9),
+    "B": (431.8, 279.4),
+    "C": (558.8, 431.8),
+    "D": (863.6, 558.8),
+    "E": (1117.6, 863.6),
+}
+
+_VALID_REF_RE = re.compile(r"^#?[A-Z]+[0-9]+$")
+
+
+def _get_page_size(sch) -> tuple[float, float]:
+    """Return (width, height) in mm for the schematic's page setting."""
+    paper = sch.paper
+    size_name = paper.paperSize
+    if size_name == "User":
+        w = paper.width or 297
+        h = paper.height or 210
+    else:
+        w, h = _PAGE_SIZES.get(size_name, (297, 210))
+    if getattr(paper, "portrait", False):
+        w, h = h, w
+    return w, h
 
 
 def _find_lib_symbol(sch, lib_id: str):
@@ -178,8 +211,31 @@ def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, floa
 
 
 # ---------------------------------------------------------------------------
-# Schematic read tools (7)
+# Schematic read tools (8)
 # ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_schematic_info(schematic_path: str = SCH_PATH) -> str:
+    """Get schematic summary: page size, component count, label count, wire count.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    page_w, page_h = _get_page_size(sch)
+    wire_count = sum(
+        1
+        for g in sch.graphicalItems
+        if isinstance(g, Connection) and g.type == "wire"
+    )
+    return (
+        f"Page: {sch.paper.paperSize} ({page_w}x{page_h}mm)\n"
+        f"Components: {len(sch.schematicSymbols)}\n"
+        f"Labels: {len(sch.labels)}\n"
+        f"Global labels: {len(sch.globalLabels)}\n"
+        f"Wires: {wire_count}"
+    )
 
 
 @mcp.tool()
@@ -376,7 +432,6 @@ def get_net_connections(
                     comp_angle,
                     mir,
                 )
-                px, py = _snap_grid(px), _snap_grid(py)
                 for rx, ry in reachable:
                     if abs(px - rx) < tol and abs(py - ry) < tol:
                         connections.append(
@@ -428,7 +483,22 @@ def place_component(
         mirror: Mirror axis ("x", "y", or "" for none)
         schematic_path: Path to .kicad_sch file
     """
+    # Validate reference designator
+    if not _VALID_REF_RE.match(reference):
+        return (
+            f"Error: '{reference}' is not a valid KiCad reference designator. "
+            "Must match pattern [A-Z]+[0-9]+ (e.g. 'R1', 'U2', 'C10')."
+        )
+
     sch = _load_sch(schematic_path)
+
+    # Validate position against page boundaries
+    page_w, page_h = _get_page_size(sch)
+    if x < 0 or x > page_w or y < 0 or y > page_h:
+        return (
+            f"Error: position ({x}, {y}) is outside the sheet boundary "
+            f"({page_w}x{page_h}mm). Use coordinates within the drawable area."
+        )
 
     # Snap placement to grid
     x = _snap_grid(x)
@@ -1154,7 +1224,6 @@ def wire_pins_to_net(
             px, py, outward = _get_pin_pos(sch, ref, pin_name)
         except ValueError as e:
             return f"Error wiring {ref}:{pin_name}: {e}"
-        px, py = _snap_grid(px), _snap_grid(py)
 
         if direction == "auto":
             snapped = round(outward / 90) * 90 % 360
@@ -1166,15 +1235,52 @@ def wire_pins_to_net(
         end_x = _snap_grid(px + dx_sign * stub_length)
         end_y = _snap_grid(py + dy_sign * stub_length)
 
-        # Check for conflicting labels
-        for existing in sch.labels:
-            if (
-                abs(existing.position.X - end_x) < tol
-                and abs(existing.position.Y - end_y) < tol
-                and existing.text != label_text
-            ):
-                warnings.append(f"{ref}:{pin_name} conflicts with '{existing.text}'")
-                break
+        # Check for stub collision with existing labels from different nets.
+        # If the chosen direction produces a stub that overlaps an existing
+        # label of a different net within stub_length along the same axis,
+        # try alternate directions to avoid a short circuit.
+        def _stub_collides(ex: float, ey: float) -> bool:
+            """True if endpoint (ex, ey) collides with a different-net label."""
+            for existing in sch.labels:
+                if existing.text == label_text:
+                    continue
+                lx, ly = existing.position.X, existing.position.Y
+                # Check if label is on the stub path (between pin and end)
+                if dx_sign != 0 and abs(ly - py) < tol:
+                    lo = min(px, ex)
+                    hi = max(px, ex)
+                    if lo - tol <= lx <= hi + tol:
+                        return True
+                if dy_sign != 0 and abs(lx - px) < tol:
+                    lo = min(py, ey)
+                    hi = max(py, ey)
+                    if lo - tol <= ly <= hi + tol:
+                        return True
+                # Check endpoint overlap
+                if abs(lx - ex) < tol and abs(ly - ey) < tol:
+                    return True
+            return False
+
+        if _stub_collides(end_x, end_y):
+            # Try alternate directions
+            resolved = False
+            for alt_d in _DIR_OFFSETS:
+                if alt_d == d:
+                    continue
+                adx, ady, alt_rot = _DIR_OFFSETS[alt_d]
+                alt_ex = _snap_grid(px + adx * stub_length)
+                alt_ey = _snap_grid(py + ady * stub_length)
+                if not _stub_collides(alt_ex, alt_ey):
+                    d = alt_d
+                    dx_sign, dy_sign, label_rot = adx, ady, alt_rot
+                    end_x, end_y = alt_ex, alt_ey
+                    resolved = True
+                    break
+            if not resolved:
+                warnings.append(
+                    f"{ref}:{pin_name} stub collides with existing net; "
+                    "no safe direction found"
+                )
 
         # Wire stub
         sch.graphicalItems.append(
@@ -1227,9 +1333,6 @@ def connect_pins(
     sch = _load_sch(schematic_path)
     x1, y1, _ = _get_pin_pos(sch, ref1, pin1)
     x2, y2, _ = _get_pin_pos(sch, ref2, pin2)
-
-    x1, y1 = _snap_grid(x1), _snap_grid(y1)
-    x2, y2 = _snap_grid(x2), _snap_grid(y2)
 
     segments = []
     if x1 == x2 or y1 == y2:

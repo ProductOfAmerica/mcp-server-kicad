@@ -136,8 +136,8 @@ class TestPlaceComponent:
             lib_id="test:TestPart",
             reference="U1",
             value="TestPart",
-            x=250,
-            y=250,
+            x=200,
+            y=150,
             symbol_lib_path=str(scratch_sym_lib),
             schematic_path=str(scratch_sch),
         )
@@ -156,8 +156,8 @@ class TestPlaceComponent:
             lib_id="Device:R",
             reference="R6",
             value="100",
-            x=300,
-            y=300,
+            x=200,
+            y=150,
             schematic_path=str(scratch_sch),
         )
         sch = reparse(str(scratch_sch))
@@ -700,3 +700,121 @@ class TestRemoveJunction:
     def test_remove_missing(self, scratch_sch):
         result = schematic.remove_junction(x=999, y=999, schematic_path=str(scratch_sch))
         assert "not found" in result.lower()
+
+
+# ===========================================================================
+# TestPageBoundary (Bug 1)
+# ===========================================================================
+
+
+class TestPageBoundary:
+    def test_valid_coordinates_pass(self, scratch_sch):
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="R20",
+            value="1K",
+            x=150,
+            y=100,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Placed" in result
+
+    def test_out_of_bounds_x(self, scratch_sch):
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="R21",
+            value="1K",
+            x=350,
+            y=100,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Error" in result
+        assert "outside" in result
+
+    def test_out_of_bounds_y(self, scratch_sch):
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="R22",
+            value="1K",
+            x=100,
+            y=250,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Error" in result
+        assert "outside" in result
+
+    def test_edge_coordinates_accepted(self, scratch_sch):
+        """Coordinates exactly at page edges should be accepted."""
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="R23",
+            value="1K",
+            x=297,
+            y=210,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Placed" in result
+
+
+# ===========================================================================
+# TestReferenceValidation (Bug 4)
+# ===========================================================================
+
+
+class TestReferenceValidation:
+    def test_valid_ref_passes(self, scratch_sch):
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="R10",
+            value="1K",
+            x=130,
+            y=130,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Placed" in result
+
+    def test_invalid_ref_c5b(self, scratch_sch):
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="C5B",
+            value="1K",
+            x=100,
+            y=100,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Error" in result
+        assert "valid" in result.lower()
+
+    def test_empty_ref_rejected(self, scratch_sch):
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="",
+            value="1K",
+            x=100,
+            y=100,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Error" in result
+
+    def test_digits_only_rejected(self, scratch_sch):
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="123",
+            value="1K",
+            x=100,
+            y=100,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Error" in result
+
+    def test_power_ref_accepted(self, scratch_sch):
+        """#FLG01 and #PWR05 should be accepted."""
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="#FLG01",
+            value="1K",
+            x=130,
+            y=100,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Placed" in result
