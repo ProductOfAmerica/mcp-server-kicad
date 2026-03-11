@@ -1,27 +1,27 @@
 {
   "kicad-schematic": {
     "type": "stdio",
-    "command": "uvx",
-    "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-schematic"]
+    "command": "uv",
+    "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}", "mcp-server-kicad-schematic"]
   },
   "kicad-pcb": {
     "type": "stdio",
-    "command": "uvx",
-    "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-pcb"]
+    "command": "uv",
+    "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}", "mcp-server-kicad-pcb"]
   },
   "kicad-symbol": {
     "type": "stdio",
-    "command": "uvx",
-    "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-symbol"]
+    "command": "uv",
+    "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}", "mcp-server-kicad-symbol"]
   },
   "kicad-footprint": {
     "type": "stdio",
-    "command": "uvx",
-    "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-footprint"]
+    "command": "uv",
+    "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}", "mcp-server-kicad-footprint"]
   },
   "kicad-project": {
     "type": "stdio",
-    "command": "uvx",
-    "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-project"]
+    "command": "uv",
+    "args": ["run", "--project", "${CLAUDE_PLUGIN_ROOT}", "mcp-server-kicad-project"]
   }
 }

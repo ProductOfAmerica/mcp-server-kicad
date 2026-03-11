@@ -1,0 +1,158 @@
+---
+name: verification
+description: >
+  Use when running ERC or DRC checks, fixing electrical or design rule
+  violations, debugging unconnected nets, resolving "power pin not driven"
+  errors, or preparing a design for manufacturing export. Also use when
+  the user says "my ERC has errors" or "DRC is failing."
+---
+
+# KiCad Design Verification
+
+Systematic workflows for fixing ERC and DRC violations. Run these
+checks after completing schematic capture or PCB layout — never skip
+them.
+
+## ERC Workflow (Schematic)
+
+### Step 1: Run ERC
+
+Use `run_erc` to get the full violation list. Read every violation
+before fixing anything — some errors share a root cause.
+
+### Step 2: Fix by Category
+
+Work through violations in this order. Fixing earlier categories
+often eliminates later ones.
+
+**Category 1: Power pin not driven**
+
+The most common ERC error. A power input pin has no driving source.
+
+| Cause | Fix |
+|-------|-----|
+| Regulator output has no PWR_FLAG | Add `PWR_FLAG` on the output net |
+| Battery/connector supplies power but pin type is passive | Add `PWR_FLAG` on the supply net |
+| Power symbol not connected to anything | Wire the power symbol to the net |
+| Custom symbol pin type is wrong | Fix the symbol: set pin type to "Power output" |
+
+Use `add_power_symbol` to place PWR_FLAG. Connect it to the net with
+`wire_pins_to_net` or `connect_pins`.
+
+**Where to place PWR_FLAG:** On every net that is driven by something
+KiCad does not recognize as a power source — regulator outputs,
+battery terminals, connector pins providing external power.
+
+**Category 2: Unconnected pins**
+
+| Cause | Fix |
+|-------|-----|
+| Pin should be connected | Wire it: `connect_pins` or `wire_pins_to_net` |
+| Pin is intentionally unused | Mark it: `no_connect_pin` |
+| Wire just misses the pin | Check pin position with `get_pin_positions`, rewire |
+
+Use `list_unconnected_pins` to get a precise list of which pins are
+unconnected and on which components.
+
+**Category 3: Different net names on same wire**
+
+A wire connects two differently-named nets, creating a conflict.
+
+| Cause | Fix |
+|-------|-----|
+| Two labels on the same wire segment | Remove one label with `remove_label` |
+| Intended connection between named nets | Use one consistent name, rename the other |
+
+**Category 4: Pin type conflicts**
+
+KiCad warns when incompatible pin types connect (e.g., two outputs
+driving the same net).
+
+| Cause | Fix |
+|-------|-----|
+| Two power outputs on same net | Correct if intentional (e.g., parallel regulators); add PWR_FLAG |
+| Output driving another output | Check the circuit — usually a design error |
+| Bidirectional pin warnings | Usually safe to ignore if the circuit is correct |
+
+### Step 3: Re-run ERC
+
+After fixing all violations, run `run_erc` again. Repeat until the
+violation count is zero. Do not leave warnings unaddressed — each
+one is either a real problem or needs an explicit no-connect.
+
+## DRC Workflow (PCB)
+
+### Step 1: Run DRC
+
+Use `run_drc` to get the full violation list.
+
+### Step 2: Fix by Category
+
+**Category 1: Clearance violations**
+
+Trace, pad, or via too close to another copper object.
+
+| Cause | Fix |
+|-------|-----|
+| Trace squeezed between pads | Re-route with more space or narrower trace |
+| Via too close to pad | Move the via |
+| Copper zone too close to trace | Increase zone clearance or re-route |
+
+**Category 2: Unconnected nets**
+
+A net from the schematic has no physical connection on the PCB.
+
+| Cause | Fix |
+|-------|-----|
+| Missing trace | Route the connection with `add_trace` |
+| Footprint pad not connected | Add trace or via to reach the net |
+| Wrong footprint assigned | Fix in schematic, re-import netlist |
+
+**Category 3: Track width violations**
+
+A trace is narrower than the design rule minimum.
+
+| Cause | Fix |
+|-------|-----|
+| Trace routed too narrow | Delete and re-route with correct width |
+| Net class minimum not met | Check net class settings, increase width |
+
+**Category 4: Copper zone issues**
+
+| Cause | Fix |
+|-------|-----|
+| Isolated copper island | Delete the island or connect it to a net |
+| Zone not filled | Refill zones after moving components |
+| Thermal relief too thin | Increase spoke width in zone properties |
+
+### Step 3: Re-run DRC
+
+Repeat until zero violations. Manufacturing houses will reject boards
+with DRC errors.
+
+## Pre-Manufacturing Checklist
+
+Run this before exporting Gerbers:
+
+- [ ] ERC: zero violations
+- [ ] DRC: zero violations
+- [ ] All nets connected (no ratsnest lines remaining)
+- [ ] Board outline closed on Edge.Cuts layer
+- [ ] Mounting holes placed and sized correctly
+- [ ] Silkscreen readable — no text over pads or vias
+- [ ] Fiducials placed (if required for SMD assembly)
+- [ ] All component values match the BOM
+- [ ] Design rules match manufacturer capabilities
+
+## Export for Manufacturing
+
+When verification is complete:
+
+1. `export_gerbers` — produces the full Gerber set (copper layers,
+   mask, silkscreen, drill, board outline)
+2. `export_positions` — pick-and-place file for automated assembly
+3. `export_bom` — bill of materials from the schematic
+4. `export_3d` — 3D model for mechanical review
+
+Verify the Gerber output by reviewing layer count and checking that
+the board outline, drill hits, and copper match expectations.
