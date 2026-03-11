@@ -6,7 +6,13 @@
   },
   "repository": "https://github.com/ProductOfAmerica/mcp-server-kicad",
   "homepage": "https://github.com/ProductOfAmerica/mcp-server-kicad",
-  "version": "0.4.1",
+  "version": "0.4.2",
   "license": "MIT",
-  "keywords": ["kicad", "eda", "schematic", "pcb", "electronics"]
+  "keywords": [
+    "kicad",
+    "eda",
+    "schematic",
+    "pcb",
+    "electronics"
+  ]
 }
