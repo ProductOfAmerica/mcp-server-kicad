@@ -1248,6 +1248,8 @@ def wire_pins_to_net(
     tol = 0.1
     warnings = []
     stub_endpoints = []
+    first_power_in_pos = None  # (x, y) of first power_in stub endpoint
+    has_power_out = False  # True if any wired pin is power_out
     for pin_def in pins:
         ref = pin_def["reference"]
         pin_name = pin_def["pin"]
@@ -1336,7 +1338,129 @@ def wire_pins_to_net(
             )
         )
 
+        # Track pin electrical types for auto PWR_FLAG logic
+        if first_power_in_pos is None or not has_power_out:
+            target = None
+            for sym in sch.schematicSymbols:
+                if any(p.key == "Reference" and p.value == ref for p in sym.properties):
+                    target = sym
+                    break
+            if target:
+                lib_sym = _find_lib_symbol(sch, target.libId)
+                if lib_sym:
+                    for unit in lib_sym.units:
+                        for lpin in unit.pins:
+                            if lpin.name == pin_name or lpin.number == pin_name:
+                                if lpin.electricalType == "power_in" and first_power_in_pos is None:
+                                    first_power_in_pos = (end_x, end_y)
+                                if lpin.electricalType == "power_out":
+                                    has_power_out = True
+
     _auto_junctions(sch, stub_endpoints)
+
+    # Auto-add PWR_FLAG if net has power_in but no power_out
+    if first_power_in_pos is not None and not has_power_out:
+        # Check if PWR_FLAG already exists on this net
+        has_existing_flag = False
+        for sym in sch.schematicSymbols:
+            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties):
+                sx, sy = sym.position.X, sym.position.Y
+                for lbl in sch.labels:
+                    if (
+                        lbl.text == label_text
+                        and abs(lbl.position.X - sx) < tol
+                        and abs(lbl.position.Y - sy) < tol
+                    ):
+                        has_existing_flag = True
+                        break
+            if has_existing_flag:
+                break
+
+        if not has_existing_flag:
+            from kiutils.symbol import Symbol as LibSymbol
+            from kiutils.symbol import SymbolPin
+
+            # Ensure PWR_FLAG lib symbol exists
+            if not _find_lib_symbol(sch, "power:PWR_FLAG"):
+                pwr_flag = LibSymbol()
+                pwr_flag.entryName = "PWR_FLAG"
+                pwr_flag.isPower = True
+                pwr_flag.inBom = False
+                pwr_flag.onBoard = True
+                unit0 = LibSymbol()
+                unit0.entryName = "PWR_FLAG"
+                unit0.unitId = 0
+                unit0.styleId = 1
+                unit1 = LibSymbol()
+                unit1.entryName = "PWR_FLAG"
+                unit1.unitId = 1
+                unit1.styleId = 1
+                unit1.pins = [
+                    SymbolPin(
+                        electricalType="power_out",
+                        position=Position(X=0, Y=0, angle=90),
+                        length=0,
+                        name="~",
+                        number="1",
+                    )
+                ]
+                pwr_flag.units = [unit0, unit1]
+                sch.libSymbols.append(pwr_flag)
+
+            # Generate unique #FLG reference
+            existing_flg = {
+                p.value
+                for sym in sch.schematicSymbols
+                for p in sym.properties
+                if p.key == "Reference" and p.value.startswith("#FLG")
+            }
+            n = 1
+            while f"#FLG{n:02d}" in existing_flg:
+                n += 1
+            flg_ref = f"#FLG{n:02d}"
+
+            fx, fy = first_power_in_pos
+            flg_sym = SchematicSymbol()
+            flg_sym.libId = "power:PWR_FLAG"
+            flg_sym.libName = "PWR_FLAG"
+            flg_sym.position = Position(X=fx, Y=fy, angle=0)
+            flg_sym.uuid = _gen_uuid()
+            flg_sym.unit = 1
+            flg_sym.inBom = False
+            flg_sym.onBoard = True
+            flg_sym.properties = [
+                Property(
+                    key="Reference",
+                    value=flg_ref,
+                    id=0,
+                    effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                    position=Position(X=fx, Y=fy - 3.81, angle=0),
+                ),
+                Property(
+                    key="Value",
+                    value="PWR_FLAG",
+                    id=1,
+                    effects=_default_effects(),
+                    position=Position(X=fx, Y=fy + 3.81, angle=0),
+                ),
+                Property(
+                    key="Footprint",
+                    value="",
+                    id=2,
+                    effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                    position=Position(X=fx, Y=fy, angle=0),
+                ),
+                Property(
+                    key="Datasheet",
+                    value="~",
+                    id=3,
+                    effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                    position=Position(X=fx, Y=fy, angle=0),
+                ),
+            ]
+            flg_sym.pins = {"1": _gen_uuid()}
+            sch.schematicSymbols.append(flg_sym)
+
     sch.to_file()
     msg = f"Wired {len(pins)} pins to '{label_text}'."
     if warnings:

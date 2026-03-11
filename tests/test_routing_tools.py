@@ -860,3 +860,232 @@ class TestAutoJunctions:
         assert any(abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02 for x, y in junc_positions), (
             f"Expected junction near (100, 96.19), got {junc_positions}"
         )
+
+
+# ===========================================================================
+# TestAutoPwrFlag
+# ===========================================================================
+
+
+def _make_power_sch(tmp_path, pin_type="power_in", ref="#PWR01", value="VCC"):
+    """Create schematic with a power symbol placed."""
+    from conftest import build_power_symbol
+
+    sch = new_schematic()
+    sch.libSymbols.append(build_power_symbol(value, pin_type))
+
+    sym = SchematicSymbol()
+    sym.libId = f"power:{value}"
+    sym.libName = value
+    sym.position = Position(X=100, Y=100, angle=0)
+    sym.uuid = _gen_uuid()
+    sym.unit = 1
+    sym.inBom = False
+    sym.onBoard = True
+    sym.properties = [
+        Property(
+            key="Reference",
+            value=ref,
+            id=0,
+            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+            position=Position(X=100, Y=96.19, angle=0),
+        ),
+        Property(
+            key="Value",
+            value=value,
+            id=1,
+            effects=_default_effects(),
+            position=Position(X=100, Y=103.81, angle=0),
+        ),
+        Property(
+            key="Footprint",
+            value="",
+            id=2,
+            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+            position=Position(X=100, Y=100, angle=0),
+        ),
+        Property(
+            key="Datasheet",
+            value="~",
+            id=3,
+            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+            position=Position(X=100, Y=100, angle=0),
+        ),
+    ]
+    sym.pins = {"1": _gen_uuid()}
+    sch.schematicSymbols.append(sym)
+
+    path = str(tmp_path / "power.kicad_sch")
+    sch.filePath = path
+    sch.to_file()
+    return path
+
+
+class TestAutoPwrFlag:
+    def test_auto_pwr_flag_on_power_in_net(self, tmp_path):
+        """wire_pins_to_net should auto-add PWR_FLAG for power_in nets."""
+        path = _make_power_sch(tmp_path)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "#PWR01", "pin": "1"}],
+            label_text="VCC",
+            schematic_path=path,
+        )
+        sch = reparse(path)
+        pwr_flags = [
+            sym
+            for sym in sch.schematicSymbols
+            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties)
+        ]
+        assert len(pwr_flags) == 1, f"Expected 1 PWR_FLAG, got {len(pwr_flags)}"
+
+    def test_no_duplicate_pwr_flag(self, tmp_path):
+        """Calling wire_pins_to_net twice on the same net should not duplicate PWR_FLAG."""
+        path = _make_power_sch(tmp_path)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "#PWR01", "pin": "1"}],
+            label_text="VCC",
+            schematic_path=path,
+        )
+        # Wire again to same net (e.g. a second power_in symbol)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "#PWR01", "pin": "1"}],
+            label_text="VCC",
+            schematic_path=path,
+        )
+        sch = reparse(path)
+        pwr_flags = [
+            sym
+            for sym in sch.schematicSymbols
+            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties)
+        ]
+        assert len(pwr_flags) == 1, f"Expected 1 PWR_FLAG, got {len(pwr_flags)}"
+
+    def test_no_pwr_flag_on_passive_net(self, scratch_sch):
+        """No PWR_FLAG should be added for passive pin nets."""
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
+            label_text="NET_A",
+            schematic_path=str(scratch_sch),
+        )
+        sch = reparse(str(scratch_sch))
+        pwr_flags = [
+            sym
+            for sym in sch.schematicSymbols
+            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties)
+        ]
+        assert len(pwr_flags) == 0, f"Expected 0 PWR_FLAG on passive net, got {len(pwr_flags)}"
+
+    def test_no_pwr_flag_when_power_out_present(self, tmp_path):
+        """No PWR_FLAG needed when a power_out pin is wired to the same net."""
+        from conftest import build_power_symbol
+
+        sch = new_schematic()
+        # Add VCC (power_in) and PWR_FLAG (power_out) lib symbols
+        sch.libSymbols.append(build_power_symbol("VCC", "power_in"))
+        sch.libSymbols.append(build_power_symbol("PWR_FLAG", "power_out"))
+
+        # Place VCC symbol
+        vcc_sym = SchematicSymbol()
+        vcc_sym.libId = "power:VCC"
+        vcc_sym.libName = "VCC"
+        vcc_sym.position = Position(X=100, Y=100, angle=0)
+        vcc_sym.uuid = _gen_uuid()
+        vcc_sym.unit = 1
+        vcc_sym.inBom = False
+        vcc_sym.onBoard = True
+        vcc_sym.properties = [
+            Property(
+                key="Reference",
+                value="#PWR01",
+                id=0,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=96.19, angle=0),
+            ),
+            Property(
+                key="Value",
+                value="VCC",
+                id=1,
+                effects=_default_effects(),
+                position=Position(X=100, Y=103.81, angle=0),
+            ),
+            Property(
+                key="Footprint",
+                value="",
+                id=2,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=100, angle=0),
+            ),
+            Property(
+                key="Datasheet",
+                value="~",
+                id=3,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=100, angle=0),
+            ),
+        ]
+        vcc_sym.pins = {"1": _gen_uuid()}
+        sch.schematicSymbols.append(vcc_sym)
+
+        # Place a PWR_FLAG symbol (power_out) already wired to same net
+        flg_sym = SchematicSymbol()
+        flg_sym.libId = "power:PWR_FLAG"
+        flg_sym.libName = "PWR_FLAG"
+        flg_sym.position = Position(X=110, Y=100, angle=0)
+        flg_sym.uuid = _gen_uuid()
+        flg_sym.unit = 1
+        flg_sym.inBom = False
+        flg_sym.onBoard = True
+        flg_sym.properties = [
+            Property(
+                key="Reference",
+                value="#FLG01",
+                id=0,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=110, Y=96.19, angle=0),
+            ),
+            Property(
+                key="Value",
+                value="PWR_FLAG",
+                id=1,
+                effects=_default_effects(),
+                position=Position(X=110, Y=103.81, angle=0),
+            ),
+            Property(
+                key="Footprint",
+                value="",
+                id=2,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=110, Y=100, angle=0),
+            ),
+            Property(
+                key="Datasheet",
+                value="~",
+                id=3,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=110, Y=100, angle=0),
+            ),
+        ]
+        flg_sym.pins = {"1": _gen_uuid()}
+        sch.schematicSymbols.append(flg_sym)
+
+        path = str(tmp_path / "power_out.kicad_sch")
+        sch.filePath = path
+        sch.to_file()
+
+        # Wire both to VCC net
+        schematic.wire_pins_to_net(
+            pins=[
+                {"reference": "#PWR01", "pin": "1"},
+                {"reference": "#FLG01", "pin": "1"},
+            ],
+            label_text="VCC",
+            schematic_path=path,
+        )
+        sch = reparse(path)
+        # Should NOT have added another PWR_FLAG (one already exists as power_out)
+        pwr_flags = [
+            sym
+            for sym in sch.schematicSymbols
+            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties)
+        ]
+        assert len(pwr_flags) == 1, f"Expected only the existing PWR_FLAG, got {len(pwr_flags)}"

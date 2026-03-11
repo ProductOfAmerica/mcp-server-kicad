@@ -11,11 +11,13 @@ from pathlib import Path
 
 from kiutils.items.common import ColorRGBA, Effects, Font, Position, Property, Stroke
 from kiutils.items.schitems import (
+    Connection,
     HierarchicalLabel,
     HierarchicalPin,
     HierarchicalSheet,
     HierarchicalSheetProjectInstance,
     HierarchicalSheetProjectPath,
+    LocalLabel,
 )
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
@@ -25,6 +27,8 @@ from mcp_server_kicad._shared import (
     _ADDITIVE,
     _EXPORT,
     _READ_ONLY,
+    _default_effects,
+    _default_stroke,
     _gen_uuid,
     _load_sch,
     _run_cli,
@@ -225,6 +229,31 @@ def _add_hierarchical_sheet(
         pin.effects = Effects(font=Font(height=1.27, width=1.27))
         pin.uuid = _gen_uuid()
         sheet_pins.append(pin)
+
+        # Wire stub going LEFT from pin
+        pin_y = _snap_grid(y + (i + 1) * pin_spacing)
+        stub_end_x = _snap_grid(x - 2.54)
+        parent_sch.graphicalItems.append(
+            Connection(
+                type="wire",
+                points=[
+                    Position(X=x, Y=pin_y),
+                    Position(X=stub_end_x, Y=pin_y),
+                ],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+
+        # Net label at stub endpoint
+        parent_sch.labels.append(
+            LocalLabel(
+                text=pin_def["name"],
+                position=Position(X=stub_end_x, Y=pin_y, angle=180),
+                effects=_default_effects(),
+                uuid=_gen_uuid(),
+            )
+        )
     sheet.pins = sheet_pins
 
     # Add instances block for the sheet
@@ -263,6 +292,31 @@ def _add_hierarchical_sheet(
         label.effects = Effects(font=Font(height=1.27, width=1.27))
         label.uuid = _gen_uuid()
         child_sch.hierarchicalLabels.append(label)
+
+        # Wire stub going RIGHT from label
+        label_y = _snap_grid(25.4 + i * 5.08)
+        stub_end_x = _snap_grid(label_x + 2.54)
+        child_sch.graphicalItems.append(
+            Connection(
+                type="wire",
+                points=[
+                    Position(X=label_x, Y=label_y),
+                    Position(X=stub_end_x, Y=label_y),
+                ],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+
+        # Net label at stub endpoint
+        child_sch.labels.append(
+            LocalLabel(
+                text=pin_def["name"],
+                position=Position(X=stub_end_x, Y=label_y, angle=0),
+                effects=_default_effects(),
+                uuid=_gen_uuid(),
+            )
+        )
     child_sch.to_file()
 
     return f"Added sheet '{sheet_name}' with {len(pins)} pins to {parent_schematic_path}"

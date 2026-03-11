@@ -215,6 +215,178 @@ class TestAddHierarchicalSheet:
         assert sheet.position.X == 50.8
         assert sheet.position.Y == 76.2
 
+    def test_child_labels_have_wire_stubs_and_net_labels(self, tmp_path: Path):
+        """Each hierarchical label in the child should have a wire stub and local label."""
+        parent, child = self._make_parent_and_child(tmp_path)
+        pins = [
+            {"name": "VIN", "direction": "input"},
+            {"name": "GND", "direction": "bidirectional"},
+        ]
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(parent),
+            sheet_name="Power",
+            sheet_file=str(child),
+            pins=pins,
+            project_path=str(tmp_path / "root.kicad_pro"),
+        )
+        child_sch = Schematic.from_file(str(child))
+
+        from kiutils.items.schitems import Connection, LocalLabel
+
+        label_x = 25.4
+        for i, pin_def in enumerate(pins):
+            label_y = round(25.4 + i * 5.08, 4)
+            stub_end_x = round(label_x + 2.54, 4)
+
+            # Assert wire stub exists from (label_x, label_y) to (stub_end_x, label_y)
+            wires = [
+                g
+                for g in child_sch.graphicalItems
+                if isinstance(g, Connection) and g.type == "wire"
+            ]
+            found_wire = any(
+                abs(w.points[0].X - label_x) < 0.02
+                and abs(w.points[0].Y - label_y) < 0.02
+                and abs(w.points[1].X - stub_end_x) < 0.02
+                and abs(w.points[1].Y - label_y) < 0.02
+                for w in wires
+            )
+            assert found_wire, (
+                f"No wire stub for '{pin_def['name']}' from ({label_x},{label_y}) "
+                f"to ({stub_end_x},{label_y})"
+            )
+
+            # Assert local label exists at stub endpoint
+            labels = [
+                lbl
+                for lbl in child_sch.labels
+                if isinstance(lbl, LocalLabel)
+                and lbl.text == pin_def["name"]
+                and abs(lbl.position.X - stub_end_x) < 0.02
+                and abs(lbl.position.Y - label_y) < 0.02
+            ]
+            assert len(labels) == 1, (
+                f"Expected LocalLabel '{pin_def['name']}' at ({stub_end_x},{label_y})"
+            )
+
+    def test_parent_pins_have_wire_stubs_and_net_labels(self, tmp_path: Path):
+        """Each hierarchical pin in the parent should have a wire stub and local label."""
+        parent, child = self._make_parent_and_child(tmp_path)
+        pins = [
+            {"name": "VIN", "direction": "input"},
+            {"name": "GND", "direction": "bidirectional"},
+        ]
+        x, y = 25.4, 25.4
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(parent),
+            sheet_name="Power",
+            sheet_file=str(child),
+            pins=pins,
+            x=x,
+            y=y,
+            project_path=str(tmp_path / "root.kicad_pro"),
+        )
+        parent_sch = Schematic.from_file(str(parent))
+
+        from kiutils.items.schitems import Connection, LocalLabel
+
+        pin_spacing = 2.54
+        for i, pin_def in enumerate(pins):
+            pin_y = round(y + (i + 1) * pin_spacing, 4)
+            stub_end_x = round(x - 2.54, 4)
+
+            # Assert wire stub exists from (x, pin_y) to (stub_end_x, pin_y)
+            wires = [
+                g
+                for g in parent_sch.graphicalItems
+                if isinstance(g, Connection) and g.type == "wire"
+            ]
+            found_wire = any(
+                abs(w.points[0].X - x) < 0.02
+                and abs(w.points[0].Y - pin_y) < 0.02
+                and abs(w.points[1].X - stub_end_x) < 0.02
+                and abs(w.points[1].Y - pin_y) < 0.02
+                for w in wires
+            )
+            assert found_wire, (
+                f"No wire stub for '{pin_def['name']}' from ({x},{pin_y}) to ({stub_end_x},{pin_y})"
+            )
+
+            # Assert local label exists at stub endpoint with angle=180
+            labels = [
+                lbl
+                for lbl in parent_sch.labels
+                if isinstance(lbl, LocalLabel)
+                and lbl.text == pin_def["name"]
+                and abs(lbl.position.X - stub_end_x) < 0.02
+                and abs(lbl.position.Y - pin_y) < 0.02
+                and lbl.position.angle == 180
+            ]
+            assert len(labels) == 1, (
+                f"Expected LocalLabel '{pin_def['name']}' at ({stub_end_x},{pin_y}) angle=180"
+            )
+
+
+HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
+
+
+@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+class TestHierarchicalSheetErcClean:
+    """Integration test: hierarchical sheet should produce zero ERC violations."""
+
+    def test_hierarchical_sheet_erc_clean(self, tmp_path: Path):
+        from conftest import (
+            assert_erc_clean,
+            build_r_symbol,
+            place_r1,
+        )
+        from kiutils.schematic import Schematic
+
+        from mcp_server_kicad.schematic import wire_pins_to_net
+
+        # Create project
+        proj_dir = tmp_path / "erc_proj"
+        project.create_project(directory=str(proj_dir), name="erc_proj")
+
+        # Create child schematic
+        child_path = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child_path))
+
+        # Add hierarchical sheet with pins
+        pins = [
+            {"name": "VIN", "direction": "input"},
+            {"name": "GND", "direction": "bidirectional"},
+        ]
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "erc_proj.kicad_sch"),
+            sheet_name="Power",
+            sheet_file=str(child_path),
+            pins=pins,
+            project_path=str(proj_dir / "erc_proj.kicad_pro"),
+        )
+
+        # In the child: place a resistor and wire its pins to the hierarchy net names
+        child_sch = Schematic.from_file(str(child_path))
+        child_sch.libSymbols.append(build_r_symbol())
+        r1 = place_r1(50, 50)
+        child_sch.schematicSymbols.append(r1)
+        child_sch.to_file()
+
+        # Wire R1 pins to the hierarchy net labels
+        wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
+            label_text="VIN",
+            schematic_path=str(child_path),
+        )
+        wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "2"}],
+            label_text="GND",
+            schematic_path=str(child_path),
+        )
+
+        # Run ERC on the parent (which includes child via hierarchy)
+        assert_erc_clean(str(proj_dir / "erc_proj.kicad_sch"))
+
 
 @pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
 class TestGetVersion:
