@@ -978,6 +978,32 @@ class TestAutoPwrFlag:
         ]
         assert len(pwr_flags) == 0, f"Expected 0 PWR_FLAG on passive net, got {len(pwr_flags)}"
 
+    def test_auto_pwr_flag_has_instances(self, tmp_path):
+        """Auto-placed PWR_FLAG must have SymbolProjectInstance for KiCad GUI annotation."""
+        path = _make_power_sch(tmp_path)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "#PWR01", "pin": "1"}],
+            label_text="VCC",
+            schematic_path=path,
+        )
+        sch = reparse(path)
+        pwr_flags = [
+            sym
+            for sym in sch.schematicSymbols
+            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties)
+        ]
+        assert len(pwr_flags) == 1
+        flg = pwr_flags[0]
+        # Must have instances block for KiCad 9 annotation
+        assert flg.instances is not None and len(flg.instances) > 0, (
+            "PWR_FLAG missing SymbolProjectInstance — KiCad GUI will show #FLG?"
+        )
+        # The instance must have the correct reference
+        ref_in_instance = flg.instances[0].paths[0].reference
+        assert ref_in_instance.startswith("#FLG"), (
+            f"Instance reference should be #FLGxx, got {ref_in_instance}"
+        )
+
     def test_no_pwr_flag_when_power_out_present(self, tmp_path):
         """No PWR_FLAG needed when a power_out pin is wired to the same net."""
         from conftest import build_power_symbol

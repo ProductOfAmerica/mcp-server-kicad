@@ -1515,6 +1515,37 @@ def wire_pins_to_net(
                 ),
             ]
             flg_sym.pins = {"1": _gen_uuid()}
+
+            # Instances block — required by KiCad 9 for proper annotation
+            project_name = Path(sch.filePath).stem if sch.filePath else ""
+            sheet_path = f"/{sch.uuid}"
+            # Check if this is a sub-sheet by looking for a .kicad_pro
+            sch_dir = Path(schematic_path).parent
+            pro_files = list(sch_dir.glob("*.kicad_pro"))
+            if len(pro_files) == 1:
+                pro = pro_files[0]
+                project_name = pro.stem
+                root_sch_path = pro.with_suffix(".kicad_sch")
+                if root_sch_path.resolve() != Path(schematic_path).resolve():
+                    try:
+                        project_name, sheet_path = _resolve_hierarchy_path(
+                            str(pro), schematic_path, str(sch.uuid)
+                        )
+                    except Exception:
+                        pass  # Fall back to simple path
+            flg_sym.instances = [
+                SymbolProjectInstance(
+                    name=project_name,
+                    paths=[
+                        SymbolProjectPath(
+                            sheetInstancePath=sheet_path,
+                            reference=flg_ref,
+                            unit=1,
+                        ),
+                    ],
+                ),
+            ]
+
             sch.schematicSymbols.append(flg_sym)
 
     _save_sch(sch)
