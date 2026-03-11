@@ -17,7 +17,14 @@ mcp = FastMCP(
     "kicad-symbol",
     instructions=(
         "KiCad symbol library tools for browsing, inspecting, exporting,"
-        " and upgrading symbol libraries."
+        " and upgrading symbol libraries.\n\n"
+        "CRITICAL RULES:\n"
+        "- NEVER read, edit, or write .kicad_sym files directly. Use these"
+        " MCP tools for all symbol library operations.\n"
+        "- NEVER run kicad-cli commands directly. Use export_symbol_svg and"
+        " upgrade_sym_lib instead.\n"
+        "- Use list_lib_symbols to browse, get_symbol_pins to inspect pin"
+        " details. Do NOT grep inside .kicad_sym files."
     ),
 )
 

@@ -29,7 +29,20 @@ mcp = FastMCP(
     "kicad-pcb",
     instructions=(
         "KiCad PCB manipulation, DRC analysis, and PCB export tools"
-        " including Gerber, drill, 3D models, and pick-and-place."
+        " including Gerber, drill, 3D models, and pick-and-place.\n\n"
+        "CRITICAL RULES:\n"
+        "- NEVER read, edit, or write .kicad_pcb files directly. All PCB"
+        " manipulation MUST go through these MCP tools.\n"
+        "- NEVER run kicad-cli commands directly. Use the export and DRC"
+        " tools provided by this server.\n"
+        "- NEVER grep/search inside .kicad_pcb files. Use list_pcb_items"
+        " to query board contents (footprints, traces, vias, zones, etc.).\n"
+        "- When a tool returns an error, try different parameters or a different"
+        " MCP tool. Do NOT fall back to manual file editing.\n\n"
+        "QUERY PATTERN: list_pcb_items(item_type, pcb_path) supports types:"
+        " footprints, traces, vias, zones, drawings, text.\n\n"
+        "EXPORT PATTERN: export_pcb(format, pcb_path) supports formats:"
+        " pdf, svg, dxf. Use export_gerbers for manufacturing output."
     ),
 )
 

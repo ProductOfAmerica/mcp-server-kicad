@@ -17,7 +17,14 @@ mcp = FastMCP(
     "kicad-footprint",
     instructions=(
         "KiCad footprint library tools for browsing, inspecting, exporting,"
-        " and upgrading footprint libraries."
+        " and upgrading footprint libraries.\n\n"
+        "CRITICAL RULES:\n"
+        "- NEVER read, edit, or write .kicad_mod files directly. Use these"
+        " MCP tools for all footprint library operations.\n"
+        "- NEVER run kicad-cli commands directly. Use export_footprint_svg"
+        " and upgrade_fp_lib instead.\n"
+        "- Use list_lib_footprints to browse, get_footprint_details to"
+        " inspect. Do NOT grep inside .pretty directories."
     ),
 )
 

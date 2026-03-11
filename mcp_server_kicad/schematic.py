@@ -38,9 +38,29 @@ from mcp_server_kicad._shared import (
 mcp = FastMCP(
     "kicad-schematic",
     instructions=(
-        "KiCad schematic manipulation, ERC analysis, and schematic export tools."
-        " Use wire_pins_to_net and connect_pins for efficient wiring instead of"
-        " manually computing coordinates with get_pin_positions + add_wires."
+        "KiCad schematic manipulation, ERC analysis, and schematic export tools.\n\n"
+        "CRITICAL RULES:\n"
+        "- NEVER read, edit, or write .kicad_sch files directly. All schematic"
+        " manipulation MUST go through these MCP tools. The S-expression format"
+        " is fragile and manual edits will corrupt the file.\n"
+        "- NEVER run kicad-cli commands directly. Use the export and ERC tools"
+        " provided by this server instead.\n"
+        "- NEVER grep/search inside .kicad_sch files for coordinates or data."
+        " Use get_pin_positions, list_components, list_labels, get_net_connections.\n"
+        "- When a tool returns an error, try different parameters or a different"
+        " MCP tool. Do NOT fall back to manual file editing.\n\n"
+        "WIRING WORKFLOW:\n"
+        "1. Place components with place_component\n"
+        "2. Discover pin names with get_pin_positions\n"
+        "3. Wire using wire_pin_to_label (pin-to-net) or connect_pins (pin-to-pin)\n"
+        "4. For bulk wiring, use wire_pins_to_net (multiple pins to one net)\n"
+        "5. Verify with list_labels and get_net_connections\n\n"
+        "ERC WORKFLOW:\n"
+        "1. Run run_erc to get violations\n"
+        "2. Fix 'power pin not driven' with add_power_symbol (lib_id='power:PWR_FLAG')\n"
+        "3. Fix unconnected pins with wire_pin_to_label or no_connect_pin\n"
+        "4. Re-run run_erc to verify fixes\n"
+        "5. If blocked, report the error — do NOT edit the schematic file manually"
     ),
 )
 

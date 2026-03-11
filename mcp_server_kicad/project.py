@@ -33,7 +33,21 @@ mcp = FastMCP(
     "kicad-project",
     instructions=(
         "KiCad project scaffolding, hierarchical sheet management,"
-        " jobset execution, and version info."
+        " jobset execution, and version info.\n\n"
+        "CRITICAL RULES:\n"
+        "- NEVER read, edit, or write KiCad files (.kicad_pro, .kicad_prl,"
+        " .kicad_sch, .kicad_sym, sym-lib-table) directly. All file creation"
+        " and manipulation MUST go through these MCP tools.\n"
+        "- NEVER run kicad-cli commands directly. Use run_jobset and"
+        " get_version instead.\n"
+        "- When a tool returns an error, try different parameters. Do NOT"
+        " fall back to manual file editing.\n\n"
+        "PROJECT SETUP WORKFLOW:\n"
+        "1. create_project — creates .kicad_pro, .kicad_prl, root .kicad_sch\n"
+        "2. create_schematic — creates sub-sheet .kicad_sch files\n"
+        "3. create_symbol_library + write symbols for custom parts\n"
+        "4. create_sym_lib_table — registers libraries with the project\n"
+        "5. add_hierarchical_sheet — links sub-sheets to root with pins"
     ),
 )
 
