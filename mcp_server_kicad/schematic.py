@@ -1382,30 +1382,42 @@ def wire_pins_to_net(
 
             # Ensure PWR_FLAG lib symbol exists
             if not _find_lib_symbol(sch, "power:PWR_FLAG"):
-                pwr_flag = LibSymbol()
-                pwr_flag.entryName = "PWR_FLAG"
-                pwr_flag.isPower = True
-                pwr_flag.inBom = False
-                pwr_flag.onBoard = True
-                unit0 = LibSymbol()
-                unit0.entryName = "PWR_FLAG"
-                unit0.unitId = 0
-                unit0.styleId = 1
-                unit1 = LibSymbol()
-                unit1.entryName = "PWR_FLAG"
-                unit1.unitId = 1
-                unit1.styleId = 1
-                unit1.pins = [
-                    SymbolPin(
-                        electricalType="power_out",
-                        position=Position(X=0, Y=0, angle=90),
-                        length=0,
-                        name="~",
-                        number="1",
-                    )
-                ]
-                pwr_flag.units = [unit0, unit1]
-                sch.libSymbols.append(pwr_flag)
+                # Try loading from KiCad system library first
+                _loaded = False
+                lib_path = _resolve_system_lib("power")
+                if lib_path:
+                    _sym_lib = SymbolLib.from_file(lib_path)
+                    for s in _sym_lib.symbols:
+                        if s.entryName == "PWR_FLAG":
+                            sch.libSymbols.append(s)
+                            _loaded = True
+                            break
+                # Fallback: synthetic symbol for CI without KiCad
+                if not _loaded:
+                    pwr_flag = LibSymbol()
+                    pwr_flag.entryName = "PWR_FLAG"
+                    pwr_flag.isPower = True
+                    pwr_flag.inBom = False
+                    pwr_flag.onBoard = True
+                    unit0 = LibSymbol()
+                    unit0.entryName = "PWR_FLAG"
+                    unit0.unitId = 0
+                    unit0.styleId = 1
+                    unit1 = LibSymbol()
+                    unit1.entryName = "PWR_FLAG"
+                    unit1.unitId = 1
+                    unit1.styleId = 1
+                    unit1.pins = [
+                        SymbolPin(
+                            electricalType="power_out",
+                            position=Position(X=0, Y=0, angle=90),
+                            length=0,
+                            name="~",
+                            number="1",
+                        )
+                    ]
+                    pwr_flag.units = [unit0, unit1]
+                    sch.libSymbols.append(pwr_flag)
 
             # Generate unique #FLG reference
             existing_flg = {

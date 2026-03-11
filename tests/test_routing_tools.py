@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,8 @@ from kiutils.items.common import Effects, Font, Position, Property, Stroke
 from kiutils.items.schitems import Connection, SchematicSymbol
 
 from mcp_server_kicad import schematic
+
+HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -1089,3 +1092,49 @@ class TestAutoPwrFlag:
             if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties)
         ]
         assert len(pwr_flags) == 1, f"Expected only the existing PWR_FLAG, got {len(pwr_flags)}"
+
+    @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+    def test_auto_pwr_flag_matches_system_library(self, tmp_path):
+        """PWR_FLAG lib symbol from wire_pins_to_net should match system library."""
+        from kiutils.symbol import SymbolLib
+
+        from mcp_server_kicad._shared import _resolve_system_lib
+
+        # Ensure system library exists for this test
+        sys_lib_path = _resolve_system_lib("power")
+        assert sys_lib_path is not None, "System power library not found"
+
+        # Load the real PWR_FLAG from system library
+        sys_lib = SymbolLib.from_file(sys_lib_path)
+        sys_pwr_flag = None
+        for s in sys_lib.symbols:
+            if s.entryName == "PWR_FLAG":
+                sys_pwr_flag = s
+                break
+        assert sys_pwr_flag is not None, "PWR_FLAG not found in system library"
+
+        # Create schematic and trigger auto PWR_FLAG via wire_pins_to_net
+        path = _make_power_sch(tmp_path)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "#PWR01", "pin": "1"}],
+            label_text="VCC",
+            schematic_path=path,
+        )
+        sch = reparse(path)
+
+        # Find the embedded PWR_FLAG lib symbol
+        embedded = None
+        for ls in sch.libSymbols:
+            if ls.entryName == "PWR_FLAG":
+                embedded = ls
+                break
+        assert embedded is not None, "PWR_FLAG lib symbol not found in schematic"
+
+        # Key attributes must match the system library version
+        assert embedded.isPower == sys_pwr_flag.isPower, "isPower mismatch"
+        assert embedded.inBom == sys_pwr_flag.inBom, (
+            f"inBom mismatch: embedded={embedded.inBom}, system={sys_pwr_flag.inBom}"
+        )
+        assert len(embedded.units) == len(sys_pwr_flag.units), (
+            f"Unit count mismatch: embedded={len(embedded.units)}, system={len(sys_pwr_flag.units)}"
+        )
