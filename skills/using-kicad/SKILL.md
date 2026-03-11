@@ -30,67 +30,140 @@ If you were dispatched as a subagent to execute a specific task, skip this skill
 </SUBAGENT-STOP>
 
 <EXTREMELY-IMPORTANT>
-When working on ANY electronics or KiCad task, you MUST invoke the
-matching skill before taking action. Do not place components, route
-traces, run checks, or select parts without first loading the skill
-that covers that stage of the design.
+When working on ANY electronics or KiCad task, you MUST follow this
+pipeline. Do not place components, route traces, run checks, or select
+parts without first completing prior phases and their gates.
 
 This is not optional. Do not rationalize skipping it.
 </EXTREMELY-IMPORTANT>
 
-# Using KiCad Skills
+# KiCad Design Pipeline
 
-This plugin provides a complete electronics design workflow through
-four skills and a library of MCP tools for driving KiCad. **Always
-invoke the relevant skill before starting work.**
+This plugin enforces a validated pipeline for electronics design.
+Every phase produces evidence before the next phase can start.
+
+## Pipeline
+
+```
+circuit-design ---- requirements -> validated BOM artifact
+    |
+    |  EXIT GATE: resolve all lib_ids + footprints, write specs/bom.md
+    |  BOM reviewer subagent validates artifact
+    |  HARD GATE: user approves BOM
+    |
+    v
+schematic-plan ---- BOM -> placement & wiring plan artifact
+    |
+    |  Reads specs/bom.md
+    |  Produces specs/schematic-plan.md with exact coordinates
+    |  Schematic plan reviewer subagent validates artifact
+    |  HARD GATE: user approves plan
+    |
+    v
+schematic-design -- plan -> mechanical execution
+    |
+    |  Reads specs/schematic-plan.md, executes mechanically
+    |  EXIT GATE: run ERC, must be zero violations
+    |
+    v
+verification ------ ERC gate (blocks PCB until clean)
+    |
+    |  HARD GATE: ERC = 0 violations
+    |
+    v
+pcb-layout -------- netlist -> board layout
+    |
+    |  PRE-FLIGHT: verify all footprints exist
+    |  EXIT GATE: run DRC, must be zero violations
+    |
+    v
+verification ------ DRC gate (blocks export until clean)
+    |
+    |  HARD GATE: DRC = 0 violations
+    |
+    v
+Export ------------- Gerbers, drill, BOM, pick-and-place, 3D,
+                    fabrication notes, assembly drawing
+```
+
+## Phase Gates
+
+<HARD-GATE>
+Do NOT proceed to schematic-plan until specs/bom.md exists AND its
+reviewer has returned APPROVED AND the user has confirmed approval.
+</HARD-GATE>
+
+<HARD-GATE>
+Do NOT proceed to schematic-design until specs/schematic-plan.md
+exists AND its reviewer has returned APPROVED AND the user has
+confirmed approval.
+</HARD-GATE>
+
+<HARD-GATE>
+Do NOT proceed to pcb-layout until run_erc output shows
+violation_count = 0. "Probably clean" is not evidence.
+</HARD-GATE>
+
+<HARD-GATE>
+Do NOT proceed to export until run_drc output shows
+violation_count = 0. "Probably clean" is not evidence.
+</HARD-GATE>
+
+**What constitutes "user approval":** The user explicitly says
+something like "approved," "looks good," "proceed," "yes," or "go
+ahead." Asking a question or requesting changes is NOT approval.
 
 ## Skill Catalog
 
 | Skill | Invoke as | When to use |
 |-------|-----------|-------------|
-| **circuit-design** | `/kicad:circuit-design` | Choosing topology, selecting components, calculating values, creating a BOM — everything before you open the schematic editor |
-| **schematic-design** | `/kicad:schematic-design` | Placing symbols on a schematic sheet, wiring pins, adding power symbols and net labels |
-| **pcb-layout** | `/kicad:pcb-layout` | Placing footprints on a PCB, routing traces, adding vias and copper zones, defining board outline |
+| **circuit-design** | `/kicad:circuit-design` | Choosing topology, selecting components, calculating values, creating a validated BOM |
+| **schematic-plan** | `/kicad:schematic-plan` | Planning exact placement coordinates and wiring from a validated BOM |
+| **schematic-design** | `/kicad:schematic-design` | Executing a placement plan OR modifying an existing schematic |
+| **pcb-layout** | `/kicad:pcb-layout` | Placing footprints on a PCB, routing traces, adding vias and copper zones |
 | **verification** | `/kicad:verification` | Running ERC/DRC, fixing violations, preparing for manufacturing export |
 
-## Design Workflow
+## Entry Points — Every Path Validates
 
-Follow this order. Do not skip stages.
+- **New design from scratch:** Start at circuit-design, full pipeline.
+- **User provides their own BOM:** Circuit-design runs in
+  validation-only mode — resolves every lib_id and footprint, fills
+  in missing fields, writes specs/bom.md, runs the BOM reviewer.
+  Skips topology selection but does NOT skip validation. The user's
+  BOM is accepted, then audited.
+- **User provides a placement plan:** The plan is written to
+  specs/schematic-plan.md, then the schematic plan reviewer is
+  dispatched. The user's plan is accepted, then audited. If the
+  reviewer finds issues (wrong lib_ids, coordinates outside page
+  bounds, incorrect pin names), they are surfaced and must be
+  resolved before execution.
+- **Modifying existing schematic:** Enter at schematic-design in
+  modification mode. Lightweight pre-flight validates lib_ids for
+  any new components via `list_lib_symbols` before placement.
+- **Running checks on existing work:** Enter at verification directly.
 
-```
- Requirements
-     |
-     v
- circuit-design ---- produce BOM + block diagram
-     |
-     v
- schematic-design -- place symbols, wire nets, add power
-     |
-     v
- verification ------ run ERC, fix all violations
-     |
-     v
- pcb-layout -------- place footprints, route traces, zones
-     |
-     v
- verification ------ run DRC, fix all violations
-     |
-     v
- Export ------------- Gerbers, drill, BOM, pick-and-place
-```
+## Anti-Patterns for Electronics Design
 
-**circuit-design** must complete before schematic-design begins.
-ERC must pass before starting PCB layout. DRC must pass before export.
+| Anti-Pattern | Why It Fails |
+|-------------|-------------|
+| "I know this IC's pinout from memory" | You're recalling training data, not the library. Call `get_symbol_info`. |
+| "The datasheet app circuit is simple enough to place without planning" | That's exactly what produced 9 wasted tool calls in previous failures. |
+| "Standard 100nF decoupling is fine" | The datasheet specifies the cap value and ESR. Check the datasheet. |
+| "This symbol name is probably right" | `Q_PMOS_GSD` sounded right. It doesn't exist. Call `list_lib_symbols` and verify. |
+| "A4 is big enough, I'll check later" | Later = after 4 failed placements. Calculate first. |
+| "These nets are obvious, I don't need to plan the wiring" | Obvious to you means hallucinated pin names. Query the library. |
+| "I'll just use the same component I used last time" | Training data bias. The library may have been updated. Verify. |
 
-## The Rule
+## Rationalization Prevention
 
-**Invoke the matching skill BEFORE taking action.** If the user says
-"place the regulator on the schematic," invoke `schematic-design`
-before placing anything. If they say "route the power traces," invoke
-`pcb-layout` first.
-
-If you are unsure which skill applies, ask which stage of the design
-the user is working in.
+| Thought | Reality |
+|---------|---------|
+| "I already know the components, skip circuit-design" | You'll hallucinate lib_ids. Do the phase. |
+| "The plan is simple enough to do in my head" | That's what caused 9 wasted tool calls last time. Write the plan. |
+| "I'll just fix the page size when it fails" | Pre-calculate it. Reactive fixes waste tokens. |
+| "ERC will probably pass, start PCB layout" | Run ERC. "Probably" is not evidence. |
+| "This is just a small change, no need for the full pipeline" | Small changes use modification mode. But modification mode still validates lib_ids. |
+| "The user already validated this, skip the reviewer" | The reviewer checks what humans miss — pin names, coordinate math, spacing. Always run it. |
 
 ## What This Plugin Provides
 
@@ -129,5 +202,5 @@ for you. Tool groups (60 tools total):
   `get_footprint_info`, `export_footprint_svg`,
   `upgrade_footprint_lib`
 
-Always read the skill for conventions, spacing, and strategy before
-using these tools.
+Always invoke the matching skill for conventions, spacing, and
+strategy before using these tools.
