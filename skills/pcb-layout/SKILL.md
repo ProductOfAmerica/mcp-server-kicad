@@ -64,6 +64,26 @@ These are the kicad MCP tools you should be using during PCB layout:
 - `list_lib_footprints` — browse .pretty library directories
 - `get_footprint_info` — check pad dimensions and pin mapping
 
+## Pre-flight Checks
+
+Before starting PCB layout, verify these prerequisites:
+
+1. **ERC gate cleared:** Run `run_erc` and confirm `violation_count = 0`.
+   If ERC has not been run or has violations, STOP and invoke the
+   verification skill first.
+2. **Footprint verification:** For each schematic component, call
+   `list_lib_footprints` to verify the assigned footprint exists.
+3. **BOM cross-reference:** If `specs/bom.md` exists, cross-reference
+   footprints against the BOM's footprint column.
+4. **Board size constraints:** Check board size from BOM artifact (if
+   present) and configure board outline accordingly.
+5. **IPC design class:** If BOM specifies IPC design class, configure
+   design rules (trace width, spacing, annular ring) to match class
+   requirements:
+   - Class 1 (consumer): relaxed tolerances
+   - Class 2 (industrial): standard tolerances (default)
+   - Class 3 (high-rel): tightest tolerances
+
 ## Layout Process
 
 1. **Board setup** — define board outline, layer count, design rules.
@@ -222,6 +242,19 @@ After routing is complete:
    - `export_positions` — pick-and-place file for assembly
    - `export_3d` — 3D model for mechanical fit check
 
+**Full export deliverables (post-DRC):**
+- Gerber set (copper layers, mask, silkscreen, drill, board outline)
+- Drill files
+- BOM export
+- Pick-and-place file
+- 3D model (STEP) for mechanical review
+- Fabrication notes: layer stack, copper weight, finish, IPC class,
+  solder mask color
+- Assembly drawing
+
+**Post-export verification:** Confirm Gerber layer count matches
+design, BOM export matches schematic BOM.
+
 ## Verifying Footprints in KiCad Libraries
 
 Use `list_lib_footprints` on .pretty directories to browse available
@@ -239,3 +272,10 @@ footprints. Common libraries:
 
 Use `get_footprint_info` to check pad dimensions and spacing before
 committing to a footprint.
+
+## Extensibility
+
+For complex boards (>30 components, 4+ layers, high-speed signals),
+consider creating a `pcb-plan` artifact following the same pattern as
+`schematic-plan`. For simpler boards, pre-flight checks and existing
+placement strategy are sufficient.
