@@ -214,6 +214,66 @@ def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, floa
     raise ValueError(f"Pin '{pin_name}' not found on {reference}")
 
 
+def _point_on_wire_interior(
+    px: float, py: float,
+    ax: float, ay: float,
+    bx: float, by: float,
+    tol: float = 0.01,
+) -> bool:
+    """Check if point (px, py) lies on the interior of wire segment (a->b).
+
+    Only handles axis-aligned (horizontal/vertical) wires. Returns False
+    for diagonal wires and for points at segment endpoints.
+    """
+    # Horizontal wire
+    if abs(ay - by) < tol:
+        if abs(py - ay) < tol:
+            lo, hi = min(ax, bx), max(ax, bx)
+            if lo + tol < px < hi - tol:
+                return True
+    # Vertical wire
+    if abs(ax - bx) < tol:
+        if abs(px - ax) < tol:
+            lo, hi = min(ay, by), max(ay, by)
+            if lo + tol < py < hi - tol:
+                return True
+    return False
+
+
+def _auto_junctions(sch, new_points: list[tuple[float, float]], tol: float = 0.01):
+    """Add junctions where new wire endpoints land on existing wire interiors.
+
+    Checks each point in new_points against all wire segments in
+    sch.graphicalItems. If a point is on a wire's interior (not at its
+    endpoint), and no junction already exists there, a Junction is added.
+    """
+    for px, py in new_points:
+        # Skip if junction already exists here
+        if any(
+            abs(j.position.X - px) < tol and abs(j.position.Y - py) < tol
+            for j in sch.junctions
+        ):
+            continue
+
+        for item in sch.graphicalItems:
+            if not (isinstance(item, Connection) and item.type == "wire"):
+                continue
+            if len(item.points) < 2:
+                continue
+            ax, ay = item.points[0].X, item.points[0].Y
+            bx, by = item.points[1].X, item.points[1].Y
+            if _point_on_wire_interior(px, py, ax, ay, bx, by, tol):
+                sch.junctions.append(
+                    Junction(
+                        position=Position(X=px, Y=py),
+                        diameter=0,
+                        color=ColorRGBA(R=0, G=0, B=0, A=0),
+                        uuid=_gen_uuid(),
+                    )
+                )
+                break  # One junction per point is enough
+
+
 # ---------------------------------------------------------------------------
 # Schematic read tools (8)
 # ---------------------------------------------------------------------------
@@ -1221,6 +1281,7 @@ def wire_pins_to_net(
     sch = _load_sch(schematic_path)
     tol = 0.1
     warnings = []
+    stub_endpoints = []
     for pin_def in pins:
         ref = pin_def["reference"]
         pin_name = pin_def["pin"]
@@ -1298,6 +1359,8 @@ def wire_pins_to_net(
                 uuid=_gen_uuid(),
             )
         )
+        stub_endpoints.append((px, py))
+        stub_endpoints.append((end_x, end_y))
         # Net label
         sch.labels.append(
             LocalLabel(
@@ -1308,6 +1371,7 @@ def wire_pins_to_net(
             )
         )
 
+    _auto_junctions(sch, stub_endpoints)
     sch.to_file()
     msg = f"Wired {len(pins)} pins to '{label_text}'."
     if warnings:
@@ -1371,6 +1435,13 @@ def connect_pins(
 
     for seg in segments:
         sch.graphicalItems.append(seg)
+
+    # Collect all new wire endpoints (pin positions + L-shape corner)
+    new_points = [(x1, y1), (x2, y2)]
+    if x1 != x2 and y1 != y2:
+        new_points.append((x2, y1))  # L-shape corner
+    _auto_junctions(sch, new_points)
+
     sch.to_file()
 
     n = len(segments)

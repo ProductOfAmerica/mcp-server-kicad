@@ -15,7 +15,7 @@ from conftest import (
     place_r1,
     reparse,
 )
-from kiutils.items.common import Effects, Font, Position, Property
+from kiutils.items.common import Effects, Font, Position, Property, Stroke
 from kiutils.items.schitems import Connection, SchematicSymbol
 
 from mcp_server_kicad import schematic
@@ -705,3 +705,183 @@ class TestAutoPlaceDecouplingCap:
         label_texts = {lbl.text for lbl in sch.labels}
         assert "+3V3" in label_texts
         assert "PGND" in label_texts
+
+
+# ===========================================================================
+# TestAutoJunctions
+# ===========================================================================
+
+
+class TestAutoJunctions:
+    """Tests for automatic junction insertion at T-intersections."""
+
+    def test_t_junction_connect_pins(self, tmp_path):
+        """Reproduce the D3 bug: two connect_pins calls where the second
+        wire's corner lands mid-segment on the first wire."""
+        sch = new_schematic()
+        sch.libSymbols.append(build_r_symbol())
+
+        # Place R1 at (100, 80) and R2 at (100, 120) — vertically aligned
+        r1 = place_r1(100, 80)
+        sch.schematicSymbols.append(r1)
+
+        r2 = place_r1(100, 120)
+        for prop in r2.properties:
+            if prop.key == "Reference":
+                prop.value = "R2"
+        sch.schematicSymbols.append(r2)
+
+        # Place R3 at (120, 100) — offset to the right
+        r3 = place_r1(120, 100)
+        for prop in r3.properties:
+            if prop.key == "Reference":
+                prop.value = "R3"
+        sch.schematicSymbols.append(r3)
+
+        path = tmp_path / "tjunc.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+        sch_path = str(path)
+
+        # R1 pin 2 is at (100, 83.81), R2 pin 1 is at (100, 116.19)
+        # connect_pins creates a straight vertical wire (same X)
+        schematic.connect_pins("R1", "2", "R2", "1", schematic_path=sch_path)
+
+        # Verify no junctions yet (straight wire, no T)
+        sch_after1 = reparse(sch_path)
+        assert len(sch_after1.junctions) == 0
+
+        # R3 pin 1 is at (120, 96.19). Connect R3:1 to R2:1 (100, 116.19)
+        # L-shape: (120, 96.19) -> corner (100, 96.19) -> (100, 116.19)
+        # The vertical segment from (100, 96.19) to (100, 116.19) overlaps
+        # the existing wire from (100, 83.81) to (100, 116.19).
+        # Corner point (100, 96.19) lands on interior of existing wire.
+        schematic.connect_pins("R3", "1", "R2", "1", schematic_path=sch_path)
+
+        # A junction should have been auto-created at (100, 96.19)
+        sch_after2 = reparse(sch_path)
+        assert len(sch_after2.junctions) >= 1
+        junc_positions = [(j.position.X, j.position.Y) for j in sch_after2.junctions]
+        assert any(
+            abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02
+            for x, y in junc_positions
+        ), f"Expected junction near (100, 96.19), got {junc_positions}"
+
+    def test_no_junction_at_wire_endpoint(self, tmp_path):
+        """No junction added when new wire meets existing wire at its endpoint."""
+        sch = new_schematic()
+        sch.libSymbols.append(build_r_symbol())
+
+        r1 = place_r1(100, 100)
+        sch.schematicSymbols.append(r1)
+
+        r2 = place_r1(100, 130)
+        for prop in r2.properties:
+            if prop.key == "Reference":
+                prop.value = "R2"
+        sch.schematicSymbols.append(r2)
+
+        path = tmp_path / "no_junc.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+        sch_path = str(path)
+
+        # R1 pin 2 at (100, 103.81), R2 pin 1 at (100, 126.19)
+        # Straight vertical wire — endpoints meet at pin positions
+        schematic.connect_pins("R1", "2", "R2", "1", schematic_path=sch_path)
+
+        sch_after = reparse(sch_path)
+        assert len(sch_after.junctions) == 0
+
+    def test_no_duplicate_junctions(self, tmp_path):
+        """If a junction already exists at a T-point, don't add another."""
+        sch = new_schematic()
+        sch.libSymbols.append(build_r_symbol())
+
+        r1 = place_r1(100, 80)
+        sch.schematicSymbols.append(r1)
+
+        r2 = place_r1(100, 120)
+        for prop in r2.properties:
+            if prop.key == "Reference":
+                prop.value = "R2"
+        sch.schematicSymbols.append(r2)
+
+        r3 = place_r1(120, 100)
+        for prop in r3.properties:
+            if prop.key == "Reference":
+                prop.value = "R3"
+        sch.schematicSymbols.append(r3)
+
+        path = tmp_path / "dup_junc.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+        sch_path = str(path)
+
+        # Create the T-junction scenario
+        schematic.connect_pins("R1", "2", "R2", "1", schematic_path=sch_path)
+        schematic.connect_pins("R3", "1", "R2", "1", schematic_path=sch_path)
+
+        sch_after = reparse(sch_path)
+        junc_count_1 = len(sch_after.junctions)
+        assert junc_count_1 >= 1
+
+        # Connect again with a fourth resistor that hits the same point
+        r4 = place_r1(80, 100)
+        for prop in r4.properties:
+            if prop.key == "Reference":
+                prop.value = "R4"
+        sch_after.schematicSymbols.append(r4)
+        sch_after.to_file()
+
+        schematic.connect_pins("R4", "1", "R2", "1", schematic_path=sch_path)
+
+        sch_after2 = reparse(sch_path)
+        # Count junctions near (100, 96.19)
+        junc_positions = [(j.position.X, j.position.Y) for j in sch_after2.junctions]
+        near_count = sum(
+            1 for x, y in junc_positions
+            if abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02
+        )
+        assert near_count == 1, f"Expected 1 junction near (100, 96.19), got {near_count}"
+
+    def test_wire_pins_to_net_auto_junction(self, tmp_path):
+        """wire_pins_to_net creates junction when stub crosses existing wire."""
+        sch = new_schematic()
+        sch.libSymbols.append(build_r_symbol())
+
+        # R1 at (100, 100): pin 1 at (100, 96.19), pin 2 at (100, 103.81)
+        r1 = place_r1(100, 100)
+        sch.schematicSymbols.append(r1)
+
+        # Pre-existing horizontal wire crossing through R1's vertical axis
+        sch.graphicalItems.append(
+            Connection(
+                type="wire",
+                points=[Position(X=90, Y=96.19), Position(X=110, Y=96.19)],
+                stroke=Stroke(width=0, type="default"),
+                uuid=_gen_uuid(),
+            )
+        )
+
+        path = tmp_path / "wptn_junc.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+        sch_path = str(path)
+
+        # Wire R1 pin 1 to net "VCC". Pin 1 is at (100, 96.19).
+        # The pin endpoint is ON the existing wire — but at an interior point
+        # (the wire runs from x=90 to x=110, pin is at x=100).
+        # A junction should be auto-created at (100, 96.19).
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
+            label_text="VCC",
+            schematic_path=sch_path,
+        )
+
+        sch_after = reparse(sch_path)
+        junc_positions = [(j.position.X, j.position.Y) for j in sch_after.junctions]
+        assert any(
+            abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02
+            for x, y in junc_positions
+        ), f"Expected junction near (100, 96.19), got {junc_positions}"

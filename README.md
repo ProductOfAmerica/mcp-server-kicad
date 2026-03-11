@@ -32,6 +32,21 @@ uvx --from mcp-server-kicad mcp-server-kicad-footprint
 uvx --from mcp-server-kicad mcp-server-kicad-project
 ```
 
+## Claude Code Plugin
+
+For Claude Code users, install the plugin to get MCP server configuration
+and schematic design skills bundled together:
+
+```bash
+claude plugin marketplace add ProductOfAmerica/mcp-server-kicad
+claude plugin install kicad
+```
+
+The plugin automatically configures all five MCP servers and includes skills
+that teach layout conventions for schematic design. See
+[skills/schematic-design/SKILL.md](skills/schematic-design/SKILL.md) for
+details.
+
 ## Configuration
 
 Add the servers to your Claude Desktop or Claude Code MCP config. Set `cwd` to your KiCad project directory so the servers can auto-detect project files.

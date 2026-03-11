@@ -1,0 +1,11 @@
+{
+  "name": "kicad",
+  "description": "KiCad EDA tools and design skills for Claude Code",
+  "author": {
+    "name": "ProductOfAmerica"
+  },
+  "repository": "https://github.com/ProductOfAmerica/mcp-server-kicad",
+  "homepage": "https://github.com/ProductOfAmerica/mcp-server-kicad",
+  "license": "MIT",
+  "keywords": ["kicad", "eda", "schematic", "pcb", "electronics"]
+}
