@@ -18,6 +18,7 @@ class TestResolveHierarchyPath:
         sch.to_file()
 
         pro_path = str(tmp_path / "myproject.kicad_pro")
+        assert sch.uuid is not None
         name, path = _resolve_hierarchy_path(pro_path, str(sch_path), sch.uuid)
         assert name == "myproject"
         assert path == f"/{sch.uuid}"
@@ -59,6 +60,8 @@ class TestResolveHierarchyPath:
         child_sch.to_file()
 
         pro_path = str(tmp_path / "myproject.kicad_pro")
+        assert child_sch.uuid is not None
+        assert root_sch.uuid is not None
         name, path = _resolve_hierarchy_path(pro_path, str(child_path), child_sch.uuid)
         assert name == "myproject"
         assert path == f"/{root_sch.uuid}/{sheet.uuid}"

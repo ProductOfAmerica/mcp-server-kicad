@@ -659,6 +659,7 @@ def place_component(
         sym.pins = {pn: _gen_uuid() for pn in sorted(pin_nums)}
 
     # Instances block — required by KiCad 9 for proper annotation
+    assert sch.uuid is not None, "Schematic must have a UUID before placing components"
     if project_path:
         project_name, sheet_path = _resolve_hierarchy_path(
             project_path, schematic_path, sch.uuid

@@ -57,5 +57,11 @@ select = ["E", "F", "I", "W"]
 [tool.pyright]
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
+stubPath = "typings"
 reportOptionalMemberAccess = "warning"
 reportAttributeAccessIssue = "warning"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.19.1",
+]

@@ -256,7 +256,6 @@ def _resolve_hierarchy_path(
     pro = Path(project_path)
     project_name = pro.stem
     root_sch_path = pro.with_suffix(".kicad_sch")
-
     # Root schematic — simple case
     if Path(schematic_path).resolve() == root_sch_path.resolve():
         return project_name, f"/{sch_uuid}"
