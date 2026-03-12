@@ -203,7 +203,8 @@ def export_dsn(pcb_path: str, dsn_path: str) -> str | None:
         env=env,
     )
     if result.returncode != 0:
-        return f"DSN export failed: {result.stderr.strip()}"
+        detail = result.stderr.strip() or result.stdout.strip()
+        return f"DSN export failed: {detail}"
     return None
 
 
@@ -234,7 +235,8 @@ def import_ses(pcb_path: str, ses_path: str, output_path: str) -> str | None:
         env=env,
     )
     if result.returncode != 0:
-        return f"SES import failed: {result.stderr.strip()}"
+        detail = result.stderr.strip() or result.stdout.strip()
+        return f"SES import failed: {detail}"
     return None
 
 

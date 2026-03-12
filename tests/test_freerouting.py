@@ -57,8 +57,13 @@ class TestFindJar:
         with patch.dict(os.environ, {"FREEROUTING_JAR": str(jar)}):
             assert find_jar() == str(jar)
 
-    def test_env_var_missing_file(self):
-        with patch.dict(os.environ, {"FREEROUTING_JAR": "/nonexistent/fr.jar"}):
+    def test_env_var_missing_file(self, tmp_path):
+        empty_dir = tmp_path / "empty"
+        empty_dir.mkdir()
+        with (
+            patch.dict(os.environ, {"FREEROUTING_JAR": "/nonexistent/fr.jar"}),
+            patch("mcp_server_kicad._freerouting._cache_dir", return_value=empty_dir),
+        ):
             assert find_jar() is None
 
     def test_cached_jar(self, tmp_path):

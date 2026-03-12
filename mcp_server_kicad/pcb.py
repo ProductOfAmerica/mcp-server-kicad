@@ -793,6 +793,9 @@ def autoroute_pcb(
         timeout: Max seconds to wait for routing (default: 600)
         output_dir: Directory for output files (default: same as PCB)
     """
+    # Resolve to absolute path for subprocess calls
+    pcb_path = str(Path(pcb_path).resolve())
+
     # Pre-flight: check Java
     java_err = _check_java()
     if java_err:
