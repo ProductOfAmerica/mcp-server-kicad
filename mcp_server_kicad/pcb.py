@@ -77,6 +77,20 @@ mcp = FastMCP(
 
 
 # ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+
+def _find_net(board, net_name: str) -> tuple[int, str]:
+    """Return (net_number, net_name) for a named net, or raise ValueError."""
+    for n in board.nets:
+        if n.name == net_name:
+            return n.number, n.name
+    available = [n.name for n in board.nets if n.name]
+    raise ValueError(f"Net {net_name!r} not found. Available nets: {available}")
+
+
+# ---------------------------------------------------------------------------
 # PCB read tools (8)
 # ---------------------------------------------------------------------------
 

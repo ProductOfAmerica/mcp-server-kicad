@@ -6,6 +6,7 @@ import uuid
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from kiutils.board import Board
 from kiutils.items.brditems import Segment, Via
 from kiutils.items.common import Position
@@ -142,3 +143,16 @@ class TestAutoroutePcb:
             data = json.loads(result)
             assert "error" in data
             assert "Java" in data["error"]
+
+
+class TestFindNet:
+    def test_finds_existing_net(self, scratch_pcb):
+        board = Board.from_file(str(scratch_pcb))
+        net_num, net_name = pcb._find_net(board, "Net1")
+        assert net_num == 1
+        assert net_name == "Net1"
+
+    def test_raises_for_missing_net(self, scratch_pcb):
+        board = Board.from_file(str(scratch_pcb))
+        with pytest.raises(ValueError, match="not found"):
+            pcb._find_net(board, "NonExistent")
