@@ -1267,6 +1267,48 @@ def export_ipc2581(
     return json.dumps(_file_meta(out))
 
 
+_FP_TEXT_DISPLACEMENT_THRESHOLD_MM = 5.0
+"""Maximum distance (mm) an FpText position may be from the footprint center
+before it is considered displaced and reset.  FpText positions are stored
+relative to their parent footprint, so (0, 0) means centered on the footprint."""
+
+_FP_TEXT_DEFAULT_OFFSETS: dict[str, tuple[float, float]] = {
+    "reference": (0, -1.5),
+    "value": (0, 1.5),
+}
+"""Default (X, Y) offsets for well-known FpText types, relative to footprint
+center.  Any displaced text type not listed here is reset to (0, 0)."""
+
+
+def _fix_displaced_fp_text(board: "Board", routed_path: str) -> int:  # noqa: F821
+    """Reset footprint text fields displaced by Freerouting round-trip.
+
+    After the DSN->SES round-trip, FpText items (Reference, Value, etc.)
+    may have their positions scrambled.  This function checks every FpText
+    on every footprint and, if the text's relative position exceeds
+    ``_FP_TEXT_DISPLACEMENT_THRESHOLD_MM`` from the footprint center,
+    resets it to a sensible default offset.
+
+    Returns the number of text fields that were fixed.
+    """
+    fixed = 0
+    for fp in board.footprints:
+        for item in fp.graphicItems:
+            if not isinstance(item, FpText):
+                continue
+            if item.position is None:
+                continue
+            dist = (item.position.X**2 + item.position.Y**2) ** 0.5
+            if dist > _FP_TEXT_DISPLACEMENT_THRESHOLD_MM:
+                default_x, default_y = _FP_TEXT_DEFAULT_OFFSETS.get(item.type, (0, 0))
+                item.position.X = default_x
+                item.position.Y = default_y
+                fixed += 1
+    if fixed > 0:
+        board.to_file()
+    return fixed
+
+
 @mcp.tool(annotations=_EXPORT)
 def autoroute_pcb(
     pcb_path: str = PCB_PATH,
@@ -1342,6 +1384,13 @@ def autoroute_pcb(
         if ses_err:
             return json.dumps({"error": ses_err})
 
+    # Step 4: Fix displaced footprint text fields
+    # The Freerouting DSN->SES round-trip often scrambles FpText positions
+    # (Reference, Value, etc.), displacing them far from their parent footprint.
+    # Reset any text field whose position is more than 5mm from the footprint
+    # center back to a sensible default offset.
+    text_fields_fixed = _fix_displaced_fp_text(_load_board(routed_path), routed_path)
+
     # Count traces/vias in routed board
     routed_board = _load_board(routed_path)
     traces_after = sum(1 for t in routed_board.traceItems if isinstance(t, Segment))
@@ -1351,6 +1400,7 @@ def autoroute_pcb(
         "routed_path": str(Path(routed_path).resolve()),
         "traces_added": traces_after - traces_before,
         "vias_added": vias_after - vias_before,
+        "text_fields_fixed": text_fields_fixed,
     }
 
     # Optional DRC

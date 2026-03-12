@@ -10,6 +10,7 @@ import pytest
 from kiutils.board import Board
 from kiutils.items.brditems import Segment, Via
 from kiutils.items.common import Position
+from kiutils.items.fpitems import FpText
 
 from mcp_server_kicad import pcb
 from mcp_server_kicad._shared import _fp_ref
@@ -143,6 +144,69 @@ class TestAutoroutePcb:
             data = json.loads(result)
             assert "error" in data
             assert "Java" in data["error"]
+
+    def test_fixes_displaced_text_after_routing(self, scratch_pcb, tmp_path):
+        """Freerouting DSN->SES round-trip scrambles footprint text positions.
+
+        After autoroute_pcb imports the SES file, text fields (Reference,
+        Value) that have been displaced far from the footprint center should
+        be reset to sensible default offsets.
+        """
+
+        def mock_export_dsn(pcb_path, dsn_path):
+            Path(dsn_path).touch()
+            return None
+
+        def mock_import_ses(pcb_path, ses_path, output_path):
+            """Simulate Freerouting scrambling text positions."""
+            shutil.copy(pcb_path, output_path)
+            board = Board.from_file(output_path)
+            # Scramble text positions to simulate Freerouting bug:
+            # displace reference and value text far from footprint center
+            for fp in board.footprints:
+                for item in fp.graphicItems:
+                    if isinstance(item, FpText) and item.type == "reference":
+                        # Move reference to an absurd position (50mm away)
+                        item.position = Position(X=50, Y=-50)
+                    elif isinstance(item, FpText) and item.type == "value":
+                        # Move value to an absurd position (30mm away)
+                        item.position = Position(X=-30, Y=40)
+            board.to_file()
+            return None
+
+        def mock_ensure_jar():
+            return "/fake/freerouting.jar", None
+
+        def mock_check_java():
+            return None
+
+        def mock_run_freerouting(**kwargs):
+            Path(kwargs.get("ses_path", "/tmp/fake.ses")).touch()
+            return None
+
+        with (
+            patch("mcp_server_kicad.pcb._check_java", mock_check_java),
+            patch("mcp_server_kicad.pcb._ensure_jar", mock_ensure_jar),
+            patch("mcp_server_kicad.pcb._export_dsn", mock_export_dsn),
+            patch("mcp_server_kicad.pcb._run_freerouting", mock_run_freerouting),
+            patch("mcp_server_kicad.pcb._import_ses", mock_import_ses),
+        ):
+            result = pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
+            data = json.loads(result)
+            assert "routed_path" in data
+            assert data.get("text_fields_fixed", 0) > 0
+
+            # Load the routed board and verify text positions are reasonable
+            routed_board = Board.from_file(data["routed_path"])
+            for fp in routed_board.footprints:
+                for item in fp.graphicItems:
+                    if isinstance(item, FpText) and item.type in ("reference", "value"):
+                        # Text should be within 5mm of footprint center (0,0 relative)
+                        dist = (item.position.X**2 + item.position.Y**2) ** 0.5
+                        assert dist <= 5.0, (
+                            f"{item.type} text for {_fp_ref(fp)} is {dist:.1f}mm "
+                            f"from center at ({item.position.X}, {item.position.Y})"
+                        )
 
 
 class TestFindNet:
