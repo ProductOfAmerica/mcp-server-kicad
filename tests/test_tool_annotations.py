@@ -145,6 +145,7 @@ def test_pcb_destructive(tool_name):
         "export_3d",
         "export_positions",
         "export_ipc2581",
+        "autoroute_pcb",
     ],
 )
 def test_pcb_export(tool_name):

@@ -47,6 +47,7 @@ These are the kicad MCP tools you should be using during PCB layout:
 **Routing:**
 - `add_trace` — add a trace segment with layer, width, coordinates
 - `add_via` — add a via at a coordinate
+- `autoroute_pcb` — run Freerouting autorouter (requires Java 17+, auto-downloads JAR)
 
 **Drawing and annotation:**
 - `add_pcb_text` — add silkscreen text or other layer text
