@@ -65,6 +65,11 @@ These are the kicad MCP tools you should be using during verification:
 - `add_trace` — route missing connections
 - `add_via` — add vias for layer transitions
 - `move_footprint` — fix clearance violations by repositioning
+- `set_trace_width` — fix trace width violations
+- `remove_traces` — remove problematic traces for re-routing
+- `add_copper_zone` — add missing ground planes / copper fills
+- `fill_zones` — recompute zone fills after changes
+- `remove_dangling_tracks` — clean up unconnected trace stubs
 
 **Export (post-verification):**
 - `export_gerbers` — Gerber manufacturing files
@@ -209,6 +214,18 @@ A trace is narrower than the design rule minimum.
 | Zone not filled | Refill zones after moving components |
 | Thermal relief too thin | Increase spoke width in zone properties |
 
+**Category 5: Post-autoroute quality issues**
+
+These are not DRC errors but quality problems that the autorouter creates:
+
+| Check | What to look for | Fix |
+|-------|-----------------|-----|
+| Power trace width | Power nets (VIN, VOUT, SW, GND) at minimum width (0.25mm) | `set_trace_width` to widen per current table |
+| Missing copper zones | Board has 0 zones (no ground plane) | `add_copper_zone` on both layers, then `fill_zones` |
+| Missing thermal vias | QFN/exposed-pad ICs with no vias under thermal pad | `add_thermal_vias` for each exposed-pad IC |
+| Dangling tracks | Trace stubs from autorouter that connect to nothing | `remove_dangling_tracks` |
+| Excessive vias | Autorouter used unnecessary layer transitions | Manual review — remove and re-route if egregious |
+
 ### Step 3: Re-run DRC
 
 Repeat until zero violations. Manufacturing houses will reject boards
@@ -246,6 +263,10 @@ Run this before exporting Gerbers:
 - [ ] Fiducials placed (if required for SMD assembly)
 - [ ] All component values match the BOM
 - [ ] Design rules match manufacturer capabilities
+- [ ] Power traces sized for expected current (not autorouter minimums)
+- [ ] Ground planes present on appropriate layers
+- [ ] Thermal vias under all QFN/exposed-pad ICs
+- [ ] No dangling track stubs
 
 ## Export for Manufacturing
 
