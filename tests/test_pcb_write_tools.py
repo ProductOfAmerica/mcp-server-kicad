@@ -1,7 +1,14 @@
 """Tests for PCB write tools."""
 
+import json
+import shutil
+import uuid
+from pathlib import Path
+from unittest.mock import patch
+
 from kiutils.board import Board
 from kiutils.items.brditems import Segment, Via
+from kiutils.items.common import Position
 
 from mcp_server_kicad import pcb
 from mcp_server_kicad._shared import _fp_ref
@@ -72,3 +79,66 @@ class TestAddPcbLine:
     def test_basic(self, scratch_pcb):
         result = pcb.add_pcb_line(80, 80, 120, 80, layer="Edge.Cuts", pcb_path=str(scratch_pcb))
         assert "Line" in result
+
+
+class TestAutoroutePcb:
+    def test_success(self, scratch_pcb, tmp_path):
+        """Test full autoroute workflow with mocked external dependencies."""
+
+        def mock_export_dsn(pcb_path, dsn_path):
+            Path(dsn_path).touch()
+            return None
+
+        def mock_import_ses(pcb_path, ses_path, output_path):
+            shutil.copy(pcb_path, output_path)
+            board = Board.from_file(output_path)
+            for i in range(4):
+                seg = Segment()
+                seg.start = Position(X=50 + i * 10, Y=50)
+                seg.end = Position(X=60 + i * 10, Y=50)
+                seg.width = 0.25
+                seg.layer = "F.Cu"
+                seg.net = 1
+                seg.tstamp = str(uuid.uuid4())
+                board.traceItems.append(seg)
+            for i in range(2):
+                via = Via()
+                via.position = Position(X=70 + i * 10, Y=50)
+                via.size = 0.6
+                via.drill = 0.3
+                via.net = 1
+                via.layers = ["F.Cu", "B.Cu"]
+                via.tstamp = str(uuid.uuid4())
+                board.traceItems.append(via)
+            board.to_file()
+            return None
+
+        def mock_ensure_jar():
+            return "/fake/freerouting.jar", None
+
+        def mock_check_java():
+            return None
+
+        def mock_run_freerouting(**kwargs):
+            Path(kwargs.get("ses_path", "/tmp/fake.ses")).touch()
+            return None
+
+        with (
+            patch("mcp_server_kicad.pcb._check_java", mock_check_java),
+            patch("mcp_server_kicad.pcb._ensure_jar", mock_ensure_jar),
+            patch("mcp_server_kicad.pcb._export_dsn", mock_export_dsn),
+            patch("mcp_server_kicad.pcb._run_freerouting", mock_run_freerouting),
+            patch("mcp_server_kicad.pcb._import_ses", mock_import_ses),
+        ):
+            result = pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
+            data = json.loads(result)
+            assert "routed_path" in data
+            assert data["traces_added"] == 4
+            assert data["vias_added"] == 2
+
+    def test_no_java(self, scratch_pcb):
+        with patch("mcp_server_kicad.pcb._check_java", return_value="Java not found"):
+            result = pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
+            data = json.loads(result)
+            assert "error" in data
+            assert "Java" in data["error"]

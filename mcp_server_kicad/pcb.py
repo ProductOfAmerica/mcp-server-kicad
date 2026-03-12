@@ -2,10 +2,26 @@
 
 import json
 import os
+import tempfile
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
 
+from mcp_server_kicad._freerouting import (
+    check_java as _check_java,
+)
+from mcp_server_kicad._freerouting import (
+    ensure_jar as _ensure_jar,
+)
+from mcp_server_kicad._freerouting import (
+    export_dsn as _export_dsn,
+)
+from mcp_server_kicad._freerouting import (
+    import_ses as _import_ses,
+)
+from mcp_server_kicad._freerouting import (
+    run_freerouting as _run_freerouting,
+)
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -751,6 +767,108 @@ def export_ipc2581(
     if result.returncode != 0:
         return json.dumps({"error": result.stderr.strip()})
     return json.dumps(_file_meta(out))
+
+
+@mcp.tool(annotations=_EXPORT)
+def autoroute_pcb(
+    pcb_path: str = PCB_PATH,
+    max_passes: int = 20,
+    num_threads: int = 4,
+    timeout: int = 600,
+    output_dir: str = OUTPUT_DIR,
+) -> str:
+    """Autoroute PCB traces using the Freerouting autorouter.
+
+    Exports the board to Specctra DSN format, runs Freerouting for automated
+    trace routing, and imports the results into a new PCB file. The original
+    board is never modified.
+
+    Requires Java 17+ and KiCad's pcbnew Python bindings. On first run,
+    the Freerouting JAR is auto-downloaded (~20MB).
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+        max_passes: Maximum autorouter optimization passes
+        num_threads: Thread count for routing
+        timeout: Max seconds to wait for routing (default: 600)
+        output_dir: Directory for output files (default: same as PCB)
+    """
+    # Pre-flight: check Java
+    java_err = _check_java()
+    if java_err:
+        return json.dumps({"error": java_err})
+
+    # Pre-flight: ensure Freerouting JAR
+    jar_path, jar_err = _ensure_jar()
+    if jar_err:
+        return json.dumps({"error": jar_err})
+
+    # Count existing traces/vias for before/after comparison
+    board = _load_board(pcb_path)
+    traces_before = sum(1 for t in board.traceItems if isinstance(t, Segment))
+    vias_before = sum(1 for t in board.traceItems if isinstance(t, Via))
+
+    out_dir = output_dir or str(Path(pcb_path).parent)
+    stem = Path(pcb_path).stem
+    routed_path = str(Path(out_dir) / f"{stem}_routed.kicad_pcb")
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        dsn_path = str(Path(tmp_dir) / f"{stem}.dsn")
+        ses_path = str(Path(tmp_dir) / f"{stem}.ses")
+
+        # Step 1: Export DSN
+        dsn_err = _export_dsn(pcb_path, dsn_path)
+        if dsn_err:
+            return json.dumps({"error": dsn_err})
+
+        # Step 2: Run Freerouting
+        route_err = _run_freerouting(
+            jar_path=jar_path,
+            dsn_path=dsn_path,
+            ses_path=ses_path,
+            max_passes=max_passes,
+            num_threads=num_threads,
+            timeout=timeout,
+        )
+        if route_err:
+            return json.dumps({"error": route_err})
+
+        if not Path(ses_path).exists():
+            return json.dumps({"error": "Freerouting did not produce a session file."})
+
+        # Step 3: Import SES into new PCB
+        ses_err = _import_ses(pcb_path, ses_path, routed_path)
+        if ses_err:
+            return json.dumps({"error": ses_err})
+
+    # Count traces/vias in routed board
+    routed_board = _load_board(routed_path)
+    traces_after = sum(1 for t in routed_board.traceItems if isinstance(t, Segment))
+    vias_after = sum(1 for t in routed_board.traceItems if isinstance(t, Via))
+
+    result = {
+        "routed_path": str(Path(routed_path).resolve()),
+        "traces_added": traces_after - traces_before,
+        "vias_added": vias_after - vias_before,
+    }
+
+    # Optional DRC
+    try:
+        drc_out = str(Path(out_dir) / f"{stem}_routed-drc.json")
+        _run_cli(
+            ["pcb", "drc", "--format", "json", "--severity-all", "--output", drc_out, routed_path],
+            check=False,
+        )
+        with open(drc_out) as f:
+            drc = json.load(f)
+        violations = []
+        for sheet in drc.get("sheets", []):
+            violations.extend(sheet.get("violations", []))
+        result["drc_violations"] = len(violations)
+    except Exception:
+        pass  # DRC is optional — kicad-cli may not be available
+
+    return json.dumps(result, indent=2)
 
 
 def main():
