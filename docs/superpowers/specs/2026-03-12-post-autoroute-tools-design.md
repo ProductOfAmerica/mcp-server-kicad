@@ -343,13 +343,147 @@ Tools use the existing annotation presets from `pcb.py`:
 - `_ADDITIVE` (creates/modifies): `add_copper_zone`, `fill_zones`, `set_trace_width`, `add_thermal_vias`, `set_net_class` — consistent with `add_trace`, `add_via`, `place_footprint`
 - `_DESTRUCTIVE` (removes): `remove_traces`, `remove_dangling_tracks` — consistent with `remove_footprint`
 
-## Skill Update
+## Skill Updates
 
-Update `skills/pcb-layout/SKILL.md` to:
+### `skills/pcb-layout/SKILL.md`
 
-1. Add all seven tools to the MCP Tools reference section
-2. Update the post-autoroute workflow guidance to reference these tools:
-   - After autorouting: `set_net_class` → `set_trace_width` → `add_copper_zone` (both layers) → `add_thermal_vias` → `fill_zones` → `remove_dangling_tracks` → `run_drc`
+**1. Add new tools to MCP Tools section:**
+
+Add a new tool group after "Routing":
+
+```markdown
+**Post-routing refinement:**
+- `add_copper_zone` — create a copper zone (ground plane, power fill) with polygon outline
+- `fill_zones` — compute copper fills for all zones (requires pcbnew)
+- `set_trace_width` — change width of existing traces by net, layer, or region
+- `add_thermal_vias` — add a via array under a footprint pad (QFN thermal pads)
+- `remove_traces` — delete traces by net, layer, or region
+- `set_net_class` — create/update net classes with design rules (requires pcbnew)
+- `remove_dangling_tracks` — clean up unconnected trace stubs
+```
+
+**2. Add post-autoroute phase to Layout Process:**
+
+Replace the current steps 5-6 transition with an explicit post-autoroute phase. The updated Layout Process becomes:
+
+```markdown
+## Layout Process
+
+1. **Board setup** — define board outline, layer count, design rules.
+2. **Import netlist** — footprints appear in a cluster; all nets defined.
+3. **Place footprints** — group by function, then optimize.
+4. **Route critical traces** — power, high-speed, sensitive analog.
+5. **Route remaining traces** — signal interconnects (or use `autoroute_pcb`).
+6. **Post-route refinement** — review and improve routing quality:
+   a. Set net classes for power nets: `set_net_class` (e.g., "Power" class with 0.5mm+ width)
+   b. Widen power traces: `set_trace_width` on power nets (VIN, VOUT, SW, GND paths)
+   c. Add thermal vias: `add_thermal_vias` under QFN/exposed pads
+   d. Clean up: `remove_dangling_tracks` to remove autorouter stubs
+   e. Remove and re-route if needed: `remove_traces` + `add_trace` for problem areas
+7. **Add copper zones** — `add_copper_zone` for ground planes on both layers, then `fill_zones`.
+8. **Run DRC** — fix violations, re-run until clean.
+9. **Export** — Gerbers, drill files, pick-and-place, BOM.
+```
+
+**3. Add a new "Post-Autoroute Refinement" section** after "Via Usage" (before "Layer Stack"):
+
+```markdown
+## Post-Autoroute Refinement
+
+After using `autoroute_pcb`, the board has connectivity but needs refinement
+before it's manufacturing-ready. The autorouter uses minimum-width traces for
+everything and has no concept of power integrity or thermal design.
+
+**Step 1: Define net classes**
+
+Use `set_net_class` to establish design rules for power nets:
+- Create a "Power" class with `track_width=0.5` (or wider per current table)
+  for VIN, VOUT, and other power rails.
+- Create a "HighCurrent" class with `track_width=1.0` for switch nodes (SW)
+  and high-current ground paths.
+
+**Step 2: Widen power traces**
+
+Use `set_trace_width` to bring power traces up to their net class width:
+- `set_trace_width(width=0.5, net_name="VIN")`
+- `set_trace_width(width=1.0, net_name="SW")`
+- For ground nets routed as traces (before zone fill): widen to 0.5mm+
+
+**Step 3: Add thermal vias**
+
+Use `add_thermal_vias` for any QFN or exposed-pad IC:
+- `add_thermal_vias(reference="U1", rows=3, cols=3, spacing=1.0, via_drill=0.3)`
+- Thermal vias connect the exposed pad to the ground plane on the opposite
+  layer for heat dissipation.
+
+**Step 4: Clean up**
+
+Use `remove_dangling_tracks` to remove autorouter stubs — trace ends that
+connect to nothing. These are cosmetic but will show as DRC warnings.
+
+If any trace routing is unsatisfactory, use `remove_traces` to delete traces
+on a specific net, then re-route manually with `add_trace`.
+
+**Step 5: Add copper zones**
+
+Use `add_copper_zone` on both layers:
+- Ground fill on F.Cu and B.Cu (2-layer) or dedicated ground plane on In1.Cu (4-layer)
+- Set clearance to match design rules (typically 0.3–0.5mm)
+- Then call `fill_zones` to compute the actual copper fill
+
+**Step 6: Final DRC**
+
+Run `run_drc` and fix any remaining violations. Common post-refinement issues:
+- Clearance violations from widened traces — may need to re-route nearby signals
+- Zone fill islands — delete or connect them
+```
+
+### `skills/verification/SKILL.md`
+
+**1. Add new tools to PCB fixes section:**
+
+Update the "PCB fixes" tool list (after line 68) to include:
+
+```markdown
+**PCB fixes:**
+- `add_trace` — route missing connections
+- `add_via` — add vias for layer transitions
+- `move_footprint` — fix clearance violations by repositioning
+- `set_trace_width` — fix trace width violations
+- `remove_traces` — remove problematic traces for re-routing
+- `add_copper_zone` — add missing ground planes / copper fills
+- `fill_zones` — recompute zone fills after changes
+- `remove_dangling_tracks` — clean up unconnected trace stubs
+```
+
+**2. Add post-autoroute quality checks to DRC workflow:**
+
+Add a new "Category 5" after "Category 4: Copper zone issues" in the DRC workflow:
+
+```markdown
+**Category 5: Post-autoroute quality issues**
+
+These are not DRC errors but quality problems that the autorouter creates:
+
+| Check | What to look for | Fix |
+|-------|-----------------|-----|
+| Power trace width | Power nets (VIN, VOUT, SW, GND) at minimum width (0.25mm) | `set_trace_width` to widen per current table |
+| Missing copper zones | Board has 0 zones (no ground plane) | `add_copper_zone` on both layers, then `fill_zones` |
+| Missing thermal vias | QFN/exposed-pad ICs with no vias under thermal pad | `add_thermal_vias` for each exposed-pad IC |
+| Dangling tracks | Trace stubs from autorouter that connect to nothing | `remove_dangling_tracks` |
+| Excessive vias | Autorouter used unnecessary layer transitions | Manual review — remove and re-route if egregious |
+```
+
+**3. Add to pre-manufacturing checklist:**
+
+Add these items to the checklist (after line 248):
+
+```markdown
+- [ ] Power traces sized for expected current (not autorouter minimums)
+- [ ] Ground planes present on appropriate layers
+- [ ] Thermal vias under all QFN/exposed-pad ICs
+- [ ] No dangling track stubs
+```
 
 ## Error Handling
 
@@ -397,7 +531,8 @@ None — all tools go in existing `mcp_server_kicad/pcb.py`.
 ## Modified Files
 
 - `mcp_server_kicad/pcb.py` — Add seven tools + shared helpers
-- `skills/pcb-layout/SKILL.md` — Add tools to reference, update post-autoroute workflow
+- `skills/pcb-layout/SKILL.md` — Add tools, post-autoroute phase, post-autoroute refinement section
+- `skills/verification/SKILL.md` — Add tools to PCB fixes, post-autoroute quality checks, pre-manufacturing checklist items
 - `tests/test_pcb_write_tools.py` — Add tests for all seven tools
 - `tests/test_unified_server.py` — Update tool count assertions
 - `tests/test_tool_annotations.py` — Add to `_ADDITIVE` and `_DESTRUCTIVE` annotation lists
