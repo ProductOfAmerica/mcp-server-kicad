@@ -390,6 +390,45 @@ class TestSetTraceWidth:
         assert "error" not in r2
         assert r2["traces_modified"] == 1
 
+    def test_load_board_with_empty_tstamp(self, tmp_path):
+        """Board files with ``(tstamp )`` (empty value) must load.
+
+        Regression: a previous kiutils round-trip wrote ``(tstamp )``
+        for segments whose uuid was unrecognized.  The resulting file
+        cannot be re-loaded by kiutils because ``item[1]`` does not
+        exist on a single-element list ``['tstamp']``.
+
+        ``_load_board`` must sanitise the file content before parsing.
+        """
+        pcb_content = """\
+(kicad_pcb (version 20241108) (generator "pcbnew")
+
+  (general (thickness 1.6))
+  (paper "A4")
+  (layers
+    (0 "F.Cu" signal)
+    (31 "B.Cu" signal)
+    (44 "Edge.Cuts" user)
+  )
+  (setup (pad_to_mask_clearance 0))
+
+  (net 0 "")
+  (net 1 "Net1")
+
+  (segment (start 100 100) (end 110 100) (width 0.5)
+    (layer "F.Cu") (net 1) (tstamp ))
+  (segment (start 110 100) (end 120 100) (width 0.5)
+    (layer "F.Cu") (net 1) (tstamp ))
+
+)"""
+        pcb_file = tmp_path / "corrupted.kicad_pcb"
+        pcb_file.write_text(pcb_content)
+
+        # Must not crash with IndexError
+        r = json.loads(pcb.set_trace_width(width=0.75, net_name="Net1", pcb_path=str(pcb_file)))
+        assert "error" not in r
+        assert r["traces_modified"] == 2
+
 
 class TestRemoveTraces:
     def test_remove_by_net(self, scratch_pcb):

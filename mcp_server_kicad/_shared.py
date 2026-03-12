@@ -1,6 +1,7 @@
 """Shared constants, helpers, and kiutils re-exports for KiCad MCP servers."""
 
 import os
+import re
 import subprocess
 import uuid
 from pathlib import Path
@@ -482,11 +483,34 @@ def _fix_empty_tstamps(board: Board) -> None:
             zone.tstamp = _gen_uuid()
 
 
+_EMPTY_TSTAMP_RE = re.compile(r"\(tstamp\s*\)")
+
+
 def _load_board(path: str = PCB_PATH) -> Board:
-    """Load a KiCad PCB from *path*."""
+    """Load a KiCad PCB from *path*.
+
+    Handles two KiCad 9 compatibility issues with kiutils 1.4.8:
+
+    1. **Already-corrupted files**: A previous kiutils save may have
+       written ``(tstamp )`` with no value.  kiutils crashes on
+       ``item[1]`` when parsing these.  We fix the raw text before
+       parsing.
+    2. **uuid vs tstamp**: KiCad 9 uses ``(uuid ...)`` which kiutils
+       ignores, leaving tstamp as ``""``.  After parsing we fill
+       empties with fresh UUIDs so the *next* save is also valid.
+    """
     if not path:
         raise ValueError("No PCB path provided. Pass pcb_path parameter.")
-    board = Board.from_file(path)
+
+    # Pre-process: replace empty (tstamp ) with a generated UUID so
+    # kiutils' parser doesn't crash on item[1].
+    from kiutils.utils import sexpr
+
+    raw = Path(path).read_text()
+    fixed = _EMPTY_TSTAMP_RE.sub(lambda _m: f'(tstamp "{uuid.uuid4()}")', raw)
+    board = Board.from_sexpr(sexpr.parse_sexp(fixed))
+    board.filePath = path
+
     _fix_empty_tstamps(board)
     return board
 
