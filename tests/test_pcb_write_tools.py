@@ -216,3 +216,83 @@ class TestFilterSegments:
             pcb._filter_segments(
                 board, net_name=None, layer=None, x_min=None, y_min=None, x_max=None, y_max=None
             )
+
+
+class TestAddCopperZone:
+    def test_basic_zone(self, scratch_pcb):
+        result = pcb.add_copper_zone(
+            net_name="Net1",
+            layer="F.Cu",
+            corners=[{"x": 0, "y": 0}, {"x": 50, "y": 0}, {"x": 50, "y": 50}, {"x": 0, "y": 50}],
+            pcb_path=str(scratch_pcb),
+        )
+        data = json.loads(result)
+        assert data["net"] == "Net1"
+        assert data["layer"] == "F.Cu"
+        assert data["corners"] == 4
+        board = Board.from_file(str(scratch_pcb))
+        assert len(board.zones) == 1
+        zone = board.zones[0]
+        assert zone.netName == "Net1"
+        assert zone.layers == ["F.Cu"]
+        assert zone.clearance == 0.5
+        assert len(zone.polygons) == 1
+        assert len(zone.polygons[0].coordinates) == 4
+
+    def test_no_thermal_relief(self, scratch_pcb):
+        pcb.add_copper_zone(
+            net_name="Net1",
+            layer="B.Cu",
+            corners=[{"x": 0, "y": 0}, {"x": 10, "y": 0}, {"x": 10, "y": 10}],
+            thermal_relief=False,
+            pcb_path=str(scratch_pcb),
+        )
+        board = Board.from_file(str(scratch_pcb))
+        zone = board.zones[0]
+        assert zone.connectPads == "full"
+
+    def test_fewer_than_3_corners(self, scratch_pcb):
+        result = pcb.add_copper_zone(
+            net_name="Net1",
+            layer="F.Cu",
+            corners=[{"x": 0, "y": 0}, {"x": 10, "y": 0}],
+            pcb_path=str(scratch_pcb),
+        )
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_invalid_net(self, scratch_pcb):
+        result = pcb.add_copper_zone(
+            net_name="NonExistent",
+            layer="F.Cu",
+            corners=[{"x": 0, "y": 0}, {"x": 10, "y": 0}, {"x": 10, "y": 10}],
+            pcb_path=str(scratch_pcb),
+        )
+        data = json.loads(result)
+        assert "error" in data
+
+
+class TestFillZones:
+    def test_no_pcbnew_returns_error(self, scratch_pcb):
+        with patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=(None, None)):
+            result = pcb.fill_zones(pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_success_with_mocked_subprocess(self, scratch_pcb):
+        pcb.add_copper_zone(
+            net_name="Net1",
+            layer="F.Cu",
+            corners=[{"x": 0, "y": 0}, {"x": 50, "y": 0}, {"x": 50, "y": 50}, {"x": 0, "y": 50}],
+            pcb_path=str(scratch_pcb),
+        )
+        mock_result = type("Result", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        mock_python = ("/usr/bin/python3", None)
+        with (
+            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
+            patch("subprocess.run", return_value=mock_result),
+        ):
+            result = pcb.fill_zones(pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert data["zones_filled"] == 1
+        assert data["status"] == "ok"

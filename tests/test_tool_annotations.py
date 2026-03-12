@@ -125,6 +125,8 @@ def test_pcb_read_only(tool_name):
         "add_via",
         "add_pcb_text",
         "add_pcb_line",
+        "add_copper_zone",
+        "fill_zones",
     ],
 )
 def test_pcb_additive(tool_name):

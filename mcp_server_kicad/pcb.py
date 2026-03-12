@@ -519,6 +519,98 @@ def add_pcb_line(
     return f"Line: ({x1}, {y1}) -> ({x2}, {y2}) on {layer}"
 
 
+@mcp.tool(annotations=_ADDITIVE)
+def add_copper_zone(
+    net_name: str,
+    layer: str,
+    corners: list[dict],
+    clearance: float = 0.5,
+    min_thickness: float = 0.25,
+    thermal_relief: bool = True,
+    thermal_gap: float = 0.5,
+    thermal_bridge_width: float = 0.5,
+    priority: int = 0,
+    pcb_path: str = PCB_PATH,
+) -> str:
+    """Create an unfilled copper zone. Call fill_zones afterward to compute fills.
+
+    Args:
+        net_name: Name of the net to assign to this zone (e.g. "GND")
+        layer: Copper layer (e.g. "F.Cu", "B.Cu")
+        corners: List of {x, y} dicts defining the zone polygon (min 3)
+        clearance: Zone clearance in mm
+        min_thickness: Minimum copper thickness in mm
+        thermal_relief: Use thermal relief pads (True) or solid connection (False)
+        thermal_gap: Thermal relief gap in mm
+        thermal_bridge_width: Thermal relief bridge width in mm
+        priority: Zone fill priority (higher fills first)
+        pcb_path: Path to .kicad_pcb file
+    """
+    if len(corners) < 3:
+        return json.dumps({"error": "At least 3 corners required for a zone polygon."})
+    board = _load_board(pcb_path)
+    try:
+        net_num, _ = _find_net(board, net_name)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+    zone = Zone()
+    zone.net = net_num
+    zone.netName = net_name
+    zone.layers = [layer]
+    zone.priority = priority
+    zone.clearance = clearance
+    zone.minThickness = min_thickness
+    zone.tstamp = _gen_uuid()
+    zone.hatch = Hatch(style="edge", pitch=0.5)
+    if not thermal_relief:
+        zone.connectPads = "full"
+    zone.fillSettings = FillSettings(
+        thermalGap=thermal_gap, thermalBridgeWidth=thermal_bridge_width
+    )
+    poly = ZonePolygon()
+    poly.coordinates = [Position(X=c["x"], Y=c["y"]) for c in corners]
+    zone.polygons = [poly]
+    board.zones.append(zone)
+    board.to_file()
+    return json.dumps(
+        {"net": net_name, "layer": layer, "corners": len(corners), "clearance_mm": clearance}
+    )
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def fill_zones(pcb_path: str = PCB_PATH) -> str:
+    """Fill all copper zones on the board using pcbnew's zone filler.
+
+    Requires KiCad's pcbnew Python bindings to be installed.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+    """
+    pcb_path = str(Path(pcb_path).resolve())
+    python, env = _find_pcbnew_python()
+    if not python:
+        return json.dumps({"error": "pcbnew Python bindings not found. Ensure KiCad is installed."})
+    script = (
+        "import pcbnew; "
+        f"b = pcbnew.LoadBoard({pcb_path!r}); "
+        "filler = pcbnew.ZONE_FILLER(b); "
+        "zones = b.Zones(); "
+        "filler.Fill(zones); "
+        f"pcbnew.SaveBoard({pcb_path!r}, b); "
+        "print(len(zones))"
+    )
+    result = subprocess.run(
+        [python, "-c", script], capture_output=True, text=True, timeout=120, env=env
+    )
+    if result.returncode != 0:
+        return json.dumps({"error": f"Zone fill failed: {result.stderr.strip()}"})
+    try:
+        zone_count = int(result.stdout.strip())
+    except ValueError:
+        zone_count = 0
+    return json.dumps({"zones_filled": zone_count, "status": "ok"})
+
+
 # ---------------------------------------------------------------------------
 # CLI analysis tools (1)
 # ---------------------------------------------------------------------------
