@@ -33,6 +33,7 @@ class TestCheckJava:
     def test_java_not_found(self):
         with patch("subprocess.run", side_effect=FileNotFoundError):
             result = check_java()
+            assert result is not None
             assert "Java" in result
             assert "apt install" in result
 
@@ -45,6 +46,7 @@ class TestCheckJava:
         )
         with patch("subprocess.run", return_value=mock_result):
             result = check_java()
+            assert result is not None
             assert "17" in result
 
 
@@ -109,6 +111,7 @@ class TestEnsureJar:
         ):
             path, err = ensure_jar()
             assert path is None
+            assert err is not None
             assert "Network error" in err
 
 
@@ -149,6 +152,7 @@ class TestExportDsn:
     def test_pcbnew_not_found(self, tmp_path):
         with patch(_FIND_PY, return_value=(None, None)):
             err = export_dsn(str(tmp_path / "b.kicad_pcb"), str(tmp_path / "b.dsn"))
+            assert err is not None
             assert "pcbnew" in err.lower() or "KiCad" in err
 
 
@@ -210,6 +214,7 @@ class TestRunFreerouting:
                 ses_path=str(tmp_path / "board.ses"),
                 timeout=600,
             )
+            assert err is not None
             assert "timeout" in err.lower() or "timed out" in err.lower()
 
     def test_nonzero_exit(self, tmp_path):
