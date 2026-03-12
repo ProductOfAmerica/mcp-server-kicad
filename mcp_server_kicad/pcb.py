@@ -797,7 +797,8 @@ def set_net_class(
 ) -> str:
     """Create or update a net class with design rules and assign nets.
 
-    Requires KiCad's pcbnew Python bindings.
+    Edits the KiCad project file (.kicad_pro) alongside the board to
+    define the net class and assign nets.  Does NOT require pcbnew.
 
     Args:
         name: Net class name (e.g. "Power", "HighSpeed")
@@ -808,39 +809,65 @@ def set_net_class(
         via_drill: Via drill in mm (None = use default)
         pcb_path: Path to .kicad_pcb file
     """
-    pcb_path = str(Path(pcb_path).resolve())
-    python, env = _find_pcbnew_python()
-    if not python:
-        return json.dumps({"error": "pcbnew Python bindings not found. Ensure KiCad is installed."})
+    pcb_file = Path(pcb_path).resolve()
+    pro_file = pcb_file.with_suffix(".kicad_pro")
 
-    lines = [
-        "import pcbnew",
-        f"b = pcbnew.LoadBoard({pcb_path!r})",
-        "ds = b.GetDesignSettings()",
-        "ns = ds.m_NetSettings",
-        f"nc = pcbnew.NETCLASS({name!r})",
-    ]
+    if not pro_file.exists():
+        return json.dumps(
+            {
+                "error": f"Project file not found: {pro_file}. "
+                "A .kicad_pro file must exist alongside the .kicad_pcb file."
+            }
+        )
+
+    # Read existing project JSON
+    try:
+        pro_data = json.loads(pro_file.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        return json.dumps({"error": f"Failed to read project file: {exc}"})
+
+    # Ensure net_settings structure exists
+    if "net_settings" not in pro_data:
+        pro_data["net_settings"] = {}
+    ns = pro_data["net_settings"]
+    if "classes" not in ns:
+        ns["classes"] = []
+    if "meta" not in ns:
+        ns["meta"] = {"version": 4}
+    if "netclass_assignments" not in ns or ns["netclass_assignments"] is None:
+        ns["netclass_assignments"] = {}
+
+    # Build the net class entry
+    nc_entry: dict[str, object] = {"name": name}
     if track_width is not None:
-        lines.append(f"nc.SetTrackWidth(pcbnew.FromMM({track_width}))")
+        nc_entry["track_width"] = track_width
     if clearance is not None:
-        lines.append(f"nc.SetClearance(pcbnew.FromMM({clearance}))")
+        nc_entry["clearance"] = clearance
     if via_size is not None:
-        lines.append(f"nc.SetViaDiameter(pcbnew.FromMM({via_size}))")
+        nc_entry["via_diameter"] = via_size
     if via_drill is not None:
-        lines.append(f"nc.SetViaDrill(pcbnew.FromMM({via_drill}))")
-    lines.append(f"ns.SetNetclass({name!r}, nc)")
-    for net in nets:
-        lines.append(f"ni = b.FindNet({net!r})")
-        lines.append("if ni: ni.SetNetClass(nc)")
-    lines.append(f"pcbnew.SaveBoard({pcb_path!r}, b)")
-    lines.append(f"print(len({nets!r}))")
+        nc_entry["via_drill"] = via_drill
 
-    script = "\n".join(lines)
-    result = subprocess.run(
-        [python, "-c", script], capture_output=True, text=True, timeout=60, env=env
-    )
-    if result.returncode != 0:
-        return json.dumps({"error": f"set_net_class failed: {result.stderr.strip()}"})
+    # Update or add the net class in the classes list
+    found = False
+    for i, cls in enumerate(ns["classes"]):
+        if cls.get("name") == name:
+            ns["classes"][i].update(nc_entry)
+            found = True
+            break
+    if not found:
+        ns["classes"].append(nc_entry)
+
+    # Assign nets to this class
+    for net_name in nets:
+        ns["netclass_assignments"][net_name] = name
+
+    # Write back
+    try:
+        pro_file.write_text(json.dumps(pro_data, indent=2) + "\n")
+    except OSError as exc:
+        return json.dumps({"error": f"Failed to write project file: {exc}"})
+
     return json.dumps(
         {
             "net_class": name,
@@ -962,15 +989,16 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
             report = json.load(f)
     except FileNotFoundError:
         return json.dumps({"error": "DRC failed to produce output file"}, indent=2)
-    all_violations = []
-    for sheet in report.get("sheets", []):
-        all_violations.extend(sheet.get("violations", []))
+    violations = report.get("violations", [])
+    unconnected = report.get("unconnected_items", [])
     return json.dumps(
         {
             "source": report.get("source", ""),
             "kicad_version": report.get("kicad_version", ""),
-            "violation_count": len(all_violations),
-            "violations": all_violations,
+            "violation_count": len(violations),
+            "violations": violations,
+            "unconnected_count": len(unconnected),
+            "unconnected_items": unconnected,
         },
         indent=2,
     )
@@ -1334,10 +1362,8 @@ def autoroute_pcb(
         )
         with open(drc_out) as f:
             drc = json.load(f)
-        violations = []
-        for sheet in drc.get("sheets", []):
-            violations.extend(sheet.get("violations", []))
-        result["drc_violations"] = len(violations)
+        result["drc_violations"] = len(drc.get("violations", []))
+        result["drc_unconnected"] = len(drc.get("unconnected_items", []))
     except Exception:
         pass  # DRC is optional — kicad-cli may not be available
 

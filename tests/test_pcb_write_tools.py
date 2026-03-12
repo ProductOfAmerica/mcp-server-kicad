@@ -527,160 +527,130 @@ class TestAddThermalVias:
 
 
 class TestSetNetClass:
-    def test_no_pcbnew_returns_error(self, scratch_pcb):
-        with patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=(None, None)):
-            result = pcb.set_net_class(
-                name="Power",
-                nets=["Net1"],
-                track_width=0.5,
-                pcb_path=str(scratch_pcb),
-            )
-        data = json.loads(result)
-        assert "error" in data
+    """Tests for set_net_class which edits the .kicad_pro project file."""
 
-    def test_success_with_mocked_subprocess(self, scratch_pcb):
-        mock_result = type("Result", (), {"returncode": 0, "stdout": "2\n", "stderr": ""})()
-        mock_python = ("/usr/bin/python3", None)
-        with (
-            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
-            patch("subprocess.run", return_value=mock_result),
-        ):
-            result = pcb.set_net_class(
-                name="Power",
-                nets=["Net1", "Net2"],
-                track_width=0.5,
-                clearance=0.3,
-                pcb_path=str(scratch_pcb),
-            )
+    @staticmethod
+    def _create_pro(pcb_path: Path, pro_data: dict | None = None) -> Path:
+        """Create a .kicad_pro alongside the given .kicad_pcb path."""
+        pro_path = pcb_path.with_suffix(".kicad_pro")
+        if pro_data is None:
+            pro_data = {"meta": {"filename": pro_path.name, "version": 1}}
+        pro_path.write_text(json.dumps(pro_data, indent=2) + "\n")
+        return pro_path
+
+    def test_works_without_pcbnew(self, scratch_pcb):
+        """set_net_class must work without pcbnew — it edits the .kicad_pro file."""
+        pro_path = self._create_pro(scratch_pcb)
+
+        result = pcb.set_net_class(
+            name="Power",
+            nets=["Net1", "Net2"],
+            track_width=0.5,
+            clearance=0.3,
+            via_size=0.6,
+            via_drill=0.3,
+            pcb_path=str(scratch_pcb),
+        )
         data = json.loads(result)
         assert data["net_class"] == "Power"
         assert data["nets_assigned"] == 2
+        assert data["track_width_mm"] == 0.5
+        assert data["clearance_mm"] == 0.3
 
-    def test_subprocess_failure(self, scratch_pcb):
-        mock_result = type(
-            "Result", (), {"returncode": 1, "stdout": "", "stderr": "pcbnew error"}
-        )()
-        mock_python = ("/usr/bin/python3", None)
-        with (
-            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
-            patch("subprocess.run", return_value=mock_result),
-        ):
-            result = pcb.set_net_class(
-                name="Power",
-                nets=["Net1"],
-                pcb_path=str(scratch_pcb),
-            )
+        # Verify the project file was actually written correctly
+        pro_data = json.loads(pro_path.read_text())
+        ns = pro_data["net_settings"]
+
+        # Check net class was created
+        classes = ns["classes"]
+        power_cls = next(c for c in classes if c["name"] == "Power")
+        assert power_cls["track_width"] == 0.5
+        assert power_cls["clearance"] == 0.3
+        assert power_cls["via_diameter"] == 0.6
+        assert power_cls["via_drill"] == 0.3
+
+        # Check net assignments
+        assignments = ns["netclass_assignments"]
+        assert assignments["Net1"] == "Power"
+        assert assignments["Net2"] == "Power"
+
+    def test_missing_pro_file_returns_error(self, scratch_pcb):
+        """Error when .kicad_pro file does not exist."""
+        result = pcb.set_net_class(
+            name="Power",
+            nets=["Net1"],
+            track_width=0.5,
+            pcb_path=str(scratch_pcb),
+        )
         data = json.loads(result)
         assert "error" in data
-        assert "pcbnew error" in data["error"]
+        assert "Project file not found" in data["error"]
 
-    def test_generated_script_is_valid_python(self, scratch_pcb):
-        """The generated script must be valid Python syntax.
+    def test_success_returns_proper_json(self, scratch_pcb):
+        """Return JSON with net_class, nets_assigned, track_width_mm, clearance_mm."""
+        self._create_pro(scratch_pcb)
 
-        Regression test: semicolon-joined ``if`` statements produce
-        invalid Python (e.g. ``; if ni: ...``).  Compound statements
-        cannot appear after a semicolon on the same line.
-        """
-        captured_scripts = []
-        mock_python = ("/usr/bin/python3", None)
-        mock_result = type("Result", (), {"returncode": 0, "stdout": "2\n", "stderr": ""})()
+        result = pcb.set_net_class(
+            name="Power",
+            nets=["Net1", "Net2"],
+            track_width=0.5,
+            clearance=0.3,
+            pcb_path=str(scratch_pcb),
+        )
+        data = json.loads(result)
+        assert data["net_class"] == "Power"
+        assert data["nets_assigned"] == 2
+        assert data["track_width_mm"] == 0.5
+        assert data["clearance_mm"] == 0.3
 
-        def capture_run(cmd, **kwargs):
-            if len(cmd) >= 3 and cmd[1] == "-c":
-                captured_scripts.append(cmd[2])
-            return mock_result
+    def test_updates_existing_net_class(self, scratch_pcb):
+        """Updating an existing net class should merge, not duplicate."""
+        pro_data = {
+            "meta": {"filename": "scratch.kicad_pro", "version": 1},
+            "net_settings": {
+                "classes": [{"name": "Power", "track_width": 0.25}],
+                "meta": {"version": 4},
+                "netclass_assignments": {},
+            },
+        }
+        pro_path = self._create_pro(scratch_pcb, pro_data)
 
-        with (
-            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
-            patch("subprocess.run", side_effect=capture_run),
-        ):
-            pcb.set_net_class(
-                name="Power",
-                nets=["Net1", "Net2"],
-                track_width=0.5,
-                clearance=0.3,
-                pcb_path=str(scratch_pcb),
-            )
+        pcb.set_net_class(
+            name="Power",
+            nets=["Net1"],
+            track_width=0.5,
+            clearance=0.3,
+            pcb_path=str(scratch_pcb),
+        )
 
-        assert len(captured_scripts) == 1, "Expected exactly one subprocess call"
-        script = captured_scripts[0]
-        # compile() will raise SyntaxError if the script is invalid Python
-        compile(script, "<set_net_class>", "exec")
+        updated = json.loads(pro_path.read_text())
+        classes = updated["net_settings"]["classes"]
+        # Should still be exactly one "Power" class, not two
+        power_classes = [c for c in classes if c["name"] == "Power"]
+        assert len(power_classes) == 1
+        assert power_classes[0]["track_width"] == 0.5
+        assert power_classes[0]["clearance"] == 0.3
 
-    def test_generated_script_uses_multiline(self, scratch_pcb):
-        """The generated script must use newlines, not semicolons.
+    def test_optional_params_omitted(self, scratch_pcb):
+        """When optional params are None, they should not appear in the class entry."""
+        self._create_pro(scratch_pcb)
 
-        Regression: ``python -c`` with semicolons fails when compound
-        statements like ``if`` are present.
-        """
-        captured_scripts = []
-        mock_python = ("/usr/bin/python3", None)
-        mock_result = type("Result", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+        result = pcb.set_net_class(
+            name="Signal",
+            nets=["Net1"],
+            pcb_path=str(scratch_pcb),
+        )
+        data = json.loads(result)
+        assert data["net_class"] == "Signal"
+        assert data["track_width_mm"] is None
+        assert data["clearance_mm"] is None
 
-        def capture_run(cmd, **kwargs):
-            if len(cmd) >= 3 and cmd[1] == "-c":
-                captured_scripts.append(cmd[2])
-            return mock_result
-
-        with (
-            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
-            patch("subprocess.run", side_effect=capture_run),
-        ):
-            pcb.set_net_class(
-                name="Power",
-                nets=["Net1"],
-                track_width=0.5,
-                pcb_path=str(scratch_pcb),
-            )
-
-        assert len(captured_scripts) == 1
-        script = captured_scripts[0]
-        # Must contain newlines (not be all on one line)
-        assert "\n" in script, "Script should use newlines, not semicolons"
-        # Must NOT contain semicolons joining statements
-        for line in script.split("\n"):
-            # Each line should be a single statement (no semicolons)
-            assert ";" not in line, f"Line should not contain semicolons: {line!r}"
-
-    def test_generated_script_uses_kicad9_api(self, scratch_pcb):
-        """The generated script must use KiCad 9's net class API.
-
-        Regression: KiCad 9 moved net class management from
-        ``ds.GetNetClasses()`` (which no longer exists) to
-        ``ds.m_NetSettings``.  The script must use
-        ``ns.SetNetclass(name, nc)`` and ``ni.SetNetClass(nc)``
-        instead of dict assignment and ``SetNetClassName(str)``.
-        """
-        captured_scripts = []
-        mock_python = ("/usr/bin/python3", None)
-        mock_result = type("Result", (), {"returncode": 0, "stdout": "2\n", "stderr": ""})()
-
-        def capture_run(cmd, **kwargs):
-            if len(cmd) >= 3 and cmd[1] == "-c":
-                captured_scripts.append(cmd[2])
-            return mock_result
-
-        with (
-            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
-            patch("subprocess.run", side_effect=capture_run),
-        ):
-            pcb.set_net_class(
-                name="Power",
-                nets=["Net1", "Net2"],
-                track_width=0.5,
-                clearance=0.3,
-                pcb_path=str(scratch_pcb),
-            )
-
-        assert len(captured_scripts) == 1
-        script = captured_scripts[0]
-        # Must NOT use the old KiCad 8 API
-        assert "GetNetClasses" not in script, "Must not use GetNetClasses (removed in KiCad 9)"
-        assert "SetNetClassName" not in script, "Must not use SetNetClassName (KiCad 8 API)"
-        # Must use the KiCad 9 API
-        assert "m_NetSettings" in script, "Must use ds.m_NetSettings for KiCad 9"
-        assert "SetNetclass" in script, "Must use ns.SetNetclass(name, nc)"
-        assert "SetNetClass" in script, "Must use ni.SetNetClass(nc) for net assignment"
+        pro_data = json.loads(scratch_pcb.with_suffix(".kicad_pro").read_text())
+        signal_cls = next(c for c in pro_data["net_settings"]["classes"] if c["name"] == "Signal")
+        assert "track_width" not in signal_cls
+        assert "clearance" not in signal_cls
+        assert "via_diameter" not in signal_cls
+        assert "via_drill" not in signal_cls
 
 
 class TestRemoveDanglingTracks:
