@@ -611,6 +611,74 @@ def fill_zones(pcb_path: str = PCB_PATH) -> str:
     return json.dumps({"zones_filled": zone_count, "status": "ok"})
 
 
+@mcp.tool(annotations=_ADDITIVE)
+def set_trace_width(
+    width: float,
+    net_name: str | None = None,
+    layer: str | None = None,
+    x_min: float | None = None,
+    y_min: float | None = None,
+    x_max: float | None = None,
+    y_max: float | None = None,
+    pcb_path: str = PCB_PATH,
+) -> str:
+    """Change the width of existing traces matching the given filters.
+    At least one filter (net_name, layer, or bounding box) is required.
+
+    Args:
+        width: New trace width in mm
+        net_name: Filter by net name
+        layer: Filter by layer name (e.g. "F.Cu", "B.Cu")
+        x_min: Left edge of bounding box filter (mm)
+        y_min: Top edge of bounding box filter (mm)
+        x_max: Right edge of bounding box filter (mm)
+        y_max: Bottom edge of bounding box filter (mm)
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+    try:
+        segments = _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+    for seg in segments:
+        seg.width = width
+    board.to_file()
+    return json.dumps({"traces_modified": len(segments), "net": net_name, "new_width_mm": width})
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def remove_traces(
+    net_name: str | None = None,
+    layer: str | None = None,
+    x_min: float | None = None,
+    y_min: float | None = None,
+    x_max: float | None = None,
+    y_max: float | None = None,
+    pcb_path: str = PCB_PATH,
+) -> str:
+    """Remove trace segments matching the given filters. Does not remove vias.
+    At least one filter (net_name, layer, or bounding box) is required.
+
+    Args:
+        net_name: Filter by net name
+        layer: Filter by layer name (e.g. "F.Cu", "B.Cu")
+        x_min: Left edge of bounding box filter (mm)
+        y_min: Top edge of bounding box filter (mm)
+        x_max: Right edge of bounding box filter (mm)
+        y_max: Bottom edge of bounding box filter (mm)
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+    try:
+        segments = _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max)
+    except ValueError as e:
+        return json.dumps({"error": str(e)})
+    for seg in segments:
+        board.traceItems.remove(seg)
+    board.to_file()
+    return json.dumps({"traces_removed": len(segments), "net": net_name, "layer": layer})
+
+
 # ---------------------------------------------------------------------------
 # CLI analysis tools (1)
 # ---------------------------------------------------------------------------

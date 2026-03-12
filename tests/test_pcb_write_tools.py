@@ -296,3 +296,51 @@ class TestFillZones:
         data = json.loads(result)
         assert data["zones_filled"] == 1
         assert data["status"] == "ok"
+
+
+class TestSetTraceWidth:
+    def test_widen_by_net(self, scratch_pcb):
+        _board_with_traces(scratch_pcb)
+        result = pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert data["traces_modified"] == 3  # original scratch trace + 2 added on Net1
+        assert data["new_width_mm"] == 0.5
+        board = Board.from_file(str(scratch_pcb))
+        for seg in board.traceItems:
+            if isinstance(seg, Segment) and seg.net == 1:
+                assert seg.width == 0.5
+
+    def test_no_filters_returns_error(self, scratch_pcb):
+        result = pcb.set_trace_width(width=0.5, pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_no_matches_returns_zero(self, scratch_pcb):
+        result = pcb.set_trace_width(width=0.5, net_name="Net2", pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert data["traces_modified"] == 0
+
+
+class TestRemoveTraces:
+    def test_remove_by_net(self, scratch_pcb):
+        _board_with_traces(scratch_pcb)
+        result = pcb.remove_traces(net_name="Net2", pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert data["traces_removed"] == 2
+        board = Board.from_file(str(scratch_pcb))
+        net2_segs = [t for t in board.traceItems if isinstance(t, Segment) and t.net == 2]
+        assert len(net2_segs) == 0
+
+    def test_does_not_remove_vias(self, scratch_pcb):
+        pcb.add_via(100, 100, net=1, pcb_path=str(scratch_pcb))
+        result = pcb.remove_traces(net_name="Net1", pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert data["traces_removed"] == 1
+        board = Board.from_file(str(scratch_pcb))
+        vias = [t for t in board.traceItems if isinstance(t, Via)]
+        assert len(vias) == 1
+
+    def test_no_filters_returns_error(self, scratch_pcb):
+        result = pcb.remove_traces(pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert "error" in data
