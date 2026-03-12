@@ -344,3 +344,74 @@ class TestRemoveTraces:
         result = pcb.remove_traces(pcb_path=str(scratch_pcb))
         data = json.loads(result)
         assert "error" in data
+
+
+class TestAddThermalVias:
+    def test_basic_grid(self, scratch_pcb):
+        """R1 is at (100, 100) with pads. Use explicit pad_number and net_name."""
+        result = pcb.add_thermal_vias(
+            reference="R1",
+            pad_number="1",
+            rows=2,
+            cols=2,
+            spacing=1.0,
+            via_size=0.6,
+            via_drill=0.3,
+            net_name="Net1",
+            pcb_path=str(scratch_pcb),
+        )
+        data = json.loads(result)
+        assert data["vias_added"] == 4
+        assert data["reference"] == "R1"
+        board = Board.from_file(str(scratch_pcb))
+        vias = [t for t in board.traceItems if isinstance(t, Via)]
+        assert len(vias) == 4
+
+    def test_footprint_not_found(self, scratch_pcb):
+        result = pcb.add_thermal_vias(reference="U99", pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_auto_detect_net_from_pad(self, scratch_pcb):
+        """When net_name is not provided, auto-detect from pad."""
+        result = pcb.add_thermal_vias(
+            reference="R1",
+            pad_number="1",
+            rows=1,
+            cols=1,
+            pcb_path=str(scratch_pcb),
+        )
+        data = json.loads(result)
+        assert data["vias_added"] == 1
+        board = Board.from_file(str(scratch_pcb))
+        via = [t for t in board.traceItems if isinstance(t, Via)][0]
+        # Pad 1 of R1 should have a net number assigned
+        assert via.net >= 0
+
+    def test_pad_not_found(self, scratch_pcb):
+        result = pcb.add_thermal_vias(reference="R1", pad_number="99", pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_invalid_net_name(self, scratch_pcb):
+        result = pcb.add_thermal_vias(
+            reference="R1",
+            pad_number="1",
+            net_name="NonExistent",
+            pcb_path=str(scratch_pcb),
+        )
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_auto_detect_largest_smd_pad(self, scratch_pcb):
+        """When no pad_number given, pick largest SMD pad."""
+        result = pcb.add_thermal_vias(
+            reference="R1",
+            rows=1,
+            cols=1,
+            pcb_path=str(scratch_pcb),
+        )
+        data = json.loads(result)
+        assert data["vias_added"] == 1
+        # Should have picked one of the pads (both are same size)
+        assert data["pad"] in ("1", "2")

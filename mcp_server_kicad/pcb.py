@@ -280,7 +280,7 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
 
 
 # ---------------------------------------------------------------------------
-# PCB write tools (7)
+# PCB write tools (8)
 # ---------------------------------------------------------------------------
 
 
@@ -677,6 +677,112 @@ def remove_traces(
         board.traceItems.remove(seg)
     board.to_file()
     return json.dumps({"traces_removed": len(segments), "net": net_name, "layer": layer})
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def add_thermal_vias(
+    reference: str,
+    pad_number: str = "",
+    rows: int = 3,
+    cols: int = 3,
+    spacing: float = 1.0,
+    via_size: float = 0.8,
+    via_drill: float = 0.3,
+    net_name: str | None = None,
+    pcb_path: str = PCB_PATH,
+) -> str:
+    """Add a grid of thermal vias under a footprint pad.
+
+    Args:
+        reference: Footprint reference (e.g. "U1", "R1")
+        pad_number: Pad number to center vias on. If empty, auto-selects largest SMD pad.
+        rows: Number of rows in the via grid
+        cols: Number of columns in the via grid
+        spacing: Spacing between vias in mm
+        via_size: Via annular ring diameter in mm
+        via_drill: Via drill diameter in mm
+        net_name: Net to assign to vias. If None, auto-detect from pad.
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+
+    # Find footprint
+    fp = None
+    for f in board.footprints:
+        if _fp_ref(f) == reference:
+            fp = f
+            break
+    if fp is None:
+        return json.dumps({"error": f"Footprint {reference!r} not found."})
+
+    # Find pad
+    pad = None
+    if pad_number:
+        for p in fp.pads:
+            if p.number == pad_number:
+                pad = p
+                break
+        if pad is None:
+            return json.dumps({"error": f"Pad {pad_number!r} not found on {reference}."})
+    else:
+        # Auto-detect: largest SMD pad by area
+        best_area = 0
+        for p in fp.pads:
+            if p.type == "smd":
+                area = (p.size.X or 0) * (p.size.Y or 0)
+                if area > best_area:
+                    best_area = area
+                    pad = p
+        if pad is None:
+            return json.dumps(
+                {"error": f"No SMD pad found on {reference}. Specify pad_number explicitly."}
+            )
+
+    # Compute pad center in board coordinates with rotation
+    fp_x = fp.position.X
+    fp_y = fp.position.Y
+    theta = math.radians(fp.position.angle or 0)
+    offset_x = pad.position.X
+    offset_y = pad.position.Y
+    pad_x = fp_x + (offset_x * math.cos(theta) - offset_y * math.sin(theta))
+    pad_y = fp_y + (offset_x * math.sin(theta) + offset_y * math.cos(theta))
+
+    # Determine net
+    via_net = 0
+    if net_name:
+        try:
+            via_net, _ = _find_net(board, net_name)
+        except ValueError as e:
+            return json.dumps({"error": str(e)})
+    elif pad.net is not None:
+        via_net = pad.net.number
+
+    # Generate grid centered on pad
+    vias_added = 0
+    for r in range(rows):
+        for c in range(cols):
+            vx = pad_x + (c - (cols - 1) / 2) * spacing
+            vy = pad_y + (r - (rows - 1) / 2) * spacing
+            via = Via()
+            via.position = Position(X=round(vx, 4), Y=round(vy, 4))
+            via.size = via_size
+            via.drill = via_drill
+            via.net = via_net
+            via.layers = ["F.Cu", "B.Cu"]
+            via.tstamp = _gen_uuid()
+            board.traceItems.append(via)
+            vias_added += 1
+
+    board.to_file()
+    return json.dumps(
+        {
+            "vias_added": vias_added,
+            "reference": reference,
+            "pad": pad.number,
+            "net": net_name or (pad.net.name if pad.net else ""),
+            "center": {"x": round(pad_x, 4), "y": round(pad_y, 4)},
+        }
+    )
 
 
 # ---------------------------------------------------------------------------

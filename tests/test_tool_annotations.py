@@ -128,6 +128,7 @@ def test_pcb_read_only(tool_name):
         "add_copper_zone",
         "fill_zones",
         "set_trace_width",
+        "add_thermal_vias",
     ],
 )
 def test_pcb_additive(tool_name):
