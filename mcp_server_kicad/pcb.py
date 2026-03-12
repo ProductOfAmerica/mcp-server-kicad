@@ -1,7 +1,9 @@
 """KiCad PCB MCP Server — PCB manipulation, DRC, and export tools."""
 
 import json
+import math  # noqa: F401 – used by upcoming post-autoroute tools
 import os
+import subprocess  # noqa: F401 – used by upcoming post-autoroute tools
 import tempfile
 from pathlib import Path
 
@@ -17,6 +19,9 @@ from mcp_server_kicad._freerouting import (
     export_dsn as _export_dsn,
 )
 from mcp_server_kicad._freerouting import (
+    find_pcbnew_python as _find_pcbnew_python,  # noqa: F401
+)
+from mcp_server_kicad._freerouting import (
     import_ses as _import_ses,
 )
 from mcp_server_kicad._freerouting import (
@@ -29,13 +34,17 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     OUTPUT_DIR,
     PCB_PATH,
+    FillSettings,  # noqa: F401
     Footprint,
     FpText,
     GrLine,
     GrText,
+    Hatch,  # noqa: F401
     Position,
     Segment,
     Via,
+    Zone,  # noqa: F401
+    ZonePolygon,  # noqa: F401
     _default_effects,
     _file_meta,
     _fp_ref,
