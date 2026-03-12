@@ -21,7 +21,7 @@ Add seven new MCP tools to support post-autoroute PCB refinement: copper zone cr
 Creates an unfilled copper zone definition. Caller must invoke `fill_zones` afterward to compute copper polygons.
 
 ```python
-@mcp.tool(annotations=_WRITE)
+@mcp.tool(annotations=_ADDITIVE)
 def add_copper_zone(
     net_name: str,
     layer: str,
@@ -53,8 +53,9 @@ def add_copper_zone(
 
 **Implementation:**
 - Create a kiutils `Zone` object with `net`, `netName`, `layers`, `priority`, `clearance`, `minThickness`
-- Set `connectPads` for thermal relief settings
-- Set `fillSettings` with `thermalGap`, `thermalBridgeWidth`
+- For thermal relief: leave `connectPads` as `None` (default = thermal relief). For direct connect: set `connectPads = "full"`. For no connect: set `connectPads = "no"`
+- Set `fillSettings = FillSettings(thermalGap=thermal_gap, thermalBridgeWidth=thermal_bridge_width)` — thermal gap/bridge width live on `FillSettings`, not on `connectPads`
+- If `thermal_relief` is `False`, set `connectPads = "full"` (solid copper connection, no relief)
 - Create a `ZonePolygon` from the corners list and assign to `zone.polygons`
 - Set `hatch` to edge hatch (default KiCad style)
 - Look up the net number from `board.nets` by matching `net_name`
@@ -65,7 +66,7 @@ def add_copper_zone(
 Invokes pcbnew's zone filler engine to compute copper fill polygons for all zones on the board.
 
 ```python
-@mcp.tool(annotations=_WRITE)
+@mcp.tool(annotations=_ADDITIVE)
 def fill_zones(
     pcb_path: str = PCB_PATH,
 ) -> str:
@@ -98,7 +99,7 @@ def fill_zones(
 Changes the width of existing traces matching the given filters.
 
 ```python
-@mcp.tool(annotations=_WRITE)
+@mcp.tool(annotations=_ADDITIVE)
 def set_trace_width(
     width: float,
     net_name: str | None = None,
@@ -134,7 +135,7 @@ def set_trace_width(
 Adds a grid of vias under a footprint pad for thermal dissipation (typically QFN exposed pads).
 
 ```python
-@mcp.tool(annotations=_WRITE)
+@mcp.tool(annotations=_ADDITIVE)
 def add_thermal_vias(
     reference: str,
     pad_number: str = "",
@@ -165,7 +166,12 @@ def add_thermal_vias(
 **Implementation:**
 - Find footprint by `reference` in `board.footprints`
 - If `pad_number` is empty, find the thermal/exposed pad: the SMD pad with the largest area (width × height) that is not a standard pin
-- Get pad center (footprint position + pad offset, accounting for rotation)
+- Compute pad center in board coordinates: apply 2D rotation of pad offset around footprint origin using footprint rotation angle `θ`:
+  ```
+  pad_x = fp_x + (offset_x * cos(θ) - offset_y * sin(θ))
+  pad_y = fp_y + (offset_x * sin(θ) + offset_y * cos(θ))
+  ```
+  where `fp_x, fp_y` is the footprint position, `offset_x, offset_y` is the pad's local position, and `θ` is the footprint rotation in radians
 - Get net from pad (or use `net_name` override)
 - Compute grid positions centered on pad center
 - Create kiutils `Via` objects (same approach as existing `add_via` tool) with `position`, `size`, `drill`, `net`, `layers` (F.Cu + B.Cu)
@@ -176,7 +182,7 @@ def add_thermal_vias(
 Removes trace segments matching the given filters.
 
 ```python
-@mcp.tool(annotations=_WRITE)
+@mcp.tool(annotations=_DESTRUCTIVE)
 def remove_traces(
     net_name: str | None = None,
     layer: str | None = None,
@@ -208,7 +214,7 @@ def remove_traces(
 Creates or updates a net class with design rules, and assigns nets to it.
 
 ```python
-@mcp.tool(annotations=_WRITE)
+@mcp.tool(annotations=_ADDITIVE)
 def set_net_class(
     name: str,
     nets: list[str],
@@ -233,17 +239,38 @@ def set_net_class(
 **Return:** JSON `{"net_class": "Power", "nets_assigned": 3, "track_width_mm": 0.5, "clearance_mm": 0.3}`
 
 **Implementation:**
-- Look up or create a `NetClass` in `board.designSettings.netClasses`
-- Set provided parameters (skip None values to inherit defaults)
-- Assign each net in `nets` to this class via the board's net class mapping
-- Save board via kiutils
+- **Note:** kiutils `Board` has no `designSettings` or `netClasses` attribute. Net classes in KiCad 8 `.kicad_pcb` files are stored as S-expressions within the `(setup ...)` block (e.g., `(net_class "Power" (clearance 0.3) (track_width 0.5) ...)`) and net-to-class assignments are in `(net_class_assignments ...)` or within each net definition.
+- **Approach:** Use raw S-expression manipulation on the `.kicad_pcb` file:
+  1. Read the file as text
+  2. Parse or locate the `(setup ...)` block
+  3. Insert/update the net class definition with the provided parameters
+  4. Insert/update net-to-class assignments for each net in `nets`
+  5. Write the file back
+- Alternatively, use pcbnew subprocess (consistent with `fill_zones`):
+  ```python
+  script = """
+  import pcbnew
+  b = pcbnew.LoadBoard({path!r})
+  ds = b.GetDesignSettings()
+  nc = pcbnew.NETCLASS({name!r})
+  nc.SetTrackWidth(pcbnew.FromMM({track_width}))
+  nc.SetClearance(pcbnew.FromMM({clearance}))
+  nc.SetViaDiameter(pcbnew.FromMM({via_size}))
+  nc.SetViaDrill(pcbnew.FromMM({via_drill}))
+  ds.SetNetClass({name!r}, nc)
+  for net_name in {nets!r}:
+      b.FindNet(net_name).SetNetClass(nc)
+  pcbnew.SaveBoard({path!r}, b)
+  """
+  ```
+- **Recommended:** Use pcbnew subprocess. Net class management involves design settings that kiutils doesn't model, and pcbnew has native API support. This is the same pattern as `fill_zones`.
 
 ### 7. `remove_dangling_tracks`
 
 Detects and removes trace segments that have an unconnected endpoint.
 
 ```python
-@mcp.tool(annotations=_WRITE)
+@mcp.tool(annotations=_DESTRUCTIVE)
 def remove_dangling_tracks(
     pcb_path: str = PCB_PATH,
 ) -> str:
@@ -312,9 +339,9 @@ def _find_net(board: Board, net_name: str) -> tuple[int, str]:
 
 ### Tool Annotations
 
-All seven tools use `@mcp.tool(annotations=_WRITE)` since they modify the PCB file. This is consistent with `add_trace`, `add_via`, `place_footprint`.
-
-Exception: `fill_zones` technically reads and writes, but since it modifies the file, `_WRITE` is appropriate.
+Tools use the existing annotation presets from `pcb.py`:
+- `_ADDITIVE` (creates/modifies): `add_copper_zone`, `fill_zones`, `set_trace_width`, `add_thermal_vias`, `set_net_class` — consistent with `add_trace`, `add_via`, `place_footprint`
+- `_DESTRUCTIVE` (removes): `remove_traces`, `remove_dangling_tracks` — consistent with `remove_footprint`
 
 ## Skill Update
 
@@ -336,6 +363,8 @@ Update `skills/pcb-layout/SKILL.md` to:
 | `add_thermal_vias`: footprint not found | Return JSON error |
 | `add_thermal_vias`: no suitable thermal pad found | Return JSON error suggesting explicit `pad_number` |
 | `set_net_class`: net not found in board | Return JSON error listing available nets |
+| `set_net_class`: pcbnew not available | Return JSON error with install guidance |
+| `remove_dangling_tracks`: no tracks on board | Return JSON `{"tracks_removed": 0, "iterations": 0}` (not an error) |
 
 ## Testing
 
@@ -356,10 +385,10 @@ Update `skills/pcb-layout/SKILL.md` to:
 
 ### Test Infrastructure
 
-- Use existing `_make_scratch_board()` pattern from `tests/test_pcb_write_tools.py`
+- Use existing `scratch_pcb` pytest fixture from `tests/conftest.py`
 - Add helper to create boards with pre-placed traces for filter tests
 - Update `test_unified_server.py` tool count assertions (+7 tools)
-- Update `test_tool_annotations.py` to include all seven tools in `_WRITE` annotation list
+- Update `test_tool_annotations.py`: add additive tools to `_ADDITIVE` list, destructive tools to `_DESTRUCTIVE` list
 
 ## New Files
 
@@ -371,4 +400,4 @@ None — all tools go in existing `mcp_server_kicad/pcb.py`.
 - `skills/pcb-layout/SKILL.md` — Add tools to reference, update post-autoroute workflow
 - `tests/test_pcb_write_tools.py` — Add tests for all seven tools
 - `tests/test_unified_server.py` — Update tool count assertions
-- `tests/test_tool_annotations.py` — Add to `_WRITE` annotation list
+- `tests/test_tool_annotations.py` — Add to `_ADDITIVE` and `_DESTRUCTIVE` annotation lists
