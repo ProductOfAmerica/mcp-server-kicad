@@ -280,7 +280,7 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
 
 
 # ---------------------------------------------------------------------------
-# PCB write tools (8)
+# PCB write tools (14)
 # ---------------------------------------------------------------------------
 
 
@@ -783,6 +783,157 @@ def add_thermal_vias(
             "center": {"x": round(pad_x, 4), "y": round(pad_y, 4)},
         }
     )
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def set_net_class(
+    name: str,
+    nets: list[str],
+    track_width: float | None = None,
+    clearance: float | None = None,
+    via_size: float | None = None,
+    via_drill: float | None = None,
+    pcb_path: str = PCB_PATH,
+) -> str:
+    """Create or update a net class with design rules and assign nets.
+
+    Requires KiCad's pcbnew Python bindings.
+
+    Args:
+        name: Net class name (e.g. "Power", "HighSpeed")
+        nets: List of net names to assign to this class
+        track_width: Track width in mm (None = use default)
+        clearance: Clearance in mm (None = use default)
+        via_size: Via diameter in mm (None = use default)
+        via_drill: Via drill in mm (None = use default)
+        pcb_path: Path to .kicad_pcb file
+    """
+    pcb_path = str(Path(pcb_path).resolve())
+    python, env = _find_pcbnew_python()
+    if not python:
+        return json.dumps({"error": "pcbnew Python bindings not found. Ensure KiCad is installed."})
+
+    lines = [
+        "import pcbnew",
+        f"b = pcbnew.LoadBoard({pcb_path!r})",
+        "ds = b.GetDesignSettings()",
+        "ncs = ds.GetNetClasses()",
+        f"nc = pcbnew.NETCLASS({name!r})",
+    ]
+    if track_width is not None:
+        lines.append(f"nc.SetTrackWidth(pcbnew.FromMM({track_width}))")
+    if clearance is not None:
+        lines.append(f"nc.SetClearance(pcbnew.FromMM({clearance}))")
+    if via_size is not None:
+        lines.append(f"nc.SetViaDiameter(pcbnew.FromMM({via_size}))")
+    if via_drill is not None:
+        lines.append(f"nc.SetViaDrill(pcbnew.FromMM({via_drill}))")
+    lines.append(f"ncs[{name!r}] = nc")
+    for net in nets:
+        lines.append(f"ni = b.FindNet({net!r})")
+        lines.append(f"if ni: ni.SetNetClassName({name!r})")
+    lines.append(f"pcbnew.SaveBoard({pcb_path!r}, b)")
+    lines.append(f"print(len({nets!r}))")
+
+    script = "; ".join(lines)
+    result = subprocess.run(
+        [python, "-c", script], capture_output=True, text=True, timeout=60, env=env
+    )
+    if result.returncode != 0:
+        return json.dumps({"error": f"set_net_class failed: {result.stderr.strip()}"})
+    return json.dumps(
+        {
+            "net_class": name,
+            "nets_assigned": len(nets),
+            "track_width_mm": track_width,
+            "clearance_mm": clearance,
+        }
+    )
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> str:
+    """Detect and remove trace segments with unconnected endpoints.
+
+    Iteratively removes dangling segments until no more are found.
+    A segment is considered dangling if either endpoint does not connect
+    to a pad, via, or another trace endpoint.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+    tolerance = 0.001  # mm
+    total_removed = 0
+    iterations = 0
+
+    while True:
+        # Build connection points: pad positions + via centers + trace endpoints
+        connection_points: list[tuple[float, float]] = []
+
+        # Pad positions in board coordinates
+        for fp in board.footprints:
+            fp_x = fp.position.X
+            fp_y = fp.position.Y
+            theta = math.radians(fp.position.angle or 0)
+            for pad in fp.pads:
+                ox, oy = pad.position.X, pad.position.Y
+                px = fp_x + (ox * math.cos(theta) - oy * math.sin(theta))
+                py = fp_y + (ox * math.sin(theta) + oy * math.cos(theta))
+                connection_points.append((round(px, 3), round(py, 3)))
+
+        # Via positions
+        for item in board.traceItems:
+            if isinstance(item, Via):
+                connection_points.append((round(item.position.X, 3), round(item.position.Y, 3)))
+
+        # Trace endpoints (each segment contributes both start and end)
+        segments = [t for t in board.traceItems if isinstance(t, Segment)]
+        for seg in segments:
+            connection_points.append((round(seg.start.X, 3), round(seg.start.Y, 3)))
+            connection_points.append((round(seg.end.X, 3), round(seg.end.Y, 3)))
+
+        # Check each segment for dangling endpoints
+        dangling = []
+        for seg in segments:
+            start = (round(seg.start.X, 3), round(seg.start.Y, 3))
+            end = (round(seg.end.X, 3), round(seg.end.Y, 3))
+
+            # Count connections at start point (subtract this segment's own contribution)
+            start_connections = (
+                sum(
+                    1
+                    for pt in connection_points
+                    if abs(pt[0] - start[0]) < tolerance and abs(pt[1] - start[1]) < tolerance
+                )
+                - 1
+            )
+
+            # Count connections at end point (subtract this segment's own contribution)
+            end_connections = (
+                sum(
+                    1
+                    for pt in connection_points
+                    if abs(pt[0] - end[0]) < tolerance and abs(pt[1] - end[1]) < tolerance
+                )
+                - 1
+            )
+
+            if start_connections < 1 or end_connections < 1:
+                dangling.append(seg)
+
+        if not dangling:
+            break
+
+        for seg in dangling:
+            board.traceItems.remove(seg)
+        total_removed += len(dangling)
+        iterations += 1
+
+    if total_removed > 0:
+        board.to_file()
+
+    return json.dumps({"tracks_removed": total_removed, "iterations": iterations})
 
 
 # ---------------------------------------------------------------------------

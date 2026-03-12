@@ -129,13 +129,16 @@ def test_pcb_read_only(tool_name):
         "fill_zones",
         "set_trace_width",
         "add_thermal_vias",
+        "set_net_class",
     ],
 )
 def test_pcb_additive(tool_name):
     assert _get_annotations(pcb, tool_name) == _ADDITIVE
 
 
-@pytest.mark.parametrize("tool_name", ["remove_footprint", "remove_traces"])
+@pytest.mark.parametrize(
+    "tool_name", ["remove_footprint", "remove_traces", "remove_dangling_tracks"]
+)
 def test_pcb_destructive(tool_name):
     assert _get_annotations(pcb, tool_name) == _DESTRUCTIVE
 

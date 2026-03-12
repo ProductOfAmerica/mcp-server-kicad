@@ -415,3 +415,90 @@ class TestAddThermalVias:
         assert data["vias_added"] == 1
         # Should have picked one of the pads (both are same size)
         assert data["pad"] in ("1", "2")
+
+
+class TestSetNetClass:
+    def test_no_pcbnew_returns_error(self, scratch_pcb):
+        with patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=(None, None)):
+            result = pcb.set_net_class(
+                name="Power",
+                nets=["Net1"],
+                track_width=0.5,
+                pcb_path=str(scratch_pcb),
+            )
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_success_with_mocked_subprocess(self, scratch_pcb):
+        mock_result = type("Result", (), {"returncode": 0, "stdout": "2\n", "stderr": ""})()
+        mock_python = ("/usr/bin/python3", None)
+        with (
+            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
+            patch("subprocess.run", return_value=mock_result),
+        ):
+            result = pcb.set_net_class(
+                name="Power",
+                nets=["Net1", "Net2"],
+                track_width=0.5,
+                clearance=0.3,
+                pcb_path=str(scratch_pcb),
+            )
+        data = json.loads(result)
+        assert data["net_class"] == "Power"
+        assert data["nets_assigned"] == 2
+
+    def test_subprocess_failure(self, scratch_pcb):
+        mock_result = type(
+            "Result", (), {"returncode": 1, "stdout": "", "stderr": "pcbnew error"}
+        )()
+        mock_python = ("/usr/bin/python3", None)
+        with (
+            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
+            patch("subprocess.run", return_value=mock_result),
+        ):
+            result = pcb.set_net_class(
+                name="Power",
+                nets=["Net1"],
+                pcb_path=str(scratch_pcb),
+            )
+        data = json.loads(result)
+        assert "error" in data
+        assert "pcbnew error" in data["error"]
+
+
+class TestRemoveDanglingTracks:
+    def test_removes_dangling_segment(self, scratch_pcb):
+        """Add a trace that connects to nothing."""
+        board = Board.from_file(str(scratch_pcb))
+        seg = Segment()
+        seg.start = Position(X=200, Y=200)
+        seg.end = Position(X=210, Y=200)
+        seg.width = 0.25
+        seg.layer = "F.Cu"
+        seg.net = 1
+        seg.tstamp = str(uuid.uuid4())
+        board.traceItems.append(seg)
+        board.to_file()
+
+        result = pcb.remove_dangling_tracks(pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert data["tracks_removed"] >= 1
+
+    def test_preserves_connected_traces(self, scratch_pcb):
+        """The scratch board trace connects to R1 pads -- should not be removed."""
+        result = pcb.remove_dangling_tracks(pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert data["tracks_removed"] == 0
+        board = Board.from_file(str(scratch_pcb))
+        segs = [t for t in board.traceItems if isinstance(t, Segment)]
+        assert len(segs) == 1
+
+    def test_empty_board(self, scratch_pcb):
+        """Board with no traces at all."""
+        board = Board.from_file(str(scratch_pcb))
+        board.traceItems = []
+        board.to_file()
+        result = pcb.remove_dangling_tracks(pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert data["tracks_removed"] == 0
+        assert data["iterations"] == 0
