@@ -90,6 +90,36 @@ def _find_net(board, net_name: str) -> tuple[int, str]:
     raise ValueError(f"Net {net_name!r} not found. Available nets: {available}")
 
 
+def _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max):
+    """Filter board trace segments by net name, layer, and/or bounding box."""
+    if all(v is None for v in (net_name, layer, x_min, y_min, x_max, y_max)):
+        raise ValueError("at least one filter is required")
+    net_num = None
+    if net_name is not None:
+        net_num, _ = _find_net(board, net_name)
+    result = []
+    for item in board.traceItems:
+        if not isinstance(item, Segment):
+            continue
+        if net_num is not None and item.net != net_num:
+            continue
+        if layer is not None and item.layer != layer:
+            continue
+        if x_min is not None or y_min is not None or x_max is not None or y_max is not None:
+            sx, sy = item.start.X, item.start.Y
+            ex, ey = item.end.X, item.end.Y
+            if x_min is not None and (sx < x_min or ex < x_min):
+                continue
+            if y_min is not None and (sy < y_min or ey < y_min):
+                continue
+            if x_max is not None and (sx > x_max or ex > x_max):
+                continue
+            if y_max is not None and (sy > y_max or ey > y_max):
+                continue
+        result.append(item)
+    return result
+
+
 # ---------------------------------------------------------------------------
 # PCB read tools (8)
 # ---------------------------------------------------------------------------

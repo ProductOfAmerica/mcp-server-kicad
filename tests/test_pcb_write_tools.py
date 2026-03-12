@@ -156,3 +156,63 @@ class TestFindNet:
         board = Board.from_file(str(scratch_pcb))
         with pytest.raises(ValueError, match="not found"):
             pcb._find_net(board, "NonExistent")
+
+
+def _board_with_traces(scratch_pcb):
+    """Add several traces on different nets/layers for filter testing."""
+    board = Board.from_file(str(scratch_pcb))
+    for _i, (net, layer, x) in enumerate(
+        [
+            (1, "F.Cu", 10),
+            (1, "B.Cu", 20),
+            (2, "F.Cu", 30),
+            (2, "B.Cu", 40),
+        ]
+    ):
+        seg = Segment()
+        seg.start = Position(X=x, Y=50)
+        seg.end = Position(X=x + 5, Y=50)
+        seg.width = 0.25
+        seg.layer = layer
+        seg.net = net
+        seg.tstamp = str(uuid.uuid4())
+        board.traceItems.append(seg)
+    board.to_file()
+    return board
+
+
+class TestFilterSegments:
+    def test_filter_by_net(self, scratch_pcb):
+        board = _board_with_traces(scratch_pcb)
+        result = pcb._filter_segments(
+            board, net_name="Net1", layer=None, x_min=None, y_min=None, x_max=None, y_max=None
+        )
+        assert len(result) == 3  # original scratch trace + 2 new
+
+    def test_filter_by_layer(self, scratch_pcb):
+        board = _board_with_traces(scratch_pcb)
+        result = pcb._filter_segments(
+            board, net_name=None, layer="B.Cu", x_min=None, y_min=None, x_max=None, y_max=None
+        )
+        assert len(result) == 2
+
+    def test_filter_by_net_and_layer(self, scratch_pcb):
+        board = _board_with_traces(scratch_pcb)
+        result = pcb._filter_segments(
+            board, net_name="Net1", layer="F.Cu", x_min=None, y_min=None, x_max=None, y_max=None
+        )
+        assert len(result) == 2
+
+    def test_filter_by_bbox(self, scratch_pcb):
+        board = _board_with_traces(scratch_pcb)
+        result = pcb._filter_segments(
+            board, net_name=None, layer=None, x_min=25, y_min=45, x_max=45, y_max=55
+        )
+        assert len(result) == 2
+
+    def test_no_filters_raises(self, scratch_pcb):
+        board = _board_with_traces(scratch_pcb)
+        with pytest.raises(ValueError, match="at least one filter"):
+            pcb._filter_segments(
+                board, net_name=None, layer=None, x_min=None, y_min=None, x_max=None, y_max=None
+            )
