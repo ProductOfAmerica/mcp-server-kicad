@@ -835,7 +835,7 @@ def set_net_class(
     lines.append(f"pcbnew.SaveBoard({pcb_path!r}, b)")
     lines.append(f"print(len({nets!r}))")
 
-    script = "; ".join(lines)
+    script = "\n".join(lines)
     result = subprocess.run(
         [python, "-c", script], capture_output=True, text=True, timeout=60, env=env
     )

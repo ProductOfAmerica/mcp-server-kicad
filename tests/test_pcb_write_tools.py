@@ -465,6 +465,39 @@ class TestSetNetClass:
         assert "error" in data
         assert "pcbnew error" in data["error"]
 
+    def test_generated_script_is_valid_python(self, scratch_pcb):
+        """The generated script must be valid Python syntax.
+
+        Regression test: semicolon-joined ``if`` statements produce
+        invalid Python (e.g. ``; if ni: ...``).  Compound statements
+        cannot appear after a semicolon on the same line.
+        """
+        captured_scripts = []
+        mock_python = ("/usr/bin/python3", None)
+        mock_result = type("Result", (), {"returncode": 0, "stdout": "2\n", "stderr": ""})()
+
+        def capture_run(cmd, **kwargs):
+            if len(cmd) >= 3 and cmd[1] == "-c":
+                captured_scripts.append(cmd[2])
+            return mock_result
+
+        with (
+            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
+            patch("subprocess.run", side_effect=capture_run),
+        ):
+            pcb.set_net_class(
+                name="Power",
+                nets=["Net1", "Net2"],
+                track_width=0.5,
+                clearance=0.3,
+                pcb_path=str(scratch_pcb),
+            )
+
+        assert len(captured_scripts) == 1, "Expected exactly one subprocess call"
+        script = captured_scripts[0]
+        # compile() will raise SyntaxError if the script is invalid Python
+        compile(script, "<set_net_class>", "exec")
+
 
 class TestRemoveDanglingTracks:
     def test_removes_dangling_segment(self, scratch_pcb):
