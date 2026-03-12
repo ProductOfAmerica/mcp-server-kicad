@@ -143,36 +143,46 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
         except Exception:
             pass
 
-    try:
-        result = subprocess.run(
-            ["python3", "-c", "import pcbnew"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        if result.returncode == 0:
-            _pcbnew_cache = ("python3", None)
-            return _pcbnew_cache
-    except Exception:
-        pass
+    # Try multiple python binaries — when running inside a uvx/venv environment,
+    # "python3" may resolve to the venv python which can't import pcbnew.
+    # System python (e.g. /usr/bin/python3) typically can.
+    python_candidates = ["python3"]
+    sys_python = "/usr/bin/python3"
+    if Path(sys_python).is_file() and sys_python not in python_candidates:
+        python_candidates.append(sys_python)
 
-    for path in _KICAD_PYTHON_PATHS:
-        if not Path(path).is_dir():
-            continue
-        env = {**os.environ, "PYTHONPATH": path}
+    for py in python_candidates:
         try:
             result = subprocess.run(
-                ["python3", "-c", "import pcbnew"],
+                [py, "-c", "import pcbnew"],
                 capture_output=True,
                 text=True,
                 timeout=10,
-                env=env,
             )
             if result.returncode == 0:
-                _pcbnew_cache = ("python3", env)
+                _pcbnew_cache = (py, None)
                 return _pcbnew_cache
         except Exception:
             pass
+
+    for py in python_candidates:
+        for path in _KICAD_PYTHON_PATHS:
+            if not Path(path).is_dir():
+                continue
+            env = {**os.environ, "PYTHONPATH": path}
+            try:
+                result = subprocess.run(
+                    [py, "-c", "import pcbnew"],
+                    capture_output=True,
+                    text=True,
+                    timeout=10,
+                    env=env,
+                )
+                if result.returncode == 0:
+                    _pcbnew_cache = (py, env)
+                    return _pcbnew_cache
+            except Exception:
+                pass
 
     _pcbnew_cache = (None, None)
     return _pcbnew_cache
@@ -203,7 +213,7 @@ def export_dsn(pcb_path: str, dsn_path: str) -> str | None:
         env=env,
     )
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
         return f"DSN export failed: {detail}"
     return None
 
@@ -235,7 +245,7 @@ def import_ses(pcb_path: str, ses_path: str, output_path: str) -> str | None:
         env=env,
     )
     if result.returncode != 0:
-        detail = result.stderr.strip() or result.stdout.strip()
+        detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
         return f"SES import failed: {detail}"
     return None
 
