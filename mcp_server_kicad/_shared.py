@@ -447,11 +447,48 @@ def _load_system_lib_symbol(sch, lib_prefix: str, symbol_name: str) -> bool:
     return False
 
 
+def _fix_empty_tstamps(board: Board) -> None:
+    """Fill in empty tstamp fields so kiutils can round-trip the file.
+
+    KiCad 9 uses ``(uuid ...)`` instead of ``(tstamp ...)`` in segments,
+    vias, footprints, graphic items, and zones.  kiutils 1.4.8 only
+    handles ``tstamp``, so after loading a KiCad 9 board the tstamp
+    attribute is left at its default (empty string or ``None``).  When
+    kiutils writes the file it emits ``(tstamp )`` with no value, and
+    the *next* load crashes with ``IndexError: list index out of range``
+    because it tries ``item[1]`` on a single-element list.
+
+    This helper assigns a fresh UUID to every object whose tstamp is
+    empty or ``None`` so the saved file is always valid.
+    """
+    # Trace items: Segment and Via
+    for item in board.traceItems:
+        if not item.tstamp:
+            item.tstamp = _gen_uuid()
+
+    # Footprints
+    for fp in board.footprints:
+        if not fp.tstamp:
+            fp.tstamp = _gen_uuid()
+
+    # Graphic items (GrLine, GrText, GrArc, etc.)
+    for gi in board.graphicItems:
+        if hasattr(gi, "tstamp") and not gi.tstamp:
+            gi.tstamp = _gen_uuid()
+
+    # Zones
+    for zone in board.zones:
+        if not zone.tstamp:
+            zone.tstamp = _gen_uuid()
+
+
 def _load_board(path: str = PCB_PATH) -> Board:
     """Load a KiCad PCB from *path*."""
     if not path:
         raise ValueError("No PCB path provided. Pass pcb_path parameter.")
-    return Board.from_file(path)
+    board = Board.from_file(path)
+    _fix_empty_tstamps(board)
+    return board
 
 
 def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess:

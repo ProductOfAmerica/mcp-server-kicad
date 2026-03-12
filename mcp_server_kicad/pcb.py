@@ -817,7 +817,7 @@ def set_net_class(
         "import pcbnew",
         f"b = pcbnew.LoadBoard({pcb_path!r})",
         "ds = b.GetDesignSettings()",
-        "ncs = ds.GetNetClasses()",
+        "ns = ds.m_NetSettings",
         f"nc = pcbnew.NETCLASS({name!r})",
     ]
     if track_width is not None:
@@ -828,10 +828,10 @@ def set_net_class(
         lines.append(f"nc.SetViaDiameter(pcbnew.FromMM({via_size}))")
     if via_drill is not None:
         lines.append(f"nc.SetViaDrill(pcbnew.FromMM({via_drill}))")
-    lines.append(f"ncs[{name!r}] = nc")
+    lines.append(f"ns.SetNetclass({name!r}, nc)")
     for net in nets:
         lines.append(f"ni = b.FindNet({net!r})")
-        lines.append(f"if ni: ni.SetNetClassName({name!r})")
+        lines.append("if ni: ni.SetNetClass(nc)")
     lines.append(f"pcbnew.SaveBoard({pcb_path!r}, b)")
     lines.append(f"print(len({nets!r}))")
 

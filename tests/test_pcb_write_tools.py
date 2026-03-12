@@ -320,6 +320,76 @@ class TestSetTraceWidth:
         data = json.loads(result)
         assert data["traces_modified"] == 0
 
+    def test_consecutive_calls_on_different_nets(self, scratch_pcb):
+        """Calling set_trace_width on one net then another must not crash.
+
+        Regression: the first call saves the board via kiutils; the second
+        call must be able to re-read the file that kiutils wrote.
+        """
+        _board_with_traces(scratch_pcb)
+        # First call — widen Net1
+        r1 = json.loads(pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=str(scratch_pcb)))
+        assert "error" not in r1
+        assert r1["traces_modified"] > 0
+        # Second call — widen Net2 (re-reads the file saved by the first call)
+        r2 = json.loads(pcb.set_trace_width(width=0.75, net_name="Net2", pcb_path=str(scratch_pcb)))
+        assert "error" not in r2
+        assert r2["traces_modified"] > 0
+
+    def test_roundtrip_kicad9_uuid_segments(self, tmp_path):
+        """KiCad 9 uses ``(uuid ...)`` instead of ``(tstamp ...)`` in segments.
+
+        kiutils 1.4.8 only handles ``tstamp``, so it writes ``(tstamp )``
+        with an empty value after loading a KiCad 9 board. The second load
+        then crashes with ``IndexError: list index out of range``.
+
+        The tool must handle this gracefully — either by preserving the uuid
+        or by generating a valid tstamp so the file remains loadable.
+        """
+        # Create a board file that uses KiCad 9 format with uuid instead of tstamp
+        pcb_content = """(kicad_pcb (version 20241108) (generator "pcbnew")
+
+  (general
+    (thickness 1.6)
+  )
+
+  (paper "A4")
+
+  (layers
+    (0 "F.Cu" signal)
+    (31 "B.Cu" signal)
+    (44 "Edge.Cuts" user)
+  )
+
+  (setup
+    (pad_to_mask_clearance 0)
+  )
+
+  (net 0 "")
+  (net 1 "Net1")
+  (net 2 "Net2")
+
+  (segment (start 100 100) (end 110 100) (width 0.25)
+    (layer "F.Cu") (net 1) (uuid "aaa-1111-2222"))
+  (segment (start 110 100) (end 120 100) (width 0.25)
+    (layer "F.Cu") (net 1) (uuid "bbb-1111-2222"))
+  (segment (start 120 100) (end 130 100) (width 0.25)
+    (layer "F.Cu") (net 2) (uuid "ccc-1111-2222"))
+
+)"""
+        pcb_file = tmp_path / "kicad9_board.kicad_pcb"
+        pcb_file.write_text(pcb_content)
+
+        # First call should succeed
+        r1 = json.loads(pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=str(pcb_file)))
+        assert "error" not in r1
+        assert r1["traces_modified"] == 2
+
+        # Second call must NOT crash with IndexError
+        r2 = json.loads(pcb.set_trace_width(width=0.75, net_name="Net2", pcb_path=str(pcb_file)))
+        assert "error" not in r2
+        assert r2["traces_modified"] == 1
+
 
 class TestRemoveTraces:
     def test_remove_by_net(self, scratch_pcb):
@@ -497,6 +567,81 @@ class TestSetNetClass:
         script = captured_scripts[0]
         # compile() will raise SyntaxError if the script is invalid Python
         compile(script, "<set_net_class>", "exec")
+
+    def test_generated_script_uses_multiline(self, scratch_pcb):
+        """The generated script must use newlines, not semicolons.
+
+        Regression: ``python -c`` with semicolons fails when compound
+        statements like ``if`` are present.
+        """
+        captured_scripts = []
+        mock_python = ("/usr/bin/python3", None)
+        mock_result = type("Result", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
+
+        def capture_run(cmd, **kwargs):
+            if len(cmd) >= 3 and cmd[1] == "-c":
+                captured_scripts.append(cmd[2])
+            return mock_result
+
+        with (
+            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
+            patch("subprocess.run", side_effect=capture_run),
+        ):
+            pcb.set_net_class(
+                name="Power",
+                nets=["Net1"],
+                track_width=0.5,
+                pcb_path=str(scratch_pcb),
+            )
+
+        assert len(captured_scripts) == 1
+        script = captured_scripts[0]
+        # Must contain newlines (not be all on one line)
+        assert "\n" in script, "Script should use newlines, not semicolons"
+        # Must NOT contain semicolons joining statements
+        for line in script.split("\n"):
+            # Each line should be a single statement (no semicolons)
+            assert ";" not in line, f"Line should not contain semicolons: {line!r}"
+
+    def test_generated_script_uses_kicad9_api(self, scratch_pcb):
+        """The generated script must use KiCad 9's net class API.
+
+        Regression: KiCad 9 moved net class management from
+        ``ds.GetNetClasses()`` (which no longer exists) to
+        ``ds.m_NetSettings``.  The script must use
+        ``ns.SetNetclass(name, nc)`` and ``ni.SetNetClass(nc)``
+        instead of dict assignment and ``SetNetClassName(str)``.
+        """
+        captured_scripts = []
+        mock_python = ("/usr/bin/python3", None)
+        mock_result = type("Result", (), {"returncode": 0, "stdout": "2\n", "stderr": ""})()
+
+        def capture_run(cmd, **kwargs):
+            if len(cmd) >= 3 and cmd[1] == "-c":
+                captured_scripts.append(cmd[2])
+            return mock_result
+
+        with (
+            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
+            patch("subprocess.run", side_effect=capture_run),
+        ):
+            pcb.set_net_class(
+                name="Power",
+                nets=["Net1", "Net2"],
+                track_width=0.5,
+                clearance=0.3,
+                pcb_path=str(scratch_pcb),
+            )
+
+        assert len(captured_scripts) == 1
+        script = captured_scripts[0]
+        # Must NOT use the old KiCad 8 API
+        assert "GetNetClasses" not in script, "Must not use GetNetClasses (removed in KiCad 9)"
+        assert "SetNetClassName" not in script, "Must not use SetNetClassName (KiCad 8 API)"
+        # Must use the KiCad 9 API
+        assert "m_NetSettings" in script, "Must use ds.m_NetSettings for KiCad 9"
+        assert "SetNetclass" in script, "Must use ns.SetNetclass(name, nc)"
+        assert "SetNetClass" in script, "Must use ni.SetNetClass(nc) for net assignment"
 
 
 class TestRemoveDanglingTracks:
