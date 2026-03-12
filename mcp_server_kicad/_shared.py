@@ -22,7 +22,7 @@ from kiutils.items.schitems import (
     SymbolProjectPath,
     Text,
 )
-from kiutils.items.zones import Zone
+from kiutils.items.zones import FillSettings, Hatch, Zone, ZonePolygon
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
 from mcp.types import ToolAnnotations
@@ -91,7 +91,10 @@ __all__ = [
     "SymbolLib",
     "Text",
     "Via",
+    "FillSettings",
+    "Hatch",
     "Zone",
+    "ZonePolygon",
     # path constants
     "SCH_PATH",
     "SYM_LIB_PATH",
