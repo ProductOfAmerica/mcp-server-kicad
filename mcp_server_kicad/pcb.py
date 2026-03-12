@@ -800,8 +800,8 @@ def autoroute_pcb(
 
     # Pre-flight: ensure Freerouting JAR
     jar_path, jar_err = _ensure_jar()
-    if jar_err:
-        return json.dumps({"error": jar_err})
+    if jar_err or not jar_path:
+        return json.dumps({"error": jar_err or "Freerouting JAR not found."})
 
     # Count existing traces/vias for before/after comparison
     board = _load_board(pcb_path)
