@@ -375,6 +375,74 @@ class TestRemoveHierarchicalSheet:
         sch = Schematic.from_file(str(parent))
         assert len(sch.sheets) == 0
 
+    def test_ambiguous_name_error(self, tmp_path: Path):
+        parent, child = self._make_parent_and_child(tmp_path)
+        # Add two sheets with the same name
+        self._add_sheet(parent, child, name="Power")
+        self._add_sheet(parent, child, name="Power")
+
+        result = project.remove_hierarchical_sheet(
+            name="Power",
+            parent_schematic_path=str(parent),
+        )
+        assert "Multiple sheets" in result
+        assert "uuid=" in result
+        assert "disambiguate" in result
+
+        # Verify neither was removed
+        sch = Schematic.from_file(str(parent))
+        assert len(sch.sheets) == 2
+
+    def test_remove_by_name_and_uuid(self, tmp_path: Path):
+        parent, child = self._make_parent_and_child(tmp_path)
+        uuid1 = self._add_sheet(parent, child, name="Power")
+        self._add_sheet(parent, child, name="Power")
+
+        result = project.remove_hierarchical_sheet(
+            name="Power",
+            uuid=uuid1,
+            parent_schematic_path=str(parent),
+        )
+        assert "Removed" in result
+
+        sch = Schematic.from_file(str(parent))
+        assert len(sch.sheets) == 1
+        assert sch.sheets[0].uuid != uuid1
+
+    def test_name_uuid_mismatch_error(self, tmp_path: Path):
+        parent, child = self._make_parent_and_child(tmp_path)
+        sheet_uuid = self._add_sheet(parent, child, name="Power")
+
+        result = project.remove_hierarchical_sheet(
+            name="WrongName",
+            uuid=sheet_uuid,
+            parent_schematic_path=str(parent),
+        )
+        assert "found but its name is" in result
+        assert "'Power'" in result
+        assert "'WrongName'" in result
+
+        # Verify sheet was NOT removed
+        sch = Schematic.from_file(str(parent))
+        assert len(sch.sheets) == 1
+
+    def test_no_match_error(self, tmp_path: Path):
+        parent, child = self._make_parent_and_child(tmp_path)
+
+        result = project.remove_hierarchical_sheet(
+            name="NonExistent",
+            parent_schematic_path=str(parent),
+        )
+        assert "No hierarchical sheet found" in result
+
+    def test_no_parameters_error(self, tmp_path: Path):
+        parent, child = self._make_parent_and_child(tmp_path)
+
+        result = project.remove_hierarchical_sheet(
+            parent_schematic_path=str(parent),
+        )
+        assert "Provide at least one of" in result
+
 
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
