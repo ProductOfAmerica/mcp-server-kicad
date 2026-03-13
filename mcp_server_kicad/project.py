@@ -350,7 +350,7 @@ def _remove_hierarchical_sheet(
     matches: list[int] = []
     for i, sheet in enumerate(sch.sheets):
         if uuid:
-            if _normalize_uuid(sheet.uuid) == _normalize_uuid(uuid):
+            if sheet.uuid and _normalize_uuid(sheet.uuid) == _normalize_uuid(uuid):
                 if name and sheet.sheetName.value != name:
                     return (
                         f"Sheet with uuid={uuid} found but its name is "
