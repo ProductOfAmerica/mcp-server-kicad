@@ -1,4 +1,4 @@
-"""Tests for _resolve_hierarchy_path helper."""
+"""Tests for shared helper functions in _shared.py."""
 
 from __future__ import annotations
 
@@ -65,3 +65,52 @@ class TestResolveHierarchyPath:
         name, path = _resolve_hierarchy_path(pro_path, str(child_path), child_sch.uuid)
         assert name == "myproject"
         assert path == f"/{root_sch.uuid}/{sheet.uuid}"
+
+
+class TestResolveRoot:
+    def test_returns_root_from_project_path(self, tmp_path: Path):
+        """When project_path is given, derive root .kicad_sch from it."""
+        from mcp_server_kicad._shared import _resolve_root
+
+        pro = tmp_path / "myproj.kicad_pro"
+        pro.write_text("{}")
+        root_sch = tmp_path / "myproj.kicad_sch"
+        root_sch.write_text("")
+        sub_sch = tmp_path / "child.kicad_sch"
+        sub_sch.write_text("")
+
+        result = _resolve_root(str(sub_sch), project_path=str(pro))
+        assert result == str(root_sch)
+
+    def test_returns_none_when_already_root_via_project(self, tmp_path: Path):
+        from mcp_server_kicad._shared import _resolve_root
+
+        pro = tmp_path / "myproj.kicad_pro"
+        pro.write_text("{}")
+        root_sch = tmp_path / "myproj.kicad_sch"
+        root_sch.write_text("")
+
+        result = _resolve_root(str(root_sch), project_path=str(pro))
+        assert result is None
+
+    def test_falls_back_to_glob_when_no_project_path(self, tmp_path: Path):
+        from mcp_server_kicad._shared import _resolve_root
+
+        pro = tmp_path / "myproj.kicad_pro"
+        pro.write_text("{}")
+        root_sch = tmp_path / "myproj.kicad_sch"
+        root_sch.write_text("")
+        sub_sch = tmp_path / "child.kicad_sch"
+        sub_sch.write_text("")
+
+        result = _resolve_root(str(sub_sch))
+        assert result == str(root_sch)
+
+    def test_returns_none_when_no_project_found(self, tmp_path: Path):
+        from mcp_server_kicad._shared import _resolve_root
+
+        sch = tmp_path / "standalone.kicad_sch"
+        sch.write_text("")
+
+        result = _resolve_root(str(sch))
+        assert result is None

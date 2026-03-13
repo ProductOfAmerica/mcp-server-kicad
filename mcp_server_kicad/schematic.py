@@ -34,6 +34,7 @@ from mcp_server_kicad._shared import (
     _default_effects,
     _default_stroke,
     _file_meta,
+    _find_root_schematic,
     _gen_uuid,
     _load_sch,
     _load_system_lib_symbol,
@@ -1653,25 +1654,6 @@ def no_connect_pin(
 # ---------------------------------------------------------------------------
 # ERC analysis tools (2)
 # ---------------------------------------------------------------------------
-
-
-def _find_root_schematic(schematic_path: str) -> str | None:
-    """Return the root schematic path if *schematic_path* is a sub-sheet.
-
-    Looks for a ``.kicad_pro`` in the same directory and derives the root
-    ``.kicad_sch`` from its stem.  Returns ``None`` when *schematic_path*
-    is already the root (or no project file is found).
-    """
-    sch_dir = Path(schematic_path).parent
-    pro_files = list(sch_dir.glob("*.kicad_pro"))
-    if len(pro_files) != 1:
-        return None
-    root_sch = pro_files[0].with_suffix(".kicad_sch")
-    if not root_sch.exists():
-        return None
-    if root_sch.resolve() == Path(schematic_path).resolve():
-        return None  # Already the root
-    return str(root_sch)
 
 
 def _parse_unconnected_pins(erc_report: dict, sheet_filter: str | None = None) -> list[dict]:
