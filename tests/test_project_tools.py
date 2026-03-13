@@ -327,6 +327,55 @@ class TestAddHierarchicalSheet:
             )
 
 
+class TestRemoveHierarchicalSheet:
+    def _make_parent_and_child(self, tmp_path: Path) -> tuple[Path, Path]:
+        """Helper: create empty parent + child schematics."""
+        parent = str(tmp_path / "root.kicad_sch")
+        child = str(tmp_path / "child.kicad_sch")
+        project.create_schematic(schematic_path=parent)
+        project.create_schematic(schematic_path=child)
+        return Path(parent), Path(child)
+
+    def _add_sheet(self, parent: Path, child: Path, name: str = "Power") -> str:
+        """Helper: add a hierarchical sheet and return its UUID."""
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(parent),
+            sheet_name=name,
+            sheet_file=str(child),
+            pins=[{"name": "VIN", "direction": "input"}],
+        )
+        sch = Schematic.from_file(str(parent))
+        uuid = sch.sheets[-1].uuid
+        assert uuid is not None
+        return uuid
+
+    def test_remove_by_uuid(self, tmp_path: Path):
+        parent, child = self._make_parent_and_child(tmp_path)
+        sheet_uuid = self._add_sheet(parent, child)
+
+        result = project.remove_hierarchical_sheet(
+            uuid=sheet_uuid,
+            parent_schematic_path=str(parent),
+        )
+        assert "Removed" in result
+
+        sch = Schematic.from_file(str(parent))
+        assert len(sch.sheets) == 0
+
+    def test_remove_by_name_unique(self, tmp_path: Path):
+        parent, child = self._make_parent_and_child(tmp_path)
+        self._add_sheet(parent, child, name="Power")
+
+        result = project.remove_hierarchical_sheet(
+            name="Power",
+            parent_schematic_path=str(parent),
+        )
+        assert "Removed" in result
+
+        sch = Schematic.from_file(str(parent))
+        assert len(sch.sheets) == 0
+
+
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
 

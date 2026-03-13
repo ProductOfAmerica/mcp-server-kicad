@@ -25,6 +25,7 @@ from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
     _ADDITIVE,
+    _DESTRUCTIVE,
     _EXPORT,
     _READ_ONLY,
     _default_effects,
@@ -59,7 +60,8 @@ mcp = FastMCP(
         "2. create_schematic — creates sub-sheet .kicad_sch files\n"
         "3. create_symbol_library + write symbols for custom parts\n"
         "4. create_sym_lib_table — registers libraries with the project\n"
-        "5. add_hierarchical_sheet — links sub-sheets to root with pins"
+        "5. add_hierarchical_sheet — links sub-sheets to root with pins\n"
+        "6. remove_hierarchical_sheet — removes a sheet block from parent"
     ),
 )
 
@@ -322,12 +324,87 @@ def _add_hierarchical_sheet(
     return f"Added sheet '{sheet_name}' with {len(pins)} pins to {parent_schematic_path}"
 
 
+def _remove_hierarchical_sheet(
+    parent_schematic_path: str,
+    name: str | None = None,
+    uuid: str | None = None,
+    delete_child_file: bool = False,
+) -> str:
+    """Remove a hierarchical sheet block from a parent schematic.
+
+    Args:
+        parent_schematic_path: Path to parent .kicad_sch
+        name: Sheet name to match (via sheet.sheetName.value)
+        uuid: Sheet UUID for unambiguous identification
+        delete_child_file: If True, delete the child .kicad_sch file (unless still referenced)
+    """
+    if not name and not uuid:
+        return "Provide at least one of 'name' or 'uuid'."
+
+    sch = _load_sch(parent_schematic_path)
+
+    def _normalize_uuid(u: str) -> str:
+        return u.replace("-", "").lower()
+
+    # Find matching sheets
+    matches: list[int] = []
+    for i, sheet in enumerate(sch.sheets):
+        if uuid:
+            if _normalize_uuid(sheet.uuid) == _normalize_uuid(uuid):
+                if name and sheet.sheetName.value != name:
+                    return (
+                        f"Sheet with uuid={uuid} found but its name is "
+                        f"'{sheet.sheetName.value}', not '{name}'."
+                    )
+                matches.append(i)
+                break
+        else:
+            if sheet.sheetName.value == name:
+                matches.append(i)
+
+    if not matches:
+        criteria = f"uuid={uuid}" if uuid else f"name='{name}'"
+        return f"No hierarchical sheet found matching {criteria}."
+
+    if len(matches) > 1:
+        info = ", ".join(
+            f"uuid={sch.sheets[i].uuid} at ({sch.sheets[i].position.X}, {sch.sheets[i].position.Y})"
+            for i in matches
+        )
+        return f"Multiple sheets named '{name}' found: [{info}]. Provide uuid to disambiguate."
+
+    target = sch.sheets[matches[0]]
+    sheet_name = target.sheetName.value
+    sheet_uuid = target.uuid
+    child_filename = target.fileName.value
+    msg = f"Removed hierarchical sheet '{sheet_name}' (uuid={sheet_uuid})."
+
+    # Handle child file deletion
+    if delete_child_file:
+        parent_dir = Path(parent_schematic_path).parent
+        child_path = parent_dir / child_filename
+        # Check if any OTHER sheet still references this child file
+        other_refs = any(
+            s.fileName.value == child_filename for j, s in enumerate(sch.sheets) if j != matches[0]
+        )
+        if other_refs:
+            msg += f" Kept child file '{child_filename}' — still referenced by another sheet block."
+        elif child_path.exists():
+            child_path.unlink()
+            msg += f" Deleted child file '{child_filename}'."
+
+    sch.sheets.pop(matches[0])
+    sch.to_file()
+    return msg
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
 create_symbol_library = _create_symbol_library
 create_sym_lib_table = _create_sym_lib_table
 add_hierarchical_sheet = _add_hierarchical_sheet
+remove_hierarchical_sheet = _remove_hierarchical_sheet
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -407,6 +484,28 @@ def add_hierarchical_sheet(  # noqa: F811
     return _add_hierarchical_sheet(
         parent_schematic_path, sheet_name, sheet_file, pins, x, y, project_path
     )
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def remove_hierarchical_sheet(  # noqa: F811
+    parent_schematic_path: str,
+    name: str | None = None,
+    uuid: str | None = None,
+    delete_child_file: bool = False,
+) -> str:
+    """Remove a hierarchical sheet block from a parent schematic.
+
+    Identify the sheet by name, uuid, or both. If name matches multiple sheets,
+    returns an error with UUIDs for disambiguation.
+
+    Args:
+        parent_schematic_path: Path to parent .kicad_sch
+        name: Sheet name to match
+        uuid: Sheet UUID for unambiguous identification
+        delete_child_file: If True, delete the child .kicad_sch file
+              (unless still referenced by another sheet)
+    """
+    return _remove_hierarchical_sheet(parent_schematic_path, name, uuid, delete_child_file)
 
 
 @mcp.tool(annotations=_EXPORT)
