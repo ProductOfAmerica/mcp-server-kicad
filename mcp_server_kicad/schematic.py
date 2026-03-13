@@ -309,7 +309,8 @@ def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
     """List schematic items by type.
 
     Args:
-        item_type: One of "summary", "components", "labels", "wires", "global_labels"
+        item_type: One of "summary", "components", "labels", "wires", "global_labels",
+            "hierarchical_labels", "sheets", "junctions", "no_connects", "bus_entries"
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
@@ -323,7 +324,11 @@ def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
             f"Components: {len(sch.schematicSymbols)}\n"
             f"Labels: {len(sch.labels)}\n"
             f"Global labels: {len(sch.globalLabels)}\n"
-            f"Wires: {wire_count}"
+            f"Hierarchical labels: {len(sch.hierarchicalLabels)}\n"
+            f"Sheets: {len(sch.sheets)}\n"
+            f"Wires: {wire_count}\n"
+            f"Junctions: {len(sch.junctions)}\n"
+            f"No-connects: {len(sch.noConnects)}"
         )
     elif item_type == "components":
         items = []
@@ -367,11 +372,75 @@ def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
                 }
             )
         return json.dumps(items)
+    elif item_type == "hierarchical_labels":
+        items = []
+        for hl in sch.hierarchicalLabels:
+            items.append(
+                {
+                    "text": hl.text,
+                    "shape": hl.shape,
+                    "x": hl.position.X,
+                    "y": hl.position.Y,
+                    "rotation": hl.position.angle or 0,
+                    "uuid": hl.uuid,
+                }
+            )
+        return json.dumps(items)
+    elif item_type == "sheets":
+        items = []
+        for sheet in sch.sheets:
+            items.append(
+                {
+                    "sheet_name": sheet.sheetName.value,
+                    "file_name": sheet.fileName.value,
+                    "x": sheet.position.X,
+                    "y": sheet.position.Y,
+                    "width": sheet.width,
+                    "height": sheet.height,
+                    "pin_count": len(sheet.pins),
+                    "uuid": sheet.uuid,
+                }
+            )
+        return json.dumps(items)
+    elif item_type == "junctions":
+        items = []
+        for j in sch.junctions:
+            items.append(
+                {
+                    "x": j.position.X,
+                    "y": j.position.Y,
+                    "diameter": j.diameter,
+                }
+            )
+        return json.dumps(items)
+    elif item_type == "no_connects":
+        items = []
+        for nc in sch.noConnects:
+            items.append(
+                {
+                    "x": nc.position.X,
+                    "y": nc.position.Y,
+                }
+            )
+        return json.dumps(items)
+    elif item_type == "bus_entries":
+        items = []
+        for be in sch.busEntries:
+            items.append(
+                {
+                    "x": be.position.X,
+                    "y": be.position.Y,
+                    "size_x": be.size.X,
+                    "size_y": be.size.Y,
+                }
+            )
+        return json.dumps(items)
     else:
         return json.dumps(
             {
                 "error": f"Unknown item_type: {item_type}. "
-                "Use: summary, components, labels, wires, global_labels"
+                "Use: summary, components, labels, wires, global_labels, "
+                "hierarchical_labels, sheets, junctions, no_connects, bus_entries"
             }
         )
 
