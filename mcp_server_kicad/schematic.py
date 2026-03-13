@@ -846,8 +846,8 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
         wire = Connection(
             type="wire",
             points=[
-                Position(X=_snap_grid(w["x1"]), Y=_snap_grid(w["y1"])),
-                Position(X=_snap_grid(w["x2"]), Y=_snap_grid(w["y2"])),
+                Position(X=round(w["x1"], 4), Y=round(w["y1"], 4)),
+                Position(X=round(w["x2"], 4), Y=round(w["y2"], 4)),
             ],
             stroke=_default_stroke(),
             uuid=_gen_uuid(),
@@ -874,7 +874,7 @@ def add_label(
     err = _validate_position(x, y, sch)
     if err:
         return err
-    x, y = _snap_grid(x), _snap_grid(y)
+    x, y = round(x, 4), round(y, 4)
     label = LocalLabel(
         text=text,
         position=Position(X=x, Y=y, angle=rotation),
@@ -900,7 +900,7 @@ def add_junctions(points: list[dict], schematic_path: str = SCH_PATH) -> str:
         if err:
             return err
         junc = Junction(
-            position=Position(X=_snap_grid(p["x"]), Y=_snap_grid(p["y"])),
+            position=Position(X=round(p["x"], 4), Y=round(p["y"], 4)),
             diameter=0,
             color=ColorRGBA(R=0, G=0, B=0, A=0),
             uuid=_gen_uuid(),
@@ -1071,7 +1071,7 @@ def add_global_label(
     err = _validate_position(x, y, sch)
     if err:
         return err
-    x, y = _snap_grid(x), _snap_grid(y)
+    x, y = round(x, 4), round(y, 4)
     gl = GlobalLabel(
         text=text,
         position=Position(X=x, Y=y, angle=rotation),
@@ -1317,8 +1317,8 @@ def wire_pins_to_net(
             d = direction
 
         dx_sign, dy_sign, label_rot = _DIR_OFFSETS[d]
-        end_x = _snap_grid(px + dx_sign * stub_length)
-        end_y = _snap_grid(py + dy_sign * stub_length)
+        end_x = round(px + dx_sign * stub_length, 4)
+        end_y = round(py + dy_sign * stub_length, 4)
 
         # Check for stub collision with existing labels from different nets.
         # If the chosen direction produces a stub that overlaps an existing
@@ -1353,8 +1353,8 @@ def wire_pins_to_net(
                 if alt_d == d:
                     continue
                 adx, ady, alt_rot = _DIR_OFFSETS[alt_d]
-                alt_ex = _snap_grid(px + adx * stub_length)
-                alt_ey = _snap_grid(py + ady * stub_length)
+                alt_ex = round(px + adx * stub_length, 4)
+                alt_ey = round(py + ady * stub_length, 4)
                 if not _stub_collides(alt_ex, alt_ey):
                     d = alt_d
                     dx_sign, dy_sign, label_rot = adx, ady, alt_rot
@@ -1641,7 +1641,7 @@ def no_connect_pin(
     """
     sch = _load_sch(schematic_path)
     px, py, _ = _get_pin_pos(sch, reference, pin_name)
-    px, py = _snap_grid(px), _snap_grid(py)
+    px, py = round(px, 4), round(py, 4)
 
     nc = NoConnect(position=Position(X=px, Y=py), uuid=_gen_uuid())
     sch.noConnects.append(nc)
