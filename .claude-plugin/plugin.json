@@ -18,21 +18,6 @@
       ]
     }
   },
-  "hooks": {
-    "PreToolUse": [
-      {
-        "matcher": "Read|Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node -e \"const d=JSON.parse(require('fs').readFileSync(0,'utf-8'));if(d.hook_event_name==='PreToolUse'&&['Read','Write','Edit'].includes(d.tool_name)){const f=(d.tool_input||{}).file_path||(d.tool_input||{}).path||'';if(['.kicad_sch','.kicad_pcb','.kicad_sym','.kicad_mod','.kicad_pro','.kicad_prl'].some(e=>f.endsWith(e)))console.log(JSON.stringify({decision:'block',reason:'BLOCKED: Use kicad MCP tools (add_symbol, create_schematic, place_symbol, add_wire, etc.) instead of '+d.tool_name+' on '+f}))}\"",
-            "timeout": 3000,
-            "statusMessage": "Validating KiCad file access..."
-          }
-        ]
-      }
-    ]
-  },
   "keywords": [
     "kicad",
     "eda",

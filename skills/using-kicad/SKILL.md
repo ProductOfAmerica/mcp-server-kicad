@@ -37,6 +37,32 @@ parts without first completing prior phases and their gates.
 This is not optional. Do not rationalize skipping it.
 </EXTREMELY-IMPORTANT>
 
+## Skill Activation Flow
+
+```dot
+digraph skill_flow {
+    "User message received" [shape=doublecircle];
+    "KiCad/electronics task?" [shape=diamond];
+    "Invoke Skill tool" [shape=box];
+    "Announce: 'Using [skill] to [purpose]'" [shape=box];
+    "Has checklist?" [shape=diamond];
+    "Create TodoWrite todo per item" [shape=box];
+    "Follow skill exactly" [shape=box];
+    "Respond normally" [shape=doublecircle];
+
+    "User message received" -> "KiCad/electronics task?";
+    "KiCad/electronics task?" -> "Invoke Skill tool" [label="yes"];
+    "KiCad/electronics task?" -> "Respond normally" [label="no"];
+    "Invoke Skill tool" -> "Announce: 'Using [skill] to [purpose]'";
+    "Announce: 'Using [skill] to [purpose]'" -> "Has checklist?";
+    "Has checklist?" -> "Create TodoWrite todo per item" [label="yes"];
+    "Has checklist?" -> "Follow skill exactly" [label="no"];
+    "Create TodoWrite todo per item" -> "Follow skill exactly";
+}
+```
+
+When a skill contains a checklist (items with `- [ ]`), you MUST create a TodoWrite entry for each item BEFORE starting work. This provides visible progress tracking throughout the design session.
+
 # KiCad Design Pipeline
 
 This plugin enforces a validated pipeline for electronics design.

@@ -173,6 +173,21 @@ reviewer must have returned APPROVED first.
 changes (e.g., different stage layout, different page size), fix the
 specific issues and re-run the schematic plan reviewer.
 
+## Checklist
+
+**IMPORTANT: Use TodoWrite to create todos for EACH checklist item below.**
+
+- [ ] Verify `specs/bom.md` exists and is APPROVED
+- [ ] Count components per stage
+- [ ] Calculate page size (show arithmetic)
+- [ ] Assign stage bounding boxes
+- [ ] Plan exact (x, y) coordinates per component
+- [ ] Plan wiring with tool selection per net
+- [ ] Plan no-connect pins and power flags
+- [ ] Write `specs/schematic-plan.md` artifact
+- [ ] Dispatch schematic plan reviewer subagent
+- [ ] Get user approval on plan
+
 ## Rationalization Prevention
 
 | Thought | Reality |

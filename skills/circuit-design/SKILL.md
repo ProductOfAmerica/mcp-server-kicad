@@ -272,6 +272,21 @@ The user's BOM is accepted, then audited. Validation-only mode skips
 | "I know this footprint exists" | Call `list_lib_footprints`. Verify, don't assume. |
 | "The rating is close enough" | Show the derating math. 60-80% of rated voltage, 70-80% of rated current. |
 
+## Checklist
+
+**IMPORTANT: Use TodoWrite to create todos for EACH checklist item below.**
+
+- [ ] Clarify requirements and gather constraints
+- [ ] Create block diagram with named stages
+- [ ] Select topology for each stage
+- [ ] Select components with values and ratings
+- [ ] Add protection and filtering circuits
+- [ ] Verify ALL lib_ids via `list_lib_symbols`
+- [ ] Verify ALL footprints via `list_lib_footprints`
+- [ ] Write `specs/bom.md` artifact
+- [ ] Dispatch BOM reviewer subagent
+- [ ] Get user approval on BOM
+
 ## Handoff to Schematic Plan
 
 The BOM artifact is the input to the schematic-plan skill. Before

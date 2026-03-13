@@ -82,6 +82,21 @@ Follow existing spacing/wiring/naming conventions in the schematic.
 | connect_pins fails | Try wire_pins_to_net for that connection. If that fails, report and continue with remaining wiring. |
 | ERC violations | Report violations. Invoke verification skill. |
 
+## Checklist (Plan Mode)
+
+**IMPORTANT: Use TodoWrite to create todos for EACH checklist item below.**
+
+- [ ] Verify `specs/schematic-plan.md` exists and is APPROVED
+- [ ] Pre-flight: verify project/schematic files exist
+- [ ] Set page size (if non-A4)
+- [ ] Register symbol libraries
+- [ ] Create custom symbols (if needed)
+- [ ] Place all components per coordinate table
+- [ ] Wire all connections per wiring table
+- [ ] Add no-connect flags
+- [ ] Add power flags and PWR_FLAG symbols
+- [ ] Run ERC — must show zero violations
+
 ## Rationalization Prevention
 
 | Thought | Reality |

@@ -241,6 +241,19 @@ requires a design change), report the situation to the user. Options:
 - Accept known violations with explicit user approval
 - Abort
 
+## Checklist
+
+**IMPORTANT: Use TodoWrite to create todos for EACH checklist item below.**
+
+- [ ] Run ERC or DRC (as appropriate for current gate)
+- [ ] Read ALL violations before fixing
+- [ ] Fix Category 1 violations
+- [ ] Fix Category 2 violations
+- [ ] Fix Category 3 violations
+- [ ] Fix remaining violations
+- [ ] Re-run check — must show violation_count = 0
+- [ ] Show fresh tool output as evidence
+
 ## Two Gate Points
 
 This skill is invoked at two points in the pipeline:

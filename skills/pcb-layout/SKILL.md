@@ -244,6 +244,23 @@ Run `run_drc` and fix any remaining violations. Common post-refinement issues:
 - Clearance violations from widened traces — may need to re-route nearby signals
 - Zone fill islands — delete or connect them
 
+## Checklist
+
+**IMPORTANT: Use TodoWrite to create todos for EACH checklist item below.**
+
+- [ ] Pre-flight: verify ERC = 0 violations
+- [ ] Pre-flight: verify all footprints exist
+- [ ] Define board outline and design rules
+- [ ] Place footprints by functional group
+- [ ] Route critical traces (power, high-speed)
+- [ ] Route remaining traces (or autoroute)
+- [ ] Post-route: define net classes for power nets
+- [ ] Post-route: widen power traces
+- [ ] Post-route: add thermal vias for QFN/exposed pads
+- [ ] Post-route: clean up dangling tracks
+- [ ] Add copper zones (ground planes)
+- [ ] Run DRC — must show zero violations
+
 ## Layer Stack
 
 **2-layer board (default for simple designs):**
