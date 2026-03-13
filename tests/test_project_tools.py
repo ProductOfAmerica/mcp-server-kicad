@@ -443,6 +443,36 @@ class TestRemoveHierarchicalSheet:
         )
         assert "Provide at least one of" in result
 
+    def test_delete_child_file_no_other_refs(self, tmp_path: Path):
+        parent, child = self._make_parent_and_child(tmp_path)
+        self._add_sheet(parent, child, name="Power")
+
+        assert child.exists()
+        result = project.remove_hierarchical_sheet(
+            name="Power",
+            delete_child_file=True,
+            parent_schematic_path=str(parent),
+        )
+        assert "Removed" in result
+        assert "Deleted child file" in result
+        assert not child.exists()
+
+    def test_delete_child_file_still_referenced(self, tmp_path: Path):
+        parent, child = self._make_parent_and_child(tmp_path)
+        # Two sheet blocks pointing to the same child file
+        uuid1 = self._add_sheet(parent, child, name="Power1")
+        self._add_sheet(parent, child, name="Power2")
+
+        result = project.remove_hierarchical_sheet(
+            uuid=uuid1,
+            delete_child_file=True,
+            parent_schematic_path=str(parent),
+        )
+        assert "Removed" in result
+        assert "Kept child file" in result
+        assert "still referenced" in result
+        assert child.exists()
+
 
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
