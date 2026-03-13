@@ -1216,6 +1216,35 @@ def add_hierarchical_label(
     return f"Added hierarchical label '{text}' ({shape}) at ({x}, {y})"
 
 
+@mcp.tool(annotations=_DESTRUCTIVE)
+def remove_hierarchical_label(
+    text: str,
+    schematic_path: str = SCH_PATH,
+    uuid: str = "",
+) -> str:
+    """Remove a hierarchical label by name or UUID.
+
+    Args:
+        text: Label text to match
+        schematic_path: Path to .kicad_sch file
+        uuid: Optional UUID for disambiguation when multiple labels share a name
+    """
+    sch = _load_sch(schematic_path)
+    target = None
+    for hl in sch.hierarchicalLabels:
+        if uuid and hl.uuid == uuid:
+            target = hl
+            break
+        if hl.text == text and not uuid:
+            target = hl
+            break
+    if target is None:
+        return f"Hierarchical label '{text}' not found"
+    sch.hierarchicalLabels.remove(target)
+    _save_sch(sch)
+    return f"Removed hierarchical label '{target.text}'"
+
+
 @mcp.tool(annotations=_ADDITIVE)
 def add_power_symbol(
     lib_id: str,

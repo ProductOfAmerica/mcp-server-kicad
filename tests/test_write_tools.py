@@ -1131,3 +1131,36 @@ class TestAddHierarchicalLabel:
             schematic_path=str(empty_sch),
         )
         assert "Error" in result or "invalid" in result.lower()
+
+
+# ===========================================================================
+# TestRemoveHierarchicalLabel (Task 9)
+# ===========================================================================
+
+
+class TestRemoveHierarchicalLabel:
+    def test_removes_by_name(self, empty_sch):
+        from kiutils.schematic import Schematic
+
+        schematic.add_hierarchical_label(
+            text="VIN",
+            shape="input",
+            x=25,
+            y=30,
+            schematic_path=str(empty_sch),
+        )
+        result = schematic.remove_hierarchical_label(
+            text="VIN",
+            schematic_path=str(empty_sch),
+        )
+        assert "Removed" in result
+
+        sch = Schematic.from_file(str(empty_sch))
+        assert len(sch.hierarchicalLabels) == 0
+
+    def test_not_found_returns_error(self, empty_sch):
+        result = schematic.remove_hierarchical_label(
+            text="NONEXISTENT",
+            schematic_path=str(empty_sch),
+        )
+        assert "not found" in result.lower()
