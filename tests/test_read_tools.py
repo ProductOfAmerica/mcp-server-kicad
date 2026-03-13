@@ -10,12 +10,14 @@ from pathlib import Path
 
 from conftest import (
     _default_effects,
+    _default_stroke,
     _gen_uuid,
     build_r_symbol,
     new_schematic,
+    place_r1,
 )
 from kiutils.items.common import Effects, Font, Position, Property
-from kiutils.items.schitems import SchematicSymbol
+from kiutils.items.schitems import Connection, LocalLabel, SchematicSymbol
 
 from mcp_server_kicad import schematic
 
@@ -251,3 +253,71 @@ class TestListSchematicItemsSummary:
         assert "Components: 0" in result
         assert "Labels: 0" in result
         assert "Wires: 0" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_net_connections multi-hop BFS
+# ---------------------------------------------------------------------------
+
+
+class TestGetNetConnectionsMultiHop:
+    def test_traces_through_multiple_wire_segments(self, tmp_path: Path):
+        """get_net_connections should follow multi-hop wire chains to reach a pin."""
+        # Build schematic with 3-hop chain: label -> wire -> wire -> wire -> R1 pin
+        # R1 at (100, 100): pin 1 at (100, 96.19), pin 2 at (100, 103.81)
+        sch = new_schematic()
+        sch.libSymbols.append(build_r_symbol())
+        sch.schematicSymbols.append(place_r1(100, 100))
+
+        # Label at (10, 96.19) — same Y as pin 1
+        sch.labels.append(
+            LocalLabel(
+                text="MULTI_HOP",
+                position=Position(X=10, Y=96.19, angle=0),
+                effects=_default_effects(),
+                uuid=_gen_uuid(),
+            )
+        )
+        # Wire 1: (10, 96.19) -> (40, 96.19)
+        sch.graphicalItems.append(
+            Connection(
+                type="wire",
+                points=[Position(X=10, Y=96.19), Position(X=40, Y=96.19)],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+        # Wire 2: (40, 96.19) -> (70, 96.19)
+        sch.graphicalItems.append(
+            Connection(
+                type="wire",
+                points=[Position(X=40, Y=96.19), Position(X=70, Y=96.19)],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+        # Wire 3: (70, 96.19) -> (100, 96.19) — reaches R1 pin 1
+        sch.graphicalItems.append(
+            Connection(
+                type="wire",
+                points=[Position(X=70, Y=96.19), Position(X=100, Y=96.19)],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+
+        path = tmp_path / "multihop.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+
+        result = json.loads(
+            schematic.get_net_connections(
+                label_text="MULTI_HOP",
+                schematic_path=str(path),
+            )
+        )
+        assert result["label_count"] == 1
+        # With BFS, all 3 hops are traversed and R1 pin 1 at (100, 96.19) is found.
+        # Old single-hop would only reach (40, 96.19) and miss the pin.
+        conn_refs = {c["reference"] for c in result["connections"]}
+        assert "R1" in conn_refs, f"BFS should reach R1 via 3 hops, got: {result['connections']}"

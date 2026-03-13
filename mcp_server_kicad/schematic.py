@@ -473,16 +473,29 @@ def get_net_connections(
         if glbl.text == label_text:
             label_positions.add((glbl.position.X, glbl.position.Y))
 
-    # Collect all wire endpoints reachable from label positions
+    # BFS: expand from label positions through connected wire endpoints
     reachable: set[tuple[float, float]] = set(label_positions)
-    for lx, ly in label_positions:
-        for item in sch.graphicalItems:
-            if isinstance(item, Connection) and item.type == "wire" and len(item.points) >= 2:
+    frontier = set(label_positions)
+    while frontier:
+        next_frontier: set[tuple[float, float]] = set()
+        for fx, fy in frontier:
+            for item in sch.graphicalItems:
+                if not (isinstance(item, Connection) and item.type == "wire"):
+                    continue
+                if len(item.points) < 2:
+                    continue
                 p0, p1 = item.points[0], item.points[1]
-                if abs(p0.X - lx) < tol and abs(p0.Y - ly) < tol:
-                    reachable.add((p1.X, p1.Y))
-                elif abs(p1.X - lx) < tol and abs(p1.Y - ly) < tol:
-                    reachable.add((p0.X, p0.Y))
+                if abs(p0.X - fx) < tol and abs(p0.Y - fy) < tol:
+                    pt = (p1.X, p1.Y)
+                    if pt not in reachable:
+                        reachable.add(pt)
+                        next_frontier.add(pt)
+                elif abs(p1.X - fx) < tol and abs(p1.Y - fy) < tol:
+                    pt = (p0.X, p0.Y)
+                    if pt not in reachable:
+                        reachable.add(pt)
+                        next_frontier.add(pt)
+        frontier = next_frontier
 
     # Find component pins at reachable positions
     connections = []
