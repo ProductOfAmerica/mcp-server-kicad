@@ -647,6 +647,33 @@ class TestSubSheetErcRedirect:
         assert "note" not in data, "Standalone schematic ERC should not have a redirect note"
 
 
+@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+class TestErcWithProjectPath:
+    def test_run_erc_with_explicit_project_path(self, tmp_path: Path):
+        """run_erc should accept project_path for explicit root resolution."""
+        from mcp_server_kicad import schematic
+
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "proj.kicad_sch"),
+            sheet_name="Sub",
+            sheet_file=str(child),
+            pins=[],
+            project_path=str(proj_dir / "proj.kicad_pro"),
+        )
+
+        result = schematic.run_erc(
+            schematic_path=str(child),
+            project_path=str(proj_dir / "proj.kicad_pro"),
+        )
+        data = json.loads(result)
+        assert "note" in data
+        assert "root schematic" in data["note"]
+
+
 @pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
 class TestGetVersion:
     def test_returns_version_info(self):

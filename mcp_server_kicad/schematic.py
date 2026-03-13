@@ -34,11 +34,11 @@ from mcp_server_kicad._shared import (
     _default_effects,
     _default_stroke,
     _file_meta,
-    _find_root_schematic,
     _gen_uuid,
     _load_sch,
     _load_system_lib_symbol,
     _resolve_hierarchy_path,
+    _resolve_root,
     _resolve_system_lib,
     _run_cli,
     _save_sch,
@@ -1708,6 +1708,7 @@ def _parse_unconnected_pins(erc_report: dict, sheet_filter: str | None = None) -
 def list_unconnected_pins(
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
+    project_path: str = "",
 ) -> str:
     """List unconnected pins by running ERC and filtering results.
 
@@ -1717,6 +1718,7 @@ def list_unconnected_pins(
     Args:
         schematic_path: Path to .kicad_sch file
         output_dir: Directory for ERC report file
+        project_path: Path to .kicad_pro file for explicit root resolution
     """
     import shutil
 
@@ -1724,7 +1726,7 @@ def list_unconnected_pins(
         return json.dumps({"error": "kicad-cli not found"}, indent=2)
 
     # Auto-redirect sub-sheets to root for full hierarchy context
-    root_path = _find_root_schematic(schematic_path)
+    root_path = _resolve_root(schematic_path, project_path)
     erc_target = root_path or schematic_path
     sheet_filter = Path(schematic_path).name if root_path else None
 
@@ -1757,7 +1759,9 @@ def list_unconnected_pins(
 
 
 @mcp.tool(annotations=_EXPORT)
-def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str:
+def run_erc(
+    schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR, project_path: str = ""
+) -> str:
     """Run Electrical Rules Check (ERC) on a schematic.
 
     Auto-redirects to root schematic for sub-sheets to avoid false
@@ -1768,9 +1772,10 @@ def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str
     Args:
         schematic_path: Path to .kicad_sch file
         output_dir: Directory for report file (default: same as schematic)
+        project_path: Path to .kicad_pro file for explicit root resolution
     """
     # Auto-redirect sub-sheets to root for full hierarchy context
-    root_path = _find_root_schematic(schematic_path)
+    root_path = _resolve_root(schematic_path, project_path)
     erc_target = root_path or schematic_path
     sheet_filter = Path(schematic_path).name if root_path else None
 
