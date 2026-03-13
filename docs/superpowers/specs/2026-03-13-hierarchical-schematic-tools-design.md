@@ -53,14 +53,16 @@ Add `_resolve_root(schematic_path, project_path="")` to `_shared.py`:
 
 **File:** `schematic.py`, function `add_wires`
 
-After appending all wire segments, collect all snapped wire endpoints and call `_auto_junctions(sch, points)` before saving. Same pattern `connect_pins` already uses. Note: `_snap_grid` must be applied to the collected points to match the snapped coordinates stored in the Connection objects.
+**Context:** A prior fix replaced `_snap_grid(val)` with `round(val, 4)` in `add_wires` (and 5 other connectivity tools) because `_snap_grid` rounds to 1.27mm grid, destroying coordinate precision and causing wires to miss pin positions. That fix resolved the primary "dangling wire" issue. However, `add_wires` still does not call `_auto_junctions()`, which is needed for T-connections (new wire endpoint landing on existing wire interior).
+
+After appending all wire segments, collect all wire endpoints and call `_auto_junctions(sch, points)` before saving. Same pattern `connect_pins` already uses.
 
 ```python
 # After the for loop, before _save_sch:
 all_points = []
 for w in wires:
-    all_points.append((_snap_grid(w["x1"]), _snap_grid(w["y1"])))
-    all_points.append((_snap_grid(w["x2"]), _snap_grid(w["y2"])))
+    all_points.append((round(w["x1"], 4), round(w["y1"], 4)))
+    all_points.append((round(w["x2"], 4), round(w["y2"], 4)))
 _auto_junctions(sch, all_points)
 _save_sch(sch)
 ```
