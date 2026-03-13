@@ -1,11 +1,17 @@
 """KiCad PCB MCP Server — PCB manipulation, DRC, and export tools."""
 
+from __future__ import annotations
+
 import json
 import math  # noqa: F401 – used by upcoming post-autoroute tools
 import os
 import subprocess  # noqa: F401 – used by upcoming post-autoroute tools
 import tempfile
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from kiutils.board import Board
 
 from mcp.server.fastmcp import FastMCP
 
@@ -1280,7 +1286,7 @@ _FP_TEXT_DEFAULT_OFFSETS: dict[str, tuple[float, float]] = {
 center.  Any displaced text type not listed here is reset to (0, 0)."""
 
 
-def _fix_displaced_fp_text(board: "Board", routed_path: str) -> int:  # noqa: F821
+def _fix_displaced_fp_text(board: Board, routed_path: str) -> int:
     """Reset footprint text fields displaced by Freerouting round-trip.
 
     After the DSN->SES round-trip, FpText items (Reference, Value, etc.)
