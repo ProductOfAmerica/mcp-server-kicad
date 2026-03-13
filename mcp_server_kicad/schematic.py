@@ -854,6 +854,12 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
             uuid=_gen_uuid(),
         )
         sch.graphicalItems.append(wire)
+    # Auto-add junctions where new wire endpoints hit existing wire interiors
+    all_points = []
+    for w in wires:
+        all_points.append((round(w["x1"], 4), round(w["y1"], 4)))
+        all_points.append((round(w["x2"], 4), round(w["y2"], 4)))
+    _auto_junctions(sch, all_points)
     _save_sch(sch)
     return f"Added {len(wires)} wires"
 

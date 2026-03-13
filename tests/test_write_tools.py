@@ -531,6 +531,25 @@ class TestAddWires:
         sch = reparse(str(scratch_sch))
         assert sch is not None
 
+    def test_add_wires_creates_junctions_on_existing_wire(self, scratch_sch):
+        """add_wires should auto-add junction when new wire T-connects to existing."""
+        from kiutils.schematic import Schematic
+
+        # scratch_sch has a wire from (50,50) to (80,50)
+        # Add a new wire whose ENDPOINT lands on the interior of the existing wire.
+        # _auto_junctions checks if new wire endpoints land on existing wire interiors.
+        # Wire from (65,30) to (65,50) — endpoint (65,50) is on the interior of (50,50)-(80,50)
+        result = schematic.add_wires(
+            wires=[{"x1": 65, "y1": 30, "x2": 65, "y2": 50}],
+            schematic_path=str(scratch_sch),
+        )
+        assert "Added 1 wires" in result
+
+        sch = Schematic.from_file(str(scratch_sch))
+        # Should have a junction at (65, 50) where the new wire endpoint meets existing wire
+        junctions = [(j.position.X, j.position.Y) for j in sch.junctions]
+        assert (65, 50) in junctions
+
 
 # ===========================================================================
 # TestAddLabel
