@@ -500,6 +500,35 @@ class TestModifyHierarchicalSheet:
         assert sch2.sheets[0].sheetName.value == "Power Supply"
 
 
+class TestAddSheetPin:
+    def test_adds_pin_to_existing_sheet(self, tmp_path: Path):
+        parent = str(tmp_path / "root.kicad_sch")
+        child = str(tmp_path / "child.kicad_sch")
+        project.create_schematic(schematic_path=parent)
+        project.create_schematic(schematic_path=child)
+        project.add_hierarchical_sheet(
+            parent_schematic_path=parent,
+            sheet_name="Sub",
+            sheet_file=child,
+            pins=[{"name": "A", "direction": "input"}],
+        )
+        sch = Schematic.from_file(parent)
+        sheet_uuid = sch.sheets[0].uuid
+
+        result = project.add_sheet_pin(
+            sheet_uuid=sheet_uuid,
+            pin_name="B",
+            connection_type="output",
+            schematic_path=parent,
+        )
+        assert "B" in result
+
+        sch2 = Schematic.from_file(parent)
+        assert len(sch2.sheets[0].pins) == 2
+        pin_names = {p.name for p in sch2.sheets[0].pins}
+        assert pin_names == {"A", "B"}
+
+
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
 

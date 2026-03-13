@@ -449,6 +449,54 @@ def _modify_hierarchical_sheet(
     return f"Modified sheet: {', '.join(changes)}"
 
 
+def _add_sheet_pin(
+    sheet_uuid: str,
+    pin_name: str,
+    connection_type: str,
+    schematic_path: str,
+    side: str = "left",
+) -> str:
+    """Add a pin to an existing hierarchical sheet block.
+
+    Args:
+        sheet_uuid: UUID of the sheet
+        pin_name: Pin name (should match a hierarchical label in the child schematic)
+        connection_type: input, output, bidirectional, tri_state, passive
+        schematic_path: Path to parent .kicad_sch
+        side: Which sheet edge to place pin on (left or right)
+    """
+    _valid_types = {"input", "output", "bidirectional", "tri_state", "passive"}
+    if connection_type not in _valid_types:
+        return (
+            f"Error: invalid connection_type '{connection_type}'. "
+            f"Use: {', '.join(sorted(_valid_types))}"
+        )
+    sch = _load_sch(schematic_path)
+    target = None
+    for s in sch.sheets:
+        if s.uuid == sheet_uuid:
+            target = s
+            break
+    if target is None:
+        return f"Sheet with UUID '{sheet_uuid}' not found"
+    # Calculate pin position on sheet edge
+    existing_pins_on_side = len(target.pins)
+    pin_y = target.position.Y + 2.54 * (existing_pins_on_side + 1)
+    if side == "right":
+        pin_x = target.position.X + target.width
+    else:
+        pin_x = target.position.X
+    pin = HierarchicalPin(
+        name=pin_name,
+        connectionType=connection_type,
+        position=Position(X=pin_x, Y=pin_y, angle=180 if side == "left" else 0),
+        uuid=_gen_uuid(),
+    )
+    target.pins.append(pin)
+    _save_sch(sch)
+    return f"Added sheet pin '{pin_name}' ({connection_type}) to sheet"
+
+
 def _collect_refs(sch) -> set[str]:
     """Collect all non-'?' reference designators from a schematic."""
     refs: set[str] = set()
@@ -548,6 +596,7 @@ create_sym_lib_table = _create_sym_lib_table
 add_hierarchical_sheet = _add_hierarchical_sheet
 remove_hierarchical_sheet = _remove_hierarchical_sheet
 modify_hierarchical_sheet = _modify_hierarchical_sheet
+add_sheet_pin = _add_sheet_pin
 annotate_schematic = _annotate_schematic
 
 
@@ -674,6 +723,26 @@ def modify_hierarchical_sheet(  # noqa: F811
     return _modify_hierarchical_sheet(
         sheet_uuid, schematic_path, sheet_name, file_name, width, height
     )
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def add_sheet_pin(  # noqa: F811
+    sheet_uuid: str,
+    pin_name: str,
+    connection_type: str,
+    schematic_path: str = SCH_PATH,
+    side: str = "left",
+) -> str:
+    """Add a pin to an existing hierarchical sheet block.
+
+    Args:
+        sheet_uuid: UUID of the sheet
+        pin_name: Pin name (should match a hierarchical label in the child schematic)
+        connection_type: input, output, bidirectional, tri_state, passive
+        schematic_path: Path to parent .kicad_sch
+        side: Which sheet edge to place pin on (left or right)
+    """
+    return _add_sheet_pin(sheet_uuid, pin_name, connection_type, schematic_path, side)
 
 
 @mcp.tool(annotations=_ADDITIVE)
