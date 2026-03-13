@@ -204,6 +204,11 @@ def test_project_export(tool_name):
     assert _get_annotations(project, tool_name) == _EXPORT
 
 
+@pytest.mark.parametrize("tool_name", ["remove_hierarchical_sheet"])
+def test_project_destructive(tool_name):
+    assert _get_annotations(project, tool_name) == _DESTRUCTIVE
+
+
 # -- Completeness check --
 
 
