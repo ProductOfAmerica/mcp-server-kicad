@@ -921,3 +921,34 @@ class TestListHierarchy:
         assert len(result["sheets"]) == 1
         assert result["sheets"][0]["sheet_name"] == "Power"
         assert result["sheets"][0]["file_name"] == "child.kicad_sch"
+
+
+class TestGetSheetInfo:
+    def test_returns_sheet_details_with_pin_label_matching(self, tmp_path: Path):
+        parent = str(tmp_path / "root.kicad_sch")
+        child = str(tmp_path / "child.kicad_sch")
+        project.create_schematic(schematic_path=parent)
+        project.create_schematic(schematic_path=child)
+        project.add_hierarchical_sheet(
+            parent_schematic_path=parent,
+            sheet_name="Power",
+            sheet_file=child,
+            pins=[
+                {"name": "VIN", "direction": "input"},
+                {"name": "GND", "direction": "bidirectional"},
+            ],
+        )
+        sch = Schematic.from_file(parent)
+        sheet_uuid = sch.sheets[0].uuid
+
+        result = json.loads(
+            project.get_sheet_info(
+                sheet_uuid=sheet_uuid,
+                schematic_path=parent,
+            )
+        )
+        assert result["sheet_name"] == "Power"
+        assert len(result["pins"]) == 2
+        # add_hierarchical_sheet creates matching labels in child, so matched=True
+        for pin in result["pins"]:
+            assert pin["matched"] is True

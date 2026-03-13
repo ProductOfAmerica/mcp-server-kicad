@@ -682,6 +682,63 @@ def _list_hierarchy(schematic_path: str) -> str:
     )
 
 
+def _get_sheet_info(sheet_uuid: str, schematic_path: str) -> str:
+    """Get detailed info about a hierarchical sheet including pin/label matching.
+
+    Args:
+        sheet_uuid: UUID of the sheet
+        schematic_path: Path to parent .kicad_sch
+    """
+    sch = _load_sch(schematic_path)
+    target = None
+    for s in sch.sheets:
+        if s.uuid == sheet_uuid:
+            target = s
+            break
+    if target is None:
+        return json.dumps({"error": f"Sheet with UUID '{sheet_uuid}' not found"})
+
+    sch_dir = Path(schematic_path).parent
+    child_path = sch_dir / target.fileName.value
+
+    # Load child to check label matching
+    child_labels: set[str] = set()
+    child_info: dict = {}
+    if child_path.exists():
+        child_sch = _load_sch(str(child_path))
+        child_labels = {hl.text for hl in child_sch.hierarchicalLabels}
+        child_info = {
+            "component_count": len(child_sch.schematicSymbols),
+            "label_count": len(child_sch.labels),
+            "hierarchical_label_count": len(child_sch.hierarchicalLabels),
+        }
+
+    pins = []
+    for pin in target.pins:
+        pins.append(
+            {
+                "name": pin.name,
+                "connection_type": pin.connectionType,
+                "x": pin.position.X,
+                "y": pin.position.Y,
+                "matched": pin.name in child_labels,
+            }
+        )
+
+    result = {
+        "sheet_name": target.sheetName.value,
+        "file_name": target.fileName.value,
+        "uuid": target.uuid,
+        "x": target.position.X,
+        "y": target.position.Y,
+        "width": target.width,
+        "height": target.height,
+        "pins": pins,
+        **child_info,
+    }
+    return json.dumps(result)
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
@@ -695,6 +752,7 @@ remove_sheet_pin = _remove_sheet_pin
 annotate_schematic = _annotate_schematic
 is_root_schematic = _is_root_schematic
 list_hierarchy = _list_hierarchy
+get_sheet_info = _get_sheet_info
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -891,6 +949,17 @@ def list_hierarchy(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
         schematic_path: Path to root .kicad_sch file
     """
     return _list_hierarchy(schematic_path)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def get_sheet_info(sheet_uuid: str, schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+    """Get detailed info about a hierarchical sheet including pin/label matching.
+
+    Args:
+        sheet_uuid: UUID of the sheet
+        schematic_path: Path to parent .kicad_sch
+    """
+    return _get_sheet_info(sheet_uuid, schematic_path)
 
 
 @mcp.tool(annotations=_EXPORT)
