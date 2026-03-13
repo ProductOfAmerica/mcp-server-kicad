@@ -13,10 +13,10 @@ When a hierarchical sheet block is created in error (e.g., a duplicate), there i
 ```python
 @mcp.tool(annotations=_DESTRUCTIVE)
 def remove_hierarchical_sheet(
+    parent_schematic_path: str,
     name: str | None = None,
     uuid: str | None = None,
     delete_child_file: bool = False,
-    parent_schematic_path: str,
 ) -> str:
 ```
 
