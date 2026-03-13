@@ -9,18 +9,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kiutils.items.common import ColorRGBA, Effects, Font, Position, Property, Stroke
-from kiutils.items.schitems import (
-    Connection,
-    HierarchicalLabel,
-    HierarchicalPin,
-    HierarchicalSheet,
-    HierarchicalSheetProjectInstance,
-    HierarchicalSheetProjectPath,
-    LocalLabel,
-)
-from kiutils.schematic import Schematic
-from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
@@ -28,11 +16,28 @@ from mcp_server_kicad._shared import (
     _DESTRUCTIVE,
     _EXPORT,
     _READ_ONLY,
+    # kiutils types via _shared re-exports
+    ColorRGBA,
+    Connection,
+    Effects,
+    Font,
+    HierarchicalLabel,
+    HierarchicalPin,
+    HierarchicalSheet,
+    HierarchicalSheetProjectInstance,
+    HierarchicalSheetProjectPath,
+    LocalLabel,
+    Position,
+    Property,
+    Schematic,
+    Stroke,
+    SymbolLib,
     _default_effects,
     _default_stroke,
     _gen_uuid,
     _load_sch,
     _run_cli,
+    _save_sch,
     _snap_grid,
 )
 
@@ -114,7 +119,7 @@ def _create_schematic(schematic_path: str) -> str:
     sch.generator = _KICAD_SCH_GENERATOR
     sch.uuid = _gen_uuid()
     sch.filePath = str(p)
-    sch.to_file()
+    _save_sch(sch)
     return f"Created schematic at {p}"
 
 
@@ -277,7 +282,7 @@ def _add_hierarchical_sheet(
     ]
 
     parent_sch.sheets.append(sheet)
-    parent_sch.to_file()
+    _save_sch(parent_sch)
 
     # Add matching hierarchical labels to child schematic
     child_sch = _load_sch(sheet_file)
@@ -319,7 +324,7 @@ def _add_hierarchical_sheet(
                 uuid=_gen_uuid(),
             )
         )
-    child_sch.to_file()
+    _save_sch(child_sch)
 
     return f"Added sheet '{sheet_name}' with {len(pins)} pins to {parent_schematic_path}"
 
@@ -394,7 +399,7 @@ def _remove_hierarchical_sheet(
             msg += f" Deleted child file '{child_filename}'."
 
     sch.sheets.pop(matches[0])
-    sch.to_file()
+    _save_sch(sch)
     return msg
 
 
