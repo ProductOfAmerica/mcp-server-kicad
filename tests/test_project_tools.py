@@ -875,3 +875,24 @@ class TestAnnotateSchematic:
     def test_no_unannotated_returns_message(self, scratch_sch):
         result = project.annotate_schematic(schematic_path=str(scratch_sch))
         assert "No unannotated" in result or "0" in result
+
+
+class TestIsRootSchematic:
+    def test_root_returns_true(self, tmp_path: Path):
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        result = json.loads(
+            project.is_root_schematic(schematic_path=str(proj_dir / "proj.kicad_sch"))
+        )
+        assert result["is_root"] is True
+        assert result["root_path"] is None
+
+    def test_subsheet_returns_false(self, tmp_path: Path):
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+
+        result = json.loads(project.is_root_schematic(schematic_path=str(child)))
+        assert result["is_root"] is False
+        assert "proj.kicad_sch" in result["root_path"]

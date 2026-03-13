@@ -36,6 +36,7 @@ from mcp_server_kicad._shared import (
     SymbolLib,
     _default_effects,
     _default_stroke,
+    _find_root_schematic,
     _gen_uuid,
     _load_sch,
     _resolve_root,
@@ -616,6 +617,21 @@ def _annotate_schematic(schematic_path: str, project_path: str = "") -> str:
     return f"Annotated {total} components: {', '.join(parts)}"
 
 
+def _is_root_schematic(schematic_path: str) -> str:
+    """Check if a schematic is the root or a sub-sheet.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    root = _find_root_schematic(schematic_path)
+    return json.dumps(
+        {
+            "is_root": root is None,
+            "root_path": root,
+        }
+    )
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
@@ -627,6 +643,7 @@ modify_hierarchical_sheet = _modify_hierarchical_sheet
 add_sheet_pin = _add_sheet_pin
 remove_sheet_pin = _remove_sheet_pin
 annotate_schematic = _annotate_schematic
+is_root_schematic = _is_root_schematic
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -803,6 +820,16 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
         project_path: Path to .kicad_pro file (scans hierarchy for existing refs)
     """
     return _annotate_schematic(schematic_path, project_path)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def is_root_schematic(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+    """Check if a schematic is the root or a sub-sheet.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    return _is_root_schematic(schematic_path)
 
 
 @mcp.tool(annotations=_EXPORT)
