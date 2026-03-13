@@ -21,16 +21,29 @@ The result: agents go in circles, eventually giving up and asking the user to op
 
 8 categories of changes, 26 total items:
 
-| Category | Items | New Tools | Fixes |
-|----------|-------|-----------|-------|
-| 1. Bug fixes | 3 | 0 | 3 |
-| 2. list_schematic_items expansion | 5 new types + summary update | 0 | 1 |
-| 3. Annotation | 1 | 1 | 0 |
-| 4. Hierarchical label management | 3 | 3 | 0 |
-| 5. Hierarchical sheet modification | 4 | 4 | 0 |
-| 6. Hierarchy inspection & traversal | 3 | 3 | 0 |
-| 7. Cross-sheet connectivity & validation | 3 | 3 | 0 |
-| 8. Advanced operations | 5 | 5 | 0 |
+| Category | Items | New Tools | Fixes | Target File |
+|----------|-------|-----------|-------|-------------|
+| 1. Bug fixes | 3 | 0 | 3 | `schematic.py` |
+| 2. list_schematic_items expansion | 5 new types + summary update | 0 | 1 | `schematic.py` |
+| 3. Annotation | 1 | 1 | 0 | `project.py` |
+| 4. Hierarchical label management | 3 | 3 | 0 | `schematic.py` |
+| 5. Hierarchical sheet modification | 4 | 4 | 0 | `project.py` |
+| 6. Hierarchy inspection & traversal | 3 | 3 | 0 | `project.py` |
+| 7. Cross-sheet connectivity & validation | 3 | 3 | 0 | `project.py` |
+| 8. Advanced operations | 5 | 5 | 0 | mixed |
+
+### File Placement Rules
+
+- **`schematic.py`**: Tools that operate on a single `.kicad_sch` file (read items, add/remove items within one sheet, wire tracing within one sheet).
+- **`project.py`**: Tools that operate across multiple sheets or need project-level context (hierarchy traversal, cross-sheet validation, annotation across hierarchy, sheet management).
+- All tools that modify schematics MUST use `_save_sch()` from `_shared.py` (not `sch.to_file()` directly). The `_save_sch` wrapper post-processes system library symbols that kiutils corrupts. **Note:** Existing `project.py` tools use `sch.to_file()` directly — this should be migrated to `_save_sch()` as a prerequisite.
+
+### Shared Helper
+
+Add `_resolve_root(schematic_path, project_path="")` to `_shared.py`:
+- If `project_path` provided, derive root `.kicad_sch` from the `.kicad_pro` stem
+- Otherwise, fall back to `_find_root_schematic()` (glob-based detection)
+- Used by all tools that need root context (ERC, annotation, hierarchy traversal, validation)
 
 ---
 
@@ -38,9 +51,9 @@ The result: agents go in circles, eventually giving up and asking the user to op
 
 ### 1a. `add_wires` — add `_auto_junctions()` call
 
-**File:** `schematic.py:832-857`
+**File:** `schematic.py`, function `add_wires`
 
-After appending all wire segments, collect all wire endpoints and call `_auto_junctions(sch, points)` before saving. Same pattern `connect_pins` already uses at line 1619.
+After appending all wire segments, collect all snapped wire endpoints and call `_auto_junctions(sch, points)` before saving. Same pattern `connect_pins` already uses. Note: `_snap_grid` must be applied to the collected points to match the snapped coordinates stored in the Connection objects.
 
 ```python
 # After the for loop, before _save_sch:
@@ -54,7 +67,7 @@ _save_sch(sch)
 
 ### 1b. `get_net_connections` — multi-hop BFS wire tracing
 
-**File:** `schematic.py:449-530`
+**File:** `schematic.py`, function `get_net_connections`
 
 Replace the single-hop label→wire→pin lookup with BFS flood-fill:
 
@@ -68,15 +81,15 @@ This catches label → wire → wire → wire → pin chains of arbitrary length
 
 ### 1c. `run_erc` / `list_unconnected_pins` — add `project_path` parameter
 
-**Files:** `schematic.py:1758-1804`, `schematic.py:1706-1755`
+**File:** `schematic.py`, functions `run_erc` and `list_unconnected_pins`
 
-Add optional `project_path: str = ""` parameter to both tools. When provided, derive the root schematic from the `.kicad_pro` file directly instead of relying on `_find_root_schematic`'s glob-based detection (which fails with 0 or 2+ `.kicad_pro` files in the directory). Falls back to current auto-detection when not provided.
+Add optional `project_path: str = ""` parameter to both tools. Use the new `_resolve_root()` helper: when `project_path` is provided, derive the root schematic from the `.kicad_pro` file directly instead of relying on `_find_root_schematic`'s glob-based detection (which fails with 0 or 2+ `.kicad_pro` files in the directory). Falls back to current auto-detection when not provided.
 
 ---
 
 ## Section 2: `list_schematic_items` Expansion
 
-**File:** `schematic.py:306-375`
+**File:** `schematic.py`, function `list_schematic_items`
 
 Currently supports: `summary`, `components`, `labels`, `wires`, `global_labels`. Add 5 new item types.
 
@@ -90,7 +103,7 @@ Source: `sch.hierarchicalLabels` (List[HierarchicalLabel]). The `shape` field is
 
 Returns: `[{sheet_name, file_name, x, y, width, height, pin_count, uuid}]`
 
-Source: `sch.sheets` (List[HierarchicalSheet]). Extracts name/file from the special `sheetName`/`fileName` properties.
+Source: `sch.sheets` (List[HierarchicalSheet]). Access name via `sheet.sheetName.value` and filename via `sheet.fileName.value` — these are `Property` objects, not plain strings.
 
 ### 2c. `junctions`
 
@@ -102,13 +115,13 @@ Source: `sch.junctions`.
 
 Returns: `[{x, y}]`
 
-Source: iterate graphical items or dedicated noConnects list depending on kiutils version.
+Source: `sch.noConnects` (List[NoConnect]). kiutils always populates this list from the `no_connect` S-expression tokens.
 
 ### 2e. `bus_entries`
 
 Returns: `[{x, y, size_x, size_y}]`
 
-Source: `sch.busEntries`.
+Source: `sch.busEntries`. Access coordinates via `entry.position.X/Y` and size via `entry.size.X` → `size_x`, `entry.size.Y` → `size_y` (the `size` field reuses the `Position` type; ignore its `.angle` attribute).
 
 ### Summary update
 
@@ -118,22 +131,27 @@ Update the `summary` item type to include counts for all new types: hierarchical
 
 ## Section 3: `annotate_schematic` Tool
 
-**New tool:** `annotate_schematic(schematic_path, project_path="")`
+**File:** `project.py` (cross-sheet operation requiring hierarchy traversal)
+
+**New tool:** `annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "")`
 
 **Purpose:** Auto-assign reference designators to unannotated components (those with `?` in their reference).
 
 **Algorithm:**
 
-1. Load the schematic. If `project_path` provided, scan all sheets in the hierarchy to collect existing references.
+1. Load the target schematic. If `project_path` provided, use `_resolve_root()` and scan all sheets in the hierarchy to collect existing references.
 2. Group unannotated components by prefix (`U`, `R`, `C`, etc.)
 3. For each prefix, find the max existing number across the hierarchy (e.g., if `U5` exists, start at `U6`)
 4. Assign sequential numbers to unannotated components
-5. Update both the `Reference` property on each `SchematicSymbol` AND the symbol's `SymbolProjectInstance` data
-6. Save the schematic
+5. Update annotation in **two places**:
+   - The `Reference` property on each `SchematicSymbol` (in the component's own `.kicad_sch` file)
+   - The `SymbolProjectInstance` → `SymbolProjectPath.reference` inside each symbol's instance data (per-symbol, KiCad v7+ format)
+   - The root schematic's `SymbolInstance` list entries (root-level `sch.symbolInstances`, which holds `path`, `reference`, `value`, `footprint` for every component across all sheets)
+6. Save using `_save_sch()`
 
 **Returns:** Summary like `"Annotated 12 components: U5-U7, R1-R6, C1-C3"`
 
-**Key detail:** KiCad tracks annotation in two places — the component's `Reference` property and the `symbolInstances`/`SymbolProjectInstance` list. Both must be updated or KiCad will show stale references.
+**Key detail:** KiCad tracks annotation in both per-symbol instance data and root-level `symbolInstances`. Both must be updated or KiCad will show stale/conflicting references.
 
 **Annotations:** `_ADDITIVE`
 
@@ -141,10 +159,12 @@ Update the `summary` item type to include counts for all new types: hierarchical
 
 ## Section 4: Hierarchical Label Management
 
+**File:** `schematic.py` (single-sheet operations)
+
 ### 4a. `add_hierarchical_label`
 
 ```
-add_hierarchical_label(text, shape, x, y, rotation=0, schematic_path="")
+add_hierarchical_label(text, shape, x, y, rotation=0, schematic_path: str = SCH_PATH)
 ```
 
 Creates a `HierarchicalLabel` at the given position. The `shape` parameter is one of: `input`, `output`, `bidirectional`, `tri_state`, `passive`. Snaps to grid, validates position against page boundaries.
@@ -154,7 +174,7 @@ Creates a `HierarchicalLabel` at the given position. The `shape` parameter is on
 ### 4b. `remove_hierarchical_label`
 
 ```
-remove_hierarchical_label(text, schematic_path="", uuid="")
+remove_hierarchical_label(text, schematic_path: str = SCH_PATH, uuid="")
 ```
 
 Removes a hierarchical label by name, or by UUID for disambiguation when multiple labels share the same name. Returns error if label not found.
@@ -164,41 +184,43 @@ Removes a hierarchical label by name, or by UUID for disambiguation when multipl
 ### 4c. `modify_hierarchical_label`
 
 ```
-modify_hierarchical_label(text, schematic_path="", new_text="", new_shape="", new_x=None, new_y=None, uuid="")
+modify_hierarchical_label(text, schematic_path: str = SCH_PATH, new_text="", new_shape="", new_x=None, new_y=None, uuid="")
 ```
 
 Modify properties of an existing hierarchical label — rename, change direction/shape, or reposition. Only provided fields are changed; others are left as-is. When renaming, warns that the corresponding sheet pin in the parent also needs renaming to maintain connectivity.
 
-**Annotations:** `_ADDITIVE`
+**Annotations:** `_DESTRUCTIVE` (renaming changes the label's logical identity and can break parent↔child connectivity)
 
 ---
 
 ## Section 5: Hierarchical Sheet Modification
 
+**File:** `project.py` (extends existing sheet management tools)
+
 ### 5a. `modify_hierarchical_sheet`
 
 ```
-modify_hierarchical_sheet(sheet_uuid, schematic_path, sheet_name="", file_name="", width=None, height=None)
+modify_hierarchical_sheet(sheet_uuid, schematic_path: str = SCH_PATH, sheet_name="", file_name="", width=None, height=None)
 ```
 
-Edit properties of an existing sheet block. Only provided fields are changed. Renaming `file_name` updates the property but does NOT rename the actual file on disk — returns a warning. The `sheet_uuid` is required for disambiguation (available from `list_schematic_items(item_type="sheets")`).
+Edit properties of an existing sheet block. Only provided fields are changed. Updates are applied to the `.value` attribute of the existing `Property` objects (preserving position and formatting). Renaming `file_name` updates the property but does NOT rename the actual file on disk — returns a warning. The `sheet_uuid` is required for disambiguation (available from `list_schematic_items(item_type="sheets")`).
 
 **Annotations:** `_ADDITIVE`
 
 ### 5b. `add_sheet_pin`
 
 ```
-add_sheet_pin(sheet_uuid, pin_name, connection_type, side="right", position_offset=None, schematic_path="")
+add_sheet_pin(sheet_uuid, pin_name, connection_type, side="right", position_offset=None, schematic_path: str = SCH_PATH)
 ```
 
-Add a new pin to an existing sheet block. The `side` parameter (`left`, `right`, `top`, `bottom`) determines which edge the pin is placed on. `position_offset` is the distance along that edge from the top/left corner — if omitted, auto-spaces below existing pins on that side. The `connection_type` is one of `input`, `output`, `bidirectional`, `tri_state`, `passive`. Creates a matching wire stub on the parent side.
+Add a new pin to an existing sheet block. The `side` parameter (`left`, `right`, `top`, `bottom`) determines which edge the pin is placed on. `position_offset` is the distance along that edge from the top/left corner — if omitted, auto-spaces below existing pins on that side. The `connection_type` is one of `input`, `output`, `bidirectional`, `tri_state`, `passive`. Creates a matching wire stub AND net label at the stub endpoint on the parent side (following the same pattern as `add_hierarchical_sheet`).
 
 **Annotations:** `_ADDITIVE`
 
 ### 5c. `remove_sheet_pin`
 
 ```
-remove_sheet_pin(sheet_uuid, pin_name, schematic_path="")
+remove_sheet_pin(sheet_uuid, pin_name, schematic_path: str = SCH_PATH)
 ```
 
 Remove a pin from a sheet block. Returns warning if a corresponding hierarchical label exists in the child sheet that will become orphaned. Does NOT auto-delete the child label.
@@ -208,7 +230,7 @@ Remove a pin from a sheet block. Returns warning if a corresponding hierarchical
 ### 5d. `duplicate_sheet`
 
 ```
-duplicate_sheet(sheet_uuid, new_sheet_name, new_file_name, x, y, schematic_path="", project_path="")
+duplicate_sheet(sheet_uuid, new_sheet_name, new_file_name, x, y, schematic_path: str = SCH_PATH, project_path: str = "")
 ```
 
 Duplicate a hierarchical sheet block and its child schematic file. Copies the child `.kicad_sch` to `new_file_name`, places a new sheet block at `(x, y)` with matching pins, generates new UUIDs throughout, and re-annotates the copy's components with fresh references to avoid conflicts. Handles sheet instance paths for the new copy.
@@ -219,10 +241,12 @@ Duplicate a hierarchical sheet block and its child schematic file. Copies the ch
 
 ## Section 6: Hierarchy Inspection & Traversal
 
+**File:** `project.py` (cross-sheet operations)
+
 ### 6a. `list_hierarchy`
 
 ```
-list_hierarchy(schematic_path, project_path="")
+list_hierarchy(schematic_path: str = SCH_PATH, project_path: str = "")
 ```
 
 Returns the complete hierarchy tree starting from the root schematic. Recursively loads each sheet's child file and builds a tree.
@@ -248,14 +272,14 @@ Returns the complete hierarchy tree starting from the root schematic. Recursivel
 }
 ```
 
-Auto-detects root from `project_path` or `_find_root_schematic`. If called on a sub-sheet without project context, returns just that sheet's children (partial tree).
+Auto-detects root via `_resolve_root()`. If called on a sub-sheet without project context, returns just that sheet's children (partial tree).
 
 **Annotations:** `_READ_ONLY`
 
 ### 6b. `get_sheet_info`
 
 ```
-get_sheet_info(sheet_uuid="", sheet_name="", schematic_path="")
+get_sheet_info(sheet_uuid="", sheet_name="", schematic_path: str = SCH_PATH)
 ```
 
 Detailed info for a single sheet block. Look up by UUID or name. Returns: sheet properties, all pins (with positions and connection types), the corresponding hierarchical labels found in the child file, and match status (whether each pin has a matching label and vice versa).
@@ -265,7 +289,7 @@ Detailed info for a single sheet block. Look up by UUID or name. Returns: sheet 
 ### 6c. `is_root_schematic`
 
 ```
-is_root_schematic(schematic_path)
+is_root_schematic(schematic_path: str = SCH_PATH)
 ```
 
 Returns whether the given schematic is the root (has a matching `.kicad_pro`) or a sub-sheet. Also returns the root path if it's a sub-sheet.
@@ -276,10 +300,12 @@ Returns whether the given schematic is the root (has a matching `.kicad_pro`) or
 
 ## Section 7: Cross-Sheet Connectivity & Validation
 
+**File:** `project.py` (cross-sheet operations)
+
 ### 7a. `validate_hierarchy`
 
 ```
-validate_hierarchy(schematic_path, project_path="")
+validate_hierarchy(schematic_path: str = SCH_PATH, project_path: str = "")
 ```
 
 Scans the entire hierarchy and reports all mismatches:
@@ -294,7 +320,7 @@ Scans the entire hierarchy and reports all mismatches:
 
 ```json
 {
-  "status": "issues_found",
+  "status": "ok | issues_found",
   "issue_count": 4,
   "issues": [
     {"sheet": "relay-drivers.kicad_sch", "type": "orphaned_label", "label": "RELAY_10", "detail": "No matching pin on parent sheet block"},
@@ -305,15 +331,17 @@ Scans the entire hierarchy and reports all mismatches:
 }
 ```
 
+When no issues are found: `{"status": "ok", "issue_count": 0, "issues": []}`.
+
 **Annotations:** `_READ_ONLY`
 
 ### 7b. `trace_hierarchical_net`
 
 ```
-trace_hierarchical_net(net_name, schematic_path, project_path="")
+trace_hierarchical_net(net_name, schematic_path: str = SCH_PATH, project_path: str = "")
 ```
 
-Follow a net across the entire hierarchy. Starting from a net name, finds all labels (local, global, hierarchical), traces wires using BFS, crosses sheet boundaries via pin↔label matching, and returns every component pin touched by that net across all sheets.
+Follow a net across the entire hierarchy. Starting from a net name, finds all labels (local, global, hierarchical), traces wires using BFS (reusing the improved multi-hop algorithm from 1b), crosses sheet boundaries via pin↔label matching, and returns every component pin touched by that net across all sheets.
 
 **Output format:**
 
@@ -334,7 +362,7 @@ Follow a net across the entire hierarchy. Starting from a net name, finds all la
 ### 7c. `list_cross_sheet_nets`
 
 ```
-list_cross_sheet_nets(schematic_path, project_path="")
+list_cross_sheet_nets(schematic_path: str = SCH_PATH, project_path: str = "")
 ```
 
 Returns all nets that cross sheet boundaries — every hierarchical label/pin pair and every global label — with a flag indicating whether connectivity is complete or broken. Quick overview for agents to identify which nets need attention.
@@ -347,8 +375,10 @@ Returns all nets that cross sheet boundaries — every hierarchical label/pin pa
 
 ### 8a. `get_symbol_instances`
 
+**File:** `project.py`
+
 ```
-get_symbol_instances(schematic_path, project_path="")
+get_symbol_instances(schematic_path: str = SCH_PATH, project_path: str = "")
 ```
 
 Exposes the `symbolInstances` data from the root schematic. Returns all component references across the entire hierarchy with their instance paths, values, and footprints.
@@ -364,8 +394,10 @@ Exposes the `symbolInstances` data from the root schematic. Returns all componen
 
 ### 8b. `move_hierarchical_sheet`
 
+**File:** `project.py`
+
 ```
-move_hierarchical_sheet(sheet_uuid, x, y, schematic_path="")
+move_hierarchical_sheet(sheet_uuid, x, y, schematic_path: str = SCH_PATH)
 ```
 
 Reposition a sheet block in the parent schematic. Moves the sheet and all its pins to the new position, maintaining relative pin offsets. Also repositions associated wire stubs connected to pins.
@@ -374,31 +406,59 @@ Reposition a sheet block in the parent schematic. Moves the sheet and all its pi
 
 ### 8c. `reorder_sheet_pages`
 
+**File:** `project.py`
+
 ```
-reorder_sheet_pages(page_order, schematic_path, project_path="")
+reorder_sheet_pages(page_order: list[dict], schematic_path: str = SCH_PATH, project_path: str = "")
 ```
 
-Update the page numbering of sheets in the hierarchy. `page_order` is a list of `{sheet_uuid, page}` mappings. Updates `sheetInstances` in the root schematic. KiCad uses these for PDF export page ordering.
+Update the page numbering of sheets in the hierarchy. `page_order` is a list of `{"sheet_uuid": str, "page": str}` mappings. Updates `sheetInstances` in the root schematic. KiCad uses these for PDF export page ordering.
 
 **Annotations:** `_ADDITIVE`
 
 ### 8d. `export_hierarchical_netlist`
 
+**File:** `project.py`
+
 ```
-export_hierarchical_netlist(schematic_path, project_path="", output_dir="")
+export_hierarchical_netlist(schematic_path: str = SCH_PATH, project_path: str = "", output_dir: str = "")
 ```
 
-Export a netlist that includes full hierarchy path information. Wraps `kicad-cli sch export netlist` but post-processes to annotate each net with which sheets it spans.
+Export a netlist that includes full hierarchy path information. Wraps `kicad-cli sch export netlist` then post-processes the XML output:
+
+1. Parse the generated KiCad XML netlist
+2. For each net, collect the sheet paths of all connected components (from `SymbolInstance` path data)
+3. Add a `sheets_touched` annotation to each net entry
+4. Write the enriched netlist to the output directory
+
+Must be registered in `_CLI_TOOLS` in `server.py` since it requires `kicad-cli`.
 
 **Annotations:** `_EXPORT`
 
 ### 8e. `flatten_hierarchy`
 
+**File:** `project.py`
+
 ```
-flatten_hierarchy(schematic_path, output_path, project_path="")
+flatten_hierarchy(schematic_path: str = SCH_PATH, output_path: str = "", project_path: str = "")
 ```
 
-Create a single flat schematic from a hierarchical design. Copies all components, wires, and labels from sub-sheets into one schematic, replacing hierarchical label↔pin connections with direct wires. Assigns unique references across the merged design. The original hierarchy is untouched — this creates a new file.
+Create a single flat schematic from a hierarchical design. The original hierarchy is untouched — this creates a new file.
+
+**Algorithm:**
+
+1. Load root schematic, recursively load all child sheets
+2. Create new empty schematic with page size large enough to contain all content
+3. For each child sheet, offset all positions by the sheet's placement coordinates to avoid overlap
+4. Copy all components, wires, labels, junctions, no-connects from each sheet into the flat schematic
+5. Replace hierarchical label↔pin connections with direct wire segments connecting the formerly-separated nets
+6. Regenerate all UUIDs to avoid conflicts
+7. Run `annotate_schematic` logic on the result to ensure unique references
+8. Merge `libSymbols` from all sheets (deduplicate by name)
+9. Build fresh `symbolInstances` and `sheetInstances` for the flat output
+10. Save via `_save_sch()`
+
+**Complexity note:** This is the most complex tool in the spec. Consider implementing it last and potentially as a dedicated sub-spec if implementation reveals additional edge cases (e.g., nested hierarchies 3+ levels deep, global labels that span multiple sheets, bus connections).
 
 **Annotations:** `_ADDITIVE`
 
@@ -416,26 +476,39 @@ All hierarchical types needed are already in kiutils:
 | Hierarchical Sheet | `HierarchicalSheet` | `sch.sheets` |
 | Hierarchical Pin | `HierarchicalPin` | `sheet.pins` |
 | Sheet Instance | `HierarchicalSheetInstance` | `sch.sheetInstances` |
+| Sheet Project Instance | `HierarchicalSheetProjectInstance` | `sheet.instances` |
+| Sheet Project Path | `HierarchicalSheetProjectPath` | `instance.paths` |
 | Symbol Instance | `SymbolInstance` | `sch.symbolInstances` |
+| No Connect | `NoConnect` | `sch.noConnects` |
+| Bus Entry | `BusEntry` | `sch.busEntries` |
 
-### Imports to Add
+### Imports Unification
 
-In `_shared.py`, add to the `kiutils.items.schitems` import:
-- `HierarchicalLabel` (already imported in `project.py`, needs to be in `_shared.py`)
+Currently `project.py` imports kiutils types directly while `schematic.py` imports via `_shared.py` re-exports. **All new tools should import via `_shared.py` re-exports** (the `schematic.py` pattern). Add to `_shared.py`'s `kiutils.items.schitems` import block:
+
+- `HierarchicalLabel`
 - `HierarchicalSheet`
 - `HierarchicalPin`
 - `HierarchicalSheetInstance`
 - `HierarchicalSheetProjectInstance`
 - `HierarchicalSheetProjectPath`
 - `SymbolInstance`
+- `BusEntry`
+
+Existing `project.py` direct imports should be migrated to use the `_shared.py` re-exports in a prerequisite cleanup step.
+
+### Prerequisite: Migrate `project.py` to `_save_sch()`
+
+Before implementing new tools, migrate all `sch.to_file()` calls in `project.py` to use `_save_sch()` from `_shared.py`. This prevents system library symbol corruption when editing schematics that include components from KiCad's built-in libraries.
 
 ### Tool Count Impact
 
-Current schematic tools: 28. After this spec: 47 tools (+19 new).
+Current tools: 28 in `schematic.py` + 8 in `project.py` = 36 total.
+After this spec: 36 + 19 new = 55 total tools across both servers.
 
 ### Server Instructions Update
 
-Update the `mcp` server instructions string to include:
+Update the `mcp` server instructions string in both `schematic.py` and `project.py` to include:
 
 ```
 HIERARCHY WORKFLOW:
@@ -453,6 +526,7 @@ HIERARCHY WORKFLOW:
 ## Implementation Priority
 
 **Phase 1 — Unblock agents (critical):**
+- Prerequisite: migrate `project.py` to `_save_sch()`, add `_resolve_root()` helper
 - 1a: add_wires auto-junctions fix
 - 1b: get_net_connections BFS
 - 1c: run_erc project_path param
