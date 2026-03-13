@@ -686,3 +686,107 @@ class TestRunJobset:
     def test_missing_jobset_returns_error(self, tmp_path):
         result = project.run_jobset(str(tmp_path / "nonexistent.kicad_jobset"))
         assert "failed" in result.lower() or "error" in result.lower()
+
+
+@pytest.mark.no_kicad_validation
+class TestAnnotateSchematic:
+    def test_annotates_unannotated_components(self, tmp_path: Path):
+        import conftest
+        from conftest import build_r_symbol, new_schematic
+        from kiutils.items.common import Position, Property
+        from kiutils.items.schitems import SchematicSymbol
+
+        sch = new_schematic()
+        sch.libSymbols.append(build_r_symbol())
+        # Place two unannotated resistors
+        for i, y in enumerate([50, 80]):
+            sym = SchematicSymbol()
+            sym.libId = "Device:R"
+            sym.position = Position(X=100, Y=y)
+            sym.uuid = conftest._gen_uuid()
+            sym.unit = 1
+            sym.inBom = True
+            sym.onBoard = True
+            sym.properties = [
+                Property(
+                    key="Reference",
+                    value="R?",
+                    id=0,
+                    effects=conftest._default_effects(),
+                    position=Position(X=100, Y=y),
+                ),
+                Property(
+                    key="Value",
+                    value="10K",
+                    id=1,
+                    effects=conftest._default_effects(),
+                    position=Position(X=100, Y=y),
+                ),
+            ]
+            sch.schematicSymbols.append(sym)
+
+        path = tmp_path / "annotate.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+
+        result = project.annotate_schematic(schematic_path=str(path))
+        assert "Annotated 2" in result
+        assert "R1" in result
+
+        sch2 = Schematic.from_file(str(path))
+        refs = sorted(
+            next(p.value for p in s.properties if p.key == "Reference")
+            for s in sch2.schematicSymbols
+        )
+        assert refs == ["R1", "R2"]
+
+    def test_respects_existing_references(self, tmp_path: Path):
+        import conftest
+        from conftest import build_r_symbol, new_schematic, place_r1
+        from kiutils.items.common import Position, Property
+        from kiutils.items.schitems import SchematicSymbol
+
+        sch = new_schematic()
+        sch.libSymbols.append(build_r_symbol())
+        # R3 already exists
+        r3 = place_r1(50, 50)
+        for p in r3.properties:
+            if p.key == "Reference":
+                p.value = "R3"
+        sch.schematicSymbols.append(r3)
+        # One unannotated
+        sym = SchematicSymbol()
+        sym.libId = "Device:R"
+        sym.position = Position(X=100, Y=100)
+        sym.uuid = conftest._gen_uuid()
+        sym.unit = 1
+        sym.inBom = True
+        sym.onBoard = True
+        sym.properties = [
+            Property(
+                key="Reference",
+                value="R?",
+                id=0,
+                effects=conftest._default_effects(),
+                position=Position(X=100, Y=100),
+            ),
+            Property(
+                key="Value",
+                value="10K",
+                id=1,
+                effects=conftest._default_effects(),
+                position=Position(X=100, Y=100),
+            ),
+        ]
+        sch.schematicSymbols.append(sym)
+
+        path = tmp_path / "annotate2.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+
+        result = project.annotate_schematic(schematic_path=str(path))
+        assert "R4" in result  # Should start after R3
+
+    def test_no_unannotated_returns_message(self, scratch_sch):
+        result = project.annotate_schematic(schematic_path=str(scratch_sch))
+        assert "No unannotated" in result or "0" in result

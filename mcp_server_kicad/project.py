@@ -16,6 +16,7 @@ from mcp_server_kicad._shared import (
     _DESTRUCTIVE,
     _EXPORT,
     _READ_ONLY,
+    SCH_PATH,
     # kiutils types via _shared re-exports
     ColorRGBA,
     Connection,
@@ -30,12 +31,14 @@ from mcp_server_kicad._shared import (
     Position,
     Property,
     Schematic,
+    SchematicSymbol,
     Stroke,
     SymbolLib,
     _default_effects,
     _default_stroke,
     _gen_uuid,
     _load_sch,
+    _resolve_root,
     _run_cli,
     _save_sch,
     _snap_grid,
@@ -403,6 +406,97 @@ def _remove_hierarchical_sheet(
     return msg
 
 
+def _collect_refs(sch) -> set[str]:
+    """Collect all non-'?' reference designators from a schematic."""
+    refs: set[str] = set()
+    for sym in sch.schematicSymbols:
+        ref_prop = next((p for p in sym.properties if p.key == "Reference"), None)
+        if ref_prop and "?" not in ref_prop.value:
+            refs.add(ref_prop.value)
+    return refs
+
+
+def _annotate_schematic(schematic_path: str, project_path: str = "") -> str:
+    """Auto-assign reference designators to unannotated components.
+
+    Finds components with '?' in their reference (e.g. R?, U?) and assigns
+    sequential numbers, respecting existing references in the schematic
+    and across the hierarchy when project_path is provided.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+        project_path: Path to .kicad_pro file (scans hierarchy for existing refs)
+    """
+    import re
+
+    sch = _load_sch(schematic_path)
+
+    # Collect existing refs across hierarchy
+    existing_refs: set[str] = set()
+
+    if project_path:
+        root_path = _resolve_root(schematic_path, project_path)
+        root = root_path or schematic_path
+        root_dir = Path(root).parent
+        root_sch = _load_sch(root)
+        existing_refs.update(_collect_refs(root_sch))
+        for sheet in root_sch.sheets:
+            child_path = root_dir / sheet.fileName.value
+            if child_path.exists() and str(child_path.resolve()) != str(
+                Path(schematic_path).resolve()
+            ):
+                child_sch = _load_sch(str(child_path))
+                existing_refs.update(_collect_refs(child_sch))
+
+    # Also collect refs from target schematic
+    existing_refs.update(_collect_refs(sch))
+
+    # Find unannotated components and group by prefix
+    unannotated: list[tuple[SchematicSymbol, str]] = []  # (symbol, prefix)
+    ref_re = re.compile(r"^(#?[A-Z]+)\?$")
+    for sym in sch.schematicSymbols:
+        ref_prop = next((p for p in sym.properties if p.key == "Reference"), None)
+        if ref_prop and "?" in ref_prop.value:
+            m = ref_re.match(ref_prop.value)
+            if m:
+                unannotated.append((sym, m.group(1)))
+
+    if not unannotated:
+        return "No unannotated components found"
+
+    # For each prefix, find max existing number
+    num_re = re.compile(r"^(#?[A-Z]+)(\d+)")
+    max_nums: dict[str, int] = {}
+    for ref in existing_refs:
+        m = num_re.match(ref)
+        if m:
+            prefix, num = m.group(1), int(m.group(2))
+            max_nums[prefix] = max(max_nums.get(prefix, 0), num)
+
+    # Assign sequential numbers
+    assigned: dict[str, list[str]] = {}
+    for sym, prefix in unannotated:
+        next_num = max_nums.get(prefix, 0) + 1
+        max_nums[prefix] = next_num
+        new_ref = f"{prefix}{next_num}"
+        ref_prop = next(p for p in sym.properties if p.key == "Reference")
+        ref_prop.value = new_ref
+        # Update SymbolProjectInstance if present
+        for inst in getattr(sym, "instances", []):
+            for path_entry in getattr(inst, "paths", []):
+                path_entry.reference = new_ref
+        assigned.setdefault(prefix, []).append(new_ref)
+
+    _save_sch(sch)
+
+    parts = []
+    for prefix in sorted(assigned):
+        refs = assigned[prefix]
+        parts.append(f"{refs[0]}-{refs[-1]}" if len(refs) > 1 else refs[0])
+    total = sum(len(v) for v in assigned.values())
+    return f"Annotated {total} components: {', '.join(parts)}"
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
@@ -410,6 +504,7 @@ create_symbol_library = _create_symbol_library
 create_sym_lib_table = _create_sym_lib_table
 add_hierarchical_sheet = _add_hierarchical_sheet
 remove_hierarchical_sheet = _remove_hierarchical_sheet
+annotate_schematic = _annotate_schematic
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -511,6 +606,21 @@ def remove_hierarchical_sheet(  # noqa: F811
               (unless still referenced by another sheet)
     """
     return _remove_hierarchical_sheet(parent_schematic_path, name, uuid, delete_child_file)
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -> str:  # noqa: F811
+    """Auto-assign reference designators to unannotated components.
+
+    Finds components with '?' in their reference (e.g. R?, U?) and assigns
+    sequential numbers, respecting existing references in the schematic
+    and across the hierarchy when project_path is provided.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+        project_path: Path to .kicad_pro file (scans hierarchy for existing refs)
+    """
+    return _annotate_schematic(schematic_path, project_path)
 
 
 @mcp.tool(annotations=_EXPORT)
