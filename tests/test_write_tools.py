@@ -635,10 +635,8 @@ class TestRemoveLabel:
 
     def test_remove_by_text_and_position(self, scratch_sch):
         """Remove only the label at a specific position."""
-        # Use grid-aligned coordinates (199.39 = 157 * 1.27mm grid)
-        # add_label snaps inputs to grid, so remove_label must use the
-        # actual stored position (no longer auto-snapped).
-        snapped = round(200 / 1.27) * 1.27  # 199.39
+        # add_label preserves exact coordinates (no grid snapping),
+        # so remove_label must match the exact position passed to add_label.
         schematic.add_label(
             text="TEST_NET",
             x=200,
@@ -647,8 +645,8 @@ class TestRemoveLabel:
         )
         result = schematic.remove_label(
             text="TEST_NET",
-            x=snapped,
-            y=snapped,
+            x=200,
+            y=200,
             schematic_path=str(scratch_sch),
         )
         assert "Removed 1" in result
