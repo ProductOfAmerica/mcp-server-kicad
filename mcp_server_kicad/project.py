@@ -632,6 +632,56 @@ def _is_root_schematic(schematic_path: str) -> str:
     )
 
 
+def _list_hierarchy(schematic_path: str) -> str:
+    """List the full sheet hierarchy starting from a root schematic.
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    sch_dir = Path(schematic_path).parent
+    root_name = Path(schematic_path).name
+
+    sheets = []
+    for sheet in sch.sheets:
+        child_path = sch_dir / sheet.fileName.value
+        child_info: dict = {
+            "sheet_name": sheet.sheetName.value,
+            "file_name": sheet.fileName.value,
+            "uuid": sheet.uuid,
+            "pin_count": len(sheet.pins),
+            "x": sheet.position.X,
+            "y": sheet.position.Y,
+        }
+        if child_path.exists():
+            child_sch = _load_sch(str(child_path))
+            child_info["component_count"] = len(child_sch.schematicSymbols)
+            child_info["label_count"] = len(child_sch.labels)
+            child_info["hierarchical_label_count"] = len(child_sch.hierarchicalLabels)
+            # Recurse for nested sheets
+            child_info["sub_sheets"] = []
+            for sub_sheet in child_sch.sheets:
+                child_info["sub_sheets"].append(
+                    {
+                        "sheet_name": sub_sheet.sheetName.value,
+                        "file_name": sub_sheet.fileName.value,
+                        "uuid": sub_sheet.uuid,
+                    }
+                )
+        else:
+            child_info["error"] = f"File not found: {child_path}"
+        sheets.append(child_info)
+
+    return json.dumps(
+        {
+            "root": root_name,
+            "component_count": len(sch.schematicSymbols),
+            "sheet_count": len(sch.sheets),
+            "sheets": sheets,
+        }
+    )
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
@@ -644,6 +694,7 @@ add_sheet_pin = _add_sheet_pin
 remove_sheet_pin = _remove_sheet_pin
 annotate_schematic = _annotate_schematic
 is_root_schematic = _is_root_schematic
+list_hierarchy = _list_hierarchy
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -830,6 +881,16 @@ def is_root_schematic(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
         schematic_path: Path to .kicad_sch file
     """
     return _is_root_schematic(schematic_path)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_hierarchy(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+    """List the full sheet hierarchy starting from a root schematic.
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+    """
+    return _list_hierarchy(schematic_path)
 
 
 @mcp.tool(annotations=_EXPORT)

@@ -896,3 +896,28 @@ class TestIsRootSchematic:
         result = json.loads(project.is_root_schematic(schematic_path=str(child)))
         assert result["is_root"] is False
         assert "proj.kicad_sch" in result["root_path"]
+
+
+class TestListHierarchy:
+    def test_returns_hierarchy_tree(self, tmp_path: Path):
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "proj.kicad_sch"),
+            sheet_name="Power",
+            sheet_file=str(child),
+            pins=[{"name": "VIN", "direction": "input"}],
+            project_path=str(proj_dir / "proj.kicad_pro"),
+        )
+
+        result = json.loads(
+            project.list_hierarchy(
+                schematic_path=str(proj_dir / "proj.kicad_sch"),
+            )
+        )
+        assert result["root"] == "proj.kicad_sch"
+        assert len(result["sheets"]) == 1
+        assert result["sheets"][0]["sheet_name"] == "Power"
+        assert result["sheets"][0]["file_name"] == "child.kicad_sch"
