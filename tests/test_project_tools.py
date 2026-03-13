@@ -529,6 +529,36 @@ class TestAddSheetPin:
         assert pin_names == {"A", "B"}
 
 
+class TestRemoveSheetPin:
+    def test_removes_pin_by_name(self, tmp_path: Path):
+        parent = str(tmp_path / "root.kicad_sch")
+        child = str(tmp_path / "child.kicad_sch")
+        project.create_schematic(schematic_path=parent)
+        project.create_schematic(schematic_path=child)
+        project.add_hierarchical_sheet(
+            parent_schematic_path=parent,
+            sheet_name="Sub",
+            sheet_file=child,
+            pins=[
+                {"name": "A", "direction": "input"},
+                {"name": "B", "direction": "output"},
+            ],
+        )
+        sch = Schematic.from_file(parent)
+        sheet_uuid = sch.sheets[0].uuid
+
+        result = project.remove_sheet_pin(
+            sheet_uuid=sheet_uuid,
+            pin_name="A",
+            schematic_path=parent,
+        )
+        assert "Removed" in result
+
+        sch2 = Schematic.from_file(parent)
+        assert len(sch2.sheets[0].pins) == 1
+        assert sch2.sheets[0].pins[0].name == "B"
+
+
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
 

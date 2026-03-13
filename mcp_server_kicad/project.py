@@ -497,6 +497,34 @@ def _add_sheet_pin(
     return f"Added sheet pin '{pin_name}' ({connection_type}) to sheet"
 
 
+def _remove_sheet_pin(sheet_uuid: str, pin_name: str, schematic_path: str) -> str:
+    """Remove a pin from a hierarchical sheet block.
+
+    Args:
+        sheet_uuid: UUID of the sheet
+        pin_name: Name of the pin to remove
+        schematic_path: Path to parent .kicad_sch
+    """
+    sch = _load_sch(schematic_path)
+    target = None
+    for s in sch.sheets:
+        if s.uuid == sheet_uuid:
+            target = s
+            break
+    if target is None:
+        return f"Sheet with UUID '{sheet_uuid}' not found"
+    pin = None
+    for p in target.pins:
+        if p.name == pin_name:
+            pin = p
+            break
+    if pin is None:
+        return f"Pin '{pin_name}' not found on sheet"
+    target.pins.remove(pin)
+    _save_sch(sch)
+    return f"Removed pin '{pin_name}' from sheet"
+
+
 def _collect_refs(sch) -> set[str]:
     """Collect all non-'?' reference designators from a schematic."""
     refs: set[str] = set()
@@ -597,6 +625,7 @@ add_hierarchical_sheet = _add_hierarchical_sheet
 remove_hierarchical_sheet = _remove_hierarchical_sheet
 modify_hierarchical_sheet = _modify_hierarchical_sheet
 add_sheet_pin = _add_sheet_pin
+remove_sheet_pin = _remove_sheet_pin
 annotate_schematic = _annotate_schematic
 
 
@@ -743,6 +772,22 @@ def add_sheet_pin(  # noqa: F811
         side: Which sheet edge to place pin on (left or right)
     """
     return _add_sheet_pin(sheet_uuid, pin_name, connection_type, schematic_path, side)
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def remove_sheet_pin(  # noqa: F811
+    sheet_uuid: str,
+    pin_name: str,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Remove a pin from a hierarchical sheet block.
+
+    Args:
+        sheet_uuid: UUID of the sheet
+        pin_name: Name of the pin to remove
+        schematic_path: Path to parent .kicad_sch
+    """
+    return _remove_sheet_pin(sheet_uuid, pin_name, schematic_path)
 
 
 @mcp.tool(annotations=_ADDITIVE)
