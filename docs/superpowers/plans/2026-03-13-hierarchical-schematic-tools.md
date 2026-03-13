@@ -200,7 +200,8 @@ from mcp_server_kicad._shared import (
 from mcp_server_kicad._shared import (
     _ADDITIVE, _DESTRUCTIVE, _EXPORT, _READ_ONLY,
     _default_effects, _default_stroke, _gen_uuid, _load_sch, _run_cli,
-    _save_sch, _snap_grid,
+    _save_sch, _snap_grid, _find_root_schematic, _resolve_root,
+    SCH_PATH,
     # kiutils types via _shared re-exports
     ColorRGBA, Connection, Effects, Font, Position, Property, Stroke,
     HierarchicalLabel, HierarchicalPin, HierarchicalSheet,
@@ -245,16 +246,17 @@ def test_add_wires_creates_junctions_on_existing_wire(self, scratch_sch):
     from mcp_server_kicad import schematic
 
     # scratch_sch has a wire from (50,50) to (80,50)
-    # Add a vertical wire crossing at (65,40) to (65,60)
-    # This creates a T at (65,50) on the interior of the existing wire
+    # Add a new wire whose ENDPOINT lands on the interior of the existing wire.
+    # _auto_junctions checks if new wire endpoints land on existing wire interiors.
+    # Wire from (65,30) to (65,50) — endpoint (65,50) is on the interior of (50,50)-(80,50)
     result = schematic.add_wires(
-        wires=[{"x1": 65, "y1": 40, "x2": 65, "y2": 60}],
+        wires=[{"x1": 65, "y1": 30, "x2": 65, "y2": 50}],
         schematic_path=str(scratch_sch),
     )
     assert "Added 1 wires" in result
 
     sch = Schematic.from_file(str(scratch_sch))
-    # Should have a junction at (65, 50)
+    # Should have a junction at (65, 50) where the new wire endpoint meets existing wire
     junctions = [(j.position.X, j.position.Y) for j in sch.junctions]
     assert (65, 50) in junctions
 ```
@@ -309,57 +311,58 @@ git commit -m "fix: add_wires now creates junctions on T-connections"
 # tests/test_read_tools.py — add to existing file or new class
 
 class TestGetNetConnectionsMultiHop:
-    def test_traces_through_multiple_wire_segments(self, scratch_sch):
-        """get_net_connections should follow multi-hop wire chains."""
-        from conftest import build_r_symbol, new_schematic, place_r1, reparse
+    def test_traces_through_multiple_wire_segments(self, tmp_path: Path):
+        """get_net_connections should follow multi-hop wire chains to reach a pin."""
+        import conftest
         from kiutils.items.common import Position
         from kiutils.items.schitems import Connection, LocalLabel
 
         from mcp_server_kicad import schematic
 
-        # Build a schematic: label at (10,50) → wire to (30,50) → wire to (50,50) → R1 pin
-        sch = new_schematic()
-        sch.libSymbols.append(build_r_symbol())
-        # R1 at (50, 50) — pin 1 at (50, 46.19)
-        r1 = place_r1(50, 50)
-        sch.schematicSymbols.append(r1)
-        # Label at (10, 50)
+        # Build schematic with 3-hop chain: label → wire → wire → wire → R1 pin
+        # R1 at (100, 100): pin 1 at (100, 96.19), pin 2 at (100, 103.81)
+        sch = conftest.new_schematic()
+        sch.libSymbols.append(conftest.build_r_symbol())
+        sch.schematicSymbols.append(conftest.place_r1(100, 100))
+
+        # Label at (10, 96.19) — same Y as pin 1
         sch.labels.append(LocalLabel(
             text="MULTI_HOP",
-            position=Position(X=10, Y=50, angle=0),
+            position=Position(X=10, Y=96.19, angle=0),
             effects=conftest._default_effects(),
             uuid=conftest._gen_uuid(),
         ))
-        # Wire 1: (10,50) → (30,50)
+        # Wire 1: (10, 96.19) → (40, 96.19)
         sch.graphicalItems.append(Connection(
             type="wire",
-            points=[Position(X=10, Y=50), Position(X=30, Y=50)],
-            stroke=conftest._default_stroke(),
-            uuid=conftest._gen_uuid(),
+            points=[Position(X=10, Y=96.19), Position(X=40, Y=96.19)],
+            stroke=conftest._default_stroke(), uuid=conftest._gen_uuid(),
         ))
-        # Wire 2: (30,50) → (50,50)
+        # Wire 2: (40, 96.19) → (70, 96.19)
         sch.graphicalItems.append(Connection(
             type="wire",
-            points=[Position(X=30, Y=50), Position(X=50, Y=50)],
-            stroke=conftest._default_stroke(),
-            uuid=conftest._gen_uuid(),
+            points=[Position(X=40, Y=96.19), Position(X=70, Y=96.19)],
+            stroke=conftest._default_stroke(), uuid=conftest._gen_uuid(),
         ))
-        path = scratch_sch.parent / "multihop.kicad_sch"
+        # Wire 3: (70, 96.19) → (100, 96.19) — reaches R1 pin 1
+        sch.graphicalItems.append(Connection(
+            type="wire",
+            points=[Position(X=70, Y=96.19), Position(X=100, Y=96.19)],
+            stroke=conftest._default_stroke(), uuid=conftest._gen_uuid(),
+        ))
+
+        path = tmp_path / "multihop.kicad_sch"
         sch.filePath = str(path)
         sch.to_file()
 
         result = json.loads(schematic.get_net_connections(
-            label_text="MULTI_HOP",
-            schematic_path=str(path),
+            label_text="MULTI_HOP", schematic_path=str(path),
         ))
-        # Should find the label and reach (50,50) via 2 hops
         assert result["label_count"] == 1
-        # R1 pin 2 is at (50, 50 + 3.81) = (50, 53.81) — might not be reachable
-        # But the wire endpoint (50, 50) should be in the reachable set
-        # At minimum, the BFS should reach further than (30, 50)
-        reachable_xs = {c["x"] for c in result["connections"]}
-        # The old single-hop would only reach (30,50), not (50,50)
-        assert len(result["connections"]) >= 0  # basic sanity
+        # With BFS, all 3 hops are traversed and R1 pin 1 at (100, 96.19) is found.
+        # Old single-hop would only reach (40, 96.19) and miss the pin.
+        conn_refs = {c["reference"] for c in result["connections"]}
+        assert "R1" in conn_refs, f"BFS should reach R1 via 3 hops, got: {result['connections']}"
 ```
 
 Note: The exact assertion depends on pin positions. The test should verify that the BFS reaches beyond a single wire hop. Adjust assertions based on actual pin geometry.
@@ -611,6 +614,29 @@ class TestListSchematicItemsExpanded:
         assert len(result) == 1
         assert result[0]["x"] == 75
         assert result[0]["y"] == 80
+
+    def test_bus_entries(self, tmp_path: Path):
+        from kiutils.items.common import Position
+        from kiutils.items.schitems import BusEntry
+
+        from mcp_server_kicad import schematic
+
+        sch = conftest.new_schematic()
+        sch.busEntries.append(BusEntry(
+            position=Position(X=40, Y=60),
+            size=Position(X=2.54, Y=2.54),
+            uuid=conftest._gen_uuid(),
+        ))
+        path = tmp_path / "bus.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+
+        result = json.loads(schematic.list_schematic_items(
+            item_type="bus_entries", schematic_path=str(path)
+        ))
+        assert len(result) == 1
+        assert result[0]["x"] == 40
+        assert result[0]["size_x"] == 2.54
 
     def test_summary_includes_new_counts(self, tmp_path: Path):
         from kiutils.items.common import ColorRGBA, Position
@@ -933,13 +959,25 @@ def _annotate_schematic(schematic_path: str, project_path: str = "") -> str:
         new_ref = f"{prefix}{next_num}"
         ref_prop = next(p for p in sym.properties if p.key == "Reference")
         ref_prop.value = new_ref
-        # Update SymbolProjectInstance if present
+        # Update SymbolProjectInstance if present (per-symbol, in component's own .kicad_sch)
         for inst in getattr(sym, "instances", []):
             for path_entry in getattr(inst, "paths", []):
                 path_entry.reference = new_ref
         assigned.setdefault(prefix, []).append(new_ref)
 
     _save_sch(sch)
+
+    # Update root-level symbolInstances (in root .kicad_sch only)
+    if project_path:
+        root_path_str = _resolve_root(schematic_path, project_path) or schematic_path
+        root_sch = _load_sch(root_path_str)
+        for si in getattr(root_sch, "symbolInstances", []):
+            # Match by UUID path suffix
+            for sym, prefix in unannotated:
+                if si.path and si.path.endswith(sym.uuid):
+                    ref_prop = next(p for p in sym.properties if p.key == "Reference")
+                    si.reference = ref_prop.value
+        _save_sch(root_sch)
 
     parts = []
     for prefix in sorted(assigned):
@@ -983,7 +1021,7 @@ git commit -m "feat: add annotate_schematic tool"
 ### Task 8: Add `add_hierarchical_label` tool
 
 **Files:**
-- Modify: `mcp_server_kicad/schematic.py`
+- Modify: `mcp_server_kicad/schematic.py` (add `HierarchicalLabel` to imports from `_shared` if not already done in Task 1)
 - Test: `tests/test_write_tools.py`
 
 - [ ] **Step 1: Write failing test**
@@ -1757,12 +1795,14 @@ git commit -m "feat: add duplicate_sheet tool"
 
 **Files:**
 - Modify: `mcp_server_kicad/project.py`
-- Modify: `mcp_server_kicad/server.py` (add to `_CLI_TOOLS`)
+- Modify: `mcp_server_kicad/server.py` (add `"export_hierarchical_netlist"` to `_CLI_TOOLS` set)
 - Test: `tests/test_project_tools.py`
 
 - [ ] **Step 1-4: Test, implement, verify**
 
 Implementation: run `kicad-cli sch export netlist`, parse XML output, enrich with sheet path info from `symbolInstances`.
+
+**IMPORTANT:** Also add `"export_hierarchical_netlist"` to the `_CLI_TOOLS` set in `server.py` in this same commit. Without this, the tool will be exposed in environments without kicad-cli, causing runtime failures.
 
 - [ ] **Step 5: Commit**
 
