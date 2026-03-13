@@ -21,6 +21,7 @@ from mcp_server_kicad._shared import (
     Effects,
     Font,
     GlobalLabel,
+    HierarchicalLabel,
     Junction,
     LocalLabel,
     NoConnect,
@@ -1171,6 +1172,48 @@ def add_global_label(
     sch.globalLabels.append(gl)
     _save_sch(sch)
     return f"Global label '{text}' ({shape}) at ({x}, {y})"
+
+
+_VALID_HLABEL_SHAPES = {"input", "output", "bidirectional", "tri_state", "passive"}
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def add_hierarchical_label(
+    text: str,
+    shape: str,
+    x: float,
+    y: float,
+    rotation: float = 0,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Add a hierarchical label to a sub-sheet schematic.
+
+    Args:
+        text: Label name (must match parent sheet pin name)
+        shape: Direction — input, output, bidirectional, tri_state, passive
+        x: X position in mm
+        y: Y position in mm
+        rotation: Degrees (0, 90, 180, 270)
+        schematic_path: Path to .kicad_sch file
+    """
+    if shape not in _VALID_HLABEL_SHAPES:
+        return f"Error: invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}"
+    sch = _load_sch(schematic_path)
+    err = _validate_position(x, y, sch)
+    if err:
+        return err
+    x, y = round(x, 4), round(y, 4)
+    sch.hierarchicalLabels.append(
+        HierarchicalLabel(
+            text=text,
+            shape=shape,
+            position=Position(X=x, Y=y, angle=rotation),
+            effects=_default_effects(),
+            uuid=_gen_uuid(),
+        )
+    )
+    _save_sch(sch)
+    return f"Added hierarchical label '{text}' ({shape}) at ({x}, {y})"
 
 
 @mcp.tool(annotations=_ADDITIVE)

@@ -1095,3 +1095,39 @@ class TestReferenceValidation:
             project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Error" in result
+
+
+# ===========================================================================
+# TestAddHierarchicalLabel (Task 8)
+# ===========================================================================
+
+
+class TestAddHierarchicalLabel:
+    def test_adds_label(self, empty_sch):
+        from kiutils.schematic import Schematic
+
+        result = schematic.add_hierarchical_label(
+            text="VIN",
+            shape="input",
+            x=25.4,
+            y=30.0,
+            schematic_path=str(empty_sch),
+        )
+        assert "VIN" in result
+
+        sch = Schematic.from_file(str(empty_sch))
+        assert len(sch.hierarchicalLabels) == 1
+        hl = sch.hierarchicalLabels[0]
+        assert hl.text == "VIN"
+        assert hl.shape == "input"
+        assert hl.position.X == 25.4
+
+    def test_invalid_shape_returns_error(self, empty_sch):
+        result = schematic.add_hierarchical_label(
+            text="BAD",
+            shape="invalid",
+            x=10,
+            y=10,
+            schematic_path=str(empty_sch),
+        )
+        assert "Error" in result or "invalid" in result.lower()
