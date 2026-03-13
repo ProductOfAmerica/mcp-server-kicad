@@ -1245,6 +1245,60 @@ def remove_hierarchical_label(
     return f"Removed hierarchical label '{target.text}'"
 
 
+@mcp.tool(annotations=_DESTRUCTIVE)
+def modify_hierarchical_label(
+    text: str,
+    schematic_path: str = SCH_PATH,
+    new_text: str = "",
+    new_shape: str = "",
+    new_x: float | None = None,
+    new_y: float | None = None,
+    uuid: str = "",
+) -> str:
+    """Modify an existing hierarchical label.
+
+    Args:
+        text: Current label text to find
+        schematic_path: Path to .kicad_sch file
+        new_text: New label text (empty = keep current)
+        new_shape: New shape/direction (empty = keep current)
+        new_x: New X position (None = keep current)
+        new_y: New Y position (None = keep current)
+        uuid: UUID for disambiguation
+    """
+    if new_shape and new_shape not in _VALID_HLABEL_SHAPES:
+        return f"Error: invalid shape '{new_shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}"
+    sch = _load_sch(schematic_path)
+    target = None
+    for hl in sch.hierarchicalLabels:
+        if uuid and hl.uuid == uuid:
+            target = hl
+            break
+        if hl.text == text and not uuid:
+            target = hl
+            break
+    if target is None:
+        return f"Hierarchical label '{text}' not found"
+    changes = []
+    if new_text:
+        target.text = new_text
+        changes.append(f"text='{new_text}'")
+    if new_shape:
+        target.shape = new_shape
+        changes.append(f"shape={new_shape}")
+    if new_x is not None:
+        target.position.X = round(new_x, 4)
+        changes.append(f"x={new_x}")
+    if new_y is not None:
+        target.position.Y = round(new_y, 4)
+        changes.append(f"y={new_y}")
+    _save_sch(sch)
+    warning = ""
+    if new_text:
+        warning = " Warning: update the matching sheet pin in the parent schematic."
+    return f"Modified hierarchical label: {', '.join(changes)}.{warning}"
+
+
 @mcp.tool(annotations=_ADDITIVE)
 def add_power_symbol(
     lib_id: str,

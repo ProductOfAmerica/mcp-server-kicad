@@ -1164,3 +1164,50 @@ class TestRemoveHierarchicalLabel:
             schematic_path=str(empty_sch),
         )
         assert "not found" in result.lower()
+
+
+# ===========================================================================
+# TestModifyHierarchicalLabel (Task 10)
+# ===========================================================================
+
+
+class TestModifyHierarchicalLabel:
+    def test_rename_label(self, empty_sch):
+        from kiutils.schematic import Schematic
+
+        schematic.add_hierarchical_label(
+            text="VIN",
+            shape="input",
+            x=25,
+            y=30,
+            schematic_path=str(empty_sch),
+        )
+        result = schematic.modify_hierarchical_label(
+            text="VIN",
+            new_text="VIN_PROT",
+            schematic_path=str(empty_sch),
+        )
+        assert "VIN_PROT" in result
+
+        sch = Schematic.from_file(str(empty_sch))
+        assert sch.hierarchicalLabels[0].text == "VIN_PROT"
+
+    def test_change_shape(self, empty_sch):
+        from kiutils.schematic import Schematic
+
+        schematic.add_hierarchical_label(
+            text="SIG",
+            shape="input",
+            x=25,
+            y=30,
+            schematic_path=str(empty_sch),
+        )
+        result = schematic.modify_hierarchical_label(
+            text="SIG",
+            new_shape="output",
+            schematic_path=str(empty_sch),
+        )
+        assert "output" in result
+
+        sch = Schematic.from_file(str(empty_sch))
+        assert sch.hierarchicalLabels[0].shape == "output"
