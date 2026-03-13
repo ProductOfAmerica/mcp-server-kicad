@@ -30,6 +30,20 @@ wrong. Check the tool list again.
 Place footprints and route traces to produce a manufacturable board.
 This skill assumes you have a completed schematic with a netlist.
 
+## Response Format
+
+When this skill activates, print exactly:
+
+> Using pcb-layout to place footprints and route traces.
+
+Then proceed directly to the Pre-flight Checks. This is a mechanical
+execution phase — do not ask the user what to do unless board size or
+layer count is ambiguous and not specified in `specs/bom.md`.
+
+Report progress at natural milestones: after footprint placement,
+after critical trace routing, after autoroute, after post-route
+refinement. Keep status updates to one line each.
+
 ## MCP Tools for This Skill
 
 These are the kicad MCP tools you should be using during PCB layout:

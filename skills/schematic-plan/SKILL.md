@@ -4,7 +4,6 @@ description: >
   Use after circuit-design produces a validated BOM (specs/bom.md) to
   plan exact component placement coordinates and wiring before
   schematic capture begins. Pure planning — no file modifications.
-  Produces specs/schematic-plan.md artifact.
 ---
 
 <CRITICAL-RULE>
@@ -35,6 +34,21 @@ pin definitions directly from library files.
 
 **Inputs:** `specs/bom.md` (validated BOM from circuit-design)
 **Outputs:** `specs/schematic-plan.md` (placement and wiring plan)
+
+## Response Format
+
+When this skill activates, print exactly:
+
+> Using schematic-plan to plan placement and wiring from the
+> validated BOM.
+
+Then immediately proceed to the Pre-flight checks. This is a
+mechanical planning phase — do not ask the user what to do. Read
+`specs/bom.md` and execute the planning steps.
+
+Report progress at natural milestones (after page size calculation,
+after coordinate assignment, after wiring plan). Keep status updates
+to one line each.
 
 ## Pre-flight
 

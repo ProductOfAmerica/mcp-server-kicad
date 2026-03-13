@@ -2,9 +2,7 @@
 name: schematic-design
 description: >
   Use when executing a schematic placement plan (plan mode) or
-  modifying an existing schematic (modification mode). In plan mode,
-  reads specs/schematic-plan.md and executes mechanically. In
-  modification mode, validates new component lib_ids before placement.
+  modifying an existing schematic (modification mode).
 ---
 
 <CRITICAL-RULE>
@@ -30,6 +28,20 @@ wrong. Check the tool list again.
 This skill executes schematic plans mechanically. All intelligence
 (component selection, coordinate calculation, wiring decisions)
 happened in prior phases. This skill reads a plan and executes it.
+
+## Response Format
+
+When this skill activates, announce the mode:
+
+- **Plan mode:** Print exactly: "Using schematic-design to execute
+  the placement plan."
+- **Modification mode:** Print exactly: "Using schematic-design to
+  modify the existing schematic."
+
+Then proceed directly to the pre-flight checks for the appropriate
+mode. Do not ask the user what to do — the plan or user instructions
+are the input. Report progress as each placement/wiring step
+completes, but keep updates brief (one line per step).
 
 ## Two Modes
 

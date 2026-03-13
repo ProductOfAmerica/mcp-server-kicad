@@ -2,9 +2,7 @@
 name: using-kicad
 description: >
   Use when starting any conversation involving electronics, KiCad, PCB
-  design, schematic capture, circuit design, or EDA tasks. Establishes
-  the design workflow and ensures the correct skill is invoked before
-  any action is taken.
+  design, schematic capture, circuit design, or EDA tasks.
 ---
 
 <CRITICAL-RULE>
@@ -62,6 +60,26 @@ digraph skill_flow {
 ```
 
 When a skill contains a checklist (items with `- [ ]`), you MUST create a TodoWrite entry for each item BEFORE starting work. This provides visible progress tracking throughout the design session.
+
+## Response Format
+
+When this skill activates, print exactly:
+
+> KiCad design pipeline is active.
+
+Then explore the project (files, git status). Present findings in
+this structure:
+
+> **Project:** [name] at `[path]`
+> **Existing work:** [list sheets/files found, one per line]
+> **Pipeline position:** [which phase the project is at based on
+> existing artifacts like specs/bom.md, specs/schematic-plan.md]
+>
+> What would you like to work on?
+
+Do not list the full pipeline. Do not explain what each skill does.
+Do not add extra commentary beyond this structure. Keep the response
+under 8 lines.
 
 # KiCad Design Pipeline
 

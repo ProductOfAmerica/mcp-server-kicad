@@ -37,6 +37,19 @@ Systematic workflows for fixing ERC and DRC violations. Run these
 checks after completing schematic capture or PCB layout — never skip
 them.
 
+## Response Format
+
+When this skill activates, announce which check is being run:
+
+- **ERC gate:** Print exactly: "Running ERC verification on the
+  schematic."
+- **DRC gate:** Print exactly: "Running DRC verification on the
+  PCB."
+
+Then proceed directly to running the check. Do not ask the user what
+to do. Report violations found, then fix them systematically per the
+workflow below.
+
 ## MCP Tools for This Skill
 
 These are the kicad MCP tools you should be using during verification:

@@ -33,6 +33,32 @@ rating — before opening the schematic editor. This skill produces a
 **component list and block diagram** that feeds directly into the
 schematic-design skill.
 
+## Response Format
+
+When this skill activates, print exactly:
+
+> Using circuit-design to design the circuit before schematic capture.
+
+Then, if the user has not already described what they want, ask
+exactly:
+
+> What circuit are we designing? I need:
+> 1. **Function** — what does it do?
+> 2. **Input power** — voltage range, AC/DC
+> 3. **Output requirements** — voltages, currents, signals
+> 4. **Environment** — indoor/outdoor, temperature, enclosure
+> 5. **Specific parts** — any components you already want to use?
+>
+> Or if you have a BOM already, I can run validation-only mode.
+
+Do not list what you found in the project. Do not suggest example
+circuits or subsystems. Wait for the user's answer before proceeding
+to the Process checklist.
+
+If the user already described the circuit (in the same message that
+invoked this skill, or in prior conversation), skip the question and
+proceed directly to step 1 of the Process.
+
 ## Process
 
 1. **Clarify requirements** — voltage, current, environment, cost,
