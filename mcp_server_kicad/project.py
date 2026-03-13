@@ -406,6 +406,49 @@ def _remove_hierarchical_sheet(
     return msg
 
 
+def _modify_hierarchical_sheet(
+    sheet_uuid: str,
+    schematic_path: str,
+    sheet_name: str = "",
+    file_name: str = "",
+    width: float | None = None,
+    height: float | None = None,
+) -> str:
+    """Modify properties of an existing hierarchical sheet block.
+
+    Args:
+        sheet_uuid: UUID of the sheet to modify (from list_schematic_items sheets)
+        schematic_path: Path to parent .kicad_sch
+        sheet_name: New display name (empty = keep)
+        file_name: New file path (empty = keep)
+        width: New width in mm (None = keep)
+        height: New height in mm (None = keep)
+    """
+    sch = _load_sch(schematic_path)
+    target = None
+    for s in sch.sheets:
+        if s.uuid == sheet_uuid:
+            target = s
+            break
+    if target is None:
+        return f"Sheet with UUID '{sheet_uuid}' not found"
+    changes = []
+    if sheet_name:
+        target.sheetName.value = sheet_name
+        changes.append(f"name='{sheet_name}'")
+    if file_name:
+        target.fileName.value = file_name
+        changes.append(f"file='{file_name}'")
+    if width is not None:
+        target.width = width
+        changes.append(f"width={width}")
+    if height is not None:
+        target.height = height
+        changes.append(f"height={height}")
+    _save_sch(sch)
+    return f"Modified sheet: {', '.join(changes)}"
+
+
 def _collect_refs(sch) -> set[str]:
     """Collect all non-'?' reference designators from a schematic."""
     refs: set[str] = set()
@@ -504,6 +547,7 @@ create_symbol_library = _create_symbol_library
 create_sym_lib_table = _create_sym_lib_table
 add_hierarchical_sheet = _add_hierarchical_sheet
 remove_hierarchical_sheet = _remove_hierarchical_sheet
+modify_hierarchical_sheet = _modify_hierarchical_sheet
 annotate_schematic = _annotate_schematic
 
 
@@ -606,6 +650,30 @@ def remove_hierarchical_sheet(  # noqa: F811
               (unless still referenced by another sheet)
     """
     return _remove_hierarchical_sheet(parent_schematic_path, name, uuid, delete_child_file)
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def modify_hierarchical_sheet(  # noqa: F811
+    sheet_uuid: str,
+    schematic_path: str = SCH_PATH,
+    sheet_name: str = "",
+    file_name: str = "",
+    width: float | None = None,
+    height: float | None = None,
+) -> str:
+    """Modify properties of an existing hierarchical sheet block.
+
+    Args:
+        sheet_uuid: UUID of the sheet to modify (from list_schematic_items sheets)
+        schematic_path: Path to parent .kicad_sch
+        sheet_name: New display name (empty = keep)
+        file_name: New file path (empty = keep)
+        width: New width in mm (None = keep)
+        height: New height in mm (None = keep)
+    """
+    return _modify_hierarchical_sheet(
+        sheet_uuid, schematic_path, sheet_name, file_name, width, height
+    )
 
 
 @mcp.tool(annotations=_ADDITIVE)

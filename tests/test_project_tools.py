@@ -474,6 +474,32 @@ class TestRemoveHierarchicalSheet:
         assert child.exists()
 
 
+class TestModifyHierarchicalSheet:
+    def test_rename_sheet(self, tmp_path: Path):
+        parent = str(tmp_path / "root.kicad_sch")
+        child = str(tmp_path / "child.kicad_sch")
+        project.create_schematic(schematic_path=parent)
+        project.create_schematic(schematic_path=child)
+        project.add_hierarchical_sheet(
+            parent_schematic_path=parent,
+            sheet_name="Power",
+            sheet_file=child,
+            pins=[{"name": "VIN", "direction": "input"}],
+        )
+        sch = Schematic.from_file(parent)
+        sheet_uuid = sch.sheets[0].uuid
+
+        result = project.modify_hierarchical_sheet(
+            sheet_uuid=sheet_uuid,
+            schematic_path=parent,
+            sheet_name="Power Supply",
+        )
+        assert "Power Supply" in result
+
+        sch2 = Schematic.from_file(parent)
+        assert sch2.sheets[0].sheetName.value == "Power Supply"
+
+
 HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
 
