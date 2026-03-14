@@ -7,10 +7,14 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from conftest import _default_effects
 from kiutils.board import Board
+from kiutils.footprint import Footprint, Pad
 from kiutils.items.brditems import Segment, Via
-from kiutils.items.common import Position
+from kiutils.items.common import Net, Position
 from kiutils.items.fpitems import FpText
+from kiutils.items.gritems import GrLine
+from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
 
 from mcp_server_kicad import pcb
 from mcp_server_kicad._shared import _fp_ref
@@ -588,6 +592,261 @@ class TestAddThermalVias:
         assert data["vias_added"] == 1
         # Should have picked one of the pads (both are same size)
         assert data["pad"] in ("1", "2")
+
+
+# ---------------------------------------------------------------------------
+# Helper: board with keepout zone and edge cuts for move/check tests
+# ---------------------------------------------------------------------------
+
+
+def _make_keepout_pcb(tmp_path, *, with_edge_cuts=True):
+    """Build a PCB with a footprint, keepout zone, and optionally Edge.Cuts."""
+    board = Board.create_new()
+    board.nets = [Net(number=0, name=""), Net(number=1, name="Net1")]
+
+    # Footprint at safe position (100, 100)
+    fp = Footprint()
+    fp.entryName = "R_0603"
+    fp.libId = "Test:R_0603"
+    fp.layer = "F.Cu"
+    fp.position = Position(X=100, Y=100, angle=0)
+    fp.properties = {"Reference": "R1", "Value": "10K"}
+    fp.graphicItems = [
+        FpText(
+            type="reference",
+            text="R1",
+            layer="F.SilkS",
+            effects=_default_effects(),
+            position=Position(X=0, Y=-2),
+        ),
+    ]
+    pad1 = Pad()
+    pad1.number = "1"
+    pad1.type = "smd"
+    pad1.shape = "rect"
+    pad1.position = Position(X=-0.75, Y=0)
+    pad1.size = Position(X=0.7, Y=0.8)
+    pad1.layers = ["F.Cu"]
+    pad1.net = Net(number=1, name="Net1")
+    fp.pads = [pad1]
+    board.footprints.append(fp)
+
+    # Keepout zone: (10, 10) to (40, 40) on F.Cu
+    kz = Zone()
+    kz.net = 0
+    kz.netName = ""
+    kz.layers = ["F.Cu"]
+    kz.tstamp = str(uuid.uuid4())
+    kz.hatch = Hatch(style="edge", pitch=0.5)
+    kz.keepoutSettings = KeepoutSettings(
+        tracks="not_allowed",
+        vias="not_allowed",
+        pads="not_allowed",
+        copperpour="not_allowed",
+        footprints="not_allowed",
+    )
+    poly = ZonePolygon()
+    poly.coordinates = [
+        Position(X=10, Y=10),
+        Position(X=40, Y=10),
+        Position(X=40, Y=40),
+        Position(X=10, Y=40),
+    ]
+    kz.polygons = [poly]
+    board.zones.append(kz)
+
+    if with_edge_cuts:
+        for sx, sy, ex, ey in [
+            (0, 0, 200, 0),
+            (200, 0, 200, 200),
+            (200, 200, 0, 200),
+            (0, 200, 0, 0),
+        ]:
+            gl = GrLine()
+            gl.start = Position(X=sx, Y=sy)
+            gl.end = Position(X=ex, Y=ey)
+            gl.layer = "Edge.Cuts"
+            gl.width = 0.05
+            gl.tstamp = str(uuid.uuid4())
+            board.graphicItems.append(gl)
+
+    path = tmp_path / "keepout_test.kicad_pcb"
+    board.filePath = str(path)
+    board.to_file()
+    return path
+
+
+class TestMoveFootprintKeepout:
+    def test_move_into_keepout_warning(self, tmp_path):
+        pcb_path = _make_keepout_pcb(tmp_path)
+        result = pcb.move_footprint("R1", 25, 25, pcb_path=str(pcb_path))
+        assert "WARNING" in result
+
+    def test_move_outside_board_edge_warning(self, tmp_path):
+        pcb_path = _make_keepout_pcb(tmp_path)
+        result = pcb.move_footprint("R1", 500, 500, pcb_path=str(pcb_path))
+        assert "WARNING" in result
+
+    def test_move_to_safe_position_no_warning(self, tmp_path):
+        pcb_path = _make_keepout_pcb(tmp_path)
+        result = pcb.move_footprint("R1", 100, 100, pcb_path=str(pcb_path))
+        assert "WARNING" not in result
+        assert "Moved" in result
+
+    def test_move_succeeds_without_edge_cuts(self, tmp_path):
+        pcb_path = _make_keepout_pcb(tmp_path, with_edge_cuts=False)
+        result = pcb.move_footprint("R1", 150, 150, pcb_path=str(pcb_path))
+        assert "Moved" in result
+        assert "WARNING" not in result
+
+
+class TestCheckPlacement:
+    def test_safe_position(self, tmp_path):
+        pcb_path = _make_keepout_pcb(tmp_path)
+        result = json.loads(pcb.check_placement("R1", 100, 100, pcb_path=str(pcb_path)))
+        assert result["status"] == "ok"
+
+    def test_violation_inside_keepout(self, tmp_path):
+        pcb_path = _make_keepout_pcb(tmp_path)
+        result = json.loads(pcb.check_placement("R1", 25, 25, pcb_path=str(pcb_path)))
+        assert result["status"] == "violations_found"
+        assert len(result["keepout_violations"]) >= 1
+
+    def test_footprint_embedded_keepout(self, tmp_path):
+        """Footprint with embedded keepout zone: placement inside triggers violation."""
+        board = Board.create_new()
+        board.nets = [Net(number=0, name=""), Net(number=1, name="Net1")]
+
+        # Create an "ESP32" footprint with an embedded keepout zone
+        esp = Footprint()
+        esp.entryName = "ESP32"
+        esp.libId = "Test:ESP32"
+        esp.layer = "F.Cu"
+        esp.position = Position(X=50, Y=50, angle=0)
+        esp.properties = {"Reference": "U1", "Value": "ESP32"}
+        esp.graphicItems = [
+            FpText(
+                type="reference",
+                text="U1",
+                layer="F.SilkS",
+                effects=_default_effects(),
+                position=Position(X=0, Y=-2),
+            ),
+        ]
+
+        # Embedded keepout zone in footprint-local coords: (-10,-10) to (10,10)
+        ekz = Zone()
+        ekz.net = 0
+        ekz.netName = ""
+        ekz.layers = ["F.Cu"]
+        ekz.tstamp = str(uuid.uuid4())
+        ekz.hatch = Hatch(style="edge", pitch=0.5)
+        ekz.keepoutSettings = KeepoutSettings(
+            tracks="not_allowed",
+            vias="not_allowed",
+            pads="not_allowed",
+            copperpour="not_allowed",
+            footprints="not_allowed",
+        )
+        epoly = ZonePolygon()
+        epoly.coordinates = [
+            Position(X=-10, Y=-10),
+            Position(X=10, Y=-10),
+            Position(X=10, Y=10),
+            Position(X=-10, Y=10),
+        ]
+        ekz.polygons = [epoly]
+        esp.zones = [ekz]
+        board.footprints.append(esp)
+
+        # Create a second footprint to check placement of
+        fp2 = Footprint()
+        fp2.entryName = "R_0603"
+        fp2.libId = "Test:R_0603"
+        fp2.layer = "F.Cu"
+        fp2.position = Position(X=100, Y=100, angle=0)
+        fp2.properties = {"Reference": "R1", "Value": "10K"}
+        fp2.graphicItems = [
+            FpText(
+                type="reference",
+                text="R1",
+                layer="F.SilkS",
+                effects=_default_effects(),
+                position=Position(X=0, Y=-1),
+            ),
+        ]
+        board.footprints.append(fp2)
+
+        path = tmp_path / "embedded_keepout.kicad_pcb"
+        board.filePath = str(path)
+        board.to_file()
+
+        # Check placement at ESP32's center (50, 50) — inside the embedded keepout
+        result = json.loads(pcb.check_placement("R1", 50, 50, pcb_path=str(path)))
+        assert result["status"] == "violations_found"
+        assert len(result["keepout_violations"]) >= 1
+        sources = [v["source"] for v in result["keepout_violations"]]
+        assert any(s.startswith("footprint:") for s in sources)
+
+    def test_outside_board_edge(self, tmp_path):
+        pcb_path = _make_keepout_pcb(tmp_path)
+        result = json.loads(pcb.check_placement("R1", 500, 500, pcb_path=str(pcb_path)))
+        assert result["outside_board_edge"] is True
+
+    def test_no_edge_cuts(self, tmp_path):
+        """Board without Edge.Cuts: board_edge_checked should be false."""
+        pcb_path = _make_keepout_pcb(tmp_path, with_edge_cuts=False)
+        result = json.loads(pcb.check_placement("R1", 100, 100, pcb_path=str(pcb_path)))
+        assert result["board_edge_checked"] is False
+
+
+class TestAddKeepoutZone:
+    def test_basic_keepout(self, scratch_pcb):
+        corners = [
+            {"x": 0, "y": 0},
+            {"x": 50, "y": 0},
+            {"x": 50, "y": 50},
+            {"x": 0, "y": 50},
+        ]
+        result = pcb.add_keepout_zone(corners=corners, pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert data["corners"] == 4
+        assert "F.Cu" in data["layers"]
+        assert data["restrictions"]["footprints"] == "not_allowed"
+
+        # Verify it's actually on the board
+        board = Board.from_file(str(scratch_pcb))
+        keepout_zones = [z for z in board.zones if z.keepoutSettings is not None]
+        assert len(keepout_zones) == 1
+        assert len(keepout_zones[0].polygons[0].coordinates) == 4
+
+    def test_too_few_corners(self, scratch_pcb):
+        corners = [{"x": 0, "y": 0}, {"x": 10, "y": 0}]
+        result = pcb.add_keepout_zone(corners=corners, pcb_path=str(scratch_pcb))
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_custom_restrictions(self, scratch_pcb):
+        """no_tracks=False should produce tracks='allowed' in created zone."""
+        corners = [
+            {"x": 0, "y": 0},
+            {"x": 50, "y": 0},
+            {"x": 50, "y": 50},
+        ]
+        result = pcb.add_keepout_zone(
+            corners=corners,
+            no_tracks=False,
+            pcb_path=str(scratch_pcb),
+        )
+        data = json.loads(result)
+        assert data["restrictions"]["tracks"] == "allowed"
+        assert data["restrictions"]["vias"] == "not_allowed"
+
+        # Verify on disk
+        board = Board.from_file(str(scratch_pcb))
+        kz = [z for z in board.zones if z.keepoutSettings is not None][0]
+        assert kz.keepoutSettings is not None
+        assert kz.keepoutSettings.tracks == "allowed"
 
 
 class TestSetNetClass:
