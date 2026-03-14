@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import new_schematic
+from conftest import _default_effects, new_schematic
 
 from mcp_server_kicad._shared import _resolve_hierarchy_path
 
@@ -155,13 +155,36 @@ class TestLoadSchCachesSystemLibSymbols:
         lib_file = lib_dir / "TestLib.kicad_sym"
         lib_file.write_text(lib_content)
 
-        # Create a schematic with a lib_symbol named "TestLib:TestSym"
+        # Create a schematic with a lib_symbol "TestSym" and a placed
+        # schematicSymbol whose libId is "TestLib:TestSym" (mirrors real KiCad
+        # schematics where lib_symbols have bare names and schematicSymbols
+        # carry the fully-qualified libId).
+        from kiutils.items.common import Position, Property
+        from kiutils.items.schitems import SchematicSymbol
         from kiutils.symbol import Symbol
 
         sch = new_schematic()
         lib_sym = Symbol()
-        lib_sym.entryName = "TestLib:TestSym"
+        lib_sym.entryName = "TestSym"
         sch.libSymbols.append(lib_sym)
+
+        placed = SchematicSymbol()
+        placed.libId = "TestLib:TestSym"
+        placed.position = Position(X=100, Y=100, angle=0)
+        placed.uuid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        placed.unit = 1
+        placed.properties = [
+            Property(
+                key="Reference",
+                value="U1",
+                id=0,
+                effects=_default_effects(),
+                position=Position(X=100, Y=97, angle=0),
+            ),
+        ]
+        placed.pins = {"1": "11111111-2222-3333-4444-555555555555"}
+        sch.schematicSymbols.append(placed)
+
         sch_path = tmp_path / "test.kicad_sch"
         sch.filePath = str(sch_path)
         sch.to_file()
@@ -179,8 +202,10 @@ class TestLoadSchCachesSystemLibSymbols:
         finally:
             _RAW_LIB_SYMBOLS.clear()
 
-    def test_does_not_overwrite_existing_cache(self, tmp_path, monkeypatch):
+    def test_does_not_overwrite_existing_cache(self, tmp_path):
         """_load_sch does not overwrite already-cached symbols."""
+        from kiutils.items.common import Position, Property
+        from kiutils.items.schitems import SchematicSymbol
         from kiutils.symbol import Symbol
 
         from mcp_server_kicad._shared import (
@@ -190,8 +215,26 @@ class TestLoadSchCachesSystemLibSymbols:
 
         sch = new_schematic()
         lib_sym = Symbol()
-        lib_sym.entryName = "SomeLib:SomeSym"
+        lib_sym.entryName = "SomeSym"
         sch.libSymbols.append(lib_sym)
+
+        placed = SchematicSymbol()
+        placed.libId = "SomeLib:SomeSym"
+        placed.position = Position(X=100, Y=100, angle=0)
+        placed.uuid = "aaaaaaaa-bbbb-cccc-dddd-ffffffffffff"
+        placed.unit = 1
+        placed.properties = [
+            Property(
+                key="Reference",
+                value="U1",
+                id=0,
+                effects=_default_effects(),
+                position=Position(X=100, Y=97, angle=0),
+            ),
+        ]
+        placed.pins = {"1": "11111111-2222-3333-4444-666666666666"}
+        sch.schematicSymbols.append(placed)
+
         sch_path = tmp_path / "test2.kicad_sch"
         sch.filePath = str(sch_path)
         sch.to_file()
