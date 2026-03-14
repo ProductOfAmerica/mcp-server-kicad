@@ -617,6 +617,121 @@ def _annotate_schematic(schematic_path: str, project_path: str = "") -> str:
     return f"Annotated {total} components: {', '.join(parts)}"
 
 
+def _validate_hierarchy(schematic_path: str) -> str:
+    """Validate hierarchical schematic for common issues.
+
+    Checks for orphaned labels/pins, direction mismatches, duplicate
+    reference designators, unannotated components, and missing files.
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    sch_dir = Path(schematic_path).parent
+    issues: list[dict] = []
+    all_refs: dict[str, list[str]] = {}  # ref -> [sheet_names]
+
+    # Check root schematic refs
+    for sym in sch.schematicSymbols:
+        ref_prop = next((p for p in sym.properties if p.key == "Reference"), None)
+        if ref_prop:
+            if "?" in ref_prop.value:
+                issues.append(
+                    {
+                        "type": "unannotated_ref",
+                        "sheet": Path(schematic_path).name,
+                        "reference": ref_prop.value,
+                    }
+                )
+            else:
+                all_refs.setdefault(ref_prop.value, []).append(Path(schematic_path).name)
+
+    for sheet in sch.sheets:
+        child_path = sch_dir / sheet.fileName.value
+        if not child_path.exists():
+            issues.append(
+                {
+                    "type": "missing_file",
+                    "sheet_name": sheet.sheetName.value,
+                    "file_name": sheet.fileName.value,
+                }
+            )
+            continue
+
+        child_sch = _load_sch(str(child_path))
+        pin_names = {p.name: p.connectionType for p in sheet.pins}
+        label_names = {hl.text: hl.shape for hl in child_sch.hierarchicalLabels}
+
+        # Orphaned labels (in child, no matching pin)
+        for label_name, label_shape in label_names.items():
+            if label_name not in pin_names:
+                issues.append(
+                    {
+                        "type": "orphaned_label",
+                        "sheet_name": sheet.sheetName.value,
+                        "label": label_name,
+                    }
+                )
+            elif pin_names[label_name] != label_shape:
+                issues.append(
+                    {
+                        "type": "direction_mismatch",
+                        "sheet_name": sheet.sheetName.value,
+                        "pin": label_name,
+                        "pin_direction": pin_names[label_name],
+                        "label_direction": label_shape,
+                    }
+                )
+
+        # Orphaned pins (in parent, no matching label)
+        for pin_name in pin_names:
+            if pin_name not in label_names:
+                issues.append(
+                    {
+                        "type": "orphaned_pin",
+                        "sheet_name": sheet.sheetName.value,
+                        "pin": pin_name,
+                    }
+                )
+
+        # Check child refs
+        for sym in child_sch.schematicSymbols:
+            ref_prop = next((p for p in sym.properties if p.key == "Reference"), None)
+            if ref_prop:
+                if "?" in ref_prop.value:
+                    issues.append(
+                        {
+                            "type": "unannotated_ref",
+                            "sheet": sheet.fileName.value,
+                            "reference": ref_prop.value,
+                        }
+                    )
+                else:
+                    all_refs.setdefault(ref_prop.value, []).append(sheet.fileName.value)
+
+    # Check for duplicate refs across sheets
+    for ref, sheets_list in all_refs.items():
+        if ref.startswith("#"):  # Skip power symbols
+            continue
+        if len(sheets_list) > 1:
+            issues.append(
+                {
+                    "type": "duplicate_ref",
+                    "reference": ref,
+                    "sheets": sheets_list,
+                }
+            )
+
+    status = "ok" if not issues else "issues_found"
+    return json.dumps(
+        {
+            "status": status,
+            "issue_count": len(issues),
+            "issues": issues,
+        }
+    )
+
+
 def _is_root_schematic(schematic_path: str) -> str:
     """Check if a schematic is the root or a sub-sheet.
 
@@ -750,6 +865,7 @@ modify_hierarchical_sheet = _modify_hierarchical_sheet
 add_sheet_pin = _add_sheet_pin
 remove_sheet_pin = _remove_sheet_pin
 annotate_schematic = _annotate_schematic
+validate_hierarchy = _validate_hierarchy
 is_root_schematic = _is_root_schematic
 list_hierarchy = _list_hierarchy
 get_sheet_info = _get_sheet_info
@@ -929,6 +1045,19 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
         project_path: Path to .kicad_pro file (scans hierarchy for existing refs)
     """
     return _annotate_schematic(schematic_path, project_path)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def validate_hierarchy(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+    """Validate hierarchical schematic for common issues.
+
+    Checks for orphaned labels/pins, direction mismatches, duplicate
+    reference designators, unannotated components, and missing files.
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+    """
+    return _validate_hierarchy(schematic_path)
 
 
 @mcp.tool(annotations=_READ_ONLY)

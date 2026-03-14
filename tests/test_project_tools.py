@@ -6,6 +6,7 @@ import json
 import shutil
 from pathlib import Path
 
+import conftest
 import pytest
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
@@ -921,6 +922,65 @@ class TestListHierarchy:
         assert len(result["sheets"]) == 1
         assert result["sheets"][0]["sheet_name"] == "Power"
         assert result["sheets"][0]["file_name"] == "child.kicad_sch"
+
+
+class TestValidateHierarchy:
+    def test_clean_hierarchy_returns_ok(self, tmp_path: Path):
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "proj.kicad_sch"),
+            sheet_name="Sub",
+            sheet_file=str(child),
+            pins=[{"name": "VIN", "direction": "input"}],
+            project_path=str(proj_dir / "proj.kicad_pro"),
+        )
+
+        result = json.loads(
+            project.validate_hierarchy(
+                schematic_path=str(proj_dir / "proj.kicad_sch"),
+            )
+        )
+        assert result["status"] == "ok"
+        assert result["issue_count"] == 0
+
+    def test_detects_orphaned_label(self, tmp_path: Path):
+        from kiutils.items.common import Position
+        from kiutils.items.schitems import HierarchicalLabel
+
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "proj.kicad_sch"),
+            sheet_name="Sub",
+            sheet_file=str(child),
+            pins=[{"name": "VIN", "direction": "input"}],
+            project_path=str(proj_dir / "proj.kicad_pro"),
+        )
+        # Add an orphaned label to child (no matching pin in parent)
+        child_sch = Schematic.from_file(str(child))
+        child_sch.hierarchicalLabels.append(
+            HierarchicalLabel(
+                text="ORPHAN",
+                shape="output",
+                position=Position(X=50, Y=50, angle=0),
+                effects=conftest._default_effects(),
+                uuid=conftest._gen_uuid(),
+            )
+        )
+        child_sch.to_file()
+
+        result = json.loads(
+            project.validate_hierarchy(
+                schematic_path=str(proj_dir / "proj.kicad_sch"),
+            )
+        )
+        assert result["status"] == "issues_found"
+        assert any(i["type"] == "orphaned_label" for i in result["issues"])
 
 
 class TestGetSheetInfo:
