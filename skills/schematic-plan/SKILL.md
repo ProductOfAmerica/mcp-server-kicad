@@ -153,10 +153,20 @@ hierarchical labels here.
 These are the ONLY kicad MCP tools you should use during planning
 (inspection only — no modifications):
 
+**Symbol and footprint lookup:**
 - `list_lib_symbols` — verify symbol exists in library
 - `get_symbol_info` — get pin names, types, and properties
 - `list_lib_footprints` — verify footprint exists
 - `get_footprint_info` — check pad dimensions
+
+**Schematic inspection (if schematic already exists):**
+- `list_schematic_items` — list items by type (components, labels, wires, hierarchical_labels, sheets, junctions, no_connects, bus_entries, summary)
+- `is_root_schematic` — check if a schematic is root or sub-sheet
+- `list_hierarchy` — view the full sheet hierarchy tree
+- `get_sheet_info` — get sheet details with pin/label matching status
+- `validate_hierarchy` — check for orphaned labels/pins, direction mismatches, duplicate refs
+- `list_cross_sheet_nets` — list all nets crossing sheet boundaries
+- `get_symbol_instances` — list symbol instances from root schematic
 
 Do NOT use `get_symbol_pins` — it requires a placed schematic.
 Use `get_symbol_info` instead.

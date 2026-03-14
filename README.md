@@ -10,11 +10,11 @@ MCP servers for KiCad schematic, PCB, symbol, footprint, and project automation.
 
 | Server | Tools | Description |
 |--------|-------|-------------|
-| `mcp-server-kicad-schematic` | 29 | Schematic read/write, ERC analysis, and schematic exports (PDF, SVG, DXF, netlist, BOM) |
-| `mcp-server-kicad-pcb` | 19 | PCB read/write, DRC analysis, and PCB exports (Gerber, drill, 3D models, pick-and-place) |
-| `mcp-server-kicad-symbol` | 4 | Symbol library browsing, SVG export, and library upgrade |
+| `mcp-server-kicad-schematic` | 31 | Schematic read/write, ERC analysis, hierarchical labels, and exports (PDF, SVG, DXF, netlist, BOM) |
+| `mcp-server-kicad-pcb` | 24 | PCB read/write, DRC analysis, autorouting, and exports (Gerber, drill, 3D models, pick-and-place) |
+| `mcp-server-kicad-symbol` | 5 | Symbol library browsing, creation, SVG export, and library upgrade |
 | `mcp-server-kicad-footprint` | 4 | Footprint library browsing, SVG export, and library upgrade |
-| `mcp-server-kicad-project` | 7 | Project scaffolding, hierarchical sheets, jobset execution, and version info |
+| `mcp-server-kicad-project` | 24 | Project scaffolding, hierarchical sheets, hierarchy validation, annotation, and exports |
 
 ## Installation
 
@@ -103,16 +103,16 @@ The servers resolve file paths in this order:
 
 ## Available Tools
 
-### Schematic Tools (27 tools)
+### Schematic Tools (31 tools)
 
 #### Read Tools
 
 | Tool | Description |
 |------|-------------|
-| `list_schematic_items` | List schematic items by type (components, labels, wires, global_labels, summary) |
+| `list_schematic_items` | List items by type (components, labels, wires, global_labels, hierarchical_labels, sheets, junctions, no_connects, bus_entries, summary) |
 | `get_symbol_pins` | Get pin info for a symbol in the schematic's lib_symbols |
 | `get_pin_positions` | Get absolute pin positions for a placed component (accounts for rotation/mirror) |
-| `get_net_connections` | Get all connections for a named net |
+| `get_net_connections` | Get all connections for a named net (multi-hop BFS wire tracing) |
 | `list_unconnected_pins` | List unconnected pins from ERC data |
 
 #### Write Tools
@@ -121,13 +121,17 @@ The servers resolve file paths in this order:
 |------|-------------|
 | `place_component` | Place a component in the schematic |
 | `remove_component` | Remove a component by reference designator |
-| `add_wires` | Add one or more wires between points |
+| `add_wires` | Add one or more wires between points (auto-creates junctions on T-connections) |
 | `add_label` | Add a net label at a position |
 | `add_junctions` | Add one or more junction dots |
 | `add_lib_symbol` | Load a symbol definition from a .kicad_sym library into the schematic |
 | `move_component` | Move a placed component to a new position |
 | `set_component_property` | Set any property (Value, Reference, Footprint, etc.) on a placed component |
+| `set_page_size` | Set the schematic page size |
 | `add_global_label` | Add a global net label visible across all sheets |
+| `add_hierarchical_label` | Add a hierarchical label for sheet-to-sheet connections |
+| `remove_hierarchical_label` | Remove a hierarchical label by name or UUID |
+| `modify_hierarchical_label` | Modify text, shape, or position of a hierarchical label |
 | `add_power_symbol` | Place a power symbol (VCC, GND, +3V3, etc.) with auto PWR_FLAG |
 | `add_text` | Add a text annotation to the schematic |
 | `wire_pins_to_net` | Wire one or more pins to a named net |
@@ -142,7 +146,7 @@ The servers resolve file paths in this order:
 
 | Tool | Description |
 |------|-------------|
-| `run_erc` | Run Electrical Rules Check (ERC) on a schematic |
+| `run_erc` | Run Electrical Rules Check (ERC) on a schematic (supports `project_path` for hierarchy) |
 
 #### Schematic Export Tools
 
@@ -152,7 +156,7 @@ The servers resolve file paths in this order:
 | `export_netlist` | Export schematic netlist |
 | `export_bom` | Export Bill of Materials (BOM) as CSV |
 
-### PCB Tools (16 tools)
+### PCB Tools (24 tools)
 
 #### Read Tools
 
@@ -173,6 +177,13 @@ The servers resolve file paths in this order:
 | `add_via` | Add a via at a position |
 | `add_pcb_text` | Add text to the PCB (silkscreen, fab layer, etc.) |
 | `add_pcb_line` | Add a graphic line to the PCB (edge cuts, silkscreen, etc.) |
+| `add_copper_zone` | Create an unfilled copper zone |
+| `fill_zones` | Fill all copper zones on the board |
+| `set_trace_width` | Change the width of existing traces |
+| `remove_traces` | Remove trace segments matching filters |
+| `add_thermal_vias` | Add a grid of thermal vias under a footprint pad |
+| `set_net_class` | Create or update a net class with design rules |
+| `remove_dangling_tracks` | Detect and remove trace segments with unconnected endpoints |
 
 #### DRC Analysis
 
@@ -189,6 +200,7 @@ The servers resolve file paths in this order:
 | `export_3d` | Export PCB 3D model (STEP/STL/GLB) or render 3D view to PNG |
 | `export_positions` | Export component position file (pick and place) |
 | `export_ipc2581` | Export PCB in IPC-2581 format for manufacturing data exchange |
+| `autoroute_pcb` | Autoroute PCB traces using the Freerouting autorouter |
 
 ### Symbol Tools (5 tools)
 
@@ -209,7 +221,9 @@ The servers resolve file paths in this order:
 | `export_footprint_svg` | Export footprint to SVG |
 | `upgrade_footprint_lib` | Upgrade a footprint library to current KiCad format |
 
-### Project Tools (7 tools)
+### Project Tools (24 tools)
+
+#### Scaffolding
 
 | Tool | Description |
 |------|-------------|
@@ -217,7 +231,49 @@ The servers resolve file paths in this order:
 | `create_schematic` | Create a blank schematic file |
 | `create_symbol_library` | Create a blank symbol library file |
 | `create_sym_lib_table` | Create a sym-lib-table file |
-| `add_hierarchical_sheet` | Add a hierarchical sheet to a parent schematic |
+
+#### Sheet Management
+
+| Tool | Description |
+|------|-------------|
+| `add_hierarchical_sheet` | Add a hierarchical sheet with matching labels in the child |
+| `remove_hierarchical_sheet` | Remove a hierarchical sheet block from a parent |
+| `modify_hierarchical_sheet` | Modify sheet name, file, width, or height |
+| `add_sheet_pin` | Add a pin to an existing hierarchical sheet block |
+| `remove_sheet_pin` | Remove a pin from a hierarchical sheet block |
+| `move_hierarchical_sheet` | Move a sheet block to a new position (including pins) |
+| `duplicate_sheet` | Duplicate a sheet, copying the child file with new UUIDs |
+| `reorder_sheet_pages` | Reorder sheets by specifying desired UUID order |
+
+#### Hierarchy Inspection
+
+| Tool | Description |
+|------|-------------|
+| `is_root_schematic` | Check if a schematic is the root or a sub-sheet |
+| `list_hierarchy` | List the full sheet hierarchy tree from root |
+| `get_sheet_info` | Get sheet details with pin/label matching status |
+| `validate_hierarchy` | Check for orphaned labels/pins, direction mismatches, duplicate refs |
+
+#### Cross-Sheet Analysis
+
+| Tool | Description |
+|------|-------------|
+| `trace_hierarchical_net` | Trace a net across the hierarchy through pins and labels |
+| `list_cross_sheet_nets` | List all nets crossing sheet boundaries |
+| `get_symbol_instances` | List symbol instances from root schematic |
+
+#### Annotation
+
+| Tool | Description |
+|------|-------------|
+| `annotate_schematic` | Auto-assign reference designators respecting hierarchy |
+
+#### Export & Utilities
+
+| Tool | Description |
+|------|-------------|
+| `export_hierarchical_netlist` | Export netlist with hierarchy info (requires kicad-cli) |
+| `flatten_hierarchy` | Flatten a hierarchical schematic into a single sheet |
 | `run_jobset` | Run a KiCad jobset file |
 | `get_version` | Get KiCad version information |
 

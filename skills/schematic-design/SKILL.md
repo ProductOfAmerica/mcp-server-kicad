@@ -201,7 +201,18 @@ Y < 175mm.
 
 **Annotations and hierarchy:**
 - `add_text` — add text annotations to the sheet
-- `add_hierarchical_sheet` — add a sub-sheet reference
+- `add_hierarchical_label` — add a hierarchical label for sheet-to-sheet connections
+- `remove_hierarchical_label` — remove a hierarchical label by name or UUID
+- `modify_hierarchical_label` — modify text, shape, or position of a hierarchical label
+- `annotate_schematic` — auto-assign reference designators (project server)
+
+**Hierarchy management (project server):**
+- `add_hierarchical_sheet` / `remove_hierarchical_sheet` — create/remove sub-sheet blocks
+- `modify_hierarchical_sheet` — change sheet name, file, dimensions
+- `add_sheet_pin` / `remove_sheet_pin` — manage pins on sheet blocks
+- `validate_hierarchy` — check for orphaned labels/pins, direction mismatches
+- `list_hierarchy` / `get_sheet_info` — inspect hierarchy structure
+- `is_root_schematic` — check if a schematic is root or sub-sheet
 
 **Verification and export:**
 - `run_erc` — run electrical rules check
