@@ -75,7 +75,13 @@ mcp = FastMCP(
         "2. Fix 'power pin not driven' with add_power_symbol (lib_id='power:PWR_FLAG')\n"
         "3. Fix unconnected pins with wire_pin_to_label or no_connect_pin\n"
         "4. Re-run run_erc to verify fixes\n"
-        "5. If blocked, report the error — do NOT edit the schematic file manually"
+        "5. If blocked, report the error — do NOT edit the schematic file manually\n\n"
+        "HIERARCHY WORKFLOW:\n"
+        "1. Create hierarchy with add_hierarchical_sheet (project server)\n"
+        "2. Add hierarchical labels with add_hierarchical_label to connect sub-sheets\n"
+        "3. List items with list_schematic_items (hierarchical_labels, sheets)\n"
+        "4. Trace nets with get_net_connections (multi-hop BFS)\n"
+        "5. Run run_erc from root with project_path for validation"
     ),
 )
 

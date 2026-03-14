@@ -70,7 +70,16 @@ mcp = FastMCP(
         "3. create_symbol_library + write symbols for custom parts\n"
         "4. create_sym_lib_table — registers libraries with the project\n"
         "5. add_hierarchical_sheet — links sub-sheets to root with pins\n"
-        "6. remove_hierarchical_sheet — removes a sheet block from parent"
+        "6. remove_hierarchical_sheet — removes a sheet block from parent\n\n"
+        "HIERARCHY WORKFLOW:\n"
+        "1. Create hierarchy with add_hierarchical_sheet\n"
+        "2. Inspect with list_hierarchy, get_sheet_info\n"
+        "3. Validate with validate_hierarchy\n"
+        "4. Fix label/pin mismatches with add/remove_hierarchical_label"
+        " (schematic server), add/remove_sheet_pin\n"
+        "5. Trace nets across sheets with trace_hierarchical_net\n"
+        "6. Annotate all sheets with annotate_schematic\n"
+        "7. Run run_erc from root for final validation"
     ),
 )
 
