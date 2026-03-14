@@ -843,7 +843,7 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
         return f"Component {reference} not found."
     sch.schematicSymbols.remove(target)
     _save_sch(sch)
-    _remove_root_symbol_instance(schematic_path, "", target.uuid)
+    _remove_root_symbol_instance(schematic_path, "", target.uuid or "")
     return f"Removed {reference}"
 
 
@@ -1131,7 +1131,7 @@ def set_component_property(
                         _upsert_root_symbol_instance(
                             schematic_path,
                             "",
-                            sym.uuid,
+                            sym.uuid or "",
                             ref,
                             value=val,
                             footprint=fp_val,
@@ -1154,7 +1154,7 @@ def set_component_property(
                 _upsert_root_symbol_instance(
                     schematic_path,
                     "",
-                    sym.uuid,
+                    sym.uuid or "",
                     ref,
                     value=val,
                     footprint=fp_val,
