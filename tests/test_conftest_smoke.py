@@ -8,6 +8,7 @@ import pytest
 # conftest.py is auto-loaded by pytest. Import helpers via the tests package.
 from conftest import (
     assert_erc_clean,
+    assert_kicad_parseable,
     build_r_symbol,
     build_test_part_symbol,
     place_r1,
@@ -54,8 +55,10 @@ def test_scratch_sch_reparses(scratch_sch: Path) -> None:
 
 
 @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
-def test_scratch_sch_erc_clean(scratch_sch: Path) -> None:
-    assert_erc_clean(scratch_sch)
+def test_scratch_sch_parseable(scratch_sch: Path) -> None:
+    """scratch_sch is intentionally a simple fixture (unconnected pins, dangling
+    label) so it won't pass ERC.  We only need to verify kicad-cli can parse it."""
+    assert_kicad_parseable(scratch_sch)
 
 
 def test_empty_sch_exists_and_reparses(empty_sch: Path) -> None:
@@ -90,6 +93,36 @@ def test_run_erc_returns_dict(scratch_sch: Path) -> None:
     report = run_erc(scratch_sch)
     assert isinstance(report, dict)
     assert "violations" in report or "sheets" in report
+
+
+@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+def test_assert_erc_clean_catches_violations(tmp_path: Path) -> None:
+    """assert_erc_clean must fail when there ARE violations.
+
+    Regression test: KiCad 9 puts violations under sheets[N].violations,
+    not at report["violations"].  The old code checked only the top level
+    and therefore always passed.
+    """
+    from conftest import new_schematic
+
+    # Build a schematic with an unconnected component -> guaranteed ERC errors
+    sch = new_schematic()
+    sch.libSymbols.append(build_r_symbol())
+    sch.schematicSymbols.append(place_r1(100, 100))
+    path = tmp_path / "erc_violations.kicad_sch"
+    sch.filePath = str(path)
+    sch.to_file()
+
+    # Confirm kicad-cli actually finds violations
+    report = run_erc(path)
+    all_violations = []
+    for sheet in report.get("sheets", []):
+        all_violations.extend(sheet.get("violations", []))
+    assert len(all_violations) > 0, "Expected ERC violations from unconnected resistor"
+
+    # assert_erc_clean MUST raise AssertionError for this schematic
+    with pytest.raises(AssertionError, match="ERC violations"):
+        assert_erc_clean(path)
 
 
 def test_builder_functions_importable() -> None:

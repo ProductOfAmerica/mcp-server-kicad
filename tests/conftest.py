@@ -307,7 +307,11 @@ def run_erc(path: str | Path) -> dict:
 def assert_erc_clean(path: str | Path) -> None:
     """Run ERC and assert zero violations."""
     report = run_erc(path)
-    violations = report.get("violations", [])
+    violations = []
+    for sheet in report.get("sheets", []):
+        violations.extend(sheet.get("violations", []))
+    # Fallback: also check top-level (older KiCad formats)
+    violations.extend(report.get("violations", []))
     assert violations == [], f"Expected 0 ERC violations, got {len(violations)}:\n" + "\n".join(
         f"  {v.get('severity', '?')}: {v.get('description', '?')}" for v in violations
     )
