@@ -371,7 +371,7 @@ def _add_hierarchical_sheet(
                 _upsert_root_symbol_instance(
                     str(child_path),
                     project_path,
-                    sym.uuid,
+                    sym.uuid or "",
                     ref,
                     value=val,
                     footprint=fp,
@@ -664,7 +664,7 @@ def _annotate_schematic(schematic_path: str, project_path: str = "") -> str:
         _upsert_root_symbol_instance(
             schematic_path,
             project_path,
-            sym.uuid,
+            sym.uuid or "",
             ref,
             value=val,
             footprint=fp,
