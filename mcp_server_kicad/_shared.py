@@ -1,5 +1,6 @@
 """Shared constants, helpers, and kiutils re-exports for KiCad MCP servers."""
 
+import math
 import os
 import re
 import subprocess
@@ -10,8 +11,8 @@ from kiutils.board import Board
 from kiutils.footprint import Footprint, Pad
 from kiutils.items.brditems import Segment, Via
 from kiutils.items.common import ColorRGBA, Effects, Font, Net, Position, Property, Stroke
-from kiutils.items.fpitems import FpText
-from kiutils.items.gritems import GrLine, GrText
+from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpText
+from kiutils.items.gritems import GrArc, GrLine, GrText
 from kiutils.items.schitems import (
     BusEntry,
     Connection,
@@ -31,7 +32,7 @@ from kiutils.items.schitems import (
     SymbolProjectPath,
     Text,
 )
-from kiutils.items.zones import FillSettings, Hatch, Zone, ZonePolygon
+from kiutils.items.zones import FillSettings, Hatch, KeepoutSettings, Zone, ZonePolygon
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
 from mcp.types import ToolAnnotations
@@ -81,8 +82,14 @@ __all__ = [
     "Effects",
     "Font",
     "Footprint",
+    "FpArc",
+    "FpCircle",
+    "FpLine",
+    "FpPoly",
+    "FpRect",
     "FpText",
     "GlobalLabel",
+    "GrArc",
     "GrLine",
     "GrText",
     "HierarchicalLabel",
@@ -92,6 +99,7 @@ __all__ = [
     "HierarchicalSheetProjectInstance",
     "HierarchicalSheetProjectPath",
     "Junction",
+    "KeepoutSettings",
     "LocalLabel",
     "Net",
     "NoConnect",
@@ -149,6 +157,12 @@ __all__ = [
     "_sym_ref_val_fp",
     "_upsert_root_symbol_instance",
     "_remove_root_symbol_instance",
+    # geometry helpers
+    "_courtyard_bbox",
+    "_point_in_polygon",
+    "_transform_local_to_board",
+    "_board_edge_polygon",
+    "_check_keepout_violations",
 ]
 
 
@@ -742,3 +756,357 @@ def _remove_root_symbol_instance(
         _save_sch(root_sch)
         return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Geometry helpers
+# ---------------------------------------------------------------------------
+
+
+def _courtyard_bbox(fp: Footprint) -> dict | None:
+    """Compute the bounding box of courtyard items on a footprint.
+
+    Iterates ``fp.graphicItems``, collects coordinates from items on
+    ``*.CrtYd`` layers, groups by layer, and returns the bounding box
+    for the first layer found.
+
+    Returns a dict with keys ``layer``, ``min_x``, ``min_y``, ``max_x``,
+    ``max_y``, ``width``, ``height``, or ``None`` if no courtyard items.
+    """
+    # Collect points grouped by layer
+    layer_points: dict[str, list[tuple[float, float]]] = {}
+
+    for item in fp.graphicItems:
+        layer: str | None = None
+        pts: list[tuple[float, float]] = []
+
+        if isinstance(item, FpLine):
+            layer = item.layer
+            pts = [
+                (item.start.X, item.start.Y),
+                (item.end.X, item.end.Y),
+            ]
+        elif isinstance(item, FpRect):
+            layer = item.layer
+            pts = [
+                (item.start.X, item.start.Y),
+                (item.end.X, item.end.Y),
+            ]
+        elif isinstance(item, FpCircle):
+            layer = item.layer
+            cx, cy = item.center.X, item.center.Y
+            ex, ey = item.end.X, item.end.Y
+            radius = math.sqrt((ex - cx) ** 2 + (ey - cy) ** 2)
+            pts = [
+                (cx - radius, cy - radius),
+                (cx + radius, cy + radius),
+            ]
+        elif isinstance(item, FpArc):
+            layer = item.layer
+            pts = [
+                (item.start.X, item.start.Y),
+                (item.mid.X, item.mid.Y),
+                (item.end.X, item.end.Y),
+            ]
+        elif isinstance(item, FpPoly):
+            layer = item.layer
+            pts = [(c.X, c.Y) for c in item.coordinates]
+
+        if layer is None or not layer.endswith(".CrtYd") or not pts:
+            continue
+
+        layer_points.setdefault(layer, []).extend(pts)
+
+    if not layer_points:
+        return None
+
+    # Return the first layer found (prefer F.CrtYd, then B.CrtYd, then any)
+    for preferred in ("F.CrtYd", "B.CrtYd"):
+        if preferred in layer_points:
+            chosen_layer = preferred
+            break
+    else:
+        chosen_layer = next(iter(layer_points))
+
+    points = layer_points[chosen_layer]
+    xs = [p[0] for p in points]
+    ys = [p[1] for p in points]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+
+    return {
+        "layer": chosen_layer,
+        "min_x": min_x,
+        "min_y": min_y,
+        "max_x": max_x,
+        "max_y": max_y,
+        "width": max_x - min_x,
+        "height": max_y - min_y,
+    }
+
+
+def _point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) -> bool:
+    """Test if point (x, y) is inside *polygon* using ray-casting.
+
+    Returns ``False`` for empty or degenerate polygons (< 3 points).
+    """
+    n = len(polygon)
+    if n < 3:
+        return False
+
+    inside = False
+    j = n - 1
+    for i in range(n):
+        xi, yi = polygon[i]
+        xj, yj = polygon[j]
+        if ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / (yj - yi) + xi):
+            inside = not inside
+        j = i
+
+    return inside
+
+
+def _transform_local_to_board(
+    fp_x: float,
+    fp_y: float,
+    angle: float,
+    local_x: float,
+    local_y: float,
+) -> tuple[float, float]:
+    """Convert footprint-local coordinates to board coordinates.
+
+    Applies rotation by *angle* (degrees) around the footprint origin
+    ``(fp_x, fp_y)``.
+    """
+    theta = math.radians(angle or 0)
+    cos_t = math.cos(theta)
+    sin_t = math.sin(theta)
+    board_x = fp_x + (local_x * cos_t - local_y * sin_t)
+    board_y = fp_y + (local_x * sin_t + local_y * cos_t)
+    return board_x, board_y
+
+
+def _board_edge_polygon(board: Board) -> list[tuple[float, float]] | None:
+    """Extract the board outline from Edge.Cuts graphic items.
+
+    Collects ``GrLine`` and ``GrArc`` segments on the ``Edge.Cuts`` layer,
+    chains them into a closed polygon by endpoint matching (1 um tolerance),
+    and returns the vertex list.  GrArc segments are linearized into ~16
+    straight segments.
+
+    Returns ``None`` if no Edge.Cuts lines exist or a closed polygon
+    cannot be formed.
+    """
+    # Collect oriented segments as (start, end) tuples
+    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+
+    for item in board.graphicItems:
+        if isinstance(item, GrLine) and item.layer == "Edge.Cuts":
+            s = (round(item.start.X, 3), round(item.start.Y, 3))
+            e = (round(item.end.X, 3), round(item.end.Y, 3))
+            if s != e:
+                segments.append((s, e))
+        elif isinstance(item, GrArc) and item.layer == "Edge.Cuts":
+            # Linearize arc into ~16 line segments
+            arc_pts = _linearize_arc(
+                item.start.X,
+                item.start.Y,
+                item.mid.X,
+                item.mid.Y,
+                item.end.X,
+                item.end.Y,
+            )
+            for k in range(len(arc_pts) - 1):
+                s = (round(arc_pts[k][0], 3), round(arc_pts[k][1], 3))
+                e = (round(arc_pts[k + 1][0], 3), round(arc_pts[k + 1][1], 3))
+                if s != e:
+                    segments.append((s, e))
+
+    if not segments:
+        return None
+
+    # Build adjacency: endpoint -> list of (other_endpoint, segment_index)
+    adjacency: dict[tuple[float, float], list[tuple[tuple[float, float], int]]] = {}
+    for idx, (s, e) in enumerate(segments):
+        adjacency.setdefault(s, []).append((e, idx))
+        adjacency.setdefault(e, []).append((s, idx))
+
+    # Chain into a closed polygon starting from the first segment
+    used: set[int] = set()
+    polygon: list[tuple[float, float]] = []
+
+    start_pt = segments[0][0]
+    current = start_pt
+    polygon.append(current)
+
+    while True:
+        neighbors = adjacency.get(current, [])
+        found = False
+        for next_pt, seg_idx in neighbors:
+            if seg_idx not in used:
+                used.add(seg_idx)
+                polygon.append(next_pt)
+                current = next_pt
+                found = True
+                break
+        if not found:
+            break
+        if current == start_pt:
+            break
+
+    # Verify closed polygon
+    if len(polygon) < 4 or polygon[0] != polygon[-1]:
+        return None
+
+    # Remove closing duplicate
+    return polygon[:-1]
+
+
+def _linearize_arc(
+    sx: float,
+    sy: float,
+    mx: float,
+    my: float,
+    ex: float,
+    ey: float,
+    num_segments: int = 16,
+) -> list[tuple[float, float]]:
+    """Approximate a 3-point arc (start, mid, end) as line segments.
+
+    Returns a list of ``num_segments + 1`` points along the arc.
+    """
+    # Find circle center from three points
+    ax, ay = sx, sy
+    bx, by = mx, my
+    cx, cy = ex, ey
+
+    d = 2.0 * (ax * (by - cy) + bx * (cy - ay) + cx * (ay - by))
+    if abs(d) < 1e-10:
+        # Degenerate (collinear) — just return start, mid, end
+        return [(sx, sy), (mx, my), (ex, ey)]
+
+    a_sq = ax * ax + ay * ay
+    b_sq = bx * bx + by * by
+    c_sq = cx * cx + cy * cy
+    ux = (a_sq * (by - cy) + b_sq * (cy - ay) + c_sq * (ay - by)) / d
+    uy = (a_sq * (cx - bx) + b_sq * (ax - cx) + c_sq * (bx - ax)) / d
+
+    radius = math.sqrt((ax - ux) ** 2 + (ay - uy) ** 2)
+
+    # Compute angles
+    angle_start = math.atan2(sy - uy, sx - ux)
+    angle_mid = math.atan2(my - uy, mx - ux)
+    angle_end = math.atan2(ey - uy, ex - ux)
+
+    # Determine sweep direction: start -> mid -> end
+    def _normalize(a: float) -> float:
+        while a < 0:
+            a += 2 * math.pi
+        while a >= 2 * math.pi:
+            a -= 2 * math.pi
+        return a
+
+    # Check if going CCW (positive) or CW (negative) from start through mid to end
+    d_start_mid = _normalize(angle_mid - angle_start)
+    d_start_end = _normalize(angle_end - angle_start)
+
+    if d_start_mid <= d_start_end:
+        # CCW sweep
+        sweep = d_start_end
+    else:
+        # CW sweep (negative direction)
+        sweep = d_start_end - 2 * math.pi
+
+    points: list[tuple[float, float]] = []
+    for i in range(num_segments + 1):
+        t = i / num_segments
+        angle = angle_start + sweep * t
+        px = ux + radius * math.cos(angle)
+        py = uy + radius * math.sin(angle)
+        points.append((px, py))
+
+    return points
+
+
+def _check_keepout_violations(board: Board, x: float, y: float, layer: str) -> list[dict]:
+    """Check if position (x, y) violates any keepout zones on *layer*.
+
+    Checks both board-level zones and footprint-embedded zones.
+
+    Returns a list of violation dicts, each with keys:
+    ``source`` (``"board"`` or ``"footprint:{ref}"``),
+    ``layers``, and ``restrictions``.
+    """
+    violations: list[dict] = []
+
+    # 1. Board-level keepout zones
+    for zone in board.zones:
+        ks = zone.keepoutSettings
+        if ks is None:
+            continue
+        if ks.footprints != "not_allowed":
+            continue
+        # Check layer overlap
+        if layer not in zone.layers:
+            continue
+        # Get polygon
+        if not zone.polygons:
+            continue
+        poly_coords = [(round(c.X, 3), round(c.Y, 3)) for c in zone.polygons[0].coordinates]
+        if _point_in_polygon(x, y, poly_coords):
+            violations.append(
+                {
+                    "source": "board",
+                    "layers": list(zone.layers),
+                    "restrictions": {
+                        "tracks": ks.tracks,
+                        "vias": ks.vias,
+                        "pads": ks.pads,
+                        "copperpour": ks.copperpour,
+                        "footprints": ks.footprints,
+                    },
+                }
+            )
+
+    # 2. Footprint-embedded keepout zones
+    for fp in board.footprints:
+        fp_zones = getattr(fp, "zones", None)
+        if not fp_zones:
+            continue
+        ref = _fp_ref(fp)
+        if fp.position is None:
+            continue
+        fp_x = fp.position.X
+        fp_y = fp.position.Y
+        fp_angle = fp.position.angle or 0
+        for zone in fp_zones:
+            ks = zone.keepoutSettings
+            if ks is None:
+                continue
+            if ks.footprints != "not_allowed":
+                continue
+            if layer not in zone.layers:
+                continue
+            if not zone.polygons:
+                continue
+            # Transform polygon from footprint-local to board coordinates
+            poly_coords: list[tuple[float, float]] = []
+            for c in zone.polygons[0].coordinates:
+                bx, by = _transform_local_to_board(fp_x, fp_y, fp_angle, c.X, c.Y)
+                poly_coords.append((round(bx, 3), round(by, 3)))
+            if _point_in_polygon(x, y, poly_coords):
+                violations.append(
+                    {
+                        "source": f"footprint:{ref}",
+                        "layers": list(zone.layers),
+                        "restrictions": {
+                            "tracks": ks.tracks,
+                            "vias": ks.vias,
+                            "pads": ks.pads,
+                            "copperpour": ks.copperpour,
+                            "footprints": ks.footprints,
+                        },
+                    }
+                )
+
+    return violations
