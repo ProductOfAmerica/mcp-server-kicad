@@ -909,6 +909,89 @@ class TestSetComponentProperty:
         )
         assert "not found" in result.lower()
 
+    @pytest.mark.no_kicad_validation
+    def test_set_reference_updates_per_symbol_instances(self, tmp_path):
+        """Changing Reference via set_component_property must update sym.instances."""
+        from conftest import _gen_uuid, build_r_symbol, new_schematic
+        from kiutils.items.common import Effects, Font, Position, Property
+        from kiutils.items.schitems import (
+            SchematicSymbol,
+            SymbolProjectInstance,
+            SymbolProjectPath,
+        )
+
+        sch = new_schematic()
+        sch.libSymbols.append(build_r_symbol())
+        sym = SchematicSymbol()
+        sym.libId = "Device:R"
+        sym.position = Position(X=100, Y=100)
+        sym.uuid = _gen_uuid()
+        sym.unit = 1
+        sym.inBom = True
+        sym.onBoard = True
+        sym.properties = [
+            Property(
+                key="Reference",
+                value="R1",
+                id=0,
+                effects=Effects(font=Font(height=1.27, width=1.27)),
+                position=Position(X=100, Y=97),
+            ),
+            Property(
+                key="Value",
+                value="10K",
+                id=1,
+                effects=Effects(font=Font(height=1.27, width=1.27)),
+                position=Position(X=100, Y=103),
+            ),
+            Property(
+                key="Footprint",
+                value="",
+                id=2,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=100),
+            ),
+        ]
+        sym.pins = {"1": _gen_uuid(), "2": _gen_uuid()}
+        # Set up initial per-symbol instances block (as KiCad 9 does)
+        sym.instances = [
+            SymbolProjectInstance(
+                name="test_proj",
+                paths=[
+                    SymbolProjectPath(
+                        sheetInstancePath=f"/{sch.uuid}",
+                        reference="R1",
+                        unit=1,
+                    ),
+                ],
+            ),
+        ]
+        sch.schematicSymbols.append(sym)
+        path = tmp_path / "test_ref.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+
+        schematic.set_component_property(
+            reference="R1",
+            key="Reference",
+            value="R42",
+            schematic_path=str(path),
+        )
+
+        sch2 = reparse(str(path))
+        sym2 = sch2.schematicSymbols[0]
+        # Property should be updated
+        ref_val = next(p.value for p in sym2.properties if p.key == "Reference")
+        assert ref_val == "R42"
+        # Per-symbol instances must also be updated
+        assert len(sym2.instances) > 0, "instances block missing"
+        for inst in sym2.instances:
+            for path_entry in inst.paths:
+                assert path_entry.reference == "R42", (
+                    f"Per-symbol instance reference {path_entry.reference!r} "
+                    f"doesn't match new reference 'R42'"
+                )
+
 
 # ===========================================================================
 # TestRemoveJunction

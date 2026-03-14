@@ -1125,6 +1125,10 @@ def set_component_property(
             for prop in sym.properties:
                 if prop.key == key:
                     prop.value = value
+                    if key == "Reference":
+                        for inst in getattr(sym, "instances", []):
+                            for path_entry in getattr(inst, "paths", []):
+                                path_entry.reference = value
                     _save_sch(sch)
                     if key in ("Reference", "Value", "Footprint"):
                         ref, val, fp_val = _sym_ref_val_fp(sym)
@@ -1148,6 +1152,10 @@ def set_component_property(
                     position=Position(X=sym.position.X, Y=sym.position.Y, angle=0),
                 )
             )
+            if key == "Reference":
+                for inst in getattr(sym, "instances", []):
+                    for path_entry in getattr(inst, "paths", []):
+                        path_entry.reference = value
             _save_sch(sch)
             if key in ("Reference", "Value", "Footprint"):
                 ref, val, fp_val = _sym_ref_val_fp(sym)

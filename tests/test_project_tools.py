@@ -1560,6 +1560,36 @@ class TestRootSymbolInstanceSync:
         assert "R1" in refs
         assert "R2" in refs
 
+    def test_annotate_subsheet_updates_per_symbol_instances(self, tmp_path: Path):
+        """Test 7b: annotate_schematic updates the per-symbol instances block."""
+        proj_dir, root, child, pro = self._make_project_with_child(tmp_path)
+        self._place_symbol_in_child(child)
+        self._place_symbol_in_child(child)
+
+        # Fix positions so they don't overlap
+        child_sch = Schematic.from_file(child)
+        for i, sym in enumerate(child_sch.schematicSymbols):
+            from kiutils.items.common import Position
+
+            sym.position = Position(X=100, Y=50 + i * 30)
+        child_sch.to_file()
+
+        project.annotate_schematic(schematic_path=child, project_path=pro)
+
+        # Re-read the child schematic and verify per-symbol instances
+        child_sch = Schematic.from_file(child)
+        for sym in child_sch.schematicSymbols:
+            ref_prop = next(p for p in sym.properties if p.key == "Reference")
+            assert "?" not in ref_prop.value, f"Symbol still unannotated: {ref_prop.value}"
+            # The per-symbol instances block must also have the new reference
+            assert len(sym.instances) > 0, f"Symbol {ref_prop.value} has no instances block"
+            for inst in sym.instances:
+                for path_entry in inst.paths:
+                    assert path_entry.reference == ref_prop.value, (
+                        f"Per-symbol instance reference {path_entry.reference!r} "
+                        f"doesn't match property {ref_prop.value!r}"
+                    )
+
     def test_annotate_root_syncs_own_symbol_instances(self, tmp_path: Path):
         """Test 8: annotate_schematic on root syncs symbolInstances to itself."""
         from conftest import _default_effects, _gen_uuid, build_r_symbol

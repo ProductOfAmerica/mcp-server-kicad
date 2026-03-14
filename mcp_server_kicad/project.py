@@ -41,6 +41,7 @@ from mcp_server_kicad._shared import (
     _find_root_schematic,
     _gen_uuid,
     _load_sch,
+    _resolve_hierarchy_path,
     _resolve_root,
     _run_cli,
     _save_sch,
@@ -654,6 +655,27 @@ def _annotate_schematic(schematic_path: str, project_path: str = "") -> str:
         for inst in getattr(sym, "instances", []):
             for path_entry in getattr(inst, "paths", []):
                 path_entry.reference = new_ref
+        # Create instances block if missing (symbols placed without it)
+        if not getattr(sym, "instances", []):
+            if project_path:
+                proj_name, sheet_path = _resolve_hierarchy_path(
+                    project_path, schematic_path, sch.uuid or ""
+                )
+            else:
+                proj_name = Path(schematic_path).stem if schematic_path else ""
+                sheet_path = f"/{sch.uuid}"
+            sym.instances = [
+                SymbolProjectInstance(
+                    name=proj_name,
+                    paths=[
+                        SymbolProjectPath(
+                            sheetInstancePath=sheet_path,
+                            reference=new_ref,
+                            unit=1,
+                        ),
+                    ],
+                ),
+            ]
         assigned.setdefault(prefix, []).append(new_ref)
 
     _save_sch(sch)
