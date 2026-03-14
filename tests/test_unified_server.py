@@ -34,7 +34,7 @@ class TestUnifiedServer:
         assert "run_erc" in registered
         assert "export_gerbers" in registered
         # Total tool count
-        assert len(registered) == 86, f"Expected 86 tools, got {len(registered)}: {registered}"
+        assert len(registered) == 87, f"Expected 87 tools, got {len(registered)}: {registered}"
 
     def test_copy_tools_without_cli(self):
         """CLI-dependent tools are excluded when has_cli=False."""

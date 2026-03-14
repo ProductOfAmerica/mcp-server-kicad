@@ -1181,3 +1181,17 @@ class TestDuplicateSheet:
         # The new sheet should reference a different file
         files = {s.fileName.value for s in sch2.sheets}
         assert len(files) == 2  # Two different files
+
+
+@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+class TestExportHierarchicalNetlist:
+    def test_exports_netlist(self, tmp_path: Path):
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+
+        result = project.export_hierarchical_netlist(
+            schematic_path=str(proj_dir / "proj.kicad_sch"),
+            output_dir=str(proj_dir),
+        )
+        data = json.loads(result)
+        assert "output_path" in data or "netlist" in data or "error" not in data

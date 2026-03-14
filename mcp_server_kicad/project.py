@@ -1213,6 +1213,95 @@ def _duplicate_sheet(
     return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
 
 
+def _export_hierarchical_netlist(
+    schematic_path: str,
+    output_dir: str = "",
+) -> str:
+    import xml.etree.ElementTree as ET
+
+    if not output_dir:
+        output_dir = str(Path(schematic_path).parent)
+
+    output_path = str(Path(output_dir) / (Path(schematic_path).stem + ".net"))
+
+    try:
+        _run_cli(
+            [
+                "sch",
+                "export",
+                "netlist",
+                "--output",
+                output_path,
+                schematic_path,
+            ]
+        )
+    except RuntimeError as e:
+        return json.dumps({"error": str(e)})
+
+    # Parse the netlist XML
+    if not Path(output_path).exists():
+        return json.dumps({"error": "Netlist file not generated"})
+
+    try:
+        tree = ET.parse(output_path)
+        root = tree.getroot()
+
+        components = []
+        comp_section = root.find(".//components")
+        if comp_section is not None:
+            for comp in comp_section.findall("comp"):
+                ref = comp.get("ref", "")
+                value_el = comp.find("value")
+                fp_el = comp.find("footprint")
+                sheetpath_el = comp.find("sheetpath")
+                components.append(
+                    {
+                        "reference": ref,
+                        "value": value_el.text if value_el is not None else "",
+                        "footprint": fp_el.text if fp_el is not None else "",
+                        "sheet_path": sheetpath_el.get("names", "/")
+                        if sheetpath_el is not None
+                        else "/",
+                    }
+                )
+
+        nets = []
+        net_section = root.find(".//nets")
+        if net_section is not None:
+            for net in net_section.findall("net"):
+                net_name = net.get("name", "")
+                net_code = net.get("code", "")
+                nodes = []
+                for node in net.findall("node"):
+                    nodes.append(
+                        {
+                            "ref": node.get("ref", ""),
+                            "pin": node.get("pin", ""),
+                            "pinfunction": node.get("pinfunction", ""),
+                        }
+                    )
+                nets.append(
+                    {
+                        "name": net_name,
+                        "code": net_code,
+                        "node_count": len(nodes),
+                        "nodes": nodes,
+                    }
+                )
+
+        return json.dumps(
+            {
+                "output_path": output_path,
+                "component_count": len(components),
+                "net_count": len(nets),
+                "components": components,
+                "nets": nets,
+            }
+        )
+    except ET.ParseError as e:
+        return json.dumps({"output_path": output_path, "parse_error": str(e)})
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
@@ -1234,6 +1323,7 @@ get_symbol_instances = _get_symbol_instances
 move_hierarchical_sheet = _move_hierarchical_sheet
 reorder_sheet_pages = _reorder_sheet_pages
 duplicate_sheet = _duplicate_sheet
+export_hierarchical_netlist = _export_hierarchical_netlist
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -1537,6 +1627,23 @@ def duplicate_sheet(  # noqa: F811
         new_file_name: Name for the copied file (auto-generated if empty)
     """
     return _duplicate_sheet(sheet_uuid, new_sheet_name, schematic_path, project_path, new_file_name)
+
+
+@mcp.tool(annotations=_EXPORT)
+def export_hierarchical_netlist(  # noqa: F811
+    schematic_path: str = SCH_PATH,
+    output_dir: str = "",
+) -> str:
+    """Export a netlist from the root schematic, including hierarchy info.
+
+    Runs kicad-cli to generate a netlist and returns parsed component/net data
+    with sheet path information for each component.
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+        output_dir: Directory for netlist output (defaults to schematic directory)
+    """
+    return _export_hierarchical_netlist(schematic_path, output_dir)
 
 
 @mcp.tool(annotations=_EXPORT)
