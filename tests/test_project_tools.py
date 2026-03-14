@@ -1065,3 +1065,20 @@ class TestListCrossSheetNets:
         net_names = {n["name"] for n in result["hierarchical_nets"]}
         assert "VIN" in net_names
         assert "GND" in net_names
+
+
+class TestGetSymbolInstances:
+    def test_returns_instances(self, tmp_path: Path):
+        """get_symbol_instances should return symbol instance data from root schematic."""
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+
+        # The root schematic created by create_project is empty, so there won't be instances.
+        # But the tool should still work and return an empty list.
+        result = json.loads(
+            project.get_symbol_instances(
+                schematic_path=str(proj_dir / "proj.kicad_sch"),
+            )
+        )
+        assert "instances" in result
+        assert isinstance(result["instances"], list)

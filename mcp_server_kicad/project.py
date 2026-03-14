@@ -992,6 +992,27 @@ def _list_cross_sheet_nets(schematic_path: str) -> str:
     )
 
 
+def _get_symbol_instances(schematic_path: str) -> str:
+    """List all symbol instances from a root schematic's symbolInstances table.
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    instances = []
+    for si in getattr(sch, "symbolInstances", []):
+        instances.append(
+            {
+                "path": si.path if hasattr(si, "path") else "",
+                "reference": si.reference if hasattr(si, "reference") else "",
+                "unit": si.unit if hasattr(si, "unit") else 1,
+                "value": si.value if hasattr(si, "value") else "",
+                "footprint": si.footprint if hasattr(si, "footprint") else "",
+            }
+        )
+    return json.dumps({"instances": instances, "count": len(instances)})
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
@@ -1009,6 +1030,7 @@ list_hierarchy = _list_hierarchy
 get_sheet_info = _get_sheet_info
 trace_hierarchical_net = _trace_hierarchical_net
 list_cross_sheet_nets = _list_cross_sheet_nets
+get_symbol_instances = _get_symbol_instances
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -1250,6 +1272,16 @@ def list_cross_sheet_nets(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
         schematic_path: Path to root .kicad_sch file
     """
     return _list_cross_sheet_nets(schematic_path)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def get_symbol_instances(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+    """List all symbol instances from a root schematic's symbolInstances table.
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+    """
+    return _get_symbol_instances(schematic_path)
 
 
 @mcp.tool(annotations=_EXPORT)
