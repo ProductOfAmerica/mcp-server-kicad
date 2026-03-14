@@ -1037,3 +1037,31 @@ class TestTraceHierarchicalNet:
         )
         assert result["net_name"] == "VIN"
         assert len(result["sheets_touched"]) >= 1
+
+
+class TestListCrossSheetNets:
+    def test_lists_hierarchical_connections(self, tmp_path: Path):
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "proj.kicad_sch"),
+            sheet_name="Sub",
+            sheet_file=str(child),
+            pins=[
+                {"name": "VIN", "direction": "input"},
+                {"name": "GND", "direction": "bidirectional"},
+            ],
+            project_path=str(proj_dir / "proj.kicad_pro"),
+        )
+
+        result = json.loads(
+            project.list_cross_sheet_nets(
+                schematic_path=str(proj_dir / "proj.kicad_sch"),
+            )
+        )
+        assert len(result["hierarchical_nets"]) == 2
+        net_names = {n["name"] for n in result["hierarchical_nets"]}
+        assert "VIN" in net_names
+        assert "GND" in net_names

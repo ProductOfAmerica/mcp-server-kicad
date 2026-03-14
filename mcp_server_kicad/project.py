@@ -940,6 +940,58 @@ def _trace_hierarchical_net(net_name: str, schematic_path: str) -> str:
     )
 
 
+def _list_cross_sheet_nets(schematic_path: str) -> str:
+    """List all nets that cross sheet boundaries (hierarchical pins and global labels).
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    sch_dir = Path(schematic_path).parent
+
+    hierarchical_nets: list[dict] = []
+    global_nets: dict[str, list[str]] = {}  # name -> [sheet files]
+
+    for sheet in sch.sheets:
+        for pin in sheet.pins:
+            child_path = sch_dir / sheet.fileName.value
+            has_label = False
+            if child_path.exists():
+                child_sch = _load_sch(str(child_path))
+                has_label = any(hl.text == pin.name for hl in child_sch.hierarchicalLabels)
+            hierarchical_nets.append(
+                {
+                    "name": pin.name,
+                    "direction": pin.connectionType,
+                    "sheet_name": sheet.sheetName.value,
+                    "file_name": sheet.fileName.value,
+                    "label_matched": has_label,
+                }
+            )
+
+        # Collect global labels
+        child_path = sch_dir / sheet.fileName.value
+        if child_path.exists():
+            child_sch = _load_sch(str(child_path))
+            for gl in child_sch.globalLabels:
+                global_nets.setdefault(gl.text, []).append(sheet.fileName.value)
+
+    # Also check root for global labels
+    for gl in sch.globalLabels:
+        global_nets.setdefault(gl.text, []).append(Path(schematic_path).name)
+
+    global_net_list = [
+        {"name": name, "sheets": sheets} for name, sheets in sorted(global_nets.items())
+    ]
+
+    return json.dumps(
+        {
+            "hierarchical_nets": hierarchical_nets,
+            "global_nets": global_net_list,
+        }
+    )
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
@@ -956,6 +1008,7 @@ is_root_schematic = _is_root_schematic
 list_hierarchy = _list_hierarchy
 get_sheet_info = _get_sheet_info
 trace_hierarchical_net = _trace_hierarchical_net
+list_cross_sheet_nets = _list_cross_sheet_nets
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -1187,6 +1240,16 @@ def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> str
         schematic_path: Path to root .kicad_sch file
     """
     return _trace_hierarchical_net(net_name, schematic_path)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_cross_sheet_nets(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+    """List all nets that cross sheet boundaries (hierarchical pins and global labels).
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+    """
+    return _list_cross_sheet_nets(schematic_path)
 
 
 @mcp.tool(annotations=_EXPORT)
