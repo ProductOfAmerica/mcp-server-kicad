@@ -1226,3 +1226,58 @@ class TestModifyHierarchicalLabel:
 
         sch = Schematic.from_file(str(empty_sch))
         assert sch.hierarchicalLabels[0].shape == "output"
+
+
+class TestConnectPinsNetLabel:
+    def test_creates_net_label_when_no_existing(self, scratch_sch):
+        """connect_pins auto-adds net label when neither pin has one."""
+        from kiutils.schematic import Schematic
+
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R2",
+            value="10K",
+            x=100,
+            y=130,
+            schematic_path=str(scratch_sch),
+        )
+        schematic.connect_pins(
+            ref1="R1",
+            pin1="2",
+            ref2="R2",
+            pin2="1",
+            schematic_path=str(scratch_sch),
+        )
+        sch = Schematic.from_file(str(scratch_sch))
+        net_labels = [lbl.text for lbl in sch.labels if lbl.text.startswith("Net-(")]
+        assert "Net-(R1-2)" in net_labels
+
+    def test_skips_label_when_pin_already_labeled(self, scratch_sch):
+        """connect_pins skips auto-label when pin already has a net label."""
+        from kiutils.schematic import Schematic
+
+        # Wire R1:1 to a net label first
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
+            label_text="MY_NET",
+            schematic_path=str(scratch_sch),
+        )
+        # Place R2 and connect to R1:1 (which now has MY_NET at its pin pos)
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R2",
+            value="10K",
+            x=100,
+            y=70,
+            schematic_path=str(scratch_sch),
+        )
+        schematic.connect_pins(
+            ref1="R1",
+            pin1="1",
+            ref2="R2",
+            pin2="2",
+            schematic_path=str(scratch_sch),
+        )
+        sch = Schematic.from_file(str(scratch_sch))
+        auto_labels = [lbl.text for lbl in sch.labels if lbl.text.startswith("Net-(")]
+        assert len(auto_labels) == 0, f"Should skip auto-label, got: {auto_labels}"

@@ -1870,6 +1870,60 @@ def connect_pins(
         new_points.append((x2, y1))  # L-shape corner
     _auto_junctions(sch, new_points)
 
+    # Auto-add net label for hierarchical ERC compatibility
+    # Walk wires from both pin endpoints to find all connected points,
+    # then skip if any connected point already has a label.
+    tol = 0.01
+
+    def _connected_points(seed_x: float, seed_y: float) -> set[tuple[float, float]]:
+        """BFS over wires to collect all points electrically connected to seed."""
+        visited: set[tuple[float, float]] = set()
+        queue = [(seed_x, seed_y)]
+        while queue:
+            cx, cy = queue.pop()
+            if (cx, cy) in visited:
+                continue
+            visited.add((cx, cy))
+            for item in sch.graphicalItems:
+                if getattr(item, "type", None) != "wire" or len(item.points) < 2:
+                    continue
+                p0 = item.points[0]
+                p1 = item.points[-1]
+                if abs(p0.X - cx) < tol and abs(p0.Y - cy) < tol:
+                    nxt = (p1.X, p1.Y)
+                    if nxt not in visited:
+                        queue.append(nxt)
+                elif abs(p1.X - cx) < tol and abs(p1.Y - cy) < tol:
+                    nxt = (p0.X, p0.Y)
+                    if nxt not in visited:
+                        queue.append(nxt)
+        return visited
+
+    net_points = _connected_points(x1, y1) | _connected_points(x2, y2)
+
+    has_label = False
+    for lbl in sch.labels:
+        lx, ly = lbl.position.X, lbl.position.Y
+        if any(abs(lx - px) < tol and abs(ly - py) < tol for px, py in net_points):
+            has_label = True
+            break
+    if not has_label:
+        for gl in sch.globalLabels:
+            lx, ly = gl.position.X, gl.position.Y
+            if any(abs(lx - px) < tol and abs(ly - py) < tol for px, py in net_points):
+                has_label = True
+                break
+    if not has_label:
+        net_name = f"Net-({ref1}-{pin1})"
+        sch.labels.append(
+            LocalLabel(
+                text=net_name,
+                position=Position(X=x1, Y=y1, angle=0),
+                effects=_default_effects(),
+                uuid=_gen_uuid(),
+            )
+        )
+
     _save_sch(sch)
 
     n = len(segments)
