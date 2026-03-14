@@ -21,6 +21,7 @@ from mcp_server_kicad._shared import (
     Effects,
     Font,
     GlobalLabel,
+    HierarchicalLabel,
     Junction,
     LocalLabel,
     NoConnect,
@@ -38,6 +39,7 @@ from mcp_server_kicad._shared import (
     _load_sch,
     _load_system_lib_symbol,
     _resolve_hierarchy_path,
+    _resolve_root,
     _resolve_system_lib,
     _run_cli,
     _save_sch,
@@ -73,7 +75,13 @@ mcp = FastMCP(
         "2. Fix 'power pin not driven' with add_power_symbol (lib_id='power:PWR_FLAG')\n"
         "3. Fix unconnected pins with wire_pin_to_label or no_connect_pin\n"
         "4. Re-run run_erc to verify fixes\n"
-        "5. If blocked, report the error — do NOT edit the schematic file manually"
+        "5. If blocked, report the error — do NOT edit the schematic file manually\n\n"
+        "HIERARCHY WORKFLOW:\n"
+        "1. Create hierarchy with add_hierarchical_sheet (project server)\n"
+        "2. Add hierarchical labels with add_hierarchical_label to connect sub-sheets\n"
+        "3. List items with list_schematic_items (hierarchical_labels, sheets)\n"
+        "4. Trace nets with get_net_connections (multi-hop BFS)\n"
+        "5. Run run_erc from root with project_path for validation"
     ),
 )
 
@@ -308,7 +316,8 @@ def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
     """List schematic items by type.
 
     Args:
-        item_type: One of "summary", "components", "labels", "wires", "global_labels"
+        item_type: One of "summary", "components", "labels", "wires", "global_labels",
+            "hierarchical_labels", "sheets", "junctions", "no_connects", "bus_entries"
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
@@ -322,7 +331,11 @@ def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
             f"Components: {len(sch.schematicSymbols)}\n"
             f"Labels: {len(sch.labels)}\n"
             f"Global labels: {len(sch.globalLabels)}\n"
-            f"Wires: {wire_count}"
+            f"Hierarchical labels: {len(sch.hierarchicalLabels)}\n"
+            f"Sheets: {len(sch.sheets)}\n"
+            f"Wires: {wire_count}\n"
+            f"Junctions: {len(sch.junctions)}\n"
+            f"No-connects: {len(sch.noConnects)}"
         )
     elif item_type == "components":
         items = []
@@ -366,11 +379,75 @@ def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
                 }
             )
         return json.dumps(items)
+    elif item_type == "hierarchical_labels":
+        items = []
+        for hl in sch.hierarchicalLabels:
+            items.append(
+                {
+                    "text": hl.text,
+                    "shape": hl.shape,
+                    "x": hl.position.X,
+                    "y": hl.position.Y,
+                    "rotation": hl.position.angle or 0,
+                    "uuid": hl.uuid,
+                }
+            )
+        return json.dumps(items)
+    elif item_type == "sheets":
+        items = []
+        for sheet in sch.sheets:
+            items.append(
+                {
+                    "sheet_name": sheet.sheetName.value,
+                    "file_name": sheet.fileName.value,
+                    "x": sheet.position.X,
+                    "y": sheet.position.Y,
+                    "width": sheet.width,
+                    "height": sheet.height,
+                    "pin_count": len(sheet.pins),
+                    "uuid": sheet.uuid,
+                }
+            )
+        return json.dumps(items)
+    elif item_type == "junctions":
+        items = []
+        for j in sch.junctions:
+            items.append(
+                {
+                    "x": j.position.X,
+                    "y": j.position.Y,
+                    "diameter": j.diameter,
+                }
+            )
+        return json.dumps(items)
+    elif item_type == "no_connects":
+        items = []
+        for nc in sch.noConnects:
+            items.append(
+                {
+                    "x": nc.position.X,
+                    "y": nc.position.Y,
+                }
+            )
+        return json.dumps(items)
+    elif item_type == "bus_entries":
+        items = []
+        for be in sch.busEntries:
+            items.append(
+                {
+                    "x": be.position.X,
+                    "y": be.position.Y,
+                    "size_x": be.size.X,
+                    "size_y": be.size.Y,
+                }
+            )
+        return json.dumps(items)
     else:
         return json.dumps(
             {
                 "error": f"Unknown item_type: {item_type}. "
-                "Use: summary, components, labels, wires, global_labels"
+                "Use: summary, components, labels, wires, global_labels, "
+                "hierarchical_labels, sheets, junctions, no_connects, bus_entries"
             }
         )
 
@@ -472,16 +549,29 @@ def get_net_connections(
         if glbl.text == label_text:
             label_positions.add((glbl.position.X, glbl.position.Y))
 
-    # Collect all wire endpoints reachable from label positions
+    # BFS: expand from label positions through connected wire endpoints
     reachable: set[tuple[float, float]] = set(label_positions)
-    for lx, ly in label_positions:
-        for item in sch.graphicalItems:
-            if isinstance(item, Connection) and item.type == "wire" and len(item.points) >= 2:
+    frontier = set(label_positions)
+    while frontier:
+        next_frontier: set[tuple[float, float]] = set()
+        for fx, fy in frontier:
+            for item in sch.graphicalItems:
+                if not (isinstance(item, Connection) and item.type == "wire"):
+                    continue
+                if len(item.points) < 2:
+                    continue
                 p0, p1 = item.points[0], item.points[1]
-                if abs(p0.X - lx) < tol and abs(p0.Y - ly) < tol:
-                    reachable.add((p1.X, p1.Y))
-                elif abs(p1.X - lx) < tol and abs(p1.Y - ly) < tol:
-                    reachable.add((p0.X, p0.Y))
+                if abs(p0.X - fx) < tol and abs(p0.Y - fy) < tol:
+                    pt = (p1.X, p1.Y)
+                    if pt not in reachable:
+                        reachable.add(pt)
+                        next_frontier.add(pt)
+                elif abs(p1.X - fx) < tol and abs(p1.Y - fy) < tol:
+                    pt = (p0.X, p0.Y)
+                    if pt not in reachable:
+                        reachable.add(pt)
+                        next_frontier.add(pt)
+        frontier = next_frontier
 
     # Find component pins at reachable positions
     connections = []
@@ -853,6 +943,12 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
             uuid=_gen_uuid(),
         )
         sch.graphicalItems.append(wire)
+    # Auto-add junctions where new wire endpoints hit existing wire interiors
+    all_points = []
+    for w in wires:
+        all_points.append((round(w["x1"], 4), round(w["y1"], 4)))
+        all_points.append((round(w["x2"], 4), round(w["y2"], 4)))
+    _auto_junctions(sch, all_points)
     _save_sch(sch)
     return f"Added {len(wires)} wires"
 
@@ -1082,6 +1178,131 @@ def add_global_label(
     sch.globalLabels.append(gl)
     _save_sch(sch)
     return f"Global label '{text}' ({shape}) at ({x}, {y})"
+
+
+_VALID_HLABEL_SHAPES = {"input", "output", "bidirectional", "tri_state", "passive"}
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def add_hierarchical_label(
+    text: str,
+    shape: str,
+    x: float,
+    y: float,
+    rotation: float = 0,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Add a hierarchical label to a sub-sheet schematic.
+
+    Args:
+        text: Label name (must match parent sheet pin name)
+        shape: Direction — input, output, bidirectional, tri_state, passive
+        x: X position in mm
+        y: Y position in mm
+        rotation: Degrees (0, 90, 180, 270)
+        schematic_path: Path to .kicad_sch file
+    """
+    if shape not in _VALID_HLABEL_SHAPES:
+        return f"Error: invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}"
+    sch = _load_sch(schematic_path)
+    err = _validate_position(x, y, sch)
+    if err:
+        return err
+    x, y = round(x, 4), round(y, 4)
+    sch.hierarchicalLabels.append(
+        HierarchicalLabel(
+            text=text,
+            shape=shape,
+            position=Position(X=x, Y=y, angle=rotation),
+            effects=_default_effects(),
+            uuid=_gen_uuid(),
+        )
+    )
+    _save_sch(sch)
+    return f"Added hierarchical label '{text}' ({shape}) at ({x}, {y})"
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def remove_hierarchical_label(
+    text: str,
+    schematic_path: str = SCH_PATH,
+    uuid: str = "",
+) -> str:
+    """Remove a hierarchical label by name or UUID.
+
+    Args:
+        text: Label text to match
+        schematic_path: Path to .kicad_sch file
+        uuid: Optional UUID for disambiguation when multiple labels share a name
+    """
+    sch = _load_sch(schematic_path)
+    target = None
+    for hl in sch.hierarchicalLabels:
+        if uuid and hl.uuid == uuid:
+            target = hl
+            break
+        if hl.text == text and not uuid:
+            target = hl
+            break
+    if target is None:
+        return f"Hierarchical label '{text}' not found"
+    sch.hierarchicalLabels.remove(target)
+    _save_sch(sch)
+    return f"Removed hierarchical label '{target.text}'"
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def modify_hierarchical_label(
+    text: str,
+    schematic_path: str = SCH_PATH,
+    new_text: str = "",
+    new_shape: str = "",
+    new_x: float | None = None,
+    new_y: float | None = None,
+    uuid: str = "",
+) -> str:
+    """Modify an existing hierarchical label.
+
+    Args:
+        text: Current label text to find
+        schematic_path: Path to .kicad_sch file
+        new_text: New label text (empty = keep current)
+        new_shape: New shape/direction (empty = keep current)
+        new_x: New X position (None = keep current)
+        new_y: New Y position (None = keep current)
+        uuid: UUID for disambiguation
+    """
+    if new_shape and new_shape not in _VALID_HLABEL_SHAPES:
+        return f"Error: invalid shape '{new_shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}"
+    sch = _load_sch(schematic_path)
+    target = None
+    for hl in sch.hierarchicalLabels:
+        if uuid and hl.uuid == uuid:
+            target = hl
+            break
+        if hl.text == text and not uuid:
+            target = hl
+            break
+    if target is None:
+        return f"Hierarchical label '{text}' not found"
+    changes = []
+    if new_text:
+        target.text = new_text
+        changes.append(f"text='{new_text}'")
+    if new_shape:
+        target.shape = new_shape
+        changes.append(f"shape={new_shape}")
+    if new_x is not None:
+        target.position.X = round(new_x, 4)
+        changes.append(f"x={new_x}")
+    if new_y is not None:
+        target.position.Y = round(new_y, 4)
+        changes.append(f"y={new_y}")
+    _save_sch(sch)
+    warning = ""
+    if new_text:
+        warning = " Warning: update the matching sheet pin in the parent schematic."
+    return f"Modified hierarchical label: {', '.join(changes)}.{warning}"
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1655,25 +1876,6 @@ def no_connect_pin(
 # ---------------------------------------------------------------------------
 
 
-def _find_root_schematic(schematic_path: str) -> str | None:
-    """Return the root schematic path if *schematic_path* is a sub-sheet.
-
-    Looks for a ``.kicad_pro`` in the same directory and derives the root
-    ``.kicad_sch`` from its stem.  Returns ``None`` when *schematic_path*
-    is already the root (or no project file is found).
-    """
-    sch_dir = Path(schematic_path).parent
-    pro_files = list(sch_dir.glob("*.kicad_pro"))
-    if len(pro_files) != 1:
-        return None
-    root_sch = pro_files[0].with_suffix(".kicad_sch")
-    if not root_sch.exists():
-        return None
-    if root_sch.resolve() == Path(schematic_path).resolve():
-        return None  # Already the root
-    return str(root_sch)
-
-
 def _parse_unconnected_pins(erc_report: dict, sheet_filter: str | None = None) -> list[dict]:
     """Extract unconnected pin violations from an ERC report.
 
@@ -1707,6 +1909,7 @@ def _parse_unconnected_pins(erc_report: dict, sheet_filter: str | None = None) -
 def list_unconnected_pins(
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
+    project_path: str = "",
 ) -> str:
     """List unconnected pins by running ERC and filtering results.
 
@@ -1716,6 +1919,7 @@ def list_unconnected_pins(
     Args:
         schematic_path: Path to .kicad_sch file
         output_dir: Directory for ERC report file
+        project_path: Path to .kicad_pro file for explicit root resolution
     """
     import shutil
 
@@ -1723,7 +1927,7 @@ def list_unconnected_pins(
         return json.dumps({"error": "kicad-cli not found"}, indent=2)
 
     # Auto-redirect sub-sheets to root for full hierarchy context
-    root_path = _find_root_schematic(schematic_path)
+    root_path = _resolve_root(schematic_path, project_path)
     erc_target = root_path or schematic_path
     sheet_filter = Path(schematic_path).name if root_path else None
 
@@ -1756,7 +1960,9 @@ def list_unconnected_pins(
 
 
 @mcp.tool(annotations=_EXPORT)
-def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str:
+def run_erc(
+    schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR, project_path: str = ""
+) -> str:
     """Run Electrical Rules Check (ERC) on a schematic.
 
     Auto-redirects to root schematic for sub-sheets to avoid false
@@ -1767,9 +1973,10 @@ def run_erc(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str
     Args:
         schematic_path: Path to .kicad_sch file
         output_dir: Directory for report file (default: same as schematic)
+        project_path: Path to .kicad_pro file for explicit root resolution
     """
     # Auto-redirect sub-sheets to root for full hierarchy context
-    root_path = _find_root_schematic(schematic_path)
+    root_path = _resolve_root(schematic_path, project_path)
     erc_target = root_path or schematic_path
     sheet_filter = Path(schematic_path).name if root_path else None
 

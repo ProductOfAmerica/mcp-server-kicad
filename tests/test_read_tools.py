@@ -10,12 +10,14 @@ from pathlib import Path
 
 from conftest import (
     _default_effects,
+    _default_stroke,
     _gen_uuid,
     build_r_symbol,
     new_schematic,
+    place_r1,
 )
 from kiutils.items.common import Effects, Font, Position, Property
-from kiutils.items.schitems import SchematicSymbol
+from kiutils.items.schitems import Connection, LocalLabel, SchematicSymbol
 
 from mcp_server_kicad import schematic
 
@@ -251,3 +253,225 @@ class TestListSchematicItemsSummary:
         assert "Components: 0" in result
         assert "Labels: 0" in result
         assert "Wires: 0" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: get_net_connections multi-hop BFS
+# ---------------------------------------------------------------------------
+
+
+class TestGetNetConnectionsMultiHop:
+    def test_traces_through_multiple_wire_segments(self, tmp_path: Path):
+        """get_net_connections should follow multi-hop wire chains to reach a pin."""
+        # Build schematic with 3-hop chain: label -> wire -> wire -> wire -> R1 pin
+        # R1 at (100, 100): pin 1 at (100, 96.19), pin 2 at (100, 103.81)
+        sch = new_schematic()
+        sch.libSymbols.append(build_r_symbol())
+        sch.schematicSymbols.append(place_r1(100, 100))
+
+        # Label at (10, 96.19) — same Y as pin 1
+        sch.labels.append(
+            LocalLabel(
+                text="MULTI_HOP",
+                position=Position(X=10, Y=96.19, angle=0),
+                effects=_default_effects(),
+                uuid=_gen_uuid(),
+            )
+        )
+        # Wire 1: (10, 96.19) -> (40, 96.19)
+        sch.graphicalItems.append(
+            Connection(
+                type="wire",
+                points=[Position(X=10, Y=96.19), Position(X=40, Y=96.19)],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+        # Wire 2: (40, 96.19) -> (70, 96.19)
+        sch.graphicalItems.append(
+            Connection(
+                type="wire",
+                points=[Position(X=40, Y=96.19), Position(X=70, Y=96.19)],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+        # Wire 3: (70, 96.19) -> (100, 96.19) — reaches R1 pin 1
+        sch.graphicalItems.append(
+            Connection(
+                type="wire",
+                points=[Position(X=70, Y=96.19), Position(X=100, Y=96.19)],
+                stroke=_default_stroke(),
+                uuid=_gen_uuid(),
+            )
+        )
+
+        path = tmp_path / "multihop.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+
+        result = json.loads(
+            schematic.get_net_connections(
+                label_text="MULTI_HOP",
+                schematic_path=str(path),
+            )
+        )
+        assert result["label_count"] == 1
+        # With BFS, all 3 hops are traversed and R1 pin 1 at (100, 96.19) is found.
+        # Old single-hop would only reach (40, 96.19) and miss the pin.
+        conn_refs = {c["reference"] for c in result["connections"]}
+        assert "R1" in conn_refs, f"BFS should reach R1 via 3 hops, got: {result['connections']}"
+
+
+# ---------------------------------------------------------------------------
+# Tests: list_schematic_items expanded (5 new item types)
+# ---------------------------------------------------------------------------
+
+
+class TestListSchematicItemsExpanded:
+    def test_hierarchical_labels(self, tmp_path: Path):
+        from kiutils.items.schitems import HierarchicalLabel
+
+        sch = new_schematic()
+        sch.hierarchicalLabels.append(
+            HierarchicalLabel(
+                text="VIN",
+                shape="input",
+                position=Position(X=25.4, Y=30.0, angle=0),
+                effects=_default_effects(),
+                uuid=_gen_uuid(),
+            )
+        )
+        path = tmp_path / "hlabels.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+
+        result = json.loads(
+            schematic.list_schematic_items(
+                item_type="hierarchical_labels", schematic_path=str(path)
+            )
+        )
+        assert len(result) == 1
+        assert result[0]["text"] == "VIN"
+        assert result[0]["shape"] == "input"
+        assert result[0]["x"] == 25.4
+
+    def test_sheets(self, tmp_path: Path):
+        from mcp_server_kicad import project
+
+        parent = tmp_path / "root.kicad_sch"
+        child = tmp_path / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(parent))
+        project.create_schematic(schematic_path=str(child))
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(parent),
+            sheet_name="Power",
+            sheet_file=str(child),
+            pins=[{"name": "VIN", "direction": "input"}],
+        )
+
+        result = json.loads(
+            schematic.list_schematic_items(item_type="sheets", schematic_path=str(parent))
+        )
+        assert len(result) == 1
+        assert result[0]["sheet_name"] == "Power"
+        assert result[0]["file_name"] == "child.kicad_sch"
+        assert result[0]["pin_count"] == 1
+        assert "uuid" in result[0]
+
+    def test_junctions(self, tmp_path: Path):
+        from kiutils.items.common import ColorRGBA
+        from kiutils.items.schitems import Junction
+
+        sch = new_schematic()
+        sch.junctions.append(
+            Junction(
+                position=Position(X=50, Y=50),
+                diameter=0,
+                color=ColorRGBA(R=0, G=0, B=0, A=0),
+                uuid=_gen_uuid(),
+            )
+        )
+        path = tmp_path / "junctions.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+
+        result = json.loads(
+            schematic.list_schematic_items(item_type="junctions", schematic_path=str(path))
+        )
+        assert len(result) == 1
+        assert result[0]["x"] == 50
+        assert result[0]["y"] == 50
+
+    def test_no_connects(self, tmp_path: Path):
+        from kiutils.items.schitems import NoConnect
+
+        sch = new_schematic()
+        sch.noConnects.append(
+            NoConnect(
+                position=Position(X=75, Y=80),
+                uuid=_gen_uuid(),
+            )
+        )
+        path = tmp_path / "noconn.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+
+        result = json.loads(
+            schematic.list_schematic_items(item_type="no_connects", schematic_path=str(path))
+        )
+        assert len(result) == 1
+        assert result[0]["x"] == 75
+        assert result[0]["y"] == 80
+
+    def test_bus_entries(self, tmp_path: Path):
+        from kiutils.items.schitems import BusEntry
+
+        sch = new_schematic()
+        sch.busEntries.append(
+            BusEntry(
+                position=Position(X=40, Y=60),
+                size=Position(X=2.54, Y=2.54),
+                uuid=_gen_uuid(),
+            )
+        )
+        path = tmp_path / "bus.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+
+        result = json.loads(
+            schematic.list_schematic_items(item_type="bus_entries", schematic_path=str(path))
+        )
+        assert len(result) == 1
+        assert result[0]["x"] == 40
+        assert result[0]["size_x"] == 2.54
+
+    def test_summary_includes_new_counts(self, tmp_path: Path):
+        from kiutils.items.common import ColorRGBA
+        from kiutils.items.schitems import HierarchicalLabel, Junction
+
+        sch = new_schematic()
+        sch.hierarchicalLabels.append(
+            HierarchicalLabel(
+                text="A",
+                shape="input",
+                position=Position(X=10, Y=10, angle=0),
+                effects=_default_effects(),
+                uuid=_gen_uuid(),
+            )
+        )
+        sch.junctions.append(
+            Junction(
+                position=Position(X=20, Y=20),
+                diameter=0,
+                color=ColorRGBA(R=0, G=0, B=0, A=0),
+                uuid=_gen_uuid(),
+            )
+        )
+        path = tmp_path / "summary.kicad_sch"
+        sch.filePath = str(path)
+        sch.to_file()
+
+        result = schematic.list_schematic_items(item_type="summary", schematic_path=str(path))
+        assert "Hierarchical labels: 1" in result
+        assert "Junctions: 1" in result

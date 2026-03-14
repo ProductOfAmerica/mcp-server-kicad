@@ -70,20 +70,22 @@ class TestFindRootSchematic:
     def test_returns_none_for_root(self, tmp_path):
         """Root schematic returns None (no redirect needed)."""
         from mcp_server_kicad import project
+        from mcp_server_kicad._shared import _find_root_schematic
 
         project.create_project(directory=str(tmp_path / "proj"), name="proj")
         root = str(tmp_path / "proj" / "proj.kicad_sch")
-        assert schematic._find_root_schematic(root) is None
+        assert _find_root_schematic(root) is None
 
     def test_returns_root_for_subsheet(self, tmp_path):
         """Sub-sheet returns path to root schematic."""
         from mcp_server_kicad import project
+        from mcp_server_kicad._shared import _find_root_schematic
 
         proj_dir = tmp_path / "proj"
         project.create_project(directory=str(proj_dir), name="proj")
         child = proj_dir / "child.kicad_sch"
         project.create_schematic(schematic_path=str(child))
-        result = schematic._find_root_schematic(str(child))
+        result = _find_root_schematic(str(child))
         assert result is not None
         assert result.endswith("proj.kicad_sch")
 

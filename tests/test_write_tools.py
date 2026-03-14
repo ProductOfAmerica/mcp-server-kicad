@@ -531,6 +531,25 @@ class TestAddWires:
         sch = reparse(str(scratch_sch))
         assert sch is not None
 
+    def test_add_wires_creates_junctions_on_existing_wire(self, scratch_sch):
+        """add_wires should auto-add junction when new wire T-connects to existing."""
+        from kiutils.schematic import Schematic
+
+        # scratch_sch has a wire from (50,50) to (80,50)
+        # Add a new wire whose ENDPOINT lands on the interior of the existing wire.
+        # _auto_junctions checks if new wire endpoints land on existing wire interiors.
+        # Wire from (65,30) to (65,50) — endpoint (65,50) is on the interior of (50,50)-(80,50)
+        result = schematic.add_wires(
+            wires=[{"x1": 65, "y1": 30, "x2": 65, "y2": 50}],
+            schematic_path=str(scratch_sch),
+        )
+        assert "Added 1 wires" in result
+
+        sch = Schematic.from_file(str(scratch_sch))
+        # Should have a junction at (65, 50) where the new wire endpoint meets existing wire
+        junctions = [(j.position.X, j.position.Y) for j in sch.junctions]
+        assert (65, 50) in junctions
+
 
 # ===========================================================================
 # TestAddLabel
@@ -1076,3 +1095,119 @@ class TestReferenceValidation:
             project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Error" in result
+
+
+# ===========================================================================
+# TestAddHierarchicalLabel (Task 8)
+# ===========================================================================
+
+
+class TestAddHierarchicalLabel:
+    def test_adds_label(self, empty_sch):
+        from kiutils.schematic import Schematic
+
+        result = schematic.add_hierarchical_label(
+            text="VIN",
+            shape="input",
+            x=25.4,
+            y=30.0,
+            schematic_path=str(empty_sch),
+        )
+        assert "VIN" in result
+
+        sch = Schematic.from_file(str(empty_sch))
+        assert len(sch.hierarchicalLabels) == 1
+        hl = sch.hierarchicalLabels[0]
+        assert hl.text == "VIN"
+        assert hl.shape == "input"
+        assert hl.position.X == 25.4
+
+    def test_invalid_shape_returns_error(self, empty_sch):
+        result = schematic.add_hierarchical_label(
+            text="BAD",
+            shape="invalid",
+            x=10,
+            y=10,
+            schematic_path=str(empty_sch),
+        )
+        assert "Error" in result or "invalid" in result.lower()
+
+
+# ===========================================================================
+# TestRemoveHierarchicalLabel (Task 9)
+# ===========================================================================
+
+
+class TestRemoveHierarchicalLabel:
+    def test_removes_by_name(self, empty_sch):
+        from kiutils.schematic import Schematic
+
+        schematic.add_hierarchical_label(
+            text="VIN",
+            shape="input",
+            x=25,
+            y=30,
+            schematic_path=str(empty_sch),
+        )
+        result = schematic.remove_hierarchical_label(
+            text="VIN",
+            schematic_path=str(empty_sch),
+        )
+        assert "Removed" in result
+
+        sch = Schematic.from_file(str(empty_sch))
+        assert len(sch.hierarchicalLabels) == 0
+
+    def test_not_found_returns_error(self, empty_sch):
+        result = schematic.remove_hierarchical_label(
+            text="NONEXISTENT",
+            schematic_path=str(empty_sch),
+        )
+        assert "not found" in result.lower()
+
+
+# ===========================================================================
+# TestModifyHierarchicalLabel (Task 10)
+# ===========================================================================
+
+
+class TestModifyHierarchicalLabel:
+    def test_rename_label(self, empty_sch):
+        from kiutils.schematic import Schematic
+
+        schematic.add_hierarchical_label(
+            text="VIN",
+            shape="input",
+            x=25,
+            y=30,
+            schematic_path=str(empty_sch),
+        )
+        result = schematic.modify_hierarchical_label(
+            text="VIN",
+            new_text="VIN_PROT",
+            schematic_path=str(empty_sch),
+        )
+        assert "VIN_PROT" in result
+
+        sch = Schematic.from_file(str(empty_sch))
+        assert sch.hierarchicalLabels[0].text == "VIN_PROT"
+
+    def test_change_shape(self, empty_sch):
+        from kiutils.schematic import Schematic
+
+        schematic.add_hierarchical_label(
+            text="SIG",
+            shape="input",
+            x=25,
+            y=30,
+            schematic_path=str(empty_sch),
+        )
+        result = schematic.modify_hierarchical_label(
+            text="SIG",
+            new_shape="output",
+            schematic_path=str(empty_sch),
+        )
+        assert "output" in result
+
+        sch = Schematic.from_file(str(empty_sch))
+        assert sch.hierarchicalLabels[0].shape == "output"

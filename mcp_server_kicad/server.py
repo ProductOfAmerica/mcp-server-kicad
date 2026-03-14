@@ -46,6 +46,7 @@ _CLI_TOOLS: set[str] = {
     # project
     "run_jobset",
     "get_version",
+    "export_hierarchical_netlist",
 }
 
 

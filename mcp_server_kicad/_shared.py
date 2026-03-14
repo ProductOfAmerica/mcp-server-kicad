@@ -13,12 +13,20 @@ from kiutils.items.common import ColorRGBA, Effects, Font, Net, Position, Proper
 from kiutils.items.fpitems import FpText
 from kiutils.items.gritems import GrLine, GrText
 from kiutils.items.schitems import (
+    BusEntry,
     Connection,
     GlobalLabel,
+    HierarchicalLabel,
+    HierarchicalPin,
+    HierarchicalSheet,
+    HierarchicalSheetInstance,
+    HierarchicalSheetProjectInstance,
+    HierarchicalSheetProjectPath,
     Junction,
     LocalLabel,
     NoConnect,
     SchematicSymbol,
+    SymbolInstance,
     SymbolProjectInstance,
     SymbolProjectPath,
     Text,
@@ -67,6 +75,7 @@ _EXPORT = ToolAnnotations(
 __all__ = [
     # kiutils types
     "Board",
+    "BusEntry",
     "ColorRGBA",
     "Connection",
     "Effects",
@@ -76,6 +85,12 @@ __all__ = [
     "GlobalLabel",
     "GrLine",
     "GrText",
+    "HierarchicalLabel",
+    "HierarchicalPin",
+    "HierarchicalSheet",
+    "HierarchicalSheetInstance",
+    "HierarchicalSheetProjectInstance",
+    "HierarchicalSheetProjectPath",
     "Junction",
     "LocalLabel",
     "Net",
@@ -85,6 +100,7 @@ __all__ = [
     "Property",
     "Schematic",
     "SchematicSymbol",
+    "SymbolInstance",
     "SymbolProjectInstance",
     "SymbolProjectPath",
     "Segment",
@@ -124,6 +140,8 @@ __all__ = [
     "_SYSTEM_SYM_DIRS",
     "_resolve_system_lib",
     "_resolve_hierarchy_path",
+    "_find_root_schematic",
+    "_resolve_root",
     "_RAW_LIB_SYMBOLS",
     "_save_sch",
     "_load_system_lib_symbol",
@@ -277,6 +295,40 @@ def _resolve_hierarchy_path(
 
     # Fallback: couldn't find sheet in root — use own UUID
     return project_name, f"/{sch_uuid}"
+
+
+def _find_root_schematic(schematic_path: str) -> str | None:
+    """Return the root schematic path if *schematic_path* is a sub-sheet.
+
+    Looks for a ``.kicad_pro`` in the same directory and derives the root
+    ``.kicad_sch`` from its stem.  Returns ``None`` when *schematic_path*
+    is already the root (or no project file is found).
+    """
+    sch_dir = Path(schematic_path).parent
+    pro_files = list(sch_dir.glob("*.kicad_pro"))
+    if len(pro_files) != 1:
+        return None
+    root_sch = pro_files[0].with_suffix(".kicad_sch")
+    if not root_sch.exists():
+        return None
+    if root_sch.resolve() == Path(schematic_path).resolve():
+        return None
+    return str(root_sch)
+
+
+def _resolve_root(schematic_path: str, project_path: str = "") -> str | None:
+    """Find the root schematic, preferring explicit project_path.
+
+    Returns the root .kicad_sch path if schematic_path is a sub-sheet,
+    or None if it IS the root (or no root can be determined).
+    """
+    if project_path:
+        pro = Path(project_path)
+        root_sch = pro.with_suffix(".kicad_sch")
+        if root_sch.exists() and root_sch.resolve() != Path(schematic_path).resolve():
+            return str(root_sch)
+        return None
+    return _find_root_schematic(schematic_path)
 
 
 # ---------------------------------------------------------------------------
