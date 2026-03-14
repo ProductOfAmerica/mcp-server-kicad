@@ -83,6 +83,7 @@ These are the kicad MCP tools you should be using during verification:
 - `run_drc` — run design rules check, returns all violations
 - `get_board_info` — verify board setup and design rules
 - `list_pcb_items` — inspect board contents
+- `validate_board` — check all footprints against keep-out zones and board edge
 
 **PCB fixes:**
 - `add_trace` — route missing connections

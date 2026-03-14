@@ -45,19 +45,25 @@ from mcp_server_kicad._shared import (
     FpText,
     GrLine,
     GrText,
-    Hatch,  # noqa: F401
+    Hatch,
+    KeepoutSettings,
     Position,
     Segment,
     Via,
-    Zone,  # noqa: F401
-    ZonePolygon,  # noqa: F401
+    Zone,
+    ZonePolygon,
+    _board_edge_polygon,
+    _check_footprint_keepout_violations,
+    _courtyard_bbox,
     _default_effects,
     _file_meta,
     _fp_ref,
     _fp_val,
     _gen_uuid,
     _load_board,
+    _point_in_polygon,
     _run_cli,
+    _transform_local_to_board,
 )
 
 mcp = FastMCP(
@@ -196,7 +202,24 @@ def list_pcb_items(item_type: str, pcb_path: str = PCB_PATH) -> str:
     elif item_type == "zones":
         items = []
         for z in board.zones:
-            items.append({"net_name": z.netName, "layers": z.layers, "priority": z.priority})
+            entry: dict = {
+                "net_name": z.netName,
+                "layers": z.layers,
+                "priority": z.priority,
+                "is_keepout": z.keepoutSettings is not None,
+            }
+            if z.keepoutSettings is not None:
+                ks = z.keepoutSettings
+                entry["keepout"] = {
+                    "tracks": ks.tracks,
+                    "vias": ks.vias,
+                    "pads": ks.pads,
+                    "copperpour": ks.copperpour,
+                    "footprints": ks.footprints,
+                }
+            if z.polygons:
+                entry["polygon"] = [{"x": pt.X, "y": pt.Y} for pt in z.polygons[0].coordinates]
+            items.append(entry)
         return json.dumps(items)
     elif item_type == "layers":
         items = []
@@ -366,8 +389,68 @@ def move_footprint(
             if layer:
                 fp.layer = layer
             board.to_file()
-            return f"Moved {reference} to ({x}, {y})"
+            # Validation (never blocks the move)
+            warnings: list[str] = []
+            try:
+                violations = _check_footprint_keepout_violations(board, x, y, fp.layer)
+                if violations:
+                    warnings.append(
+                        "WARNING: position is inside a keep-out zone (footprints not allowed)"
+                    )
+                edge_poly = _board_edge_polygon(board)
+                if edge_poly is not None and not _point_in_polygon(x, y, edge_poly):
+                    warnings.append("WARNING: position is outside the board edge")
+            except Exception:
+                pass  # Validation must never block the move
+            msg = f"Moved {reference} to ({x}, {y})"
+            if warnings:
+                msg += " " + " ".join(warnings)
+            return msg
     return f"Footprint {reference} not found."
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def check_placement(
+    reference: str,
+    x: float,
+    y: float,
+    rotation: float = 0,
+    pcb_path: str = PCB_PATH,
+) -> str:
+    """Check if placing/moving a footprint to (x, y) would violate constraints.
+
+    Args:
+        reference: Footprint reference designator
+        x: Proposed X position
+        y: Proposed Y position
+        rotation: Proposed rotation in degrees
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+    fp = None
+    for f in board.footprints:
+        if _fp_ref(f) == reference:
+            fp = f
+            break
+    if fp is None:
+        return json.dumps({"error": f"Footprint {reference!r} not found."})
+
+    keepout_violations = _check_footprint_keepout_violations(board, x, y, fp.layer)
+    edge_poly = _board_edge_polygon(board)
+    board_edge_checked = edge_poly is not None
+    outside_board_edge = False
+    if edge_poly is not None:
+        outside_board_edge = not _point_in_polygon(x, y, edge_poly)
+
+    has_violations = bool(keepout_violations) or outside_board_edge
+    return json.dumps(
+        {
+            "status": "violations_found" if has_violations else "ok",
+            "board_edge_checked": board_edge_checked,
+            "keepout_violations": keepout_violations,
+            "outside_board_edge": outside_board_edge,
+        }
+    )
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
@@ -584,6 +667,65 @@ def add_copper_zone(
 
 
 @mcp.tool(annotations=_ADDITIVE)
+def add_keepout_zone(
+    corners: list[dict],
+    layers: list[str] | None = None,
+    no_tracks: bool = True,
+    no_vias: bool = True,
+    no_pads: bool = True,
+    no_copper_pour: bool = True,
+    no_footprints: bool = True,
+    pcb_path: str = PCB_PATH,
+) -> str:
+    """Create a keep-out zone that restricts placement of specified items.
+
+    Args:
+        corners: List of {x, y} dicts defining the zone polygon (min 3)
+        layers: Layers to apply keep-out to (default: ["F.Cu", "B.Cu"])
+        no_tracks: Restrict tracks in this zone
+        no_vias: Restrict vias in this zone
+        no_pads: Restrict pads in this zone
+        no_copper_pour: Restrict copper pour in this zone
+        no_footprints: Restrict footprints in this zone
+        pcb_path: Path to .kicad_pcb file
+    """
+    if len(corners) < 3:
+        return json.dumps({"error": "At least 3 corners required for a zone polygon."})
+    board = _load_board(pcb_path)
+    zone = Zone()
+    zone.net = 0
+    zone.netName = ""
+    zone.layers = layers or ["F.Cu", "B.Cu"]
+    zone.tstamp = _gen_uuid()
+    zone.hatch = Hatch(style="edge", pitch=0.5)
+    zone.keepoutSettings = KeepoutSettings(
+        tracks="not_allowed" if no_tracks else "allowed",
+        vias="not_allowed" if no_vias else "allowed",
+        pads="not_allowed" if no_pads else "allowed",
+        copperpour="not_allowed" if no_copper_pour else "allowed",
+        footprints="not_allowed" if no_footprints else "allowed",
+    )
+    poly = ZonePolygon()
+    poly.coordinates = [Position(X=c["x"], Y=c["y"]) for c in corners]
+    zone.polygons = [poly]
+    board.zones.append(zone)
+    board.to_file()
+    return json.dumps(
+        {
+            "corners": len(corners),
+            "layers": zone.layers,
+            "restrictions": {
+                "tracks": "not_allowed" if no_tracks else "allowed",
+                "vias": "not_allowed" if no_vias else "allowed",
+                "pads": "not_allowed" if no_pads else "allowed",
+                "copperpour": "not_allowed" if no_copper_pour else "allowed",
+                "footprints": "not_allowed" if no_footprints else "allowed",
+            },
+        }
+    )
+
+
+@mcp.tool(annotations=_ADDITIVE)
 def fill_zones(pcb_path: str = PCB_PATH) -> str:
     """Fill all copper zones on the board using pcbnew's zone filler.
 
@@ -747,11 +889,9 @@ def add_thermal_vias(
     # Compute pad center in board coordinates with rotation
     fp_x = fp.position.X
     fp_y = fp.position.Y
-    theta = math.radians(fp.position.angle or 0)
-    offset_x = pad.position.X
-    offset_y = pad.position.Y
-    pad_x = fp_x + (offset_x * math.cos(theta) - offset_y * math.sin(theta))
-    pad_y = fp_y + (offset_x * math.sin(theta) + offset_y * math.cos(theta))
+    pad_x, pad_y = _transform_local_to_board(
+        fp_x, fp_y, fp.position.angle or 0, pad.position.X, pad.position.Y
+    )
 
     # Determine net
     via_net = 0
@@ -908,11 +1048,10 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> str:
         for fp in board.footprints:
             fp_x = fp.position.X
             fp_y = fp.position.Y
-            theta = math.radians(fp.position.angle or 0)
             for pad in fp.pads:
-                ox, oy = pad.position.X, pad.position.Y
-                px = fp_x + (ox * math.cos(theta) - oy * math.sin(theta))
-                py = fp_y + (ox * math.sin(theta) + oy * math.cos(theta))
+                px, py = _transform_local_to_board(
+                    fp_x, fp_y, fp.position.angle or 0, pad.position.X, pad.position.Y
+                )
                 connection_points.append((round(px, 3), round(py, 3)))
 
         # Via positions
@@ -1424,6 +1563,113 @@ def autoroute_pcb(
         pass  # DRC is optional — kicad-cli may not be available
 
     return json.dumps(result, indent=2)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> str:
+    """Get the board-coordinate bounding box of a placed footprint.
+
+    Args:
+        reference: Footprint reference designator
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+    fp = None
+    for f in board.footprints:
+        if _fp_ref(f) == reference:
+            fp = f
+            break
+    if fp is None:
+        return json.dumps({"error": f"Footprint {reference!r} not found."})
+
+    bbox = _courtyard_bbox(fp)
+    courtyard = None
+    if bbox is not None:
+        # Transform all 4 local corners to board coordinates
+        fp_x = fp.position.X
+        fp_y = fp.position.Y
+        angle = fp.position.angle or 0
+        local_corners = [
+            (bbox["min_x"], bbox["min_y"]),
+            (bbox["max_x"], bbox["min_y"]),
+            (bbox["max_x"], bbox["max_y"]),
+            (bbox["min_x"], bbox["max_y"]),
+        ]
+        board_corners = [
+            _transform_local_to_board(fp_x, fp_y, angle, lx, ly) for lx, ly in local_corners
+        ]
+        # Recompute axis-aligned bounding box from transformed corners
+        xs = [c[0] for c in board_corners]
+        ys = [c[1] for c in board_corners]
+        min_x, max_x = min(xs), max(xs)
+        min_y, max_y = min(ys), max(ys)
+        courtyard = {
+            "min_x": round(min_x, 4),
+            "min_y": round(min_y, 4),
+            "max_x": round(max_x, 4),
+            "max_y": round(max_y, 4),
+            "width": round(max_x - min_x, 4),
+            "height": round(max_y - min_y, 4),
+        }
+
+    return json.dumps(
+        {
+            "reference": reference,
+            "position": {"x": fp.position.X, "y": fp.position.Y},
+            "rotation": fp.position.angle or 0,
+            "courtyard": courtyard,
+            "layer": fp.layer,
+        }
+    )
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def validate_board(pcb_path: str = PCB_PATH) -> str:
+    """Validate all footprint placements against keep-out zones and board edge.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+    edge_poly = _board_edge_polygon(board)
+    board_edge_checked = edge_poly is not None
+    violations: list[dict] = []
+
+    for fp in board.footprints:
+        ref = _fp_ref(fp)
+        fp_x = fp.position.X
+        fp_y = fp.position.Y
+        fp_layer = fp.layer
+
+        fp_violations: list[str] = []
+
+        keepout_hits = _check_footprint_keepout_violations(board, fp_x, fp_y, fp_layer)
+        if keepout_hits:
+            fp_violations.append("keepout_zone")
+
+        if edge_poly is not None and not _point_in_polygon(fp_x, fp_y, edge_poly):
+            fp_violations.append("outside_board_edge")
+
+        if fp_violations:
+            violations.append(
+                {
+                    "reference": ref,
+                    "position": {"x": fp_x, "y": fp_y},
+                    "layer": fp_layer,
+                    "issues": fp_violations,
+                }
+            )
+
+    total = len(board.footprints)
+    status = f"{len(violations)} violations found" if violations else "ok"
+    return json.dumps(
+        {
+            "total_footprints": total,
+            "violations": violations,
+            "board_edge_checked": board_edge_checked,
+            "status": status,
+        }
+    )
 
 
 def main():

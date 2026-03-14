@@ -52,10 +52,12 @@ These are the kicad MCP tools you should be using during PCB layout:
 - `list_pcb_items` — list footprints, traces, vias, zones, etc.
 - `get_board_info` — get board outline, layer count, design rules
 - `get_footprint_pads` — get pad positions and net assignments
+- `get_footprint_bounds` — get board-coordinate bounding box of a placed footprint
+- `check_placement` — check if placing a footprint at (x, y) violates keepout or board edge
 
 **Placing and moving footprints:**
 - `place_footprint` — place a footprint on the board
-- `move_footprint` — reposition a placed footprint
+- `move_footprint` — reposition a placed footprint (warns on keepout/edge violations)
 - `remove_footprint` — delete a placed footprint
 
 **Routing:**
@@ -65,6 +67,7 @@ These are the kicad MCP tools you should be using during PCB layout:
 
 **Post-routing refinement:**
 - `add_copper_zone` — create a copper zone (ground plane, power fill) with polygon outline
+- `add_keepout_zone` — create a keep-out zone restricting tracks, vias, pads, copper pour, or footprints
 - `fill_zones` — compute copper fills for all zones (requires pcbnew)
 - `set_trace_width` — change width of existing traces by net, layer, or region
 - `add_thermal_vias` — add a via array under a footprint pad (QFN thermal pads)
