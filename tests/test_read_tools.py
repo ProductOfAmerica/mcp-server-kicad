@@ -475,3 +475,67 @@ class TestListSchematicItemsExpanded:
         result = schematic.list_schematic_items(item_type="summary", schematic_path=str(path))
         assert "Hierarchical labels: 1" in result
         assert "Junctions: 1" in result
+
+
+# ---------------------------------------------------------------------------
+# Tests: floating-point precision in _transform_pin_pos
+# ---------------------------------------------------------------------------
+
+
+class TestPinPositionPrecision:
+    def test_no_floating_point_artifacts(self, tmp_path: Path):
+        """_transform_pin_pos must return cleanly rounded coordinates, no IEEE 754 artifacts.
+
+        Without rounding:
+          132.08 + (-3.81) * cos(0) = 128.27 (happens to be clean)
+          but 132.08 + 0 * sin(0) = 132.08 (clean)
+          48.26 - 0 * sin(0) + (-3.81) * cos(0) = 44.449999... (artifact!)
+
+        The artifact comes from float arithmetic on non-power-of-2 values.
+        """
+        from mcp_server_kicad.schematic import _transform_pin_pos
+
+        # Resistor pin 1 at lib pos (0, 3.81), angle 270
+        # Placed at (132.08, 48.26), rotation 0, no mirror
+        x, y, _ = _transform_pin_pos(
+            0,
+            3.81,
+            270,
+            132.08,
+            48.26,
+            0,
+            None,
+        )
+        # x and y should be cleanly representable to 4 decimal places
+        assert x == round(x, 4), f"x={x!r} has FP artifact (expected {round(x, 4)})"
+        assert y == round(y, 4), f"y={y!r} has FP artifact (expected {round(y, 4)})"
+
+        # Resistor pin 2 at lib pos (0, -3.81), angle 90
+        x2, y2, _ = _transform_pin_pos(
+            0,
+            -3.81,
+            90,
+            132.08,
+            48.26,
+            0,
+            None,
+        )
+        assert x2 == round(x2, 4), f"x={x2!r} has FP artifact (expected {round(x2, 4)})"
+        assert y2 == round(y2, 4), f"y={y2!r} has FP artifact (expected {round(y2, 4)})"
+
+    def test_90_deg_rotation_no_artifacts(self, tmp_path: Path):
+        """90-degree rotation should also produce clean coordinates."""
+        from mcp_server_kicad.schematic import _transform_pin_pos
+
+        # 48.26 + 5.08 * sin(90) = 53.339999999999996 without rounding
+        x, y, _ = _transform_pin_pos(
+            0,
+            3.81,
+            270,
+            132.08,
+            48.26,
+            90,
+            None,
+        )
+        assert x == round(x, 4), f"x={x!r} has FP artifact"
+        assert y == round(y, 4), f"y={y!r} has FP artifact"

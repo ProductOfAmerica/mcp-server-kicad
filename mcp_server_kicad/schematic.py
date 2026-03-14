@@ -202,7 +202,7 @@ def _transform_pin_pos(
 
     # Outward direction (away from body)
     outward = (abs_pin_angle + 180) % 360
-    return final_x, final_y, outward
+    return round(final_x, 4), round(final_y, 4), outward
 
 
 def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, float]:
