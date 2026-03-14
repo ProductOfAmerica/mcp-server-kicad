@@ -1202,6 +1202,77 @@ class TestExportHierarchicalNetlist:
         assert "output_path" in data or "netlist" in data or "error" not in data
 
 
+class TestParentProjectInstances:
+    def test_add_hierarchical_sheet_creates_parent_instances(self, tmp_path: Path):
+        """Symbols placed before add_hierarchical_sheet should get parent instances."""
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+
+        # Place a component on the child FIRST
+        from mcp_server_kicad import schematic
+
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R1",
+            value="10K",
+            x=50,
+            y=50,
+            schematic_path=str(child),
+        )
+
+        # THEN add child as hierarchical sheet
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "proj.kicad_sch"),
+            sheet_name="Sub",
+            sheet_file=str(child),
+            pins=[],
+            project_path=str(proj_dir / "proj.kicad_pro"),
+        )
+
+        # R1 should have instances for BOTH projects
+        child_sch = Schematic.from_file(str(child))
+        r1 = child_sch.schematicSymbols[0]
+        instance_projects = {inst.name for inst in r1.instances}
+        assert "proj" in instance_projects, f"Missing parent instance. Got: {instance_projects}"
+
+    def test_place_component_on_subsheet_creates_parent_instance(self, tmp_path: Path):
+        """Components placed after add_hierarchical_sheet should get parent instances."""
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+
+        # Add child as hierarchical sheet FIRST
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "proj.kicad_sch"),
+            sheet_name="Sub",
+            sheet_file=str(child),
+            pins=[],
+            project_path=str(proj_dir / "proj.kicad_pro"),
+        )
+
+        # THEN place a component on the child
+        from mcp_server_kicad import schematic
+
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R1",
+            value="10K",
+            x=50,
+            y=50,
+            schematic_path=str(child),
+            project_path=str(proj_dir / "proj.kicad_pro"),
+        )
+
+        # R1 should have instances for BOTH projects
+        child_sch = Schematic.from_file(str(child))
+        r1 = child_sch.schematicSymbols[0]
+        instance_projects = {inst.name for inst in r1.instances}
+        assert "proj" in instance_projects, f"Missing parent instance. Got: {instance_projects}"
+
+
 class TestFlattenHierarchy:
     def test_flattens_simple_hierarchy(self, tmp_path: Path):
         """Flatten a 2-level hierarchy into a single schematic."""

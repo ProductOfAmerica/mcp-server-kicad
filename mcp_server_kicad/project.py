@@ -34,6 +34,8 @@ from mcp_server_kicad._shared import (
     SchematicSymbol,
     Stroke,
     SymbolLib,
+    SymbolProjectInstance,
+    SymbolProjectPath,
     _default_effects,
     _default_stroke,
     _find_root_schematic,
@@ -337,6 +339,33 @@ def _add_hierarchical_sheet(
                 uuid=_gen_uuid(),
             )
         )
+    # Add parent project instances to child symbols
+    if project_path:
+        root_sch_path = Path(project_path).with_suffix(".kicad_sch")
+        if root_sch_path.exists():
+            root_sch = _load_sch(str(root_sch_path))
+            parent_project_name = Path(project_path).stem
+            parent_sheet_path = f"/{root_sch.uuid}/{sheet.uuid}"
+            for sym in child_sch.schematicSymbols:
+                instances = getattr(sym, "instances", None) or []
+                has_parent = any(inst.name == parent_project_name for inst in instances)
+                if not has_parent:
+                    ref_prop = next((p for p in sym.properties if p.key == "Reference"), None)
+                    if not hasattr(sym, "instances") or sym.instances is None:
+                        sym.instances = []
+                    sym.instances.append(
+                        SymbolProjectInstance(
+                            name=parent_project_name,
+                            paths=[
+                                SymbolProjectPath(
+                                    sheetInstancePath=parent_sheet_path,
+                                    reference=ref_prop.value if ref_prop else "?",
+                                    unit=1,
+                                )
+                            ],
+                        )
+                    )
+
     _save_sch(child_sch)
 
     return f"Added sheet '{sheet_name}' with {len(pins)} pins to {parent_schematic_path}"

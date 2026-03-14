@@ -778,6 +778,37 @@ def place_component(
         ),
     ]
 
+    # If this is a sub-sheet in a parent project, also add parent instance
+    if project_path:
+        sch_dir = Path(schematic_path).parent
+        target_name = Path(schematic_path).name
+        for pro_file in sch_dir.glob("*.kicad_pro"):
+            parent_sch_path = pro_file.with_suffix(".kicad_sch")
+            if not parent_sch_path.exists():
+                continue
+            if str(parent_sch_path.resolve()) == str(Path(schematic_path).resolve()):
+                continue
+            parent_sch = _load_sch(str(parent_sch_path))
+            for s in parent_sch.sheets:
+                if s.fileName.value == target_name:
+                    parent_path = f"/{parent_sch.uuid}/{s.uuid}"
+                    sym.instances.append(
+                        SymbolProjectInstance(
+                            name=pro_file.stem,
+                            paths=[
+                                SymbolProjectPath(
+                                    sheetInstancePath=parent_path,
+                                    reference=reference,
+                                    unit=1,
+                                )
+                            ],
+                        )
+                    )
+                    break
+            else:
+                continue
+            break
+
     sch.schematicSymbols.append(sym)
     _save_sch(sch)
     return f"Placed {reference} ({value}) at ({x}, {y})"
