@@ -1012,3 +1012,28 @@ class TestGetSheetInfo:
         # add_hierarchical_sheet creates matching labels in child, so matched=True
         for pin in result["pins"]:
             assert pin["matched"] is True
+
+
+class TestTraceHierarchicalNet:
+    def test_traces_net_through_hierarchy(self, tmp_path: Path):
+        """Trace a net from root through a hierarchical pin into a child sheet."""
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "proj.kicad_sch"),
+            sheet_name="Sub",
+            sheet_file=str(child),
+            pins=[{"name": "VIN", "direction": "input"}],
+            project_path=str(proj_dir / "proj.kicad_pro"),
+        )
+
+        result = json.loads(
+            project.trace_hierarchical_net(
+                net_name="VIN",
+                schematic_path=str(proj_dir / "proj.kicad_sch"),
+            )
+        )
+        assert result["net_name"] == "VIN"
+        assert len(result["sheets_touched"]) >= 1

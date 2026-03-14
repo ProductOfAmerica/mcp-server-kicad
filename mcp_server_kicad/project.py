@@ -854,6 +854,92 @@ def _get_sheet_info(sheet_uuid: str, schematic_path: str) -> str:
     return json.dumps(result)
 
 
+def _trace_hierarchical_net(net_name: str, schematic_path: str) -> str:
+    """Trace a net across the hierarchy, following hierarchical pins and labels.
+
+    Args:
+        net_name: Net/label name to trace
+        schematic_path: Path to root .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    sch_dir = Path(schematic_path).parent
+    root_name = Path(schematic_path).name
+
+    sheets_touched: list[str] = []
+    connections: list[dict] = []
+
+    # Check root schematic for labels matching net_name
+    root_labels = [lbl for lbl in sch.labels if lbl.text == net_name]
+    root_glabels = [g for g in sch.globalLabels if g.text == net_name]
+    if root_labels or root_glabels:
+        sheets_touched.append(root_name)
+
+    # Check sheet pins for matching name
+    for sheet in sch.sheets:
+        pin_match = any(p.name == net_name for p in sheet.pins)
+        if pin_match:
+            if root_name not in sheets_touched:
+                sheets_touched.append(root_name)
+            connections.append(
+                {
+                    "type": "sheet_pin",
+                    "sheet_name": sheet.sheetName.value,
+                    "file_name": sheet.fileName.value,
+                }
+            )
+            # Look inside child
+            child_path = sch_dir / sheet.fileName.value
+            if child_path.exists():
+                child_sch = _load_sch(str(child_path))
+                child_hlabels = [hl for hl in child_sch.hierarchicalLabels if hl.text == net_name]
+                if child_hlabels:
+                    sheets_touched.append(sheet.fileName.value)
+                    connections.append(
+                        {
+                            "type": "hierarchical_label",
+                            "sheet_name": sheet.sheetName.value,
+                            "file_name": sheet.fileName.value,
+                            "label_count": len(child_hlabels),
+                        }
+                    )
+                # Check for component connections in child
+                child_labels = [lbl for lbl in child_sch.labels if lbl.text == net_name]
+                if child_labels:
+                    connections.append(
+                        {
+                            "type": "local_label",
+                            "file_name": sheet.fileName.value,
+                            "count": len(child_labels),
+                        }
+                    )
+
+    # Also check global labels in all sheets
+    for sheet in sch.sheets:
+        child_path = sch_dir / sheet.fileName.value
+        if child_path.exists():
+            child_sch = _load_sch(str(child_path))
+            child_glabels = [g for g in child_sch.globalLabels if g.text == net_name]
+            if child_glabels:
+                if sheet.fileName.value not in sheets_touched:
+                    sheets_touched.append(sheet.fileName.value)
+                connections.append(
+                    {
+                        "type": "global_label",
+                        "file_name": sheet.fileName.value,
+                        "count": len(child_glabels),
+                    }
+                )
+
+    return json.dumps(
+        {
+            "net_name": net_name,
+            "sheets_touched": sheets_touched,
+            "connection_count": len(connections),
+            "connections": connections,
+        }
+    )
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
@@ -869,6 +955,7 @@ validate_hierarchy = _validate_hierarchy
 is_root_schematic = _is_root_schematic
 list_hierarchy = _list_hierarchy
 get_sheet_info = _get_sheet_info
+trace_hierarchical_net = _trace_hierarchical_net
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -1089,6 +1176,17 @@ def get_sheet_info(sheet_uuid: str, schematic_path: str = SCH_PATH) -> str:  # n
         schematic_path: Path to parent .kicad_sch
     """
     return _get_sheet_info(sheet_uuid, schematic_path)
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+    """Trace a net across the hierarchy, following hierarchical pins and labels.
+
+    Args:
+        net_name: Net/label name to trace
+        schematic_path: Path to root .kicad_sch file
+    """
+    return _trace_hierarchical_net(net_name, schematic_path)
 
 
 @mcp.tool(annotations=_EXPORT)
