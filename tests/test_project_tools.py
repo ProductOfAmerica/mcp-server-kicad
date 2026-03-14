@@ -1082,3 +1082,31 @@ class TestGetSymbolInstances:
         )
         assert "instances" in result
         assert isinstance(result["instances"], list)
+
+
+class TestMoveHierarchicalSheet:
+    def test_moves_sheet_and_pins(self, tmp_path: Path):
+        parent = str(tmp_path / "root.kicad_sch")
+        child = str(tmp_path / "child.kicad_sch")
+        project.create_schematic(schematic_path=parent)
+        project.create_schematic(schematic_path=child)
+        project.add_hierarchical_sheet(
+            parent_schematic_path=parent,
+            sheet_name="Sub",
+            sheet_file=child,
+            pins=[{"name": "A", "direction": "input"}],
+        )
+        sch = Schematic.from_file(parent)
+        sheet_uuid = sch.sheets[0].uuid
+
+        result = project.move_hierarchical_sheet(
+            sheet_uuid=sheet_uuid,
+            new_x=80,
+            new_y=60,
+            schematic_path=parent,
+        )
+        assert "80" in result or "Moved" in result
+
+        sch2 = Schematic.from_file(parent)
+        assert sch2.sheets[0].position.X == 80
+        assert sch2.sheets[0].position.Y == 60

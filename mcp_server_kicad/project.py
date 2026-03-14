@@ -1013,6 +1013,44 @@ def _get_symbol_instances(schematic_path: str) -> str:
     return json.dumps({"instances": instances, "count": len(instances)})
 
 
+def _move_hierarchical_sheet(
+    sheet_uuid: str, new_x: float, new_y: float, schematic_path: str
+) -> str:
+    """Move a hierarchical sheet block to a new position, including all pins.
+
+    Args:
+        sheet_uuid: UUID of the sheet to move
+        new_x: New X position in mm
+        new_y: New Y position in mm
+        schematic_path: Path to parent .kicad_sch
+    """
+    sch = _load_sch(schematic_path)
+    target = None
+    for s in sch.sheets:
+        if s.uuid == sheet_uuid:
+            target = s
+            break
+    if target is None:
+        return f"Sheet with UUID '{sheet_uuid}' not found"
+    dx = new_x - target.position.X
+    dy = new_y - target.position.Y
+    target.position.X = new_x
+    target.position.Y = new_y
+    # Move pins by the same delta
+    for pin in target.pins:
+        pin.position.X = round(pin.position.X + dx, 4)
+        pin.position.Y = round(pin.position.Y + dy, 4)
+    # Move property positions
+    if hasattr(target.sheetName, "position") and target.sheetName.position:
+        target.sheetName.position.X = round(target.sheetName.position.X + dx, 4)
+        target.sheetName.position.Y = round(target.sheetName.position.Y + dy, 4)
+    if hasattr(target.fileName, "position") and target.fileName.position:
+        target.fileName.position.X = round(target.fileName.position.X + dx, 4)
+        target.fileName.position.Y = round(target.fileName.position.Y + dy, 4)
+    _save_sch(sch)
+    return f"Moved sheet to ({new_x}, {new_y})"
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
@@ -1031,6 +1069,7 @@ get_sheet_info = _get_sheet_info
 trace_hierarchical_net = _trace_hierarchical_net
 list_cross_sheet_nets = _list_cross_sheet_nets
 get_symbol_instances = _get_symbol_instances
+move_hierarchical_sheet = _move_hierarchical_sheet
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -1282,6 +1321,24 @@ def get_symbol_instances(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
         schematic_path: Path to root .kicad_sch file
     """
     return _get_symbol_instances(schematic_path)
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def move_hierarchical_sheet(  # noqa: F811
+    sheet_uuid: str,
+    new_x: float,
+    new_y: float,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Move a hierarchical sheet block to a new position, including all pins.
+
+    Args:
+        sheet_uuid: UUID of the sheet to move
+        new_x: New X position in mm
+        new_y: New Y position in mm
+        schematic_path: Path to parent .kicad_sch
+    """
+    return _move_hierarchical_sheet(sheet_uuid, new_x, new_y, schematic_path)
 
 
 @mcp.tool(annotations=_EXPORT)
