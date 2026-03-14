@@ -1195,3 +1195,46 @@ class TestExportHierarchicalNetlist:
         )
         data = json.loads(result)
         assert "output_path" in data or "netlist" in data or "error" not in data
+
+
+class TestFlattenHierarchy:
+    def test_flattens_simple_hierarchy(self, tmp_path: Path):
+        """Flatten a 2-level hierarchy into a single schematic."""
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+
+        # Create child with a component
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+
+        # Add a resistor to the child
+        child_sch = Schematic.from_file(str(child))
+        child_sch.libSymbols.append(conftest.build_r_symbol())
+        child_sch.schematicSymbols.append(conftest.place_r1(50, 50))
+        child_sch.to_file()
+
+        root = str(proj_dir / "proj.kicad_sch")
+        pro = str(proj_dir / "proj.kicad_pro")
+        project.add_hierarchical_sheet(
+            parent_schematic_path=root,
+            sheet_name="Sub",
+            sheet_file=str(child),
+            pins=[],
+            project_path=pro,
+        )
+
+        # Before flatten: root has 0 components and 1 sheet
+        root_sch = Schematic.from_file(root)
+        assert len(root_sch.sheets) == 1
+        assert len(root_sch.schematicSymbols) == 0
+
+        result = project.flatten_hierarchy(
+            schematic_path=root,
+            output_path=str(proj_dir / "flat.kicad_sch"),
+        )
+        assert "flat.kicad_sch" in result or "Flattened" in result
+
+        # After flatten: output has the child's component, no sheets
+        flat_sch = Schematic.from_file(str(proj_dir / "flat.kicad_sch"))
+        assert len(flat_sch.sheets) == 0
+        assert len(flat_sch.schematicSymbols) >= 1

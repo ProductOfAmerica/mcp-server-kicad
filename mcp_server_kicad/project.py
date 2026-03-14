@@ -1213,6 +1213,141 @@ def _duplicate_sheet(
     return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
 
 
+def _flatten_hierarchy(
+    schematic_path: str,
+    output_path: str = "",
+) -> str:
+    """Flatten a hierarchical schematic into a single sheet.
+
+    Creates a new file — does NOT modify the original hierarchy.
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+        output_path: Path for flattened output (defaults to *_flat.kicad_sch)
+    """
+    import copy
+    import uuid as _uuid_mod
+
+    sch = _load_sch(schematic_path)
+    sch_dir = Path(schematic_path).parent
+
+    if not output_path:
+        stem = Path(schematic_path).stem
+        output_path = str(sch_dir / f"{stem}_flat.kicad_sch")
+
+    # Create output schematic as a copy of root
+    flat = copy.deepcopy(sch)
+    flat.uuid = str(_uuid_mod.uuid4())
+    flat.filePath = output_path
+
+    # Find the max Y extent of root content for offset
+    max_y = 0.0
+    for sym in flat.schematicSymbols:
+        if sym.position and sym.position.Y > max_y:
+            max_y = sym.position.Y
+    for gi in flat.graphicalItems:
+        if hasattr(gi, "points"):
+            for pt in gi.points:
+                if pt.Y > max_y:
+                    max_y = pt.Y
+
+    y_offset = max_y + 50  # Start child content 50mm below root content
+
+    sheet_index = 0
+    for sheet in sch.sheets:
+        child_path = sch_dir / sheet.fileName.value
+        if not child_path.exists():
+            continue
+
+        child_sch = _load_sch(str(child_path))
+        x_offset = sheet_index * 200  # Space sheets horizontally
+
+        # Merge lib symbols (avoid duplicates)
+        existing_lib_names = {s.entryName for s in flat.libSymbols}
+        for lib_sym in child_sch.libSymbols:
+            if lib_sym.entryName not in existing_lib_names:
+                flat.libSymbols.append(lib_sym)
+                existing_lib_names.add(lib_sym.entryName)
+
+        # Merge components with offset
+        for sym in child_sch.schematicSymbols:
+            new_sym = copy.deepcopy(sym)
+            new_sym.uuid = str(_uuid_mod.uuid4())
+            if new_sym.position:
+                new_sym.position.X += x_offset
+                new_sym.position.Y += y_offset
+            # Offset property positions
+            for prop in new_sym.properties:
+                if prop.position:
+                    prop.position.X += x_offset
+                    prop.position.Y += y_offset
+            flat.schematicSymbols.append(new_sym)
+
+        # Merge wires/graphical items with offset
+        for gi in child_sch.graphicalItems:
+            new_gi = copy.deepcopy(gi)
+            if hasattr(new_gi, "uuid"):
+                new_gi.uuid = str(_uuid_mod.uuid4())
+            if hasattr(new_gi, "points"):
+                for pt in new_gi.points:
+                    pt.X += x_offset
+                    pt.Y += y_offset
+            flat.graphicalItems.append(new_gi)
+
+        # Merge labels with offset
+        for label in child_sch.labels:
+            new_label = copy.deepcopy(label)
+            new_label.uuid = str(_uuid_mod.uuid4())
+            if new_label.position:
+                new_label.position.X += x_offset
+                new_label.position.Y += y_offset
+            flat.labels.append(new_label)
+
+        # Merge global labels with offset
+        for gl in child_sch.globalLabels:
+            new_gl = copy.deepcopy(gl)
+            new_gl.uuid = str(_uuid_mod.uuid4())
+            if new_gl.position:
+                new_gl.position.X += x_offset
+                new_gl.position.Y += y_offset
+            flat.globalLabels.append(new_gl)
+
+        # Merge junctions with offset
+        for j in child_sch.junctions:
+            new_j = copy.deepcopy(j)
+            new_j.uuid = str(_uuid_mod.uuid4())
+            if new_j.position:
+                new_j.position.X += x_offset
+                new_j.position.Y += y_offset
+            flat.junctions.append(new_j)
+
+        # Merge no-connects with offset
+        for nc in child_sch.noConnects:
+            new_nc = copy.deepcopy(nc)
+            new_nc.uuid = str(_uuid_mod.uuid4())
+            if new_nc.position:
+                new_nc.position.X += x_offset
+                new_nc.position.Y += y_offset
+            flat.noConnects.append(new_nc)
+
+        sheet_index += 1
+
+    # Remove sheet blocks from flattened output
+    flat.sheets = []
+    # Remove hierarchical labels (no longer needed without sheets)
+    flat.hierarchicalLabels = []
+    # Clear symbol instances and sheet instances (no longer valid)
+    if hasattr(flat, "symbolInstances"):
+        flat.symbolInstances = []
+    if hasattr(flat, "sheetInstances"):
+        flat.sheetInstances = []
+
+    _save_sch(flat)
+
+    total_components = len(flat.schematicSymbols)
+    return f"Flattened hierarchy to {Path(output_path).name}: {total_components} components"
+
+
 def _export_hierarchical_netlist(
     schematic_path: str,
     output_dir: str = "",
@@ -1323,6 +1458,7 @@ get_symbol_instances = _get_symbol_instances
 move_hierarchical_sheet = _move_hierarchical_sheet
 reorder_sheet_pages = _reorder_sheet_pages
 duplicate_sheet = _duplicate_sheet
+flatten_hierarchy = _flatten_hierarchy
 export_hierarchical_netlist = _export_hierarchical_netlist
 
 
@@ -1627,6 +1763,23 @@ def duplicate_sheet(  # noqa: F811
         new_file_name: Name for the copied file (auto-generated if empty)
     """
     return _duplicate_sheet(sheet_uuid, new_sheet_name, schematic_path, project_path, new_file_name)
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def flatten_hierarchy(  # noqa: F811
+    schematic_path: str = SCH_PATH,
+    output_path: str = "",
+) -> str:
+    """Flatten a hierarchical schematic into a single sheet.
+
+    Merges all child sheet content into one schematic with offset positions.
+    Creates a new file — does NOT modify the original hierarchy.
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+        output_path: Path for flattened output (defaults to *_flat.kicad_sch)
+    """
+    return _flatten_hierarchy(schematic_path, output_path)
 
 
 @mcp.tool(annotations=_EXPORT)
