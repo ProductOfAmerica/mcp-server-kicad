@@ -71,7 +71,12 @@ about how the plan was created. Read the plan, execute the plan.
 7. Add no-connect flags
 8. Add power flags
 9. Add hierarchical sheets (if applicable)
-10. Run ERC
+10. Annotate — run `annotate_schematic` to assign reference designators.
+    For hierarchical designs, pass `project_path` to avoid cross-sheet
+    ref conflicts.
+11. Validate hierarchy — run `validate_hierarchy` from root to check
+    for orphaned labels, direction mismatches, duplicate refs.
+12. Run ERC
 
 ### Modification Mode (existing schematics)
 
@@ -107,6 +112,8 @@ Follow existing spacing/wiring/naming conventions in the schematic.
 - [ ] Wire all connections per wiring table
 - [ ] Add no-connect flags
 - [ ] Add power flags and PWR_FLAG symbols
+- [ ] Annotate schematic — no `?` refs remaining
+- [ ] Validate hierarchy — no orphaned labels or duplicate refs
 - [ ] Run ERC — must show zero violations
 
 ## Rationalization Prevention
@@ -210,6 +217,7 @@ Y < 175mm.
 - `remove_hierarchical_label` — remove a hierarchical label by name or UUID
 - `modify_hierarchical_label` — modify text, shape, or position of a hierarchical label
 - `annotate_schematic` — auto-assign reference designators (project server)
+- `remove_text` — remove text annotations by position or content
 
 **Hierarchy management (project server):**
 - `add_hierarchical_sheet` / `remove_hierarchical_sheet` — create/remove sub-sheet blocks
@@ -218,6 +226,50 @@ Y < 175mm.
 - `validate_hierarchy` — check for orphaned labels/pins, direction mismatches
 - `list_hierarchy` / `get_sheet_info` — inspect hierarchy structure
 - `is_root_schematic` — check if a schematic is root or sub-sheet
+- `move_hierarchical_sheet` — reposition a sheet block on the canvas
+- `reorder_sheet_pages` — change the page order of hierarchical sheets
+- `duplicate_sheet` — create a copy of a sheet with new UUIDs
+- `flatten_hierarchy` — merge all sub-sheets into a single flat schematic
+- `trace_hierarchical_net` — trace a net across the hierarchy for debugging
+- `export_hierarchical_netlist` — export netlist with hierarchy info
+  (use instead of `export_netlist` for hierarchical designs)
+
+## Hierarchy Workflow Sequences
+
+### Sequence: Setting up a hierarchical design
+1. `add_hierarchical_sheet` — create the sub-sheet block on the parent
+2. `add_sheet_pin` — add pins to the sheet block for each signal crossing the boundary
+3. In the child schematic: `add_hierarchical_label` for each pin
+4. `validate_hierarchy` — verify pins match labels, no orphans
+
+### Sequence: Duplicating a channel (e.g., 4 identical sensor channels)
+1. Design the first channel as a sub-sheet
+2. `duplicate_sheet` — creates a copy with new UUIDs and a new file
+3. Repeat for each additional channel
+4. `annotate_schematic` with `project_path` — assigns unique refs across all copies
+
+### Sequence: Pre-ERC annotation and validation
+1. `annotate_schematic` with `project_path` — assign refs to all `?` components
+2. `validate_hierarchy` from root — check for duplicates, orphans, mismatches
+3. If duplicates: `set_component_property` to reset to `X?`, then re-annotate
+4. `run_erc` — only after validate_hierarchy is clean
+
+### Sequence: Debugging cross-sheet connectivity
+1. `trace_hierarchical_net` — follow the net across sheet boundaries
+2. `get_net_connections` — check connections on each sheet
+3. `list_cross_sheet_nets` — see all nets crossing boundaries
+4. Fix with `add_sheet_pin`, `add_hierarchical_label`, or `connect_pins`
+
+### Sequence: Restructuring hierarchy
+1. `flatten_hierarchy` — merge all sheets into one (creates new file, non-destructive)
+2. OR `move_hierarchical_sheet` — reposition sheet blocks on the parent
+3. OR `reorder_sheet_pages` — change page numbering order
+4. `validate_hierarchy` — verify structure is still valid
+
+### Sequence: Cleaning up after modifications
+1. `remove_text` — delete temporary text annotations
+2. `validate_hierarchy` — check for new orphaned labels or direction mismatches
+3. `annotate_schematic` — reassign any `?` refs introduced during modifications
 
 **Verification and export:**
 - `run_erc` — run electrical rules check
@@ -247,4 +299,6 @@ After completing placement and wiring:
 1. Run `run_erc` to check for violations
 2. Fix "power pin not driven" with PWR_FLAG symbols
 3. Fix unconnected pins with `wire_pins_to_net` or `no_connect_pin`
+3.5. If components have `?` references, run `annotate_schematic` with
+     `project_path` before re-running ERC.
 4. Re-run ERC until clean

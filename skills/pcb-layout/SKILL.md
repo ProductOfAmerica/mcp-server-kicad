@@ -83,6 +83,8 @@ These are the kicad MCP tools you should be using during PCB layout:
 - `export_3d` — export 3D model (STEP/VRML)
 - `export_positions` — export pick-and-place file
 - `export_ipc2581` — export IPC-2581 data
+- `export_hierarchical_netlist` — use instead of standard netlist export
+  for hierarchical designs with sub-sheets
 
 **Footprint libraries:**
 - `list_lib_footprints` — browse .pretty library directories
@@ -95,13 +97,17 @@ Before starting PCB layout, verify these prerequisites:
 1. **ERC gate cleared:** Run `run_erc` and confirm `violation_count = 0`.
    If ERC has not been run or has violations, STOP and invoke the
    verification skill first.
-2. **Footprint verification:** For each schematic component, call
+2. **Annotation check:** Run `validate_hierarchy` on the root schematic.
+   Netlist import fails if references contain `?` or have duplicates
+   across sheets. Fix with `annotate_schematic` (pass `project_path`
+   for hierarchical designs) before proceeding.
+3. **Footprint verification:** For each schematic component, call
    `list_lib_footprints` to verify the assigned footprint exists.
-3. **BOM cross-reference:** If `specs/bom.md` exists, cross-reference
+4. **BOM cross-reference:** If `specs/bom.md` exists, cross-reference
    footprints against the BOM's footprint column.
-4. **Board size constraints:** Check board size from BOM artifact (if
+5. **Board size constraints:** Check board size from BOM artifact (if
    present) and configure board outline accordingly.
-5. **IPC design class:** If BOM specifies IPC design class, configure
+6. **IPC design class:** If BOM specifies IPC design class, configure
    design rules (trace width, spacing, annular ring) to match class
    requirements:
    - Class 1 (consumer): relaxed tolerances
@@ -263,6 +269,7 @@ Run `run_drc` and fix any remaining violations. Common post-refinement issues:
 **IMPORTANT: Use TodoWrite to create todos for EACH checklist item below.**
 
 - [ ] Pre-flight: verify ERC = 0 violations
+- [ ] Pre-flight: run `validate_hierarchy` — no unannotated/duplicate refs
 - [ ] Pre-flight: verify all footprints exist
 - [ ] Define board outline and design rules
 - [ ] Place footprints by functional group

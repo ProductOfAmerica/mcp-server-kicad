@@ -55,6 +55,9 @@ to one line each.
 1. Verify `specs/bom.md` exists
 2. Verify BOM reviewer returned APPROVED
 3. Read the BOM and count components per stage
+4. If modifying an existing hierarchical schematic, run
+   `validate_hierarchy` to inspect current annotation state —
+   the plan must account for existing ref conflicts
 
 ## Planning Steps
 
@@ -165,8 +168,13 @@ These are the ONLY kicad MCP tools you should use during planning
 - `list_hierarchy` — view the full sheet hierarchy tree
 - `get_sheet_info` — get sheet details with pin/label matching status
 - `validate_hierarchy` — check for orphaned labels/pins, direction mismatches, duplicate refs
+  Run `validate_hierarchy` before planning to understand existing
+  annotation state. If it reports `duplicate_ref` or `unannotated_ref`,
+  the plan should include an annotation step.
 - `list_cross_sheet_nets` — list all nets crossing sheet boundaries
 - `get_symbol_instances` — list symbol instances from root schematic
+- `trace_hierarchical_net` — trace a net across the hierarchy to understand
+  existing cross-sheet connections before planning new ones
 
 Do NOT use `get_symbol_pins` — it requires a placed schematic.
 Use `get_symbol_info` instead.

@@ -213,7 +213,7 @@ ahead." Asking a question or requesting changes is NOT approval.
 
 The KiCad MCP server gives you tools to drive KiCad programmatically.
 You do not need the user to click anything in KiCad — the tools do it
-for you. Tool groups (60 tools total):
+for you. Tool groups (89 tools total):
 
 - **Project:** `create_project`, `create_schematic`,
   `create_symbol_library`, `create_sym_lib_table`,
@@ -234,9 +234,22 @@ for you. Tool groups (60 tools total):
   `list_unconnected_pins`, `add_text`
 - **Schematic — Export:** `run_erc`, `export_schematic`,
   `export_netlist`, `export_bom`
+- **Schematic — Hierarchy & Annotation:** `annotate_schematic`,
+  `validate_hierarchy`, `add_hierarchical_sheet`,
+  `remove_hierarchical_sheet`, `modify_hierarchical_sheet`,
+  `add_sheet_pin`, `remove_sheet_pin`, `move_hierarchical_sheet`,
+  `list_hierarchy`, `get_sheet_info`, `is_root_schematic`,
+  `trace_hierarchical_net`, `list_cross_sheet_nets`,
+  `get_symbol_instances`, `export_hierarchical_netlist`,
+  `flatten_hierarchy`, `duplicate_sheet`, `reorder_sheet_pages`,
+  `remove_text`, `add_hierarchical_label`,
+  `remove_hierarchical_label`, `modify_hierarchical_label`
 - **PCB — Place & Edit:** `place_footprint`, `move_footprint`,
   `remove_footprint`
-- **PCB — Route:** `add_trace`, `add_via`
+- **PCB — Route & Refine:** `add_trace`, `add_via`, `autoroute_pcb`,
+  `set_trace_width`, `remove_traces`, `add_thermal_vias`,
+  `set_net_class`, `remove_dangling_tracks`, `add_copper_zone`,
+  `fill_zones`
 - **PCB — Draw:** `add_pcb_text`, `add_pcb_line`
 - **PCB — Inspect:** `list_pcb_items`, `get_board_info`,
   `get_footprint_pads`
@@ -244,6 +257,10 @@ for you. Tool groups (60 tools total):
   `export_3d`, `export_positions`, `export_ipc2581`
 - **Footprint Libraries:** `list_lib_footprints`,
   `get_footprint_info`, `export_footprint_svg`,
+  `upgrade_footprint_lib`
+- **Utilities:** `run_jobset` (batch operations from .kicad_job files),
+  `get_version` (KiCad version info), `export_symbol_svg`,
+  `upgrade_symbol_lib`, `export_footprint_svg`,
   `upgrade_footprint_lib`
 
 Always invoke the matching skill for conventions, spacing, and

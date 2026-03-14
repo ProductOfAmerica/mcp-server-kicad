@@ -60,6 +60,10 @@ These are the kicad MCP tools you should be using during verification:
 - `list_unconnected_pins` — find unconnected pins by component.
   Auto-redirects sub-sheets to root to avoid false positives.
 - `get_net_connections` — trace a net to debug connectivity issues
+- `validate_hierarchy` — check for unannotated refs, duplicate refs,
+  orphaned labels/pins, direction mismatches (run from root schematic)
+- `trace_hierarchical_net` — trace a net across sheet boundaries to
+  debug cross-sheet connectivity issues
 
 **Schematic fixes:**
 - `add_power_symbol` — place PWR_FLAG to fix "power pin not driven"
@@ -68,6 +72,12 @@ These are the kicad MCP tools you should be using during verification:
 - `no_connect_pin` — mark intentionally unused pins
 - `remove_label` — remove misplaced labels
 - `set_page_size` — resize sheet when components exceed page boundary
+- `annotate_schematic` — auto-assign reference designators to unannotated
+  components (pass `project_path` for hierarchical designs)
+- `set_component_property` — reset duplicate references to `X?` before
+  re-annotation
+- `remove_text` — remove leftover text annotations from debug/workaround
+  operations
 
 **PCB checks:**
 - `run_drc` — run design rules check, returns all violations
@@ -91,8 +101,43 @@ These are the kicad MCP tools you should be using during verification:
 - `export_3d` — 3D model for mechanical review
 - `export_schematic` — schematic PDF/SVG
 - `export_pcb` — PCB PDF/SVG
+- `export_ipc2581` — IPC-2581 manufacturing data (alternative to Gerbers
+  for some fabs)
+- `export_hierarchical_netlist` — netlist with hierarchy info for
+  hierarchical designs (use instead of `export_netlist` when design has
+  sub-sheets)
 
 ## ERC Workflow (Schematic)
+
+### Step 0: Pre-ERC Hierarchy Validation
+
+Run `validate_hierarchy` on the root schematic before ERC. This catches
+issues that kicad-cli ERC does not report: unannotated components,
+duplicate reference designators across sheets, orphaned hierarchical
+labels/pins, and direction mismatches.
+
+**If `unannotated_ref` issues:**
+1. Run `annotate_schematic(schematic_path, project_path="path/to/project.kicad_pro")`
+   — the `project_path` param scans the hierarchy to avoid cross-sheet conflicts
+2. Re-run `validate_hierarchy` to confirm
+
+**If `duplicate_ref` issues:**
+`annotate_schematic` only assigns numbers to `?` refs — it does NOT fix
+duplicates. To fix:
+1. Reset the conflicting ref to `X?` with `set_component_property`:
+   `set_component_property(reference="R1", key="Reference", value="R?",
+   schematic_path="sheet_with_duplicate.kicad_sch")`
+2. Run `annotate_schematic` with `project_path` to assign a unique number
+3. Re-run `validate_hierarchy` to confirm
+
+**If `orphaned_label`, `orphaned_pin`, or `direction_mismatch`:**
+Fix with `add_sheet_pin`/`remove_sheet_pin` or `modify_hierarchical_label`.
+
+**Debug cross-sheet nets:** Use `trace_hierarchical_net` to follow a net
+across sheet boundaries when investigating connectivity violations that
+span multiple sheets.
+
+Proceed to Step 1 only when `validate_hierarchy` returns `status: "ok"`.
 
 ### Step 1: Run ERC
 
@@ -258,6 +303,8 @@ requires a design change), report the situation to the user. Options:
 
 **IMPORTANT: Use TodoWrite to create todos for EACH checklist item below.**
 
+- [ ] Run `validate_hierarchy` from root (for ERC gate)
+- [ ] Fix unannotated/duplicate refs with `annotate_schematic`
 - [ ] Run ERC or DRC (as appropriate for current gate)
 - [ ] Read ALL violations before fixing
 - [ ] Fix Category 1 violations

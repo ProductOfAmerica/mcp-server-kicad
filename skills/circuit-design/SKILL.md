@@ -205,6 +205,14 @@ These are the kicad MCP tools you should be using during circuit design:
 - `list_lib_footprints` — list footprints in a .pretty directory
 - `get_footprint_info` — check pad dimensions and pin mapping
 
+**Visual verification (optional):**
+- `export_symbol_svg` — export symbol library to SVG for visual review
+- `export_footprint_svg` — export footprint library to SVG for visual review
+
+**Library maintenance:**
+- `upgrade_symbol_lib` — upgrade symbol library to current KiCad format
+- `upgrade_footprint_lib` — upgrade footprint library to current format
+
 ## Output: BOM Artifact (`specs/bom.md`)
 
 Write the validated BOM to `specs/bom.md` in the KiCad project
