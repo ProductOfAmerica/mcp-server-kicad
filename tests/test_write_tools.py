@@ -1032,6 +1032,34 @@ class TestPageBoundary:
 
 
 # ===========================================================================
+# TestRemoveText
+# ===========================================================================
+
+
+class TestRemoveText:
+    def test_remove_by_content(self, scratch_sch):
+        schematic.add_text(text="HELLO", x=50, y=50, schematic_path=str(scratch_sch))
+        result = schematic.remove_text(text="HELLO", schematic_path=str(scratch_sch))
+        assert "Removed 1" in result
+        sch = reparse(str(scratch_sch))
+        assert not any(t.text == "HELLO" for t in sch.texts)
+
+    def test_remove_by_content_and_position(self, scratch_sch):
+        schematic.add_text(text="A", x=50, y=50, schematic_path=str(scratch_sch))
+        schematic.add_text(text="A", x=80, y=80, schematic_path=str(scratch_sch))
+        result = schematic.remove_text(text="A", x=50, y=50, schematic_path=str(scratch_sch))
+        assert "Removed 1" in result
+        sch = reparse(str(scratch_sch))
+        a_texts = [t for t in sch.texts if t.text == "A"]
+        assert len(a_texts) == 1
+        assert abs(a_texts[0].position.X - 80) < 0.1
+
+    def test_remove_missing(self, scratch_sch):
+        result = schematic.remove_text(text="NONEXISTENT", schematic_path=str(scratch_sch))
+        assert "not found" in result
+
+
+# ===========================================================================
 # TestReferenceValidation (Bug 4)
 # ===========================================================================
 

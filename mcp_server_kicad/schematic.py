@@ -1511,6 +1511,46 @@ def add_text(
     return f"Text '{text}' at ({x}, {y})"
 
 
+@mcp.tool(annotations=_DESTRUCTIVE)
+def remove_text(
+    text: str,
+    x: float | None = None,
+    y: float | None = None,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Remove text annotation(s) by content, optionally filtered by position.
+
+    If x and y are provided, only removes texts matching both content AND
+    position (within 0.1mm tolerance). Otherwise removes ALL texts with
+    matching content.
+
+    Args:
+        text: Text content to match
+        x: Optional X position filter
+        y: Optional Y position filter
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    tol = 0.1
+    removed = []
+    remaining = []
+    for t in sch.texts:
+        if t.text == text:
+            if x is not None and y is not None:
+                if abs(t.position.X - x) < tol and abs(t.position.Y - y) < tol:
+                    removed.append(t)
+                    continue
+            else:
+                removed.append(t)
+                continue
+        remaining.append(t)
+    if not removed:
+        return f"Text '{text}' not found."
+    sch.texts = remaining
+    _save_sch(sch)
+    return f"Removed {len(removed)} text(s) '{text}'."
+
+
 # ---------------------------------------------------------------------------
 # High-level routing tools (4)
 # ---------------------------------------------------------------------------
