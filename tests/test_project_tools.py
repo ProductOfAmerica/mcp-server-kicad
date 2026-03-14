@@ -1110,3 +1110,38 @@ class TestMoveHierarchicalSheet:
         sch2 = Schematic.from_file(parent)
         assert sch2.sheets[0].position.X == 80
         assert sch2.sheets[0].position.Y == 60
+
+
+class TestReorderSheetPages:
+    def test_reorders_pages(self, tmp_path: Path):
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child1 = proj_dir / "child1.kicad_sch"
+        child2 = proj_dir / "child2.kicad_sch"
+        project.create_schematic(schematic_path=str(child1))
+        project.create_schematic(schematic_path=str(child2))
+        root = str(proj_dir / "proj.kicad_sch")
+        pro = str(proj_dir / "proj.kicad_pro")
+        project.add_hierarchical_sheet(
+            parent_schematic_path=root,
+            sheet_name="Sheet1",
+            sheet_file=str(child1),
+            pins=[],
+            project_path=pro,
+        )
+        project.add_hierarchical_sheet(
+            parent_schematic_path=root,
+            sheet_name="Sheet2",
+            sheet_file=str(child2),
+            pins=[],
+            project_path=pro,
+        )
+
+        sch = Schematic.from_file(root)
+        uuid1, uuid2 = sch.sheets[0].uuid, sch.sheets[1].uuid
+
+        result = project.reorder_sheet_pages(
+            page_order=[uuid2, uuid1],
+            schematic_path=root,
+        )
+        assert "Reordered" in result

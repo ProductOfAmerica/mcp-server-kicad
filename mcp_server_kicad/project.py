@@ -1051,6 +1051,30 @@ def _move_hierarchical_sheet(
     return f"Moved sheet to ({new_x}, {new_y})"
 
 
+def _reorder_sheet_pages(page_order: list[str], schematic_path: str) -> str:
+    """Reorder hierarchical sheets by specifying the desired UUID order.
+
+    Args:
+        page_order: List of sheet UUIDs in desired order
+        schematic_path: Path to root .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    # Build uuid->sheet map
+    sheet_map = {s.uuid: s for s in sch.sheets}
+    missing = [u for u in page_order if u not in sheet_map]
+    if missing:
+        return f"Sheet UUIDs not found: {missing}"
+    # Reorder
+    new_sheets = [sheet_map[u] for u in page_order]
+    # Add any sheets not in the order (preserve at end)
+    for s in sch.sheets:
+        if s.uuid not in page_order:
+            new_sheets.append(s)
+    sch.sheets = new_sheets
+    _save_sch(sch)
+    return f"Reordered {len(page_order)} sheets"
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
@@ -1070,6 +1094,7 @@ trace_hierarchical_net = _trace_hierarchical_net
 list_cross_sheet_nets = _list_cross_sheet_nets
 get_symbol_instances = _get_symbol_instances
 move_hierarchical_sheet = _move_hierarchical_sheet
+reorder_sheet_pages = _reorder_sheet_pages
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -1339,6 +1364,20 @@ def move_hierarchical_sheet(  # noqa: F811
         schematic_path: Path to parent .kicad_sch
     """
     return _move_hierarchical_sheet(sheet_uuid, new_x, new_y, schematic_path)
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def reorder_sheet_pages(  # noqa: F811
+    page_order: list[str],
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Reorder hierarchical sheets by specifying the desired UUID order.
+
+    Args:
+        page_order: List of sheet UUIDs in desired order
+        schematic_path: Path to root .kicad_sch file
+    """
+    return _reorder_sheet_pages(page_order, schematic_path)
 
 
 @mcp.tool(annotations=_EXPORT)
