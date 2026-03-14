@@ -1533,6 +1533,7 @@ def wire_pins_to_net(
     label_text: str,
     direction: str = "auto",
     stub_length: float = 2.54,
+    auto_pwr_flag: bool = True,
     schematic_path: str = SCH_PATH,
 ) -> str:
     """Wire multiple component pins to the same net label.
@@ -1544,6 +1545,7 @@ def wire_pins_to_net(
         label_text: Net label text (e.g. "GND", "VCC")
         direction: Wire direction: "auto", "left", "right", "up", "down"
         stub_length: Wire stub length in mm (default 2.54)
+        auto_pwr_flag: Auto-place PWR_FLAG when net has power_in but no power_out (default True)
         schematic_path: Path to .kicad_sch file
     """
     if not pins:
@@ -1663,7 +1665,7 @@ def wire_pins_to_net(
     _auto_junctions(sch, stub_endpoints)
 
     # Auto-add PWR_FLAG if net has power_in but no power_out
-    if first_power_in_pos is not None and not has_power_out:
+    if auto_pwr_flag and first_power_in_pos is not None and not has_power_out:
         # Check if PWR_FLAG already exists on this net
         has_existing_flag = False
         for sym in sch.schematicSymbols:

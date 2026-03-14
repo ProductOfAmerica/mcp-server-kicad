@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from conftest import new_schematic
 
 from mcp_server_kicad._shared import _resolve_hierarchy_path
@@ -114,3 +115,93 @@ class TestResolveRoot:
 
         result = _resolve_root(str(sch))
         assert result is None
+
+
+@pytest.mark.no_kicad_validation
+class TestLoadSchCachesSystemLibSymbols:
+    def test_caches_system_lib_symbol_on_load(self, tmp_path, monkeypatch):
+        """_load_sch caches raw text for system lib symbols found in the schematic."""
+        from mcp_server_kicad._shared import (
+            _RAW_LIB_SYMBOLS,
+            _load_sch,
+        )
+
+        # Create a fake system library file
+        lib_content = """(kicad_symbol_lib
+  (version 20231120)
+  (generator "kicad_symbol_editor")
+  (symbol "TestSym"
+    (pin_names (offset 0))
+    (in_bom yes)
+    (on_board yes)
+    (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (property "Value" "TestSym" (at 0 2.54 0) (effects (font (size 1.27 1.27))))
+    (symbol "TestSym_0_1"
+      (rectangle (start -2.54 -2.54) (end 2.54 2.54)
+        (stroke (width 0) (type default))
+        (fill (type none))
+      )
+    )
+    (symbol "TestSym_1_1"
+      (pin passive line (at -5.08 0 0) (length 2.54)
+        (name "A" (effects (font (size 1.27 1.27))))
+        (number "1" (effects (font (size 1.27 1.27))))
+      )
+    )
+  )
+)"""
+        lib_dir = tmp_path / "symbols"
+        lib_dir.mkdir()
+        lib_file = lib_dir / "TestLib.kicad_sym"
+        lib_file.write_text(lib_content)
+
+        # Create a schematic with a lib_symbol named "TestLib:TestSym"
+        from kiutils.symbol import Symbol
+
+        sch = new_schematic()
+        lib_sym = Symbol()
+        lib_sym.entryName = "TestLib:TestSym"
+        sch.libSymbols.append(lib_sym)
+        sch_path = tmp_path / "test.kicad_sch"
+        sch.filePath = str(sch_path)
+        sch.to_file()
+
+        # Monkeypatch system sym dirs to include our fake dir
+        monkeypatch.setattr("mcp_server_kicad._shared._SYSTEM_SYM_DIRS", [lib_dir])
+
+        # Clear cache
+        _RAW_LIB_SYMBOLS.clear()
+
+        try:
+            _load_sch(str(sch_path))
+            assert "TestSym" in _RAW_LIB_SYMBOLS
+            assert '(symbol "TestSym"' in _RAW_LIB_SYMBOLS["TestSym"]
+        finally:
+            _RAW_LIB_SYMBOLS.clear()
+
+    def test_does_not_overwrite_existing_cache(self, tmp_path, monkeypatch):
+        """_load_sch does not overwrite already-cached symbols."""
+        from kiutils.symbol import Symbol
+
+        from mcp_server_kicad._shared import (
+            _RAW_LIB_SYMBOLS,
+            _load_sch,
+        )
+
+        sch = new_schematic()
+        lib_sym = Symbol()
+        lib_sym.entryName = "SomeLib:SomeSym"
+        sch.libSymbols.append(lib_sym)
+        sch_path = tmp_path / "test2.kicad_sch"
+        sch.filePath = str(sch_path)
+        sch.to_file()
+
+        sentinel = '(symbol "SomeSym" ORIGINAL_CACHED)'
+        _RAW_LIB_SYMBOLS["SomeSym"] = sentinel
+
+        try:
+            _load_sch(str(sch_path))
+            # Should not have been overwritten
+            assert _RAW_LIB_SYMBOLS["SomeSym"] == sentinel
+        finally:
+            _RAW_LIB_SYMBOLS.clear()

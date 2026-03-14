@@ -238,7 +238,19 @@ def _load_sch(path: str = SCH_PATH) -> Schematic:
     """Load a KiCad schematic from *path*."""
     if not path:
         raise ValueError("No schematic path provided. Pass sch_path parameter.")
-    return Schematic.from_file(path)
+    sch = Schematic.from_file(path)
+    # Cache raw system lib symbol text to prevent kiutils round-trip corruption
+    for lib_sym in sch.libSymbols:
+        sym_name = lib_sym.entryName
+        if sym_name not in _RAW_LIB_SYMBOLS:
+            # Try to find in system libraries
+            lib_prefix = lib_sym.libraryNickname or ""
+            lib_path = _resolve_system_lib(lib_prefix) if lib_prefix else None
+            if lib_path:
+                raw = _extract_raw_symbol(lib_path, sym_name)
+                if raw:
+                    _RAW_LIB_SYMBOLS[sym_name] = raw
+    return sch
 
 
 def _gen_uuid() -> str:

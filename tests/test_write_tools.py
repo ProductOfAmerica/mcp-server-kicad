@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from conftest import (
     assert_kicad_parseable,
+    build_power_symbol,
     build_r_symbol,
     new_schematic,
     reparse,
@@ -1281,3 +1282,154 @@ class TestConnectPinsNetLabel:
         sch = Schematic.from_file(str(scratch_sch))
         auto_labels = [lbl.text for lbl in sch.labels if lbl.text.startswith("Net-(")]
         assert len(auto_labels) == 0, f"Should skip auto-label, got: {auto_labels}"
+
+
+# ---------------------------------------------------------------------------
+# wire_pins_to_net  –  auto_pwr_flag opt-out
+# ---------------------------------------------------------------------------
+
+
+class TestWirePinsToNetAutoPwrFlag:
+    @pytest.mark.no_kicad_validation
+    def test_auto_pwr_flag_false_skips_pwr_flag(self, tmp_path):
+        """wire_pins_to_net with auto_pwr_flag=False should not place PWR_FLAG."""
+        import uuid
+
+        from kiutils.items.common import Effects, Font, Position, Property
+        from kiutils.items.schitems import SchematicSymbol
+
+        sch = new_schematic()
+        # Add VCC lib symbol (power_in type)
+        sch.libSymbols.append(build_power_symbol("VCC", "power_in"))
+
+        # Place a VCC symbol instance
+        vcc = SchematicSymbol()
+        vcc.libId = "power:VCC"
+        vcc.libName = "VCC"
+        vcc.position = Position(X=100, Y=100, angle=0)
+        vcc.uuid = str(uuid.uuid4())
+        vcc.unit = 1
+        vcc.inBom = False
+        vcc.onBoard = True
+        vcc.properties = [
+            Property(
+                key="Reference",
+                value="#PWR01",
+                id=0,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=96.19, angle=0),
+            ),
+            Property(
+                key="Value",
+                value="VCC",
+                id=1,
+                effects=Effects(font=Font(height=1.27, width=1.27)),
+                position=Position(X=100, Y=103.81, angle=0),
+            ),
+            Property(
+                key="Footprint",
+                value="",
+                id=2,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=100, angle=0),
+            ),
+            Property(
+                key="Datasheet",
+                value="~",
+                id=3,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=100, angle=0),
+            ),
+        ]
+        vcc.pins = {"1": str(uuid.uuid4())}
+        sch.schematicSymbols.append(vcc)
+
+        sch_path = tmp_path / "pwr_test.kicad_sch"
+        sch.filePath = str(sch_path)
+        sch.to_file()
+
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "#PWR01", "pin": "1"}],
+            label_text="VCC_NET",
+            auto_pwr_flag=False,
+            schematic_path=str(sch_path),
+        )
+
+        # Reload and check no PWR_FLAG was placed
+        sch2 = reparse(str(sch_path))
+        pwr_flags = [
+            s
+            for s in sch2.schematicSymbols
+            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in s.properties)
+        ]
+        assert len(pwr_flags) == 0, "PWR_FLAG should not be placed when auto_pwr_flag=False"
+
+    @pytest.mark.no_kicad_validation
+    def test_auto_pwr_flag_true_places_pwr_flag(self, tmp_path):
+        """wire_pins_to_net with auto_pwr_flag=True (default) should place PWR_FLAG for power_in."""
+        import uuid
+
+        from kiutils.items.common import Effects, Font, Position, Property
+        from kiutils.items.schitems import SchematicSymbol
+
+        sch = new_schematic()
+        sch.libSymbols.append(build_power_symbol("VCC", "power_in"))
+
+        vcc = SchematicSymbol()
+        vcc.libId = "power:VCC"
+        vcc.libName = "VCC"
+        vcc.position = Position(X=100, Y=100, angle=0)
+        vcc.uuid = str(uuid.uuid4())
+        vcc.unit = 1
+        vcc.inBom = False
+        vcc.onBoard = True
+        vcc.properties = [
+            Property(
+                key="Reference",
+                value="#PWR01",
+                id=0,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=96.19, angle=0),
+            ),
+            Property(
+                key="Value",
+                value="VCC",
+                id=1,
+                effects=Effects(font=Font(height=1.27, width=1.27)),
+                position=Position(X=100, Y=103.81, angle=0),
+            ),
+            Property(
+                key="Footprint",
+                value="",
+                id=2,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=100, angle=0),
+            ),
+            Property(
+                key="Datasheet",
+                value="~",
+                id=3,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=100, Y=100, angle=0),
+            ),
+        ]
+        vcc.pins = {"1": str(uuid.uuid4())}
+        sch.schematicSymbols.append(vcc)
+
+        sch_path = tmp_path / "pwr_test2.kicad_sch"
+        sch.filePath = str(sch_path)
+        sch.to_file()
+
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "#PWR01", "pin": "1"}],
+            label_text="VCC_NET2",
+            schematic_path=str(sch_path),
+        )
+
+        sch2 = reparse(str(sch_path))
+        pwr_flags = [
+            s
+            for s in sch2.schematicSymbols
+            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in s.properties)
+        ]
+        assert len(pwr_flags) == 1, "PWR_FLAG should be placed when auto_pwr_flag=True (default)"
