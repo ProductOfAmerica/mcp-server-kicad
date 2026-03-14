@@ -162,7 +162,9 @@ __all__ = [
     "_point_in_polygon",
     "_transform_local_to_board",
     "_board_edge_polygon",
-    "_check_keepout_violations",
+    "_linearize_arc",
+    "_keepout_restrictions",
+    "_check_footprint_keepout_violations",
 ]
 
 
@@ -803,11 +805,14 @@ def _courtyard_bbox(fp: Footprint) -> dict | None:
             ]
         elif isinstance(item, FpArc):
             layer = item.layer
-            pts = [
-                (item.start.X, item.start.Y),
-                (item.mid.X, item.mid.Y),
-                (item.end.X, item.end.Y),
-            ]
+            pts = _linearize_arc(
+                item.start.X,
+                item.start.Y,
+                item.mid.X,
+                item.mid.Y,
+                item.end.X,
+                item.end.Y,
+            )
         elif isinstance(item, FpPoly):
             layer = item.layer
             pts = [(c.X, c.Y) for c in item.coordinates]
@@ -890,7 +895,8 @@ def _board_edge_polygon(board: Board) -> list[tuple[float, float]] | None:
     """Extract the board outline from Edge.Cuts graphic items.
 
     Collects ``GrLine`` and ``GrArc`` segments on the ``Edge.Cuts`` layer,
-    chains them into a closed polygon by endpoint matching (1 um tolerance),
+    chains them into a closed polygon by endpoint matching (coordinates are
+    rounded to 1 µm before matching),
     and returns the vertex list.  GrArc segments are linearized into ~16
     straight segments.
 
@@ -1000,11 +1006,7 @@ def _linearize_arc(
 
     # Determine sweep direction: start -> mid -> end
     def _normalize(a: float) -> float:
-        while a < 0:
-            a += 2 * math.pi
-        while a >= 2 * math.pi:
-            a -= 2 * math.pi
-        return a
+        return a % (2 * math.pi)
 
     # Check if going CCW (positive) or CW (negative) from start through mid to end
     d_start_mid = _normalize(angle_mid - angle_start)
@@ -1028,7 +1030,18 @@ def _linearize_arc(
     return points
 
 
-def _check_keepout_violations(board: Board, x: float, y: float, layer: str) -> list[dict]:
+def _keepout_restrictions(ks: KeepoutSettings) -> dict[str, str]:
+    """Return a dict of keepout restriction values from *ks*."""
+    return {
+        "tracks": ks.tracks,
+        "vias": ks.vias,
+        "pads": ks.pads,
+        "copperpour": ks.copperpour,
+        "footprints": ks.footprints,
+    }
+
+
+def _check_footprint_keepout_violations(board: Board, x: float, y: float, layer: str) -> list[dict]:
     """Check if position (x, y) violates any keepout zones on *layer*.
 
     Checks both board-level zones and footprint-embedded zones.
@@ -1058,13 +1071,7 @@ def _check_keepout_violations(board: Board, x: float, y: float, layer: str) -> l
                 {
                     "source": "board",
                     "layers": list(zone.layers),
-                    "restrictions": {
-                        "tracks": ks.tracks,
-                        "vias": ks.vias,
-                        "pads": ks.pads,
-                        "copperpour": ks.copperpour,
-                        "footprints": ks.footprints,
-                    },
+                    "restrictions": _keepout_restrictions(ks),
                 }
             )
 
@@ -1099,13 +1106,7 @@ def _check_keepout_violations(board: Board, x: float, y: float, layer: str) -> l
                     {
                         "source": f"footprint:{ref}",
                         "layers": list(zone.layers),
-                        "restrictions": {
-                            "tracks": ks.tracks,
-                            "vias": ks.vias,
-                            "pads": ks.pads,
-                            "copperpour": ks.copperpour,
-                            "footprints": ks.footprints,
-                        },
+                        "restrictions": _keepout_restrictions(ks),
                     }
                 )
 
