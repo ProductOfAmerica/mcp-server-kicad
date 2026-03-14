@@ -34,7 +34,7 @@ class TestUnifiedServer:
         assert "run_erc" in registered
         assert "export_gerbers" in registered
         # Total tool count
-        assert len(registered) == 85, f"Expected 85 tools, got {len(registered)}: {registered}"
+        assert len(registered) == 86, f"Expected 86 tools, got {len(registered)}: {registered}"
 
     def test_copy_tools_without_cli(self):
         """CLI-dependent tools are excluded when has_cli=False."""
@@ -47,7 +47,7 @@ class TestUnifiedServer:
         for cli_tool in server._CLI_TOOLS:
             assert cli_tool not in registered, f"{cli_tool} should be excluded"
         # Tool count: 73 total - 17 CLI = 56
-        assert len(registered) == 68, f"Expected 68 non-CLI tools, got {len(registered)}"
+        assert len(registered) == 69, f"Expected 69 non-CLI tools, got {len(registered)}"
 
     def test_no_tool_name_collisions(self):
         """All tool names across modules are unique."""

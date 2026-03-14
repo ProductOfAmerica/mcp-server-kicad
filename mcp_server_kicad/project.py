@@ -1075,6 +1075,144 @@ def _reorder_sheet_pages(page_order: list[str], schematic_path: str) -> str:
     return f"Reordered {len(page_order)} sheets"
 
 
+def _duplicate_sheet(
+    sheet_uuid: str,
+    new_sheet_name: str,
+    schematic_path: str,
+    project_path: str = "",
+    new_file_name: str = "",
+) -> str:
+    """Duplicate a hierarchical sheet, copying the child file with new UUIDs.
+
+    Args:
+        sheet_uuid: UUID of the sheet to duplicate
+        new_sheet_name: Display name for the new sheet
+        schematic_path: Path to parent .kicad_sch
+        project_path: Path to .kicad_pro (for hierarchy metadata)
+        new_file_name: Name for the copied file (auto-generated if empty)
+    """
+    import shutil
+    import uuid as _uuid_mod
+
+    sch = _load_sch(schematic_path)
+    sch_dir = Path(schematic_path).parent
+
+    # Find source sheet
+    source = None
+    for s in sch.sheets:
+        if s.uuid == sheet_uuid:
+            source = s
+            break
+    if source is None:
+        return f"Sheet with UUID '{sheet_uuid}' not found"
+
+    # Determine new file name
+    if not new_file_name:
+        base = Path(source.fileName.value).stem
+        new_file_name = f"{base}_{new_sheet_name.replace(' ', '_').lower()}.kicad_sch"
+
+    # Copy the child file
+    src_path = sch_dir / source.fileName.value
+    dst_path = sch_dir / new_file_name
+    if not src_path.exists():
+        return f"Source file not found: {src_path}"
+
+    shutil.copy2(str(src_path), str(dst_path))
+
+    # Regenerate UUIDs in the copy
+    copy_sch = _load_sch(str(dst_path))
+    copy_sch.uuid = str(_uuid_mod.uuid4())
+    for sym in copy_sch.schematicSymbols:
+        sym.uuid = str(_uuid_mod.uuid4())
+    for label in copy_sch.labels:
+        label.uuid = str(_uuid_mod.uuid4())
+    for gl in copy_sch.globalLabels:
+        gl.uuid = str(_uuid_mod.uuid4())
+    for hl in copy_sch.hierarchicalLabels:
+        hl.uuid = str(_uuid_mod.uuid4())
+    for gi in copy_sch.graphicalItems:
+        if hasattr(gi, "uuid"):
+            gi.uuid = str(_uuid_mod.uuid4())
+    for j in copy_sch.junctions:
+        j.uuid = str(_uuid_mod.uuid4())
+    for nc in copy_sch.noConnects:
+        nc.uuid = str(_uuid_mod.uuid4())
+    _save_sch(copy_sch)
+
+    # Create new sheet block in parent (copy properties from source)
+    dx = source.width + 5
+    new_sheet = HierarchicalSheet()
+    new_sheet.uuid = _gen_uuid()
+    new_sheet.position = Position(
+        X=source.position.X + dx,
+        Y=source.position.Y,
+    )
+    new_sheet.width = source.width
+    new_sheet.height = source.height
+    new_sheet.stroke = Stroke(width=0.1, type="default")
+    new_sheet.fill = ColorRGBA()
+    new_sheet.fieldsAutoplaced = True
+    new_sheet.sheetName = Property(
+        key="Sheetname",
+        value=new_sheet_name,
+        id=0,
+        effects=Effects(font=Font(height=1.27, width=1.27)),
+        position=Position(
+            X=source.position.X + dx,
+            Y=source.position.Y - 1.27,
+            angle=0,
+        ),
+    )
+    new_sheet.fileName = Property(
+        key="Sheetfile",
+        value=new_file_name,
+        id=1,
+        effects=Effects(font=Font(height=1.27, width=1.27)),
+        position=Position(
+            X=source.position.X + dx,
+            Y=round(source.position.Y + source.height + 1.27, 4),
+            angle=0,
+        ),
+    )
+
+    # Copy pins with offset
+    for pin in source.pins:
+        new_pin = HierarchicalPin(
+            name=pin.name,
+            connectionType=pin.connectionType,
+            position=Position(
+                X=round(pin.position.X + dx, 4),
+                Y=pin.position.Y,
+                angle=pin.position.angle if hasattr(pin.position, "angle") else 0,
+            ),
+            uuid=_gen_uuid(),
+        )
+        new_pin.effects = Effects(font=Font(height=1.27, width=1.27))
+        new_sheet.pins.append(new_pin)
+
+    # Add instances block
+    project_name = (
+        Path(project_path).stem
+        if project_path
+        else (Path(sch.filePath).stem if sch.filePath else "")
+    )
+    new_sheet.instances = [
+        HierarchicalSheetProjectInstance(
+            name=project_name,
+            paths=[
+                HierarchicalSheetProjectPath(
+                    sheetInstancePath=f"/{sch.uuid}/{new_sheet.uuid}",
+                    page=str(len(sch.sheets) + 2),
+                ),
+            ],
+        ),
+    ]
+
+    sch.sheets.append(new_sheet)
+    _save_sch(sch)
+    return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
+
+
 # Public aliases — tests call these directly without going through MCP
 create_project = _create_project
 create_schematic = _create_schematic
@@ -1095,6 +1233,7 @@ list_cross_sheet_nets = _list_cross_sheet_nets
 get_symbol_instances = _get_symbol_instances
 move_hierarchical_sheet = _move_hierarchical_sheet
 reorder_sheet_pages = _reorder_sheet_pages
+duplicate_sheet = _duplicate_sheet
 
 
 # ── MCP tool wrappers ─────────────────────────────────────────────
@@ -1378,6 +1517,26 @@ def reorder_sheet_pages(  # noqa: F811
         schematic_path: Path to root .kicad_sch file
     """
     return _reorder_sheet_pages(page_order, schematic_path)
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def duplicate_sheet(  # noqa: F811
+    sheet_uuid: str,
+    new_sheet_name: str,
+    schematic_path: str = SCH_PATH,
+    project_path: str = "",
+    new_file_name: str = "",
+) -> str:
+    """Duplicate a hierarchical sheet, copying the child file with new UUIDs.
+
+    Args:
+        sheet_uuid: UUID of the sheet to duplicate
+        new_sheet_name: Display name for the new sheet
+        schematic_path: Path to parent .kicad_sch
+        project_path: Path to .kicad_pro (for hierarchy metadata)
+        new_file_name: Name for the copied file (auto-generated if empty)
+    """
+    return _duplicate_sheet(sheet_uuid, new_sheet_name, schematic_path, project_path, new_file_name)
 
 
 @mcp.tool(annotations=_EXPORT)

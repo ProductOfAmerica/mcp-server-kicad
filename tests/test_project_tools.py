@@ -1145,3 +1145,39 @@ class TestReorderSheetPages:
             schematic_path=root,
         )
         assert "Reordered" in result
+
+
+class TestDuplicateSheet:
+    def test_duplicates_sheet(self, tmp_path: Path):
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+        root = str(proj_dir / "proj.kicad_sch")
+        pro = str(proj_dir / "proj.kicad_pro")
+        project.add_hierarchical_sheet(
+            parent_schematic_path=root,
+            sheet_name="Power",
+            sheet_file=str(child),
+            pins=[{"name": "VIN", "direction": "input"}],
+            project_path=pro,
+        )
+        sch = Schematic.from_file(root)
+        sheet_uuid = sch.sheets[0].uuid
+
+        result = project.duplicate_sheet(
+            sheet_uuid=sheet_uuid,
+            new_sheet_name="Power2",
+            schematic_path=root,
+            project_path=pro,
+        )
+        assert "Power2" in result
+
+        sch2 = Schematic.from_file(root)
+        assert len(sch2.sheets) == 2
+        names = {s.sheetName.value for s in sch2.sheets}
+        assert "Power" in names
+        assert "Power2" in names
+        # The new sheet should reference a different file
+        files = {s.fileName.value for s in sch2.sheets}
+        assert len(files) == 2  # Two different files
