@@ -13,6 +13,13 @@ from mcp_server_kicad._shared import (
     FP_LIB_PATH,
     OUTPUT_DIR,
     Footprint,
+    FpArc,
+    FpCircle,
+    FpLine,
+    FpPoly,
+    FpRect,
+    FpText,
+    _courtyard_bbox,
     _run_cli,
 )
 
@@ -68,6 +75,59 @@ def get_footprint_info(footprint_path: str) -> str:
             f"@ ({pad.position.X}, {pad.position.Y}) "
             f"size=({pad.size.X}, {pad.size.Y}) layers={pad.layers}"
         )
+
+    # Courtyard bounding box
+    crtyd = _courtyard_bbox(fp)
+    if crtyd is not None:
+        lines.append(
+            f"  Courtyard: {crtyd['layer']} {crtyd['width']:.1f} x {crtyd['height']:.1f} mm "
+            f"(bbox: {crtyd['min_x']:.1f}, {crtyd['min_y']:.1f} to "
+            f"{crtyd['max_x']:.1f}, {crtyd['max_y']:.1f})"
+        )
+
+    # Keep-out zones
+    for zone in fp.zones:
+        if zone.keepoutSettings is None:
+            continue
+        ks = zone.keepoutSettings
+        layer_str = ", ".join(zone.layers) if zone.layers else "none"
+        lines.append(
+            f"  Keep-out zone: layers=[{layer_str}] "
+            f"footprints={ks.footprints} tracks={ks.tracks} "
+            f"vias={ks.vias} pads={ks.pads} copperpour={ks.copperpour}"
+        )
+        if zone.polygons:
+            coords = [(round(c.X, 3), round(c.Y, 3)) for c in zone.polygons[0].coordinates]
+            lines.append(f"    polygon: {coords}")
+
+    # Graphics summary — group non-CrtYd, non-FpText items by layer
+    type_names = {
+        FpLine: "line",
+        FpRect: "rect",
+        FpCircle: "circle",
+        FpArc: "arc",
+        FpPoly: "poly",
+    }
+    layer_counts: dict[str, dict[str, int]] = {}
+    for item in fp.graphicItems:
+        if isinstance(item, FpText):
+            continue
+        item_layer: str | None = getattr(item, "layer", None)
+        if item_layer is None or item_layer.endswith(".CrtYd"):
+            continue
+        for cls, name in type_names.items():
+            if isinstance(item, cls):
+                counts = layer_counts.setdefault(item_layer, {})
+                counts[name] = counts.get(name, 0) + 1
+                break
+
+    if layer_counts:
+        parts: list[str] = []
+        for layer_name, counts in layer_counts.items():
+            items_str = ", ".join(f"{c} {n}{'s' if c > 1 else ''}" for n, c in counts.items())
+            parts.append(f"{layer_name} ({items_str})")
+        lines.append(f"  Graphics: {', '.join(parts)}")
+
     return "\n".join(lines)
 
 
