@@ -146,6 +146,9 @@ __all__ = [
     "_save_sch",
     "_load_system_lib_symbol",
     "_extract_raw_symbol",
+    "_sym_ref_val_fp",
+    "_upsert_root_symbol_instance",
+    "_remove_root_symbol_instance",
 ]
 
 
@@ -624,3 +627,118 @@ def _fp_val(fp: Footprint) -> str:
         if isinstance(item, FpText) and item.type == "value":
             return item.text
     return "?"
+
+
+def _sym_ref_val_fp(sym) -> tuple[str, str, str]:
+    """Extract (reference, value, footprint) from a SchematicSymbol's properties."""
+    ref = next((p.value for p in sym.properties if p.key == "Reference"), "?")
+    val = next((p.value for p in sym.properties if p.key == "Value"), "")
+    fp = next((p.value for p in sym.properties if p.key == "Footprint"), "")
+    return ref, val, fp
+
+
+def _upsert_root_symbol_instance(
+    schematic_path: str,
+    project_path: str,
+    sym_uuid: str,
+    reference: str,
+    unit: int = 1,
+    value: str = "",
+    footprint: str = "",
+) -> bool:
+    """Create or update a SymbolInstance entry in the root schematic's symbolInstances list.
+
+    Automatically detects whether *schematic_path* is a sub-sheet or the root
+    itself and builds the correct instance path accordingly.
+
+    Returns True if the root was updated, False if no root could be determined.
+    """
+    root_path = _resolve_root(schematic_path, project_path)
+
+    if root_path is None:
+        # Also try auto-detect from directory
+        root_path = _find_root_schematic(schematic_path)
+
+    if root_path is not None:
+        # schematic_path is a sub-sheet — build 3-segment path
+        root_sch = _load_sch(root_path)
+        target_name = Path(schematic_path).name
+        sheet_uuid = None
+        for sheet in root_sch.sheets:
+            if sheet.fileName.value == target_name:
+                sheet_uuid = sheet.uuid
+                break
+        if sheet_uuid is None:
+            return False
+        sym_path = f"/{root_sch.uuid}/{sheet_uuid}/{sym_uuid}"
+    else:
+        # Check if schematic IS the root (has a .kicad_pro sibling)
+        pro_path = Path(schematic_path).with_suffix(".kicad_pro")
+        if not pro_path.exists():
+            return False
+        root_sch = _load_sch(schematic_path)
+        sym_path = f"/{root_sch.uuid}/{sym_uuid}"
+
+    si_list = getattr(root_sch, "symbolInstances", None)
+    if si_list is None:
+        root_sch.symbolInstances = []
+        si_list = root_sch.symbolInstances
+
+    # Look for existing entry
+    for si in si_list:
+        if si.path == sym_path:
+            si.reference = reference
+            si.unit = unit
+            si.value = value
+            si.footprint = footprint
+            _save_sch(root_sch)
+            return True
+
+    # Not found — append new entry
+    si_list.append(
+        SymbolInstance(
+            path=sym_path,
+            reference=reference,
+            unit=unit,
+            value=value,
+            footprint=footprint,
+        )
+    )
+    _save_sch(root_sch)
+    return True
+
+
+def _remove_root_symbol_instance(
+    schematic_path: str,
+    project_path: str,
+    sym_uuid: str,
+) -> bool:
+    """Remove a SymbolInstance entry from the root schematic's symbolInstances list.
+
+    Returns True if an entry was removed, False otherwise.
+    """
+    root_path = _resolve_root(schematic_path, project_path)
+
+    if root_path is None:
+        root_path = _find_root_schematic(schematic_path)
+
+    if root_path is not None:
+        root_sch = _load_sch(root_path)
+    else:
+        pro_path = Path(schematic_path).with_suffix(".kicad_pro")
+        if not pro_path.exists():
+            return False
+        root_sch = _load_sch(schematic_path)
+
+    si_list = getattr(root_sch, "symbolInstances", None)
+    if not si_list:
+        return False
+
+    suffix = f"/{sym_uuid}"
+    original_len = len(si_list)
+    root_sch.symbolInstances = [si for si in si_list if not si.path.endswith(suffix)]
+
+    if len(root_sch.symbolInstances) < original_len:
+        _save_sch(root_sch)
+        return True
+    return False

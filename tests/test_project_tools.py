@@ -1314,3 +1314,465 @@ class TestFlattenHierarchy:
         flat_sch = Schematic.from_file(str(proj_dir / "flat.kicad_sch"))
         assert len(flat_sch.sheets) == 0
         assert len(flat_sch.schematicSymbols) >= 1
+
+
+@pytest.mark.no_kicad_validation
+class TestRootSymbolInstanceSync:
+    """Tests for _upsert_root_symbol_instance, _remove_root_symbol_instance,
+    and integration with tools that should sync symbolInstances."""
+
+    def _make_project_with_child(self, tmp_path: Path):
+        """Helper: create project, child sch, link as hierarchical sheet.
+
+        Returns (proj_dir, root_path, child_path, pro_path).
+        """
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+        root = str(proj_dir / "proj.kicad_sch")
+        pro = str(proj_dir / "proj.kicad_pro")
+        project.add_hierarchical_sheet(
+            parent_schematic_path=root,
+            sheet_name="Sub",
+            sheet_file=str(child),
+            pins=[],
+            project_path=pro,
+        )
+        return proj_dir, root, str(child), pro
+
+    def _place_symbol_in_child(self, child_path: str) -> str:
+        """Place an unannotated R? symbol in child using kiutils. Returns sym UUID."""
+        from conftest import _default_effects, _gen_uuid, build_r_symbol
+        from kiutils.items.common import Position, Property
+        from kiutils.items.schitems import SchematicSymbol
+
+        child_sch = Schematic.from_file(child_path)
+        # Add lib symbol if not present
+        if not any(s.entryName == "R" for s in child_sch.libSymbols):
+            child_sch.libSymbols.append(build_r_symbol())
+
+        sym = SchematicSymbol()
+        sym.libId = "Device:R"
+        sym.position = Position(X=100, Y=100)
+        sym_uuid = _gen_uuid()
+        sym.uuid = sym_uuid
+        sym.unit = 1
+        sym.inBom = True
+        sym.onBoard = True
+        sym.properties = [
+            Property(
+                key="Reference",
+                value="R?",
+                id=0,
+                effects=_default_effects(),
+                position=Position(X=100, Y=97),
+            ),
+            Property(
+                key="Value",
+                value="10K",
+                id=1,
+                effects=_default_effects(),
+                position=Position(X=100, Y=103),
+            ),
+            Property(
+                key="Footprint",
+                value="",
+                id=2,
+                effects=_default_effects(hide=True),
+                position=Position(X=100, Y=100),
+            ),
+        ]
+        sym.pins = {"1": _gen_uuid(), "2": _gen_uuid()}
+        child_sch.schematicSymbols.append(sym)
+        child_sch.to_file()
+        return sym_uuid
+
+    # ---- Helper unit tests (1-6) ----
+
+    def test_upsert_creates_symbol_instance_in_root(self, tmp_path: Path):
+        """Test 1: upsert creates a new SymbolInstance entry in root."""
+        from mcp_server_kicad._shared import _upsert_root_symbol_instance
+
+        proj_dir, root, child, pro = self._make_project_with_child(tmp_path)
+        sym_uuid = self._place_symbol_in_child(child)
+
+        result = _upsert_root_symbol_instance(
+            schematic_path=child,
+            project_path=pro,
+            sym_uuid=sym_uuid,
+            reference="R1",
+            value="10K",
+        )
+        assert result is True
+
+        root_sch = Schematic.from_file(root)
+        si_list = root_sch.symbolInstances
+        assert len(si_list) == 1
+        assert si_list[0].reference == "R1"
+        assert sym_uuid in si_list[0].path
+
+    def test_upsert_updates_existing_symbol_instance(self, tmp_path: Path):
+        """Test 2: upsert updates an existing entry instead of duplicating."""
+        from mcp_server_kicad._shared import _upsert_root_symbol_instance
+
+        proj_dir, root, child, pro = self._make_project_with_child(tmp_path)
+        sym_uuid = self._place_symbol_in_child(child)
+
+        _upsert_root_symbol_instance(
+            schematic_path=child,
+            project_path=pro,
+            sym_uuid=sym_uuid,
+            reference="R1",
+            value="10K",
+        )
+        _upsert_root_symbol_instance(
+            schematic_path=child,
+            project_path=pro,
+            sym_uuid=sym_uuid,
+            reference="R2",
+            value="22K",
+        )
+
+        root_sch = Schematic.from_file(root)
+        si_list = root_sch.symbolInstances
+        assert len(si_list) == 1  # Not 2
+        assert si_list[0].reference == "R2"
+        assert si_list[0].value == "22K"
+
+    def test_upsert_flat_project_returns_false(self, tmp_path: Path):
+        """Test 3: upsert returns False for a bare .kicad_sch with no .kicad_pro."""
+        from conftest import new_schematic
+
+        from mcp_server_kicad._shared import _upsert_root_symbol_instance
+
+        sch = new_schematic()
+        bare_path = tmp_path / "bare.kicad_sch"
+        sch.filePath = str(bare_path)
+        sch.to_file()
+
+        result = _upsert_root_symbol_instance(
+            schematic_path=str(bare_path),
+            project_path="",
+            sym_uuid="fake-uuid-1234",
+            reference="R1",
+        )
+        assert result is False
+
+    def test_upsert_root_schematic_uses_2_segment_path(self, tmp_path: Path):
+        """Test 4: upsert on root schematic itself uses /{root_uuid}/{sym_uuid}."""
+        from conftest import _gen_uuid
+
+        from mcp_server_kicad._shared import _upsert_root_symbol_instance
+
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        root = str(proj_dir / "proj.kicad_sch")
+        pro = str(proj_dir / "proj.kicad_pro")
+
+        sym_uuid = _gen_uuid()
+        result = _upsert_root_symbol_instance(
+            schematic_path=root,
+            project_path=pro,
+            sym_uuid=sym_uuid,
+            reference="R1",
+            value="10K",
+        )
+        assert result is True
+
+        root_sch = Schematic.from_file(root)
+        si_list = root_sch.symbolInstances
+        assert len(si_list) == 1
+        # Path should be /{root_uuid}/{sym_uuid} — exactly 2 segments
+        path = si_list[0].path
+        assert path == f"/{root_sch.uuid}/{sym_uuid}"
+        segments = [s for s in path.split("/") if s]
+        assert len(segments) == 2
+
+    def test_remove_deletes_symbol_instance_from_root(self, tmp_path: Path):
+        """Test 5: remove deletes a SymbolInstance entry from root."""
+        from mcp_server_kicad._shared import (
+            _remove_root_symbol_instance,
+            _upsert_root_symbol_instance,
+        )
+
+        proj_dir, root, child, pro = self._make_project_with_child(tmp_path)
+        sym_uuid = self._place_symbol_in_child(child)
+
+        _upsert_root_symbol_instance(
+            schematic_path=child,
+            project_path=pro,
+            sym_uuid=sym_uuid,
+            reference="R1",
+            value="10K",
+        )
+
+        result = _remove_root_symbol_instance(
+            schematic_path=child,
+            project_path=pro,
+            sym_uuid=sym_uuid,
+        )
+        assert result is True
+
+        root_sch = Schematic.from_file(root)
+        assert len(root_sch.symbolInstances) == 0
+
+    def test_remove_nonexistent_returns_false(self, tmp_path: Path):
+        """Test 6: remove returns False when UUID not in symbolInstances."""
+        from conftest import _gen_uuid
+
+        from mcp_server_kicad._shared import _remove_root_symbol_instance
+
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        root = str(proj_dir / "proj.kicad_sch")
+        pro = str(proj_dir / "proj.kicad_pro")
+
+        result = _remove_root_symbol_instance(
+            schematic_path=root,
+            project_path=pro,
+            sym_uuid=_gen_uuid(),
+        )
+        assert result is False
+
+    # ---- Integration tests (7-13) ----
+
+    def test_annotate_subsheet_syncs_root_symbol_instances(self, tmp_path: Path):
+        """Test 7: annotate_schematic on sub-sheet syncs symbolInstances to root."""
+        proj_dir, root, child, pro = self._make_project_with_child(tmp_path)
+        # Place two unannotated symbols
+        self._place_symbol_in_child(child)
+        self._place_symbol_in_child(child)
+
+        # Fix positions so they don't overlap (re-read and adjust)
+        child_sch = Schematic.from_file(child)
+        for i, sym in enumerate(child_sch.schematicSymbols):
+            from kiutils.items.common import Position
+
+            sym.position = Position(X=100, Y=50 + i * 30)
+        child_sch.to_file()
+
+        project.annotate_schematic(schematic_path=child, project_path=pro)
+
+        root_sch = Schematic.from_file(root)
+        si_list = root_sch.symbolInstances
+        refs = sorted(si.reference for si in si_list)
+        assert "R1" in refs
+        assert "R2" in refs
+
+    def test_annotate_root_syncs_own_symbol_instances(self, tmp_path: Path):
+        """Test 8: annotate_schematic on root syncs symbolInstances to itself."""
+        from conftest import _default_effects, _gen_uuid, build_r_symbol
+        from kiutils.items.common import Position, Property
+        from kiutils.items.schitems import SchematicSymbol
+
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        root = str(proj_dir / "proj.kicad_sch")
+        pro = str(proj_dir / "proj.kicad_pro")
+
+        # Place unannotated symbol in root
+        root_sch = Schematic.from_file(root)
+        root_sch.libSymbols.append(build_r_symbol())
+        sym = SchematicSymbol()
+        sym.libId = "Device:R"
+        sym.position = Position(X=100, Y=100)
+        sym.uuid = _gen_uuid()
+        sym.unit = 1
+        sym.inBom = True
+        sym.onBoard = True
+        sym.properties = [
+            Property(
+                key="Reference",
+                value="R?",
+                id=0,
+                effects=_default_effects(),
+                position=Position(X=100, Y=97),
+            ),
+            Property(
+                key="Value",
+                value="10K",
+                id=1,
+                effects=_default_effects(),
+                position=Position(X=100, Y=103),
+            ),
+            Property(
+                key="Footprint",
+                value="",
+                id=2,
+                effects=_default_effects(hide=True),
+                position=Position(X=100, Y=100),
+            ),
+        ]
+        sym.pins = {"1": _gen_uuid(), "2": _gen_uuid()}
+        root_sch.schematicSymbols.append(sym)
+        root_sch.to_file()
+
+        project.annotate_schematic(schematic_path=root, project_path=pro)
+
+        root_sch2 = Schematic.from_file(root)
+        si_list = root_sch2.symbolInstances
+        refs = [si.reference for si in si_list]
+        assert "R1" in refs
+        # Verify 2-segment path
+        for si in si_list:
+            segments = [s for s in si.path.split("/") if s]
+            assert len(segments) == 2
+
+    def test_place_component_subsheet_syncs_root(self, tmp_path: Path):
+        """Test 9: place_component on sub-sheet syncs symbolInstances to root."""
+        from mcp_server_kicad import schematic
+
+        proj_dir, root, child, pro = self._make_project_with_child(tmp_path)
+
+        # Add lib symbol to child so place_component can find it
+        child_sch = Schematic.from_file(child)
+        child_sch.libSymbols.append(conftest.build_r_symbol())
+        child_sch.to_file()
+
+        schematic.place_component(
+            reference="R1",
+            value="10K",
+            lib_id="Device:R",
+            x=100,
+            y=100,
+            schematic_path=child,
+            project_path=pro,
+        )
+
+        root_sch = Schematic.from_file(root)
+        si_list = root_sch.symbolInstances
+        refs = [si.reference for si in si_list]
+        assert "R1" in refs
+
+    def test_remove_component_subsheet_syncs_root(self, tmp_path: Path):
+        """Test 10: remove_component on sub-sheet removes symbolInstances from root."""
+        from mcp_server_kicad import schematic
+
+        proj_dir, root, child, pro = self._make_project_with_child(tmp_path)
+
+        # Place a component in the child (place_component syncs root automatically)
+        child_sch = Schematic.from_file(child)
+        child_sch.libSymbols.append(conftest.build_r_symbol())
+        child_sch.to_file()
+
+        schematic.place_component(
+            reference="R1",
+            value="10K",
+            lib_id="Device:R",
+            x=100,
+            y=100,
+            schematic_path=child,
+            project_path=pro,
+        )
+
+        schematic.remove_component(reference="R1", schematic_path=child)
+
+        root_sch = Schematic.from_file(root)
+        si_refs = [si.reference for si in root_sch.symbolInstances]
+        assert "R1" not in si_refs
+
+    def test_set_component_property_value_syncs_root(self, tmp_path: Path):
+        """Test 11: set_component_property syncs value change to root symbolInstances."""
+        from mcp_server_kicad import schematic
+
+        proj_dir, root, child, pro = self._make_project_with_child(tmp_path)
+
+        # Place a component in the child (place_component syncs root automatically)
+        child_sch = Schematic.from_file(child)
+        child_sch.libSymbols.append(conftest.build_r_symbol())
+        child_sch.to_file()
+
+        schematic.place_component(
+            reference="R1",
+            value="10K",
+            lib_id="Device:R",
+            x=100,
+            y=100,
+            schematic_path=child,
+            project_path=pro,
+        )
+
+        schematic.set_component_property(
+            reference="R1",
+            key="Value",
+            value="22K",
+            schematic_path=child,
+        )
+
+        root_sch = Schematic.from_file(root)
+        si_list = root_sch.symbolInstances
+        values = [si.value for si in si_list if si.reference == "R1"]
+        assert "22K" in values
+
+    def test_annotate_upserts_not_duplicates(self, tmp_path: Path):
+        """Test 12: re-annotation doesn't create duplicate symbolInstances."""
+        proj_dir, root, child, pro = self._make_project_with_child(tmp_path)
+        self._place_symbol_in_child(child)
+        self._place_symbol_in_child(child)
+
+        # Fix positions
+        child_sch = Schematic.from_file(child)
+        for i, sym in enumerate(child_sch.schematicSymbols):
+            from kiutils.items.common import Position
+
+            sym.position = Position(X=100, Y=50 + i * 30)
+        child_sch.to_file()
+
+        # First annotation
+        project.annotate_schematic(schematic_path=child, project_path=pro)
+
+        # Reset refs back to R? to simulate re-annotation
+        child_sch = Schematic.from_file(child)
+        for sym in child_sch.schematicSymbols:
+            for p in sym.properties:
+                if p.key == "Reference":
+                    p.value = "R?"
+        child_sch.to_file()
+
+        # Second annotation
+        project.annotate_schematic(schematic_path=child, project_path=pro)
+
+        root_sch = Schematic.from_file(root)
+        si_list = root_sch.symbolInstances
+        # Should have exactly 2 entries (one per symbol), not 4
+        assert len(si_list) == 2
+        refs = sorted(si.reference for si in si_list)
+        assert refs == ["R1", "R2"]
+
+    def test_add_hierarchical_sheet_syncs_existing_child_syms(self, tmp_path: Path):
+        """Test 13: add_hierarchical_sheet syncs existing child symbols to root."""
+
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        child = proj_dir / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+
+        # Place annotated symbols in child BEFORE linking
+        child_sch = Schematic.from_file(str(child))
+        child_sch.libSymbols.append(conftest.build_r_symbol())
+        child_sch.schematicSymbols.append(conftest.place_r1(50, 50))
+        r2 = conftest.place_r1(50, 80)
+        for p in r2.properties:
+            if p.key == "Reference":
+                p.value = "R2"
+        child_sch.schematicSymbols.append(r2)
+        child_sch.to_file()
+
+        root = str(proj_dir / "proj.kicad_sch")
+        pro = str(proj_dir / "proj.kicad_pro")
+
+        # Link child as hierarchical sheet
+        project.add_hierarchical_sheet(
+            parent_schematic_path=root,
+            sheet_name="Sub",
+            sheet_file=str(child),
+            pins=[],
+            project_path=pro,
+        )
+
+        root_sch = Schematic.from_file(root)
+        si_list = root_sch.symbolInstances
+        si_refs = sorted(si.reference for si in si_list)
+        assert "R1" in si_refs
+        assert "R2" in si_refs

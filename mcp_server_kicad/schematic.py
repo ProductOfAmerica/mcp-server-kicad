@@ -38,12 +38,15 @@ from mcp_server_kicad._shared import (
     _gen_uuid,
     _load_sch,
     _load_system_lib_symbol,
+    _remove_root_symbol_instance,
     _resolve_hierarchy_path,
     _resolve_root,
     _resolve_system_lib,
     _run_cli,
     _save_sch,
     _snap_grid,
+    _sym_ref_val_fp,
+    _upsert_root_symbol_instance,
 )
 
 mcp = FastMCP(
@@ -811,6 +814,14 @@ def place_component(
 
     sch.schematicSymbols.append(sym)
     _save_sch(sch)
+    _upsert_root_symbol_instance(
+        schematic_path,
+        project_path,
+        sym.uuid,
+        reference=reference,
+        value=value,
+        footprint="",
+    )
     return f"Placed {reference} ({value}) at ({x}, {y})"
 
 
@@ -832,6 +843,7 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
         return f"Component {reference} not found."
     sch.schematicSymbols.remove(target)
     _save_sch(sch)
+    _remove_root_symbol_instance(schematic_path, "", target.uuid)
     return f"Removed {reference}"
 
 
@@ -1114,6 +1126,16 @@ def set_component_property(
                 if prop.key == key:
                     prop.value = value
                     _save_sch(sch)
+                    if key in ("Reference", "Value", "Footprint"):
+                        ref, val, fp_val = _sym_ref_val_fp(sym)
+                        _upsert_root_symbol_instance(
+                            schematic_path,
+                            "",
+                            sym.uuid,
+                            ref,
+                            value=val,
+                            footprint=fp_val,
+                        )
                     return f"Set {reference}.{key} = {value}"
             # Create new property (hidden, at component center)
             new_id = max((p.id for p in sym.properties if p.id is not None), default=-1) + 1
@@ -1127,6 +1149,16 @@ def set_component_property(
                 )
             )
             _save_sch(sch)
+            if key in ("Reference", "Value", "Footprint"):
+                ref, val, fp_val = _sym_ref_val_fp(sym)
+                _upsert_root_symbol_instance(
+                    schematic_path,
+                    "",
+                    sym.uuid,
+                    ref,
+                    value=val,
+                    footprint=fp_val,
+                )
             return f"Set {reference}.{key} = {value} (new property)"
     return f"Component {reference} not found."
 

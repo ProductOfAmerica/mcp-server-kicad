@@ -45,6 +45,8 @@ from mcp_server_kicad._shared import (
     _run_cli,
     _save_sch,
     _snap_grid,
+    _sym_ref_val_fp,
+    _upsert_root_symbol_instance,
 )
 
 # KiCad 9 file format constants
@@ -365,6 +367,15 @@ def _add_hierarchical_sheet(
                             ],
                         )
                     )
+                ref, val, fp = _sym_ref_val_fp(sym)
+                _upsert_root_symbol_instance(
+                    str(child_path),
+                    project_path,
+                    sym.uuid,
+                    ref,
+                    value=val,
+                    footprint=fp,
+                )
 
     _save_sch(child_sch)
 
@@ -646,6 +657,18 @@ def _annotate_schematic(schematic_path: str, project_path: str = "") -> str:
         assigned.setdefault(prefix, []).append(new_ref)
 
     _save_sch(sch)
+
+    # Sync root symbolInstances for all annotated symbols
+    for sym, _prefix in unannotated:
+        ref, val, fp = _sym_ref_val_fp(sym)
+        _upsert_root_symbol_instance(
+            schematic_path,
+            project_path,
+            sym.uuid,
+            ref,
+            value=val,
+            footprint=fp,
+        )
 
     parts = []
     for prefix in sorted(assigned):
