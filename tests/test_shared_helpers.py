@@ -316,6 +316,21 @@ class TestTransformLocalToBoard:
         assert bx == pytest.approx(6, abs=0.01)
         assert by == pytest.approx(23, abs=0.01)
 
+    def test_mirrored_zero_rotation(self):
+        bx, by = _transform_local_to_board(10, 20, 0, 3, 4, mirrored=True)
+        assert bx == pytest.approx(7)
+        assert by == pytest.approx(24)
+
+    def test_mirrored_false_unchanged(self):
+        bx, by = _transform_local_to_board(10, 20, 0, 3, 4, mirrored=False)
+        assert bx == pytest.approx(13)
+        assert by == pytest.approx(24)
+
+    def test_mirrored_with_rotation(self):
+        bx, by = _transform_local_to_board(10, 20, 90, 3, 4, mirrored=True)
+        assert bx == pytest.approx(6, abs=0.01)
+        assert by == pytest.approx(17, abs=0.01)
+
 
 # ---------------------------------------------------------------------------
 # _board_edge_polygon
