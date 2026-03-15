@@ -430,7 +430,7 @@ wheels = [
 
 [[package]]
 name = "mcp-server-kicad"
-version = "0.8.12"
+version = "0.9.0"
 source = { editable = "." }
 dependencies = [
     { name = "kiutils" },
