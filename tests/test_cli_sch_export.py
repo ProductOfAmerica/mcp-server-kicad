@@ -1,10 +1,10 @@
 """Tests for CLI schematic export tools."""
 
-import json
 import shutil
 from pathlib import Path
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 
@@ -17,9 +17,8 @@ class TestExportSchematicPdf:
         result = schematic.export_schematic(
             format="pdf", schematic_path=str(scratch_sch), output_dir=str(tmp_path)
         )
-        data = json.loads(result)
-        assert Path(data["path"]).exists()
-        assert data["format"] == "pdf"
+        assert Path(result.path).exists()
+        assert result.format == "pdf"
 
 
 class TestExportSchematicSvg:
@@ -27,22 +26,19 @@ class TestExportSchematicSvg:
         result = schematic.export_schematic(
             format="svg", schematic_path=str(scratch_sch), output_dir=str(tmp_path)
         )
-        data = json.loads(result)
-        assert data["format"] == "svg"
+        assert result.format == "svg"
 
 
 class TestExportSchematicNetlist:
     def test_produces_file(self, scratch_sch, tmp_path):
         result = schematic.export_netlist(schematic_path=str(scratch_sch), output_dir=str(tmp_path))
-        data = json.loads(result)
-        assert Path(data["path"]).exists()
+        assert Path(result.path).exists()
 
 
 class TestExportBom:
     def test_produces_file(self, scratch_sch, tmp_path):
         result = schematic.export_bom(schematic_path=str(scratch_sch), output_dir=str(tmp_path))
-        data = json.loads(result)
-        assert Path(data["path"]).exists()
+        assert Path(result.path).exists()
 
 
 class TestExportSchematicDxf:
@@ -50,16 +46,15 @@ class TestExportSchematicDxf:
         result = schematic.export_schematic(
             format="dxf", schematic_path=str(scratch_sch), output_dir=str(tmp_path)
         )
-        data = json.loads(result)
-        assert data["format"] == "dxf"
+        assert result.format == "dxf"
 
 
 class TestExportSchematicInvalidFormat:
     pytestmark = []  # no kicad-cli needed for format validation
 
     def test_invalid_format(self):
-        result = json.loads(schematic.export_schematic(format="xyz"))
-        assert "error" in result
+        with pytest.raises(ToolError):
+            schematic.export_schematic(format="xyz")
 
 
 class TestFindRootSchematic:

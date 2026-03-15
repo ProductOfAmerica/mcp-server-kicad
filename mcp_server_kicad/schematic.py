@@ -8,6 +8,7 @@ import re
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad._shared import (
     _ADDITIVE,
@@ -48,6 +49,24 @@ from mcp_server_kicad._shared import (
     _sym_ref_val_fp,
     _upsert_root_symbol_instance,
 )
+from mcp_server_kicad.models import (
+    BomExportResult,
+    BusEntryItem,
+    ComponentItem,
+    ErcResult,
+    ExportResult,
+    GlobalLabelItem,
+    HierarchicalLabelItem,
+    JunctionItem,
+    LabelItem,
+    MultiFileExportResult,
+    NetConnectionsResult,
+    NoConnectItem,
+    SchematicSummary,
+    SheetItem,
+    UnconnectedPinsResult,
+    WireItem,
+)
 
 mcp = FastMCP(
     "kicad-schematic",
@@ -71,7 +90,7 @@ mcp = FastMCP(
         "5. Verify with list_labels and get_net_connections\n\n"
         "CLEANUP WORKFLOW:\n"
         "- To find existing wires before removal, use"
-        " list_schematic_items(item_type='wires') which returns x1/y1/x2/y2"
+        " list_schematic_wires which returns x1/y1/x2/y2"
         " endpoints for every wire segment. Pass those coordinates to remove_wire.\n\n"
         "ERC WORKFLOW:\n"
         "1. Run run_erc to get violations\n"
@@ -82,7 +101,7 @@ mcp = FastMCP(
         "HIERARCHY WORKFLOW:\n"
         "1. Create hierarchy with add_hierarchical_sheet (project server)\n"
         "2. Add hierarchical labels with add_hierarchical_label to connect sub-sheets\n"
-        "3. List items with list_schematic_items (hierarchical_labels, sheets)\n"
+        "3. List items with list_schematic_hierarchical_labels and list_schematic_sheets\n"
         "4. Trace nets with get_net_connections (multi-hop BFS)\n"
         "5. Run run_erc from root with project_path for validation"
     ),
@@ -121,18 +140,17 @@ def _get_page_size(sch) -> tuple[float, float]:
     return w, h
 
 
-def _validate_position(x: float, y: float, sch) -> str | None:
-    """Return an error string if (x, y) is outside the sheet boundary, else None."""
+def _validate_position(x: float, y: float, sch) -> None:
+    """Raise ToolError if (x, y) is outside the sheet boundary."""
     page_w, page_h = _get_page_size(sch)
     if x < 0 or x > page_w or y < 0 or y > page_h:
         page_name = sch.paper.paperSize if sch.paper else "A4"
         sizes = ", ".join(_PAGE_SIZES.keys())
-        return (
-            f"Error: position ({x}, {y}) is outside the sheet boundary "
+        raise ToolError(
+            f"Position ({x}, {y}) is outside the sheet boundary "
             f"({page_w}x{page_h}mm, page '{page_name}'). "
             f"Use set_page_size to resize (available: {sizes}, or 'User')."
         )
-    return None
 
 
 def _find_lib_symbol(sch, lib_id: str):
@@ -310,149 +328,223 @@ def _auto_junctions(sch, new_points: list[tuple[float, float]], tol: float = 0.0
 
 
 # ---------------------------------------------------------------------------
-# Schematic read tools (8)
+# Schematic read tools (13)
 # ---------------------------------------------------------------------------
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def list_schematic_items(item_type: str, schematic_path: str = SCH_PATH) -> str:
-    """List schematic items by type.
+def get_schematic_summary(schematic_path: str = SCH_PATH) -> SchematicSummary:
+    """Get schematic page info and item counts.
 
     Args:
-        item_type: One of "summary", "components", "labels", "wires", "global_labels",
-            "hierarchical_labels", "sheets", "junctions", "no_connects", "bus_entries"
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
-    if item_type == "summary":
-        page_w, page_h = _get_page_size(sch)
-        wire_count = sum(
-            1 for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"
+    page_w, page_h = _get_page_size(sch)
+    wire_count = sum(
+        1 for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"
+    )
+    return SchematicSummary(
+        page_size=sch.paper.paperSize if sch.paper else "A4",
+        page_width_mm=page_w,
+        page_height_mm=page_h,
+        components=len(sch.schematicSymbols),
+        labels=len(sch.labels),
+        global_labels=len(sch.globalLabels),
+        hierarchical_labels=len(sch.hierarchicalLabels),
+        sheets=len(sch.sheets),
+        wires=wire_count,
+        junctions=len(sch.junctions),
+        no_connects=len(sch.noConnects),
+    )
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_schematic_components(schematic_path: str = SCH_PATH) -> list[ComponentItem]:
+    """List all placed components in the schematic.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    items = []
+    for sym in sch.schematicSymbols:
+        ref = next((p.value for p in sym.properties if p.key == "Reference"), "?")
+        val = next((p.value for p in sym.properties if p.key == "Value"), "?")
+        pos = sym.position
+        items.append(
+            ComponentItem(
+                reference=ref,
+                value=val,
+                lib_id=sym.libId,
+                x=pos.X,
+                y=pos.Y,
+                rotation=pos.angle or 0,
+            )
         )
-        return (
-            f"Page: {sch.paper.paperSize} ({page_w}x{page_h}mm)\n"
-            f"Components: {len(sch.schematicSymbols)}\n"
-            f"Labels: {len(sch.labels)}\n"
-            f"Global labels: {len(sch.globalLabels)}\n"
-            f"Hierarchical labels: {len(sch.hierarchicalLabels)}\n"
-            f"Sheets: {len(sch.sheets)}\n"
-            f"Wires: {wire_count}\n"
-            f"Junctions: {len(sch.junctions)}\n"
-            f"No-connects: {len(sch.noConnects)}"
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_schematic_labels(schematic_path: str = SCH_PATH) -> list[LabelItem]:
+    """List all net labels in the schematic.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    items = []
+    for label in sch.labels:
+        items.append(LabelItem(text=label.text, x=label.position.X, y=label.position.Y))
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_schematic_wires(schematic_path: str = SCH_PATH) -> list[WireItem]:
+    """List all wire segments in the schematic.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    items = []
+    for item in sch.graphicalItems:
+        if isinstance(item, Connection) and item.type == "wire":
+            p = item.points
+            if len(p) >= 2:
+                items.append(WireItem(x1=p[0].X, y1=p[0].Y, x2=p[1].X, y2=p[1].Y))
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_schematic_global_labels(schematic_path: str = SCH_PATH) -> list[GlobalLabelItem]:
+    """List all global labels in the schematic.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    items = []
+    for gl in sch.globalLabels:
+        items.append(
+            GlobalLabelItem(
+                text=gl.text,
+                shape=gl.shape,
+                x=gl.position.X,
+                y=gl.position.Y,
+            )
         )
-    elif item_type == "components":
-        items = []
-        for sym in sch.schematicSymbols:
-            ref = next((p.value for p in sym.properties if p.key == "Reference"), "?")
-            val = next((p.value for p in sym.properties if p.key == "Value"), "?")
-            pos = sym.position
-            items.append(
-                {
-                    "reference": ref,
-                    "value": val,
-                    "lib_id": sym.libId,
-                    "x": pos.X,
-                    "y": pos.Y,
-                    "rotation": pos.angle,
-                }
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_schematic_hierarchical_labels(
+    schematic_path: str = SCH_PATH,
+) -> list[HierarchicalLabelItem]:
+    """List all hierarchical labels in the schematic.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    items = []
+    for hl in sch.hierarchicalLabels:
+        items.append(
+            HierarchicalLabelItem(
+                text=hl.text,
+                shape=hl.shape,
+                x=hl.position.X,
+                y=hl.position.Y,
+                rotation=hl.position.angle or 0,
+                uuid=hl.uuid or "",
             )
-        return json.dumps(items)
-    elif item_type == "labels":
-        items = []
-        for label in sch.labels:
-            items.append({"text": label.text, "x": label.position.X, "y": label.position.Y})
-        return json.dumps(items)
-    elif item_type == "wires":
-        items = []
-        for item in sch.graphicalItems:
-            if isinstance(item, Connection) and item.type == "wire":
-                p = item.points
-                if len(p) >= 2:
-                    items.append({"x1": p[0].X, "y1": p[0].Y, "x2": p[1].X, "y2": p[1].Y})
-        return json.dumps(items)
-    elif item_type == "global_labels":
-        items = []
-        for gl in sch.globalLabels:
-            items.append(
-                {
-                    "text": gl.text,
-                    "shape": gl.shape,
-                    "x": gl.position.X,
-                    "y": gl.position.Y,
-                }
-            )
-        return json.dumps(items)
-    elif item_type == "hierarchical_labels":
-        items = []
-        for hl in sch.hierarchicalLabels:
-            items.append(
-                {
-                    "text": hl.text,
-                    "shape": hl.shape,
-                    "x": hl.position.X,
-                    "y": hl.position.Y,
-                    "rotation": hl.position.angle or 0,
-                    "uuid": hl.uuid,
-                }
-            )
-        return json.dumps(items)
-    elif item_type == "sheets":
-        items = []
-        for sheet in sch.sheets:
-            items.append(
-                {
-                    "sheet_name": sheet.sheetName.value,
-                    "file_name": sheet.fileName.value,
-                    "x": sheet.position.X,
-                    "y": sheet.position.Y,
-                    "width": sheet.width,
-                    "height": sheet.height,
-                    "pin_count": len(sheet.pins),
-                    "uuid": sheet.uuid,
-                }
-            )
-        return json.dumps(items)
-    elif item_type == "junctions":
-        items = []
-        for j in sch.junctions:
-            items.append(
-                {
-                    "x": j.position.X,
-                    "y": j.position.Y,
-                    "diameter": j.diameter,
-                }
-            )
-        return json.dumps(items)
-    elif item_type == "no_connects":
-        items = []
-        for nc in sch.noConnects:
-            items.append(
-                {
-                    "x": nc.position.X,
-                    "y": nc.position.Y,
-                }
-            )
-        return json.dumps(items)
-    elif item_type == "bus_entries":
-        items = []
-        for be in sch.busEntries:
-            items.append(
-                {
-                    "x": be.position.X,
-                    "y": be.position.Y,
-                    "size_x": be.size.X,
-                    "size_y": be.size.Y,
-                }
-            )
-        return json.dumps(items)
-    else:
-        return json.dumps(
-            {
-                "error": f"Unknown item_type: {item_type}. "
-                "Use: summary, components, labels, wires, global_labels, "
-                "hierarchical_labels, sheets, junctions, no_connects, bus_entries"
-            }
         )
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_schematic_sheets(schematic_path: str = SCH_PATH) -> list[SheetItem]:
+    """List all hierarchical sheets in the schematic.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    items = []
+    for sheet in sch.sheets:
+        items.append(
+            SheetItem(
+                sheet_name=sheet.sheetName.value,
+                file_name=sheet.fileName.value,
+                x=sheet.position.X,
+                y=sheet.position.Y,
+                width=sheet.width,
+                height=sheet.height,
+                pin_count=len(sheet.pins),
+                uuid=sheet.uuid or "",
+            )
+        )
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_schematic_junctions(schematic_path: str = SCH_PATH) -> list[JunctionItem]:
+    """List all junctions in the schematic.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    items = []
+    for j in sch.junctions:
+        items.append(
+            JunctionItem(
+                x=j.position.X,
+                y=j.position.Y,
+                diameter=j.diameter,
+            )
+        )
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_schematic_no_connects(schematic_path: str = SCH_PATH) -> list[NoConnectItem]:
+    """List all no-connect flags in the schematic.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    items = []
+    for nc in sch.noConnects:
+        items.append(
+            NoConnectItem(
+                x=nc.position.X,
+                y=nc.position.Y,
+            )
+        )
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_schematic_bus_entries(schematic_path: str = SCH_PATH) -> list[BusEntryItem]:
+    """List all bus entries in the schematic.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    items = []
+    for be in sch.busEntries:
+        items.append(
+            BusEntryItem(
+                x=be.position.X,
+                y=be.position.Y,
+                size_x=be.size.X,
+                size_y=be.size.Y,
+            )
+        )
+    return items
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -476,7 +568,7 @@ def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
                     f"rot={pin.position.angle} len={pin.length}"
                 )
         return "\n".join(lines)
-    return f"'{symbol_name}' not found."
+    raise ToolError(f"'{symbol_name}' not found.")
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -495,12 +587,12 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
             target = sym
             break
     if target is None:
-        return f"{reference} not found."
+        raise ToolError(f"{reference} not found.")
 
     symbol_name = target.libId.split(":")[-1] if ":" in target.libId else target.libId
     lib_sym = _find_lib_symbol(sch, target.libId)
     if lib_sym is None:
-        return f"Lib symbol for {reference} not found."
+        raise ToolError(f"Lib symbol for {reference} not found.")
 
     cx, cy = target.position.X, target.position.Y
     angle_deg = target.position.angle or 0
@@ -530,7 +622,7 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
 def get_net_connections(
     label_text: str,
     schematic_path: str = SCH_PATH,
-) -> str:
+) -> NetConnectionsResult:
     """Find all component pins connected to a net label.
 
     Scans labels matching the text, traces wires from label positions,
@@ -613,13 +705,10 @@ def get_net_connections(
                                 "y": py,
                             }
                         )
-    return json.dumps(
-        {
-            "net": label_text,
-            "label_count": len(label_positions),
-            "connections": connections,
-        },
-        indent=2,
+    return NetConnectionsResult(
+        net=label_text,
+        label_count=len(label_positions),
+        connections=connections,
     )
 
 
@@ -657,17 +746,15 @@ def place_component(
     """
     # Validate reference designator
     if not _VALID_REF_RE.match(reference):
-        return (
-            f"Error: '{reference}' is not a valid KiCad reference designator. "
+        raise ToolError(
+            f"'{reference}' is not a valid KiCad reference designator. "
             "Must match pattern [A-Z]+[0-9]+[A-Z]* (e.g. 'R1', 'U2', 'C5B')."
         )
 
     sch = _load_sch(schematic_path)
 
     # Validate position against page boundaries
-    err = _validate_position(x, y, sch)
-    if err:
-        return err
+    _validate_position(x, y, sch)
 
     # Snap placement to grid
     x = _snap_grid(x)
@@ -702,7 +789,7 @@ def place_component(
                 hint = f" Similar: {', '.join(similar)}"
             else:
                 hint = " Try list_lib_symbols to search across all libraries."
-            return f"Error: symbol '{symbol_name}' not found in {lib_prefix} library.{hint}"
+            raise ToolError(f"symbol '{symbol_name}' not found in {lib_prefix} library.{hint}")
 
     # Create instance — set libName to match the lib_symbol's name as stored
     # in the file so KiCad can resolve the lookup without crashing.
@@ -840,7 +927,7 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
             target = sym
             break
     if target is None:
-        return f"Component {reference} not found."
+        raise ToolError(f"Component {reference} not found.")
     sch.schematicSymbols.remove(target)
     _save_sch(sch)
     _remove_root_symbol_instance(schematic_path, "", target.uuid or "")
@@ -883,7 +970,7 @@ def remove_label(
                 continue
         remaining.append(lbl)
     if not removed:
-        return f"Label '{text}' not found."
+        raise ToolError(f"Label '{text}' not found.")
     sch.labels = remaining
     _save_sch(sch)
     return f"Removed {len(removed)} label(s) '{text}'."
@@ -900,7 +987,7 @@ def remove_wire(
     """Remove a wire segment by its endpoint coordinates.
 
     Matches wires with endpoints within 0.1mm tolerance (in either order).
-    Use list_schematic_items(item_type="wires") to get wire coordinates first.
+    Use list_schematic_wires to get wire coordinates first.
 
     Args:
         x1: Start X
@@ -933,7 +1020,7 @@ def remove_wire(
                 continue
         remaining.append(item)
     if not removed:
-        return f"Wire ({x1},{y1})->({x2},{y2}) not found."
+        raise ToolError(f"Wire ({x1},{y1})->({x2},{y2}) not found.")
     sch.graphicalItems = remaining
     _save_sch(sch)
     return f"Removed {len(removed)} wire(s)."
@@ -959,7 +1046,7 @@ def remove_junction(
             sch.junctions.pop(i)
             _save_sch(sch)
             return f"Removed junction at ({x}, {y})"
-    return f"Junction at ({x}, {y}) not found."
+    raise ToolError(f"Junction at ({x}, {y}) not found.")
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -973,9 +1060,7 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
     sch = _load_sch(schematic_path)
     for w in wires:
         for xk, yk in [("x1", "y1"), ("x2", "y2")]:
-            err = _validate_position(w[xk], w[yk], sch)
-            if err:
-                return err
+            _validate_position(w[xk], w[yk], sch)
         wire = Connection(
             type="wire",
             points=[
@@ -1010,9 +1095,7 @@ def add_label(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
-    err = _validate_position(x, y, sch)
-    if err:
-        return err
+    _validate_position(x, y, sch)
     x, y = round(x, 4), round(y, 4)
     label = LocalLabel(
         text=text,
@@ -1035,9 +1118,7 @@ def add_junctions(points: list[dict], schematic_path: str = SCH_PATH) -> str:
     """
     sch = _load_sch(schematic_path)
     for p in points:
-        err = _validate_position(p["x"], p["y"], sch)
-        if err:
-            return err
+        _validate_position(p["x"], p["y"], sch)
         junc = Junction(
             position=Position(X=round(p["x"], 4), Y=round(p["y"], 4)),
             diameter=0,
@@ -1063,11 +1144,11 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
     for s in sym_lib.symbols:
         if s.entryName == symbol_name:
             if _find_lib_symbol(sch, symbol_name):
-                return f"'{symbol_name}' already in lib_symbols."
+                raise ToolError(f"'{symbol_name}' already in lib_symbols.")
             sch.libSymbols.append(s)
             _save_sch(sch)
             return f"Added '{symbol_name}' to lib_symbols."
-    return f"'{symbol_name}' not found in {symbol_lib_path}."
+    raise ToolError(f"'{symbol_name}' not found in {symbol_lib_path}.")
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1088,9 +1169,7 @@ def move_component(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
-    err = _validate_position(x, y, sch)
-    if err:
-        return err
+    _validate_position(x, y, sch)
     x, y = _snap_grid(x), _snap_grid(y)
     for sym in sch.schematicSymbols:
         if any(p.key == "Reference" and p.value == reference for p in sym.properties):
@@ -1100,7 +1179,7 @@ def move_component(
                 sym.position.angle = rotation
             _save_sch(sch)
             return f"Moved {reference} to ({x}, {y})"
-    return f"Component {reference} not found."
+    raise ToolError(f"Component {reference} not found.")
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1168,7 +1247,7 @@ def set_component_property(
                     footprint=fp_val,
                 )
             return f"Set {reference}.{key} = {value} (new property)"
-    return f"Component {reference} not found."
+    raise ToolError(f"Component {reference} not found.")
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1191,13 +1270,13 @@ def set_page_size(
     size_key = size.strip()
     if size_key == "User":
         if width is None or height is None:
-            return "Error: 'User' page size requires both width and height parameters."
+            raise ToolError("'User' page size requires both width and height parameters.")
         w, h = float(width), float(height)
     elif size_key in _PAGE_SIZES:
         w, h = _PAGE_SIZES[size_key]
     else:
         valid = ", ".join(list(_PAGE_SIZES.keys()) + ["User"])
-        return f"Error: unknown page size '{size_key}'. Valid sizes: {valid}."
+        raise ToolError(f"unknown page size '{size_key}'. Valid sizes: {valid}.")
 
     sch = _load_sch(schematic_path)
     sch.paper.paperSize = size_key
@@ -1235,9 +1314,7 @@ def add_global_label(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
-    err = _validate_position(x, y, sch)
-    if err:
-        return err
+    _validate_position(x, y, sch)
     x, y = round(x, 4), round(y, 4)
     gl = GlobalLabel(
         text=text,
@@ -1274,11 +1351,9 @@ def add_hierarchical_label(
         schematic_path: Path to .kicad_sch file
     """
     if shape not in _VALID_HLABEL_SHAPES:
-        return f"Error: invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}"
+        raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}")
     sch = _load_sch(schematic_path)
-    err = _validate_position(x, y, sch)
-    if err:
-        return err
+    _validate_position(x, y, sch)
     x, y = round(x, 4), round(y, 4)
     sch.hierarchicalLabels.append(
         HierarchicalLabel(
@@ -1316,7 +1391,7 @@ def remove_hierarchical_label(
             target = hl
             break
     if target is None:
-        return f"Hierarchical label '{text}' not found"
+        raise ToolError(f"Hierarchical label '{text}' not found")
     sch.hierarchicalLabels.remove(target)
     _save_sch(sch)
     return f"Removed hierarchical label '{target.text}'"
@@ -1344,7 +1419,9 @@ def modify_hierarchical_label(
         uuid: UUID for disambiguation
     """
     if new_shape and new_shape not in _VALID_HLABEL_SHAPES:
-        return f"Error: invalid shape '{new_shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}"
+        raise ToolError(
+            f"invalid shape '{new_shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}"
+        )
     sch = _load_sch(schematic_path)
     target = None
     for hl in sch.hierarchicalLabels:
@@ -1355,7 +1432,7 @@ def modify_hierarchical_label(
             target = hl
             break
     if target is None:
-        return f"Hierarchical label '{text}' not found"
+        raise ToolError(f"Hierarchical label '{text}' not found")
     changes = []
     if new_text:
         target.text = new_text
@@ -1497,8 +1574,6 @@ def auto_place_decoupling_cap(
         schematic_path=schematic_path,
         project_path=project_path,
     )
-    if result.startswith("Error"):
-        return result
 
     # Wire pin 1 (top) to power net
     wire_pins_to_net(
@@ -1537,9 +1612,7 @@ def add_text(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
-    err = _validate_position(x, y, sch)
-    if err:
-        return err
+    _validate_position(x, y, sch)
     t = Text(
         text=text,
         position=Position(X=x, Y=y, angle=rotation),
@@ -1585,7 +1658,7 @@ def remove_text(
                 continue
         remaining.append(t)
     if not removed:
-        return f"Text '{text}' not found."
+        raise ToolError(f"Text '{text}' not found.")
     sch.texts = remaining
     _save_sch(sch)
     return f"Removed {len(removed)} text(s) '{text}'."
@@ -1642,7 +1715,7 @@ def wire_pins_to_net(
         try:
             px, py, outward = _get_pin_pos(sch, ref, pin_name)
         except ValueError as e:
-            return f"Error wiring {ref}:{pin_name}: {e}"
+            raise ToolError(f"Error wiring {ref}:{pin_name}: {e}") from e
 
         if direction == "auto":
             snapped = round(outward / 90) * 90 % 360
@@ -2077,7 +2150,7 @@ def list_unconnected_pins(
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
     project_path: str = "",
-) -> str:
+) -> UnconnectedPinsResult:
     """List unconnected pins by running ERC and filtering results.
 
     Requires kicad-cli. Auto-redirects to root schematic for sub-sheets
@@ -2091,7 +2164,7 @@ def list_unconnected_pins(
     import shutil
 
     if not shutil.which("kicad-cli"):
-        return json.dumps({"error": "kicad-cli not found"}, indent=2)
+        raise ToolError("kicad-cli not found")
 
     # Auto-redirect sub-sheets to root for full hierarchy context
     root_path = _resolve_root(schematic_path, project_path)
@@ -2117,19 +2190,17 @@ def list_unconnected_pins(
         with open(out_path) as f:
             report = json.load(f)
     except FileNotFoundError:
-        return json.dumps({"error": "ERC failed to produce output"}, indent=2)
+        raise ToolError("ERC failed to produce output")
 
     pins = _parse_unconnected_pins(report, sheet_filter=sheet_filter)
-    result: dict = {"unconnected_count": len(pins), "pins": pins}
-    if root_path:
-        result["note"] = "ERC ran from root schematic to include full hierarchy context"
-    return json.dumps(result, indent=2)
+    note = "ERC ran from root schematic to include full hierarchy context" if root_path else None
+    return UnconnectedPinsResult(unconnected_count=len(pins), pins=pins, note=note)
 
 
 @mcp.tool(annotations=_EXPORT)
 def run_erc(
     schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR, project_path: str = ""
-) -> str:
+) -> ErcResult:
     """Run Electrical Rules Check (ERC) on a schematic.
 
     Auto-redirects to root schematic for sub-sheets to avoid false
@@ -2157,7 +2228,7 @@ def run_erc(
         with open(out_path) as f:
             report = json.load(f)
     except FileNotFoundError:
-        return json.dumps({"error": "ERC failed to produce output file"}, indent=2)
+        raise ToolError("ERC failed to produce output file")
 
     all_violations = []
     for sheet in report.get("sheets", []):
@@ -2167,15 +2238,14 @@ def run_erc(
                 continue
         all_violations.extend(sheet.get("violations", []))
 
-    result = {
-        "source": report.get("source", ""),
-        "kicad_version": report.get("kicad_version", ""),
-        "violation_count": len(all_violations),
-        "violations": all_violations,
-    }
-    if root_path:
-        result["note"] = "ERC ran from root schematic to include full hierarchy context"
-    return json.dumps(result, indent=2)
+    note = "ERC ran from root schematic to include full hierarchy context" if root_path else None
+    return ErcResult(
+        source=report.get("source", ""),
+        kicad_version=report.get("kicad_version", ""),
+        violation_count=len(all_violations),
+        violations=all_violations,
+        note=note,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2188,7 +2258,7 @@ def export_schematic(
     format: str = "pdf",
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
-) -> str:
+) -> ExportResult | MultiFileExportResult:
     """Export schematic to PDF, SVG, or DXF format.
 
     Args:
@@ -2198,7 +2268,7 @@ def export_schematic(
     """
     fmt = format.lower()
     if fmt not in ("pdf", "svg", "dxf"):
-        return json.dumps({"error": f"Unknown format: {format}. Use: pdf, svg, dxf"})
+        raise ToolError(f"Unknown format: {format}. Use: pdf, svg, dxf")
 
     out_dir = output_dir or str(Path(schematic_path).parent)
     stem = Path(schematic_path).stem
@@ -2207,27 +2277,22 @@ def export_schematic(
         out_path = str(Path(out_dir) / f"{stem}.pdf")
         _run_cli(["sch", "export", "pdf", "--output", out_path, schematic_path])
         meta = _file_meta(out_path)
-        meta["format"] = "pdf"
-        return json.dumps(meta, indent=2)
+        return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format="pdf")
     elif fmt == "svg":
         os.makedirs(out_dir, exist_ok=True)
         _run_cli(["sch", "export", "svg", "--output", out_dir, schematic_path])
         svgs = sorted(Path(out_dir).glob("*.svg"))
-        return json.dumps(
-            {
-                "path": out_dir,
-                "format": "svg",
-                "files": [f.name for f in svgs],
-                "count": len(svgs),
-            },
-            indent=2,
+        return MultiFileExportResult(
+            path=out_dir,
+            format="svg",
+            files=[f.name for f in svgs],
+            count=len(svgs),
         )
     else:  # dxf
         out_path = str(Path(out_dir) / f"{stem}.dxf")
         _run_cli(["sch", "export", "dxf", "--output", out_path, schematic_path])
         meta = _file_meta(out_path)
-        meta["format"] = "dxf"
-        return json.dumps(meta, indent=2)
+        return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format="dxf")
 
 
 @mcp.tool(annotations=_EXPORT)
@@ -2235,7 +2300,7 @@ def export_netlist(
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
     format: str = "kicadxml",
-) -> str:
+) -> ExportResult:
     """Export schematic netlist in KiCad XML or KiCad net format.
 
     Args:
@@ -2248,12 +2313,11 @@ def export_netlist(
     out_path = str(Path(out_dir) / (Path(schematic_path).stem + ext))
     _run_cli(["sch", "export", "netlist", "--format", format, "--output", out_path, schematic_path])
     meta = _file_meta(out_path)
-    meta["format"] = format
-    return json.dumps(meta, indent=2)
+    return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format=format)
 
 
 @mcp.tool(annotations=_EXPORT)
-def export_bom(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> str:
+def export_bom(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> BomExportResult:
     """Export Bill of Materials (BOM) as CSV.
 
     Args:
@@ -2264,11 +2328,15 @@ def export_bom(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> 
     out_path = str(Path(out_dir) / (Path(schematic_path).stem + "-bom.csv"))
     _run_cli(["sch", "export", "bom", "--output", out_path, schematic_path])
     meta = _file_meta(out_path)
-    meta["format"] = "csv"
     with open(out_path) as f:
         lines = f.readlines()
-    meta["component_count"] = max(0, len(lines) - 1)  # minus header
-    return json.dumps(meta, indent=2)
+    component_count = max(0, len(lines) - 1)  # minus header
+    return BomExportResult(
+        path=meta["path"],
+        size_bytes=meta["size_bytes"],
+        format="csv",
+        component_count=component_count,
+    )
 
 
 # ── Entry point ───────────────────────────────────────────────────

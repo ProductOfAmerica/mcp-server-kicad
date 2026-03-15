@@ -1,6 +1,5 @@
 """Tests for PCB write tools."""
 
-import json
 import shutil
 import uuid
 from pathlib import Path
@@ -15,6 +14,7 @@ from kiutils.items.common import Net, Position
 from kiutils.items.fpitems import FpText
 from kiutils.items.gritems import GrLine
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import pcb
 from mcp_server_kicad._shared import _fp_ref
@@ -39,8 +39,8 @@ class TestMoveFootprint:
         assert r1.position.X == 200
 
     def test_move_missing(self, scratch_pcb):
-        result = pcb.move_footprint("R999", 200, 200, pcb_path=str(scratch_pcb))
-        assert "not found" in result
+        with pytest.raises(ToolError, match="not found"):
+            pcb.move_footprint("R999", 200, 200, pcb_path=str(scratch_pcb))
 
 
 class TestRemoveFootprint:
@@ -51,8 +51,8 @@ class TestRemoveFootprint:
         assert len(board.footprints) == 0
 
     def test_remove_missing(self, scratch_pcb):
-        result = pcb.remove_footprint("R999", str(scratch_pcb))
-        assert "not found" in result
+        with pytest.raises(ToolError, match="not found"):
+            pcb.remove_footprint("R999", str(scratch_pcb))
 
 
 class TestAddTrace:
@@ -137,17 +137,14 @@ class TestAutoroutePcb:
             patch("mcp_server_kicad.pcb._import_ses", mock_import_ses),
         ):
             result = pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
-            data = json.loads(result)
-            assert "routed_path" in data
-            assert data["traces_added"] == 4
-            assert data["vias_added"] == 2
+            assert result.routed_path
+            assert result.traces_added == 4
+            assert result.vias_added == 2
 
     def test_no_java(self, scratch_pcb):
         with patch("mcp_server_kicad.pcb._check_java", return_value="Java not found"):
-            result = pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
-            data = json.loads(result)
-            assert "error" in data
-            assert "Java" in data["error"]
+            with pytest.raises(ToolError, match="Java"):
+                pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
 
     def test_fixes_displaced_text_after_routing(self, scratch_pcb, tmp_path):
         """Freerouting DSN->SES round-trip scrambles footprint text positions.
@@ -196,12 +193,11 @@ class TestAutoroutePcb:
             patch("mcp_server_kicad.pcb._import_ses", mock_import_ses),
         ):
             result = pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
-            data = json.loads(result)
-            assert "routed_path" in data
-            assert data.get("text_fields_fixed", 0) > 0
+            assert result.routed_path
+            assert result.text_fields_fixed > 0
 
             # Load the routed board and verify text positions are reasonable
-            routed_board = Board.from_file(data["routed_path"])
+            routed_board = Board.from_file(result.routed_path)
             for fp in routed_board.footprints:
                 for item in fp.graphicItems:
                     if isinstance(item, FpText) and item.type in ("reference", "value"):
@@ -294,10 +290,9 @@ class TestAddCopperZone:
             corners=[{"x": 0, "y": 0}, {"x": 50, "y": 0}, {"x": 50, "y": 50}, {"x": 0, "y": 50}],
             pcb_path=str(scratch_pcb),
         )
-        data = json.loads(result)
-        assert data["net"] == "Net1"
-        assert data["layer"] == "F.Cu"
-        assert data["corners"] == 4
+        assert result.net == "Net1"
+        assert result.layer == "F.Cu"
+        assert result.corners == 4
         board = Board.from_file(str(scratch_pcb))
         assert len(board.zones) == 1
         zone = board.zones[0]
@@ -320,32 +315,29 @@ class TestAddCopperZone:
         assert zone.connectPads == "full"
 
     def test_fewer_than_3_corners(self, scratch_pcb):
-        result = pcb.add_copper_zone(
-            net_name="Net1",
-            layer="F.Cu",
-            corners=[{"x": 0, "y": 0}, {"x": 10, "y": 0}],
-            pcb_path=str(scratch_pcb),
-        )
-        data = json.loads(result)
-        assert "error" in data
+        with pytest.raises(ToolError):
+            pcb.add_copper_zone(
+                net_name="Net1",
+                layer="F.Cu",
+                corners=[{"x": 0, "y": 0}, {"x": 10, "y": 0}],
+                pcb_path=str(scratch_pcb),
+            )
 
     def test_invalid_net(self, scratch_pcb):
-        result = pcb.add_copper_zone(
-            net_name="NonExistent",
-            layer="F.Cu",
-            corners=[{"x": 0, "y": 0}, {"x": 10, "y": 0}, {"x": 10, "y": 10}],
-            pcb_path=str(scratch_pcb),
-        )
-        data = json.loads(result)
-        assert "error" in data
+        with pytest.raises(ToolError):
+            pcb.add_copper_zone(
+                net_name="NonExistent",
+                layer="F.Cu",
+                corners=[{"x": 0, "y": 0}, {"x": 10, "y": 0}, {"x": 10, "y": 10}],
+                pcb_path=str(scratch_pcb),
+            )
 
 
 class TestFillZones:
     def test_no_pcbnew_returns_error(self, scratch_pcb):
         with patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=(None, None)):
-            result = pcb.fill_zones(pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert "error" in data
+            with pytest.raises(ToolError):
+                pcb.fill_zones(pcb_path=str(scratch_pcb))
 
     def test_success_with_mocked_subprocess(self, scratch_pcb):
         pcb.add_copper_zone(
@@ -361,32 +353,28 @@ class TestFillZones:
             patch("subprocess.run", return_value=mock_result),
         ):
             result = pcb.fill_zones(pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert data["zones_filled"] == 1
-        assert data["status"] == "ok"
+        assert result.zones_filled == 1
+        assert result.status == "ok"
 
 
 class TestSetTraceWidth:
     def test_widen_by_net(self, scratch_pcb):
         _board_with_traces(scratch_pcb)
         result = pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert data["traces_modified"] == 3  # original scratch trace + 2 added on Net1
-        assert data["new_width_mm"] == 0.5
+        assert result.traces_modified == 3  # original scratch trace + 2 added on Net1
+        assert result.new_width_mm == 0.5
         board = Board.from_file(str(scratch_pcb))
         for seg in board.traceItems:
             if isinstance(seg, Segment) and seg.net == 1:
                 assert seg.width == 0.5
 
     def test_no_filters_returns_error(self, scratch_pcb):
-        result = pcb.set_trace_width(width=0.5, pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert "error" in data
+        with pytest.raises(ToolError):
+            pcb.set_trace_width(width=0.5, pcb_path=str(scratch_pcb))
 
     def test_no_matches_returns_zero(self, scratch_pcb):
         result = pcb.set_trace_width(width=0.5, net_name="Net2", pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert data["traces_modified"] == 0
+        assert result.traces_modified == 0
 
     def test_consecutive_calls_on_different_nets(self, scratch_pcb):
         """Calling set_trace_width on one net then another must not crash.
@@ -396,13 +384,11 @@ class TestSetTraceWidth:
         """
         _board_with_traces(scratch_pcb)
         # First call — widen Net1
-        r1 = json.loads(pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=str(scratch_pcb)))
-        assert "error" not in r1
-        assert r1["traces_modified"] > 0
+        r1 = pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=str(scratch_pcb))
+        assert r1.traces_modified > 0
         # Second call — widen Net2 (re-reads the file saved by the first call)
-        r2 = json.loads(pcb.set_trace_width(width=0.75, net_name="Net2", pcb_path=str(scratch_pcb)))
-        assert "error" not in r2
-        assert r2["traces_modified"] > 0
+        r2 = pcb.set_trace_width(width=0.75, net_name="Net2", pcb_path=str(scratch_pcb))
+        assert r2.traces_modified > 0
 
     def test_roundtrip_kicad9_uuid_segments(self, tmp_path):
         """KiCad 9 uses ``(uuid ...)`` instead of ``(tstamp ...)`` in segments.
@@ -449,14 +435,12 @@ class TestSetTraceWidth:
         pcb_file.write_text(pcb_content)
 
         # First call should succeed
-        r1 = json.loads(pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=str(pcb_file)))
-        assert "error" not in r1
-        assert r1["traces_modified"] == 2
+        r1 = pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=str(pcb_file))
+        assert r1.traces_modified == 2
 
         # Second call must NOT crash with IndexError
-        r2 = json.loads(pcb.set_trace_width(width=0.75, net_name="Net2", pcb_path=str(pcb_file)))
-        assert "error" not in r2
-        assert r2["traces_modified"] == 1
+        r2 = pcb.set_trace_width(width=0.75, net_name="Net2", pcb_path=str(pcb_file))
+        assert r2.traces_modified == 1
 
     def test_load_board_with_empty_tstamp(self, tmp_path):
         """Board files with ``(tstamp )`` (empty value) must load.
@@ -493,17 +477,15 @@ class TestSetTraceWidth:
         pcb_file.write_text(pcb_content)
 
         # Must not crash with IndexError
-        r = json.loads(pcb.set_trace_width(width=0.75, net_name="Net1", pcb_path=str(pcb_file)))
-        assert "error" not in r
-        assert r["traces_modified"] == 2
+        r = pcb.set_trace_width(width=0.75, net_name="Net1", pcb_path=str(pcb_file))
+        assert r.traces_modified == 2
 
 
 class TestRemoveTraces:
     def test_remove_by_net(self, scratch_pcb):
         _board_with_traces(scratch_pcb)
         result = pcb.remove_traces(net_name="Net2", pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert data["traces_removed"] == 2
+        assert result.traces_removed == 2
         board = Board.from_file(str(scratch_pcb))
         net2_segs = [t for t in board.traceItems if isinstance(t, Segment) and t.net == 2]
         assert len(net2_segs) == 0
@@ -511,16 +493,14 @@ class TestRemoveTraces:
     def test_does_not_remove_vias(self, scratch_pcb):
         pcb.add_via(100, 100, net=1, pcb_path=str(scratch_pcb))
         result = pcb.remove_traces(net_name="Net1", pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert data["traces_removed"] == 1
+        assert result.traces_removed == 1
         board = Board.from_file(str(scratch_pcb))
         vias = [t for t in board.traceItems if isinstance(t, Via)]
         assert len(vias) == 1
 
     def test_no_filters_returns_error(self, scratch_pcb):
-        result = pcb.remove_traces(pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert "error" in data
+        with pytest.raises(ToolError):
+            pcb.remove_traces(pcb_path=str(scratch_pcb))
 
 
 class TestAddThermalVias:
@@ -537,17 +517,15 @@ class TestAddThermalVias:
             net_name="Net1",
             pcb_path=str(scratch_pcb),
         )
-        data = json.loads(result)
-        assert data["vias_added"] == 4
-        assert data["reference"] == "R1"
+        assert result.vias_added == 4
+        assert result.reference == "R1"
         board = Board.from_file(str(scratch_pcb))
         vias = [t for t in board.traceItems if isinstance(t, Via)]
         assert len(vias) == 4
 
     def test_footprint_not_found(self, scratch_pcb):
-        result = pcb.add_thermal_vias(reference="U99", pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert "error" in data
+        with pytest.raises(ToolError):
+            pcb.add_thermal_vias(reference="U99", pcb_path=str(scratch_pcb))
 
     def test_auto_detect_net_from_pad(self, scratch_pcb):
         """When net_name is not provided, auto-detect from pad."""
@@ -558,27 +536,24 @@ class TestAddThermalVias:
             cols=1,
             pcb_path=str(scratch_pcb),
         )
-        data = json.loads(result)
-        assert data["vias_added"] == 1
+        assert result.vias_added == 1
         board = Board.from_file(str(scratch_pcb))
         via = [t for t in board.traceItems if isinstance(t, Via)][0]
         # Pad 1 of R1 should have a net number assigned
         assert via.net >= 0
 
     def test_pad_not_found(self, scratch_pcb):
-        result = pcb.add_thermal_vias(reference="R1", pad_number="99", pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert "error" in data
+        with pytest.raises(ToolError):
+            pcb.add_thermal_vias(reference="R1", pad_number="99", pcb_path=str(scratch_pcb))
 
     def test_invalid_net_name(self, scratch_pcb):
-        result = pcb.add_thermal_vias(
-            reference="R1",
-            pad_number="1",
-            net_name="NonExistent",
-            pcb_path=str(scratch_pcb),
-        )
-        data = json.loads(result)
-        assert "error" in data
+        with pytest.raises(ToolError):
+            pcb.add_thermal_vias(
+                reference="R1",
+                pad_number="1",
+                net_name="NonExistent",
+                pcb_path=str(scratch_pcb),
+            )
 
     def test_auto_detect_largest_smd_pad(self, scratch_pcb):
         """When no pad_number given, pick largest SMD pad."""
@@ -588,10 +563,9 @@ class TestAddThermalVias:
             cols=1,
             pcb_path=str(scratch_pcb),
         )
-        data = json.loads(result)
-        assert data["vias_added"] == 1
+        assert result.vias_added == 1
         # Should have picked one of the pads (both are same size)
-        assert data["pad"] in ("1", "2")
+        assert result.pad in ("1", "2")
 
 
 # ---------------------------------------------------------------------------
@@ -703,14 +677,14 @@ class TestMoveFootprintKeepout:
 class TestCheckPlacement:
     def test_safe_position(self, tmp_path):
         pcb_path = _make_keepout_pcb(tmp_path)
-        result = json.loads(pcb.check_placement("R1", 100, 100, pcb_path=str(pcb_path)))
-        assert result["status"] == "ok"
+        result = pcb.check_placement("R1", 100, 100, pcb_path=str(pcb_path))
+        assert result.status == "ok"
 
     def test_violation_inside_keepout(self, tmp_path):
         pcb_path = _make_keepout_pcb(tmp_path)
-        result = json.loads(pcb.check_placement("R1", 25, 25, pcb_path=str(pcb_path)))
-        assert result["status"] == "violations_found"
-        assert len(result["keepout_violations"]) >= 1
+        result = pcb.check_placement("R1", 25, 25, pcb_path=str(pcb_path))
+        assert result.status == "violations_found"
+        assert len(result.keepout_violations) >= 1
 
     def test_footprint_embedded_keepout(self, tmp_path):
         """Footprint with embedded keepout zone: placement inside triggers violation."""
@@ -782,22 +756,22 @@ class TestCheckPlacement:
         board.to_file()
 
         # Check placement at ESP32's center (50, 50) — inside the embedded keepout
-        result = json.loads(pcb.check_placement("R1", 50, 50, pcb_path=str(path)))
-        assert result["status"] == "violations_found"
-        assert len(result["keepout_violations"]) >= 1
-        sources = [v["source"] for v in result["keepout_violations"]]
+        result = pcb.check_placement("R1", 50, 50, pcb_path=str(path))
+        assert result.status == "violations_found"
+        assert len(result.keepout_violations) >= 1
+        sources = [v["source"] for v in result.keepout_violations]
         assert any(s.startswith("footprint:") for s in sources)
 
     def test_outside_board_edge(self, tmp_path):
         pcb_path = _make_keepout_pcb(tmp_path)
-        result = json.loads(pcb.check_placement("R1", 500, 500, pcb_path=str(pcb_path)))
-        assert result["outside_board_edge"] is True
+        result = pcb.check_placement("R1", 500, 500, pcb_path=str(pcb_path))
+        assert result.outside_board_edge is True
 
     def test_no_edge_cuts(self, tmp_path):
         """Board without Edge.Cuts: board_edge_checked should be false."""
         pcb_path = _make_keepout_pcb(tmp_path, with_edge_cuts=False)
-        result = json.loads(pcb.check_placement("R1", 100, 100, pcb_path=str(pcb_path)))
-        assert result["board_edge_checked"] is False
+        result = pcb.check_placement("R1", 100, 100, pcb_path=str(pcb_path))
+        assert result.board_edge_checked is False
 
 
 class TestAddKeepoutZone:
@@ -809,10 +783,9 @@ class TestAddKeepoutZone:
             {"x": 0, "y": 50},
         ]
         result = pcb.add_keepout_zone(corners=corners, pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert data["corners"] == 4
-        assert "F.Cu" in data["layers"]
-        assert data["restrictions"]["footprints"] == "not_allowed"
+        assert result.corners == 4
+        assert "F.Cu" in result.layers
+        assert result.restrictions["footprints"] == "not_allowed"
 
         # Verify it's actually on the board
         board = Board.from_file(str(scratch_pcb))
@@ -822,9 +795,8 @@ class TestAddKeepoutZone:
 
     def test_too_few_corners(self, scratch_pcb):
         corners = [{"x": 0, "y": 0}, {"x": 10, "y": 0}]
-        result = pcb.add_keepout_zone(corners=corners, pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert "error" in data
+        with pytest.raises(ToolError):
+            pcb.add_keepout_zone(corners=corners, pcb_path=str(scratch_pcb))
 
     def test_custom_restrictions(self, scratch_pcb):
         """no_tracks=False should produce tracks='allowed' in created zone."""
@@ -838,9 +810,8 @@ class TestAddKeepoutZone:
             no_tracks=False,
             pcb_path=str(scratch_pcb),
         )
-        data = json.loads(result)
-        assert data["restrictions"]["tracks"] == "allowed"
-        assert data["restrictions"]["vias"] == "not_allowed"
+        assert result.restrictions["tracks"] == "allowed"
+        assert result.restrictions["vias"] == "not_allowed"
 
         # Verify on disk
         board = Board.from_file(str(scratch_pcb))
@@ -852,9 +823,13 @@ class TestAddKeepoutZone:
 class TestSetNetClass:
     """Tests for set_net_class which edits the .kicad_pro project file."""
 
+    import json
+
     @staticmethod
     def _create_pro(pcb_path: Path, pro_data: dict | None = None) -> Path:
         """Create a .kicad_pro alongside the given .kicad_pcb path."""
+        import json
+
         pro_path = pcb_path.with_suffix(".kicad_pro")
         if pro_data is None:
             pro_data = {"meta": {"filename": pro_path.name, "version": 1}}
@@ -863,6 +838,8 @@ class TestSetNetClass:
 
     def test_works_without_pcbnew(self, scratch_pcb):
         """set_net_class must work without pcbnew — it edits the .kicad_pro file."""
+        import json
+
         pro_path = self._create_pro(scratch_pcb)
 
         result = pcb.set_net_class(
@@ -874,11 +851,10 @@ class TestSetNetClass:
             via_drill=0.3,
             pcb_path=str(scratch_pcb),
         )
-        data = json.loads(result)
-        assert data["net_class"] == "Power"
-        assert data["nets_assigned"] == 2
-        assert data["track_width_mm"] == 0.5
-        assert data["clearance_mm"] == 0.3
+        assert result.net_class == "Power"
+        assert result.nets_assigned == 2
+        assert result.track_width_mm == 0.5
+        assert result.clearance_mm == 0.3
 
         # Verify the project file was actually written correctly
         pro_data = json.loads(pro_path.read_text())
@@ -899,18 +875,16 @@ class TestSetNetClass:
 
     def test_missing_pro_file_returns_error(self, scratch_pcb):
         """Error when .kicad_pro file does not exist."""
-        result = pcb.set_net_class(
-            name="Power",
-            nets=["Net1"],
-            track_width=0.5,
-            pcb_path=str(scratch_pcb),
-        )
-        data = json.loads(result)
-        assert "error" in data
-        assert "Project file not found" in data["error"]
+        with pytest.raises(ToolError, match="Project file not found"):
+            pcb.set_net_class(
+                name="Power",
+                nets=["Net1"],
+                track_width=0.5,
+                pcb_path=str(scratch_pcb),
+            )
 
-    def test_success_returns_proper_json(self, scratch_pcb):
-        """Return JSON with net_class, nets_assigned, track_width_mm, clearance_mm."""
+    def test_success_returns_proper_result(self, scratch_pcb):
+        """Return result with net_class, nets_assigned, track_width_mm, clearance_mm."""
         self._create_pro(scratch_pcb)
 
         result = pcb.set_net_class(
@@ -920,14 +894,15 @@ class TestSetNetClass:
             clearance=0.3,
             pcb_path=str(scratch_pcb),
         )
-        data = json.loads(result)
-        assert data["net_class"] == "Power"
-        assert data["nets_assigned"] == 2
-        assert data["track_width_mm"] == 0.5
-        assert data["clearance_mm"] == 0.3
+        assert result.net_class == "Power"
+        assert result.nets_assigned == 2
+        assert result.track_width_mm == 0.5
+        assert result.clearance_mm == 0.3
 
     def test_updates_existing_net_class(self, scratch_pcb):
         """Updating an existing net class should merge, not duplicate."""
+        import json
+
         pro_data = {
             "meta": {"filename": "scratch.kicad_pro", "version": 1},
             "net_settings": {
@@ -956,6 +931,8 @@ class TestSetNetClass:
 
     def test_optional_params_omitted(self, scratch_pcb):
         """When optional params are None, they should not appear in the class entry."""
+        import json
+
         self._create_pro(scratch_pcb)
 
         result = pcb.set_net_class(
@@ -963,10 +940,9 @@ class TestSetNetClass:
             nets=["Net1"],
             pcb_path=str(scratch_pcb),
         )
-        data = json.loads(result)
-        assert data["net_class"] == "Signal"
-        assert data["track_width_mm"] is None
-        assert data["clearance_mm"] is None
+        assert result.net_class == "Signal"
+        assert result.track_width_mm is None
+        assert result.clearance_mm is None
 
         pro_data = json.loads(scratch_pcb.with_suffix(".kicad_pro").read_text())
         signal_cls = next(c for c in pro_data["net_settings"]["classes"] if c["name"] == "Signal")
@@ -991,14 +967,12 @@ class TestRemoveDanglingTracks:
         board.to_file()
 
         result = pcb.remove_dangling_tracks(pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert data["tracks_removed"] >= 1
+        assert result.tracks_removed >= 1
 
     def test_preserves_connected_traces(self, scratch_pcb):
         """The scratch board trace connects to R1 pads -- should not be removed."""
         result = pcb.remove_dangling_tracks(pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert data["tracks_removed"] == 0
+        assert result.tracks_removed == 0
         board = Board.from_file(str(scratch_pcb))
         segs = [t for t in board.traceItems if isinstance(t, Segment)]
         assert len(segs) == 1
@@ -1009,6 +983,5 @@ class TestRemoveDanglingTracks:
         board.traceItems = []
         board.to_file()
         result = pcb.remove_dangling_tracks(pcb_path=str(scratch_pcb))
-        data = json.loads(result)
-        assert data["tracks_removed"] == 0
-        assert data["iterations"] == 0
+        assert result.tracks_removed == 0
+        assert result.iterations == 0

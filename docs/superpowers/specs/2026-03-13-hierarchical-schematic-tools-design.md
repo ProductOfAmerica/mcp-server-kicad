@@ -24,7 +24,7 @@ The result: agents go in circles, eventually giving up and asking the user to op
 | Category | Items | New Tools | Fixes | Target File |
 |----------|-------|-----------|-------|-------------|
 | 1. Bug fixes | 3 | 0 | 3 | `schematic.py` |
-| 2. list_schematic_items expansion | 5 new types + summary update | 0 | 1 | `schematic.py` |
+| 2. Per-type schematic list tools | 10 tools (split from list_schematic_items) | 10 | 0 | `schematic.py` |
 | 3. Annotation | 1 | 1 | 0 | `project.py` |
 | 4. Hierarchical label management | 3 | 3 | 0 | `schematic.py` |
 | 5. Hierarchical sheet modification | 4 | 4 | 0 | `project.py` |
@@ -89,11 +89,11 @@ Add optional `project_path: str = ""` parameter to both tools. Use the new `_res
 
 ---
 
-## Section 2: `list_schematic_items` Expansion
+## Section 2: Per-Type Schematic List Tools
 
-**File:** `schematic.py`, function `list_schematic_items`
+**File:** `schematic.py`
 
-Currently supports: `summary`, `components`, `labels`, `wires`, `global_labels`. Add 5 new item types.
+The former `list_schematic_items` tool has been split into per-type tools: `get_schematic_summary`, `list_schematic_components`, `list_schematic_labels`, `list_schematic_wires`, `list_schematic_global_labels`, `list_schematic_hierarchical_labels`, `list_schematic_sheets`, `list_schematic_junctions`, `list_schematic_no_connects`, `list_schematic_bus_entries`.
 
 ### 2a. `hierarchical_labels`
 
@@ -205,7 +205,7 @@ Modify properties of an existing hierarchical label — rename, change direction
 modify_hierarchical_sheet(sheet_uuid, schematic_path: str = SCH_PATH, sheet_name="", file_name="", width=None, height=None)
 ```
 
-Edit properties of an existing sheet block. Only provided fields are changed. Updates are applied to the `.value` attribute of the existing `Property` objects (preserving position and formatting). Renaming `file_name` updates the property but does NOT rename the actual file on disk — returns a warning. The `sheet_uuid` is required for disambiguation (available from `list_schematic_items(item_type="sheets")`).
+Edit properties of an existing sheet block. Only provided fields are changed. Updates are applied to the `.value` attribute of the existing `Property` objects (preserving position and formatting). Renaming `file_name` updates the property but does NOT rename the actual file on disk — returns a warning. The `sheet_uuid` is required for disambiguation (available from `list_schematic_sheets()`).
 
 **Annotations:** `_ADDITIVE`
 
@@ -532,12 +532,12 @@ HIERARCHY WORKFLOW:
 - 1a: add_wires auto-junctions fix
 - 1b: get_net_connections BFS
 - 1c: run_erc project_path param
-- 2a-2b: hierarchical_labels + sheets in list_schematic_items
+- 2a-2b: list_schematic_hierarchical_labels + list_schematic_sheets
 - 3: annotate_schematic
 - 7a: validate_hierarchy
 
 **Phase 2 — Full hierarchy management:**
-- 2c-2e: junctions, no_connects, bus_entries in list_schematic_items
+- 2c-2e: list_schematic_junctions, list_schematic_no_connects, list_schematic_bus_entries
 - 4a-4c: hierarchical label CRUD
 - 5a-5c: sheet modification tools
 - 6a-6c: hierarchy traversal tools

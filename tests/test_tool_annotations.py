@@ -41,7 +41,16 @@ def test_symbol_destructive(tool_name):
 @pytest.mark.parametrize(
     "tool_name",
     [
-        "list_schematic_items",
+        "get_schematic_summary",
+        "list_schematic_components",
+        "list_schematic_labels",
+        "list_schematic_wires",
+        "list_schematic_global_labels",
+        "list_schematic_hierarchical_labels",
+        "list_schematic_sheets",
+        "list_schematic_junctions",
+        "list_schematic_no_connects",
+        "list_schematic_bus_entries",
         "get_symbol_pins",
         "get_pin_positions",
         "get_net_connections",
@@ -69,6 +78,7 @@ def test_schematic_read_only(tool_name):
         "wire_pins_to_net",
         "connect_pins",
         "no_connect_pin",
+        "add_hierarchical_label",
     ],
 )
 def test_schematic_additive(tool_name):
@@ -82,6 +92,9 @@ def test_schematic_additive(tool_name):
         "remove_label",
         "remove_wire",
         "remove_junction",
+        "remove_text",
+        "remove_hierarchical_label",
+        "modify_hierarchical_label",
     ],
 )
 def test_schematic_destructive(tool_name):
@@ -107,9 +120,17 @@ def test_schematic_export(tool_name):
 @pytest.mark.parametrize(
     "tool_name",
     [
-        "list_pcb_items",
+        "list_pcb_footprints",
+        "list_pcb_traces",
+        "list_pcb_nets",
+        "list_pcb_zones",
+        "list_pcb_layers",
+        "list_pcb_graphic_items",
         "get_board_info",
         "get_footprint_pads",
+        "get_footprint_bounds",
+        "validate_board",
+        "check_placement",
     ],
 )
 def test_pcb_read_only(tool_name):
@@ -126,6 +147,7 @@ def test_pcb_read_only(tool_name):
         "add_pcb_text",
         "add_pcb_line",
         "add_copper_zone",
+        "add_keepout_zone",
         "fill_zones",
         "set_trace_width",
         "add_thermal_vias",

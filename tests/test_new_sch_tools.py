@@ -1,8 +1,8 @@
 """Tests for new schematic manipulation tools."""
 
-import json
-
+import pytest
 from conftest import reparse
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 
@@ -32,8 +32,8 @@ class TestMoveComponent:
         assert r1.position.angle == 90
 
     def test_move_missing(self, scratch_sch):
-        result = schematic.move_component("R999", 200, 200, schematic_path=str(scratch_sch))
-        assert "not found" in result
+        with pytest.raises(ToolError, match="not found"):
+            schematic.move_component("R999", 200, 200, schematic_path=str(scratch_sch))
 
 
 class TestEditComponentValue:
@@ -63,10 +63,10 @@ class TestEditComponentValue:
         assert "R99" in refs
 
     def test_edit_missing(self, scratch_sch):
-        result = schematic.set_component_property(
-            "R999", key="Value", value="1K", schematic_path=str(scratch_sch)
-        )
-        assert "not found" in result
+        with pytest.raises(ToolError, match="not found"):
+            schematic.set_component_property(
+                "R999", key="Value", value="1K", schematic_path=str(scratch_sch)
+            )
 
 
 class TestAddGlobalLabel:
@@ -87,13 +87,13 @@ class TestAddGlobalLabel:
 
 class TestListGlobalLabels:
     def test_empty(self, scratch_sch):
-        result = json.loads(schematic.list_schematic_items("global_labels", str(scratch_sch)))
+        result = schematic.list_schematic_global_labels(str(scratch_sch))
         assert result == []
 
     def test_with_labels(self, scratch_sch):
         schematic.add_global_label("VCC", 50, 50, schematic_path=str(scratch_sch))
-        result = json.loads(schematic.list_schematic_items("global_labels", str(scratch_sch)))
-        texts = [item["text"] for item in result]
+        result = schematic.list_schematic_global_labels(str(scratch_sch))
+        texts = [item.text for item in result]
         assert "VCC" in texts
 
 

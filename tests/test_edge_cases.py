@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 from conftest import reparse
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 from mcp_server_kicad.schematic import _get_page_size
@@ -84,9 +85,9 @@ class TestInvalidRotation:
 
 class TestBadPaths:
     def test_nonexistent_schematic(self) -> None:
-        """list_components on a nonexistent file should raise an Exception."""
+        """list_schematic_components on a nonexistent file should raise an Exception."""
         with pytest.raises(Exception):
-            schematic.list_components("/nonexistent/path.kicad_sch")
+            schematic.list_schematic_components("/nonexistent/path.kicad_sch")
 
     def test_nonexistent_sym_lib(self, scratch_sch: Path) -> None:
         """add_lib_symbol with a nonexistent library path should raise an Exception."""
@@ -100,17 +101,16 @@ class TestLargeCoordinates:
 
         Coordinates outside the page boundary are rejected.
         """
-        result = schematic.place_component(
-            lib_id="Device:R",
-            reference="R99",
-            value="100K",
-            x=99999.8,
-            y=99999.8,
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        assert "Error" in result
-        assert "outside" in result
+        with pytest.raises(ToolError, match="outside"):
+            schematic.place_component(
+                lib_id="Device:R",
+                reference="R99",
+                value="100K",
+                x=99999.8,
+                y=99999.8,
+                schematic_path=str(scratch_sch),
+                project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+            )
 
 
 class TestSetPageSize:
@@ -141,35 +141,34 @@ class TestSetPageSize:
         assert sch.paper.height == 300
 
     def test_user_without_dimensions_returns_error(self, scratch_sch: Path) -> None:
-        """'User' size without width/height returns an error string."""
-        result = schematic.set_page_size(
-            size="User",
-            schematic_path=str(scratch_sch),
-        )
-        assert "Error" in result
+        """'User' size without width/height raises ToolError."""
+        with pytest.raises(ToolError):
+            schematic.set_page_size(
+                size="User",
+                schematic_path=str(scratch_sch),
+            )
 
     def test_invalid_size_returns_error(self, scratch_sch: Path) -> None:
-        """An invalid size name like 'Z99' returns an error string."""
-        result = schematic.set_page_size(
-            size="Z99",
-            schematic_path=str(scratch_sch),
-        )
-        assert "Error" in result
+        """An invalid size name like 'Z99' raises ToolError."""
+        with pytest.raises(ToolError):
+            schematic.set_page_size(
+                size="Z99",
+                schematic_path=str(scratch_sch),
+            )
 
     def test_resize_then_place(self, empty_sch: Path) -> None:
         """Placement outside A4 fails, but succeeds after resizing to A3."""
         # A4 is 297x210 — (400, 200) is outside
-        result = schematic.place_component(
-            lib_id="Device:R",
-            reference="R1",
-            value="10K",
-            x=400,
-            y=200,
-            schematic_path=str(empty_sch),
-            project_path=str(empty_sch.with_suffix(".kicad_pro")),
-        )
-        assert "Error" in result
-        assert "outside" in result
+        with pytest.raises(ToolError, match="outside"):
+            schematic.place_component(
+                lib_id="Device:R",
+                reference="R1",
+                value="10K",
+                x=400,
+                y=200,
+                schematic_path=str(empty_sch),
+                project_path=str(empty_sch.with_suffix(".kicad_pro")),
+            )
 
         # Resize to A3 (420x297) — (400, 200) is now inside
         result = schematic.set_page_size(

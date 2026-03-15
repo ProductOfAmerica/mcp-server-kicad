@@ -51,23 +51,17 @@ class TestKicadNativeFixture:
 
 class TestReadToolsNative:
     def test_list_components(self, kicad_native_sch):
-        import json
-
-        result = json.loads(schematic.list_schematic_items("components", str(kicad_native_sch)))
-        refs = [c["reference"] for c in result]
+        result = schematic.list_schematic_components(str(kicad_native_sch))
+        refs = [c.reference for c in result]
         assert "R1" in refs
 
     def test_list_labels(self, kicad_native_sch):
-        import json
-
-        result = json.loads(schematic.list_schematic_items("labels", str(kicad_native_sch)))
-        texts = [item["text"] for item in result]
+        result = schematic.list_schematic_labels(str(kicad_native_sch))
+        texts = [item.text for item in result]
         assert "TEST_NET" in texts
 
     def test_list_wires(self, kicad_native_sch):
-        import json
-
-        result = json.loads(schematic.list_schematic_items("wires", str(kicad_native_sch)))
+        result = schematic.list_schematic_wires(str(kicad_native_sch))
         assert isinstance(result, list)
 
     def test_get_symbol_pins(self, kicad_native_sch):
@@ -163,7 +157,7 @@ class TestWriteToolsNative:
             reference="R4",
             value="2.2K",
             x=250,
-            y=250,
+            y=200,
             schematic_path=str(kicad_native_sch),
             project_path=str(kicad_native_sch.with_suffix(".kicad_pro")),
         )

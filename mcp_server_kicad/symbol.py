@@ -1,6 +1,5 @@
 """KiCad symbol library MCP server."""
 
-import json
 import math
 import os
 from pathlib import Path
@@ -9,6 +8,7 @@ from kiutils.items.common import Effects, Fill, Font, Position, Property, Stroke
 from kiutils.items.syitems import SyRect
 from kiutils.symbol import Symbol, SymbolPin
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad._shared import (
     _ADDITIVE,
@@ -20,6 +20,7 @@ from mcp_server_kicad._shared import (
     SymbolLib,
     _run_cli,
 )
+from mcp_server_kicad.models import MultiFileExportResult
 
 mcp = FastMCP(
     "kicad-symbol",
@@ -177,20 +178,20 @@ def add_symbol(
         symbol_lib_path: Path to .kicad_sym file
     """
     if not name:
-        return "Error: symbol name is required."
+        raise ToolError("symbol name is required.")
     if not pins:
-        return "Error: at least one pin is required."
+        raise ToolError("at least one pin is required.")
     if not symbol_lib_path:
-        return "Error: symbol_lib_path is required."
+        raise ToolError("symbol_lib_path is required.")
 
     # Validate pins
     for i, p in enumerate(pins):
         for key in ("number", "name", "type"):
             if key not in p:
-                return f"Error: pin {i} missing required key '{key}'."
+                raise ToolError(f"pin {i} missing required key '{key}'.")
         if p["type"] not in _VALID_PIN_TYPES:
-            return (
-                f"Error: pin {i} has invalid type '{p['type']}'. Valid: {sorted(_VALID_PIN_TYPES)}"
+            raise ToolError(
+                f"pin {i} has invalid type '{p['type']}'. Valid: {sorted(_VALID_PIN_TYPES)}"
             )
 
     # Load or create library
@@ -199,7 +200,7 @@ def add_symbol(
         lib = SymbolLib.from_file(str(lib_path))
         for existing in lib.symbols:
             if existing.entryName == name:
-                return f"Error: symbol '{name}' already exists in {symbol_lib_path}."
+                raise ToolError(f"symbol '{name}' already exists in {symbol_lib_path}.")
     else:
         lib_path.parent.mkdir(parents=True, exist_ok=True)
         lib = SymbolLib(version=_KICAD_SYM_VERSION, generator="kicad_symbol_editor")
@@ -304,29 +305,25 @@ def add_symbol(
 
 
 @mcp.tool(annotations=_EXPORT)
-def export_symbol_svg(symbol_lib_path: str = SYM_LIB_PATH, output_dir: str = OUTPUT_DIR) -> str:
+def export_symbol_svg(
+    symbol_lib_path: str = SYM_LIB_PATH, output_dir: str = OUTPUT_DIR
+) -> MultiFileExportResult:
     """Export symbol library to SVG images.
 
     Args:
         symbol_lib_path: Path to .kicad_sym file
         output_dir: Output directory
     """
-    try:
-        out = output_dir or str(Path(symbol_lib_path).parent)
-        os.makedirs(out, exist_ok=True)
-        _run_cli(["sym", "export", "svg", "--output", out, symbol_lib_path])
-        svgs = sorted(Path(out).glob("*.svg"))
-        return json.dumps(
-            {
-                "path": out,
-                "format": "svg",
-                "files": [f.name for f in svgs],
-                "count": len(svgs),
-            },
-            indent=2,
-        )
-    except (RuntimeError, FileNotFoundError) as e:
-        return json.dumps({"error": str(e), "format": "svg"}, indent=2)
+    out = output_dir or str(Path(symbol_lib_path).parent)
+    os.makedirs(out, exist_ok=True)
+    _run_cli(["sym", "export", "svg", "--output", out, symbol_lib_path])
+    svgs = sorted(Path(out).glob("*.svg"))
+    return MultiFileExportResult(
+        path=out,
+        format="svg",
+        files=[f.name for f in svgs],
+        count=len(svgs),
+    )
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
@@ -336,11 +333,8 @@ def upgrade_symbol_lib(symbol_lib_path: str) -> str:
     Args:
         symbol_lib_path: Path to .kicad_sym file
     """
-    try:
-        _run_cli(["sym", "upgrade", symbol_lib_path])
-        return f"Successfully upgraded {symbol_lib_path}"
-    except RuntimeError as e:
-        return f"Error: {e}"
+    _run_cli(["sym", "upgrade", symbol_lib_path])
+    return f"Successfully upgraded {symbol_lib_path}"
 
 
 # ── Entry point ───────────────────────────────────────────────────

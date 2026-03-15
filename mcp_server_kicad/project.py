@@ -10,6 +10,7 @@ import json
 from pathlib import Path
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad._shared import (
     _ADDITIVE,
@@ -48,6 +49,17 @@ from mcp_server_kicad._shared import (
     _snap_grid,
     _sym_ref_val_fp,
     _upsert_root_symbol_instance,
+)
+from mcp_server_kicad.models import (
+    CrossSheetNetsResult,
+    HierarchicalNetlistResult,
+    HierarchyResult,
+    HierarchyValidationResult,
+    NetTraceResult,
+    RootSchematicResult,
+    SheetInfoResult,
+    SymbolInstancesResult,
+    VersionResult,
 )
 
 # KiCad 9 file format constants
@@ -101,7 +113,7 @@ def _create_project(directory: str, name: str) -> str:
 
     pro_path = d / f"{name}.kicad_pro"
     if pro_path.exists():
-        return f"Error: {pro_path} already exists."
+        raise ValueError(f"{pro_path} already exists.")
 
     pro_data = {"meta": {"filename": f"{name}.kicad_pro", "version": 1}}
     pro_path.write_text(json.dumps(pro_data, indent=2) + "\n")
@@ -128,7 +140,7 @@ def _create_schematic(schematic_path: str) -> str:
     """
     p = Path(schematic_path)
     if p.exists():
-        return f"Error: {p} already exists."
+        raise ValueError(f"{p} already exists.")
 
     p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -149,7 +161,7 @@ def _create_symbol_library(symbol_lib_path: str) -> str:
     """
     p = Path(symbol_lib_path)
     if p.exists():
-        return f"Error: {p} already exists."
+        raise ValueError(f"{p} already exists.")
 
     p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -204,7 +216,7 @@ def _add_hierarchical_sheet(
     """
     child_path = Path(sheet_file)
     if not child_path.exists():
-        return f"Error: {child_path} does not exist. Create it with create_schematic first."
+        raise ToolError(f"{child_path} does not exist. Create it with create_schematic first.")
 
     parent_sch = _load_sch(parent_schematic_path)
     x, y = _snap_grid(x), _snap_grid(y)
@@ -398,7 +410,7 @@ def _remove_hierarchical_sheet(
         delete_child_file: If True, delete the child .kicad_sch file (unless still referenced)
     """
     if not name and not uuid:
-        return "Provide at least one of 'name' or 'uuid'."
+        raise ToolError("Provide at least one of 'name' or 'uuid'.")
 
     sch = _load_sch(parent_schematic_path)
 
@@ -411,7 +423,7 @@ def _remove_hierarchical_sheet(
         if uuid:
             if sheet.uuid and _normalize_uuid(sheet.uuid) == _normalize_uuid(uuid):
                 if name and sheet.sheetName.value != name:
-                    return (
+                    raise ToolError(
                         f"Sheet with uuid={uuid} found but its name is "
                         f"'{sheet.sheetName.value}', not '{name}'."
                     )
@@ -423,14 +435,16 @@ def _remove_hierarchical_sheet(
 
     if not matches:
         criteria = f"uuid={uuid}" if uuid else f"name='{name}'"
-        return f"No hierarchical sheet found matching {criteria}."
+        raise ToolError(f"No hierarchical sheet found matching {criteria}.")
 
     if len(matches) > 1:
         info = ", ".join(
             f"uuid={sch.sheets[i].uuid} at ({sch.sheets[i].position.X}, {sch.sheets[i].position.Y})"
             for i in matches
         )
-        return f"Multiple sheets named '{name}' found: [{info}]. Provide uuid to disambiguate."
+        raise ToolError(
+            f"Multiple sheets named '{name}' found: [{info}]. Provide uuid to disambiguate."
+        )
 
     target = sch.sheets[matches[0]]
     sheet_name = target.sheetName.value
@@ -468,7 +482,7 @@ def _modify_hierarchical_sheet(
     """Modify properties of an existing hierarchical sheet block.
 
     Args:
-        sheet_uuid: UUID of the sheet to modify (from list_schematic_items sheets)
+        sheet_uuid: UUID of the sheet to modify (from list_schematic_sheets)
         schematic_path: Path to parent .kicad_sch
         sheet_name: New display name (empty = keep)
         file_name: New file path (empty = keep)
@@ -482,7 +496,7 @@ def _modify_hierarchical_sheet(
             target = s
             break
     if target is None:
-        return f"Sheet with UUID '{sheet_uuid}' not found"
+        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
     changes = []
     if sheet_name:
         target.sheetName.value = sheet_name
@@ -518,9 +532,8 @@ def _add_sheet_pin(
     """
     _valid_types = {"input", "output", "bidirectional", "tri_state", "passive"}
     if connection_type not in _valid_types:
-        return (
-            f"Error: invalid connection_type '{connection_type}'. "
-            f"Use: {', '.join(sorted(_valid_types))}"
+        raise ToolError(
+            f"Invalid connection_type '{connection_type}'. Use: {', '.join(sorted(_valid_types))}"
         )
     sch = _load_sch(schematic_path)
     target = None
@@ -529,7 +542,7 @@ def _add_sheet_pin(
             target = s
             break
     if target is None:
-        return f"Sheet with UUID '{sheet_uuid}' not found"
+        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
     # Calculate pin position on sheet edge
     existing_pins_on_side = len(target.pins)
     pin_y = target.position.Y + 2.54 * (existing_pins_on_side + 1)
@@ -563,14 +576,14 @@ def _remove_sheet_pin(sheet_uuid: str, pin_name: str, schematic_path: str) -> st
             target = s
             break
     if target is None:
-        return f"Sheet with UUID '{sheet_uuid}' not found"
+        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
     pin = None
     for p in target.pins:
         if p.name == pin_name:
             pin = p
             break
     if pin is None:
-        return f"Pin '{pin_name}' not found on sheet"
+        raise ToolError(f"Pin '{pin_name}' not found on sheet")
     target.pins.remove(pin)
     _save_sch(sch)
     return f"Removed pin '{pin_name}' from sheet"
@@ -700,7 +713,7 @@ def _annotate_schematic(schematic_path: str, project_path: str = "") -> str:
     return f"Annotated {total} components: {', '.join(parts)}"
 
 
-def _validate_hierarchy(schematic_path: str) -> str:
+def _validate_hierarchy(schematic_path: str) -> HierarchyValidationResult:
     """Validate hierarchical schematic for common issues.
 
     Checks for orphaned labels/pins, direction mismatches, duplicate
@@ -806,31 +819,27 @@ def _validate_hierarchy(schematic_path: str) -> str:
             )
 
     status = "ok" if not issues else "issues_found"
-    return json.dumps(
-        {
-            "status": status,
-            "issue_count": len(issues),
-            "issues": issues,
-        }
+    return HierarchyValidationResult(
+        status=status,
+        issue_count=len(issues),
+        issues=issues,
     )
 
 
-def _is_root_schematic(schematic_path: str) -> str:
+def _is_root_schematic(schematic_path: str) -> RootSchematicResult:
     """Check if a schematic is the root or a sub-sheet.
 
     Args:
         schematic_path: Path to .kicad_sch file
     """
     root = _find_root_schematic(schematic_path)
-    return json.dumps(
-        {
-            "is_root": root is None,
-            "root_path": root,
-        }
+    return RootSchematicResult(
+        is_root=root is None,
+        root_path=root,
     )
 
 
-def _list_hierarchy(schematic_path: str) -> str:
+def _list_hierarchy(schematic_path: str) -> HierarchyResult:
     """List the full sheet hierarchy starting from a root schematic.
 
     Args:
@@ -870,17 +879,15 @@ def _list_hierarchy(schematic_path: str) -> str:
             child_info["error"] = f"File not found: {child_path}"
         sheets.append(child_info)
 
-    return json.dumps(
-        {
-            "root": root_name,
-            "component_count": len(sch.schematicSymbols),
-            "sheet_count": len(sch.sheets),
-            "sheets": sheets,
-        }
+    return HierarchyResult(
+        root=root_name,
+        component_count=len(sch.schematicSymbols),
+        sheet_count=len(sch.sheets),
+        sheets=sheets,
     )
 
 
-def _get_sheet_info(sheet_uuid: str, schematic_path: str) -> str:
+def _get_sheet_info(sheet_uuid: str, schematic_path: str) -> SheetInfoResult:
     """Get detailed info about a hierarchical sheet including pin/label matching.
 
     Args:
@@ -894,7 +901,7 @@ def _get_sheet_info(sheet_uuid: str, schematic_path: str) -> str:
             target = s
             break
     if target is None:
-        return json.dumps({"error": f"Sheet with UUID '{sheet_uuid}' not found"})
+        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
 
     sch_dir = Path(schematic_path).parent
     child_path = sch_dir / target.fileName.value
@@ -923,21 +930,20 @@ def _get_sheet_info(sheet_uuid: str, schematic_path: str) -> str:
             }
         )
 
-    result = {
-        "sheet_name": target.sheetName.value,
-        "file_name": target.fileName.value,
-        "uuid": target.uuid,
-        "x": target.position.X,
-        "y": target.position.Y,
-        "width": target.width,
-        "height": target.height,
-        "pins": pins,
+    return SheetInfoResult(
+        sheet_name=target.sheetName.value,
+        file_name=target.fileName.value,
+        uuid=target.uuid or "",
+        x=target.position.X,
+        y=target.position.Y,
+        width=target.width,
+        height=target.height,
+        pins=pins,
         **child_info,
-    }
-    return json.dumps(result)
+    )
 
 
-def _trace_hierarchical_net(net_name: str, schematic_path: str) -> str:
+def _trace_hierarchical_net(net_name: str, schematic_path: str) -> NetTraceResult:
     """Trace a net across the hierarchy, following hierarchical pins and labels.
 
     Args:
@@ -1013,17 +1019,15 @@ def _trace_hierarchical_net(net_name: str, schematic_path: str) -> str:
                     }
                 )
 
-    return json.dumps(
-        {
-            "net_name": net_name,
-            "sheets_touched": sheets_touched,
-            "connection_count": len(connections),
-            "connections": connections,
-        }
+    return NetTraceResult(
+        net_name=net_name,
+        sheets_touched=sheets_touched,
+        connection_count=len(connections),
+        connections=connections,
     )
 
 
-def _list_cross_sheet_nets(schematic_path: str) -> str:
+def _list_cross_sheet_nets(schematic_path: str) -> CrossSheetNetsResult:
     """List all nets that cross sheet boundaries (hierarchical pins and global labels).
 
     Args:
@@ -1067,15 +1071,13 @@ def _list_cross_sheet_nets(schematic_path: str) -> str:
         {"name": name, "sheets": sheets} for name, sheets in sorted(global_nets.items())
     ]
 
-    return json.dumps(
-        {
-            "hierarchical_nets": hierarchical_nets,
-            "global_nets": global_net_list,
-        }
+    return CrossSheetNetsResult(
+        hierarchical_nets=hierarchical_nets,
+        global_nets=global_net_list,
     )
 
 
-def _get_symbol_instances(schematic_path: str) -> str:
+def _get_symbol_instances(schematic_path: str) -> SymbolInstancesResult:
     """List all symbol instances from a root schematic's symbolInstances table.
 
     Args:
@@ -1093,7 +1095,7 @@ def _get_symbol_instances(schematic_path: str) -> str:
                 "footprint": si.footprint if hasattr(si, "footprint") else "",
             }
         )
-    return json.dumps({"instances": instances, "count": len(instances)})
+    return SymbolInstancesResult(instances=instances, count=len(instances))
 
 
 def _move_hierarchical_sheet(
@@ -1114,7 +1116,7 @@ def _move_hierarchical_sheet(
             target = s
             break
     if target is None:
-        return f"Sheet with UUID '{sheet_uuid}' not found"
+        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
     dx = new_x - target.position.X
     dy = new_y - target.position.Y
     target.position.X = new_x
@@ -1146,7 +1148,7 @@ def _reorder_sheet_pages(page_order: list[str], schematic_path: str) -> str:
     sheet_map = {s.uuid: s for s in sch.sheets}
     missing = [u for u in page_order if u not in sheet_map]
     if missing:
-        return f"Sheet UUIDs not found: {missing}"
+        raise ToolError(f"Sheet UUIDs not found: {missing}")
     # Reorder
     new_sheets = [sheet_map[u] for u in page_order]
     # Add any sheets not in the order (preserve at end)
@@ -1187,7 +1189,7 @@ def _duplicate_sheet(
             source = s
             break
     if source is None:
-        return f"Sheet with UUID '{sheet_uuid}' not found"
+        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
 
     # Determine new file name
     if not new_file_name:
@@ -1198,7 +1200,7 @@ def _duplicate_sheet(
     src_path = sch_dir / source.fileName.value
     dst_path = sch_dir / new_file_name
     if not src_path.exists():
-        return f"Source file not found: {src_path}"
+        raise ToolError(f"Source file not found: {src_path}")
 
     shutil.copy2(str(src_path), str(dst_path))
 
@@ -1434,7 +1436,7 @@ def _flatten_hierarchy(
 def _export_hierarchical_netlist(
     schematic_path: str,
     output_dir: str = "",
-) -> str:
+) -> HierarchicalNetlistResult:
     import xml.etree.ElementTree as ET
 
     if not output_dir:
@@ -1442,23 +1444,20 @@ def _export_hierarchical_netlist(
 
     output_path = str(Path(output_dir) / (Path(schematic_path).stem + ".net"))
 
-    try:
-        _run_cli(
-            [
-                "sch",
-                "export",
-                "netlist",
-                "--output",
-                output_path,
-                schematic_path,
-            ]
-        )
-    except RuntimeError as e:
-        return json.dumps({"error": str(e)})
+    _run_cli(
+        [
+            "sch",
+            "export",
+            "netlist",
+            "--output",
+            output_path,
+            schematic_path,
+        ]
+    )
 
     # Parse the netlist XML
     if not Path(output_path).exists():
-        return json.dumps({"error": "Netlist file not generated"})
+        raise ToolError("Netlist file not generated")
 
     try:
         tree = ET.parse(output_path)
@@ -1507,17 +1506,15 @@ def _export_hierarchical_netlist(
                     }
                 )
 
-        return json.dumps(
-            {
-                "output_path": output_path,
-                "component_count": len(components),
-                "net_count": len(nets),
-                "components": components,
-                "nets": nets,
-            }
+        return HierarchicalNetlistResult(
+            output_path=output_path,
+            component_count=len(components),
+            net_count=len(nets),
+            components=components,
+            nets=nets,
         )
     except ET.ParseError as e:
-        return json.dumps({"output_path": output_path, "parse_error": str(e)})
+        raise ToolError(f"Failed to parse netlist at {output_path}: {e}") from e
 
 
 # Public aliases — tests call these directly without going through MCP
@@ -1556,7 +1553,10 @@ def create_project(directory: str, name: str) -> str:  # noqa: F811
         directory: Directory to create the project in (created if missing)
         name: Project name (used for filenames)
     """
-    return _create_project(directory, name)
+    try:
+        return _create_project(directory, name)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1566,7 +1566,10 @@ def create_schematic(schematic_path: str) -> str:  # noqa: F811
     Args:
         schematic_path: Path for the new .kicad_sch file
     """
-    return _create_schematic(schematic_path)
+    try:
+        return _create_schematic(schematic_path)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1576,7 +1579,10 @@ def create_symbol_library(symbol_lib_path: str) -> str:  # noqa: F811
     Args:
         symbol_lib_path: Path for the new .kicad_sym file
     """
-    return _create_symbol_library(symbol_lib_path)
+    try:
+        return _create_symbol_library(symbol_lib_path)
+    except ValueError as e:
+        raise ToolError(str(e)) from e
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1658,7 +1664,7 @@ def modify_hierarchical_sheet(  # noqa: F811
     """Modify properties of an existing hierarchical sheet block.
 
     Args:
-        sheet_uuid: UUID of the sheet to modify (from list_schematic_items sheets)
+        sheet_uuid: UUID of the sheet to modify (from list_schematic_sheets)
         schematic_path: Path to parent .kicad_sch
         sheet_name: New display name (empty = keep)
         file_name: New file path (empty = keep)
@@ -1722,7 +1728,7 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def validate_hierarchy(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationResult:  # noqa: F811
     """Validate hierarchical schematic for common issues.
 
     Checks for orphaned labels/pins, direction mismatches, duplicate
@@ -1735,7 +1741,7 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def is_root_schematic(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:  # noqa: F811
     """Check if a schematic is the root or a sub-sheet.
 
     Args:
@@ -1745,7 +1751,7 @@ def is_root_schematic(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def list_hierarchy(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+def list_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyResult:  # noqa: F811
     """List the full sheet hierarchy starting from a root schematic.
 
     Args:
@@ -1755,7 +1761,7 @@ def list_hierarchy(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def get_sheet_info(sheet_uuid: str, schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+def get_sheet_info(sheet_uuid: str, schematic_path: str = SCH_PATH) -> SheetInfoResult:  # noqa: F811
     """Get detailed info about a hierarchical sheet including pin/label matching.
 
     Args:
@@ -1766,7 +1772,7 @@ def get_sheet_info(sheet_uuid: str, schematic_path: str = SCH_PATH) -> str:  # n
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> NetTraceResult:  # noqa: F811
     """Trace a net across the hierarchy, following hierarchical pins and labels.
 
     Args:
@@ -1777,7 +1783,7 @@ def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> str
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def list_cross_sheet_nets(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+def list_cross_sheet_nets(schematic_path: str = SCH_PATH) -> CrossSheetNetsResult:  # noqa: F811
     """List all nets that cross sheet boundaries (hierarchical pins and global labels).
 
     Args:
@@ -1787,7 +1793,7 @@ def list_cross_sheet_nets(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def get_symbol_instances(schematic_path: str = SCH_PATH) -> str:  # noqa: F811
+def get_symbol_instances(schematic_path: str = SCH_PATH) -> SymbolInstancesResult:  # noqa: F811
     """List all symbol instances from a root schematic's symbolInstances table.
 
     Args:
@@ -1869,7 +1875,7 @@ def flatten_hierarchy(  # noqa: F811
 def export_hierarchical_netlist(  # noqa: F811
     schematic_path: str = SCH_PATH,
     output_dir: str = "",
-) -> str:
+) -> HierarchicalNetlistResult:
     """Export a netlist from the root schematic, including hierarchy info.
 
     Runs kicad-cli to generate a netlist and returns parsed component/net data
@@ -1893,19 +1899,19 @@ def run_jobset(jobset_path: str) -> str:
         result = _run_cli(["jobset", "run", jobset_path])
         return f"Jobset completed successfully.\n{result.stdout}"
     except (RuntimeError, FileNotFoundError) as e:
-        return f"Jobset failed: {e}"
+        raise ToolError(f"Jobset failed: {e}") from e
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def get_version() -> str:
+def get_version() -> VersionResult:
     """Get KiCad version information including build details and library versions."""
     try:
         result = _run_cli(["version", "--format", "about"], check=False)
     except FileNotFoundError:
-        return json.dumps({"error": "kicad-cli not found on PATH"})
+        raise ToolError("kicad-cli not found on PATH")
     if result.returncode != 0:
-        return json.dumps({"error": result.stderr.strip()})
-    return json.dumps({"version_info": result.stdout.strip()})
+        raise ToolError(result.stderr.strip())
+    return VersionResult(version_info=result.stdout.strip())
 
 
 # ── Entry point ───────────────────────────────────────────────────

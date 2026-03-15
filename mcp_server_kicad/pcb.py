@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from kiutils.board import Board
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad._freerouting import (
     check_java as _check_java,
@@ -65,6 +66,33 @@ from mcp_server_kicad._shared import (
     _run_cli,
     _transform_local_to_board,
 )
+from mcp_server_kicad.models import (
+    AutorouteResult,
+    BoardValidationResult,
+    DanglingTracksResult,
+    DrcResult,
+    ExportResult,
+    FillZonesResult,
+    FootprintBoundsResult,
+    GerberExportResult,
+    GraphicItem,
+    KeepoutZoneResult,
+    LayerItem,
+    NetClassResult,
+    NetItem,
+    PcbExportResult,
+    PcbFootprintItem,
+    PlacementCheckResult,
+    PositionExportResult,
+    RemoveTracesResult,
+    RenderExportResult,
+    SingleGerberExportResult,
+    ThermalViasResult,
+    TraceSegmentItem,
+    TraceWidthResult,
+    ZoneItem,
+    ZoneResult,
+)
 
 mcp = FastMCP(
     "kicad-pcb",
@@ -76,12 +104,14 @@ mcp = FastMCP(
         " manipulation MUST go through these MCP tools.\n"
         "- NEVER run kicad-cli commands directly. Use the export and DRC"
         " tools provided by this server.\n"
-        "- NEVER grep/search inside .kicad_pcb files. Use list_pcb_items"
-        " to query board contents (footprints, traces, vias, zones, etc.).\n"
+        "- NEVER grep/search inside .kicad_pcb files. Use list_pcb_footprints,"
+        " list_pcb_traces, list_pcb_nets, list_pcb_zones, list_pcb_layers,"
+        " and list_pcb_graphic_items to query board contents.\n"
         "- When a tool returns an error, try different parameters or a different"
         " MCP tool. Do NOT fall back to manual file editing.\n\n"
-        "QUERY PATTERN: list_pcb_items(item_type, pcb_path) supports types:"
-        " footprints, traces, vias, zones, drawings, text.\n\n"
+        "QUERY PATTERN: Use per-type list tools (list_pcb_footprints,"
+        " list_pcb_traces, list_pcb_nets, list_pcb_zones, list_pcb_layers,"
+        " list_pcb_graphic_items).\n\n"
         "EXPORT PATTERN: export_pcb(format, pcb_path) supports formats:"
         " pdf, svg, dxf. Use export_gerbers for manufacturing output."
     ),
@@ -138,133 +168,174 @@ def _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max):
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def list_pcb_items(item_type: str, pcb_path: str = PCB_PATH) -> str:
-    """List PCB items by type.
+def list_pcb_footprints(pcb_path: str = PCB_PATH) -> list[PcbFootprintItem]:
+    """List all footprints on the PCB.
 
     Args:
-        item_type: One of "footprints", "traces", "nets", "zones", "layers", "graphic_items"
         pcb_path: Path to .kicad_pcb file
     """
     board = _load_board(pcb_path)
-    if item_type == "footprints":
-        items = []
-        for fp in board.footprints:
-            ref = _fp_ref(fp)
-            val = _fp_val(fp)
-            pos = fp.position
-            items.append(
-                {
-                    "reference": ref,
-                    "value": val,
-                    "lib_id": fp.libId,
-                    "x": pos.X,
-                    "y": pos.Y,
-                    "rotation": pos.angle,
-                    "layer": fp.layer,
-                }
+    items: list[PcbFootprintItem] = []
+    for fp in board.footprints:
+        ref = _fp_ref(fp)
+        val = _fp_val(fp)
+        pos = fp.position
+        items.append(
+            PcbFootprintItem(
+                reference=ref,
+                value=val,
+                lib_id=fp.libId,
+                x=pos.X,
+                y=pos.Y,
+                rotation=pos.angle or 0,
+                layer=fp.layer,
             )
-        return json.dumps(items)
-    elif item_type == "traces":
-        items = []
-        for item in board.traceItems:
-            if isinstance(item, Segment):
-                items.append(
-                    {
-                        "type": "segment",
-                        "start_x": item.start.X,
-                        "start_y": item.start.Y,
-                        "end_x": item.end.X,
-                        "end_y": item.end.Y,
-                        "width": item.width,
-                        "layer": item.layer,
-                        "net": item.net,
-                    }
-                )
-            elif isinstance(item, Via):
-                items.append(
-                    {
-                        "type": "via",
-                        "x": item.position.X,
-                        "y": item.position.Y,
-                        "size": item.size,
-                        "drill": item.drill,
-                        "layers": item.layers,
-                        "net": item.net,
-                    }
-                )
-        return json.dumps(items)
-    elif item_type == "nets":
-        items = []
-        for net in board.nets:
-            if net.name:  # skip unnamed net 0
-                items.append({"number": net.number, "name": net.name})
-        return json.dumps(items)
-    elif item_type == "zones":
-        items = []
-        for z in board.zones:
-            entry: dict = {
-                "net_name": z.netName,
-                "layers": z.layers,
-                "priority": z.priority,
-                "is_keepout": z.keepoutSettings is not None,
-            }
-            if z.keepoutSettings is not None:
-                ks = z.keepoutSettings
-                entry["keepout"] = {
-                    "tracks": ks.tracks,
-                    "vias": ks.vias,
-                    "pads": ks.pads,
-                    "copperpour": ks.copperpour,
-                    "footprints": ks.footprints,
-                }
-            if z.polygons:
-                entry["polygon"] = [{"x": pt.X, "y": pt.Y} for pt in z.polygons[0].coordinates]
-            items.append(entry)
-        return json.dumps(items)
-    elif item_type == "layers":
-        items = []
-        for layer in board.layers:
-            items.append({"ordinal": layer.ordinal, "name": layer.name, "type": layer.type})
-        return json.dumps(items)
-    elif item_type == "graphic_items":
-        items = []
-        for item in board.graphicItems:
-            if isinstance(item, GrLine):
-                items.append(
-                    {
-                        "type": "line",
-                        "start_x": item.start.X,
-                        "start_y": item.start.Y,
-                        "end_x": item.end.X,
-                        "end_y": item.end.Y,
-                        "layer": item.layer,
-                    }
-                )
-            elif isinstance(item, GrText):
-                items.append(
-                    {
-                        "type": "text",
-                        "text": item.text,
-                        "x": item.position.X,
-                        "y": item.position.Y,
-                        "layer": item.layer,
-                    }
-                )
-            else:
-                items.append(
-                    {
-                        "type": type(item).__name__,
-                        "layer": getattr(item, "layer", "unknown"),
-                    }
-                )
-        return json.dumps(items)
-    else:
-        return json.dumps(
-            {
-                "error": f"Unknown item_type: {item_type}."
-                " Use: footprints, traces, nets, zones, layers, graphic_items"
-            }
         )
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_pcb_traces(pcb_path: str = PCB_PATH) -> list[TraceSegmentItem]:
+    """List all trace segments and vias on the PCB.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+    items: list[TraceSegmentItem] = []
+    for item in board.traceItems:
+        if isinstance(item, Segment):
+            items.append(
+                TraceSegmentItem(
+                    type="segment",
+                    start_x=item.start.X,
+                    start_y=item.start.Y,
+                    end_x=item.end.X,
+                    end_y=item.end.Y,
+                    width=item.width,
+                    layer=item.layer,
+                    net=item.net,
+                )
+            )
+        elif isinstance(item, Via):
+            items.append(
+                TraceSegmentItem(
+                    type="via",
+                    x=item.position.X,
+                    y=item.position.Y,
+                    size=item.size,
+                    drill=item.drill,
+                    layers=item.layers,
+                    net=item.net,
+                )
+            )
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_pcb_nets(pcb_path: str = PCB_PATH) -> list[NetItem]:
+    """List all named nets on the PCB.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+    items: list[NetItem] = []
+    for net in board.nets:
+        if net.name:  # skip unnamed net 0
+            items.append(NetItem(number=net.number, name=net.name))
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
+    """List all zones (copper and keepout) on the PCB.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+    items: list[ZoneItem] = []
+    for z in board.zones:
+        keepout = None
+        if z.keepoutSettings is not None:
+            ks = z.keepoutSettings
+            keepout = {
+                "tracks": ks.tracks,
+                "vias": ks.vias,
+                "pads": ks.pads,
+                "copperpour": ks.copperpour,
+                "footprints": ks.footprints,
+            }
+        polygon = None
+        if z.polygons:
+            polygon = [{"x": pt.X, "y": pt.Y} for pt in z.polygons[0].coordinates]
+        items.append(
+            ZoneItem(
+                net_name=z.netName,
+                layers=z.layers,
+                priority=z.priority or 0,
+                is_keepout=z.keepoutSettings is not None,
+                keepout=keepout,
+                polygon=polygon,
+            )
+        )
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_pcb_layers(pcb_path: str = PCB_PATH) -> list[LayerItem]:
+    """List all layers defined in the PCB stackup.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+    items: list[LayerItem] = []
+    for layer in board.layers:
+        items.append(LayerItem(ordinal=layer.ordinal, name=layer.name, type=layer.type))
+    return items
+
+
+@mcp.tool(annotations=_READ_ONLY)
+def list_pcb_graphic_items(pcb_path: str = PCB_PATH) -> list[GraphicItem]:
+    """List all graphic items (lines, text, etc.) on the PCB.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file
+    """
+    board = _load_board(pcb_path)
+    items: list[GraphicItem] = []
+    for item in board.graphicItems:
+        if isinstance(item, GrLine):
+            items.append(
+                GraphicItem(
+                    type="line",
+                    start_x=item.start.X,
+                    start_y=item.start.Y,
+                    end_x=item.end.X,
+                    end_y=item.end.Y,
+                    layer=item.layer or "unknown",
+                )
+            )
+        elif isinstance(item, GrText):
+            items.append(
+                GraphicItem(
+                    type="text",
+                    text=item.text,
+                    x=item.position.X,
+                    y=item.position.Y,
+                    layer=item.layer or "unknown",
+                )
+            )
+        else:
+            items.append(
+                GraphicItem(
+                    type=type(item).__name__,
+                    layer=getattr(item, "layer", "unknown"),
+                )
+            )
+    return items
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -305,7 +376,7 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
                     f"layers={pad.layers} net={net_name}"
                 )
             return "\n".join(lines)
-    return f"Footprint {reference} not found."
+    raise ToolError(f"Footprint {reference} not found.")
 
 
 # ---------------------------------------------------------------------------
@@ -406,7 +477,7 @@ def move_footprint(
             if warnings:
                 msg += " " + " ".join(warnings)
             return msg
-    return f"Footprint {reference} not found."
+    raise ToolError(f"Footprint {reference} not found.")
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -416,7 +487,7 @@ def check_placement(
     y: float,
     rotation: float = 0,
     pcb_path: str = PCB_PATH,
-) -> str:
+) -> PlacementCheckResult:
     """Check if placing/moving a footprint to (x, y) would violate constraints.
 
     Args:
@@ -433,7 +504,7 @@ def check_placement(
             fp = f
             break
     if fp is None:
-        return json.dumps({"error": f"Footprint {reference!r} not found."})
+        raise ToolError(f"Footprint {reference!r} not found.")
 
     keepout_violations = _check_footprint_keepout_violations(board, x, y, fp.layer)
     edge_poly = _board_edge_polygon(board)
@@ -443,13 +514,11 @@ def check_placement(
         outside_board_edge = not _point_in_polygon(x, y, edge_poly)
 
     has_violations = bool(keepout_violations) or outside_board_edge
-    return json.dumps(
-        {
-            "status": "violations_found" if has_violations else "ok",
-            "board_edge_checked": board_edge_checked,
-            "keepout_violations": keepout_violations,
-            "outside_board_edge": outside_board_edge,
-        }
+    return PlacementCheckResult(
+        status="violations_found" if has_violations else "ok",
+        board_edge_checked=board_edge_checked,
+        keepout_violations=keepout_violations,
+        outside_board_edge=outside_board_edge,
     )
 
 
@@ -468,7 +537,7 @@ def remove_footprint(reference: str, pcb_path: str = PCB_PATH) -> str:
             target = fp
             break
     if target is None:
-        return f"Footprint {reference} not found."
+        raise ToolError(f"Footprint {reference} not found.")
     board.footprints.remove(target)
     board.to_file()
     return f"Removed {reference}"
@@ -620,7 +689,7 @@ def add_copper_zone(
     thermal_bridge_width: float = 0.5,
     priority: int = 0,
     pcb_path: str = PCB_PATH,
-) -> str:
+) -> ZoneResult:
     """Create an unfilled copper zone. Call fill_zones afterward to compute fills.
 
     Args:
@@ -636,12 +705,12 @@ def add_copper_zone(
         pcb_path: Path to .kicad_pcb file
     """
     if len(corners) < 3:
-        return json.dumps({"error": "At least 3 corners required for a zone polygon."})
+        raise ToolError("At least 3 corners required for a zone polygon.")
     board = _load_board(pcb_path)
     try:
         net_num, _ = _find_net(board, net_name)
     except ValueError as e:
-        return json.dumps({"error": str(e)})
+        raise ToolError(str(e)) from e
     zone = Zone()
     zone.net = net_num
     zone.netName = net_name
@@ -661,9 +730,7 @@ def add_copper_zone(
     zone.polygons = [poly]
     board.zones.append(zone)
     board.to_file()
-    return json.dumps(
-        {"net": net_name, "layer": layer, "corners": len(corners), "clearance_mm": clearance}
-    )
+    return ZoneResult(net=net_name, layer=layer, corners=len(corners), clearance_mm=clearance)
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -676,7 +743,7 @@ def add_keepout_zone(
     no_copper_pour: bool = True,
     no_footprints: bool = True,
     pcb_path: str = PCB_PATH,
-) -> str:
+) -> KeepoutZoneResult:
     """Create a keep-out zone that restricts placement of specified items.
 
     Args:
@@ -690,7 +757,7 @@ def add_keepout_zone(
         pcb_path: Path to .kicad_pcb file
     """
     if len(corners) < 3:
-        return json.dumps({"error": "At least 3 corners required for a zone polygon."})
+        raise ToolError("At least 3 corners required for a zone polygon.")
     board = _load_board(pcb_path)
     zone = Zone()
     zone.net = 0
@@ -710,23 +777,21 @@ def add_keepout_zone(
     zone.polygons = [poly]
     board.zones.append(zone)
     board.to_file()
-    return json.dumps(
-        {
-            "corners": len(corners),
-            "layers": zone.layers,
-            "restrictions": {
-                "tracks": "not_allowed" if no_tracks else "allowed",
-                "vias": "not_allowed" if no_vias else "allowed",
-                "pads": "not_allowed" if no_pads else "allowed",
-                "copperpour": "not_allowed" if no_copper_pour else "allowed",
-                "footprints": "not_allowed" if no_footprints else "allowed",
-            },
-        }
+    return KeepoutZoneResult(
+        corners=len(corners),
+        layers=zone.layers,
+        restrictions={
+            "tracks": "not_allowed" if no_tracks else "allowed",
+            "vias": "not_allowed" if no_vias else "allowed",
+            "pads": "not_allowed" if no_pads else "allowed",
+            "copperpour": "not_allowed" if no_copper_pour else "allowed",
+            "footprints": "not_allowed" if no_footprints else "allowed",
+        },
     )
 
 
 @mcp.tool(annotations=_ADDITIVE)
-def fill_zones(pcb_path: str = PCB_PATH) -> str:
+def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
     """Fill all copper zones on the board using pcbnew's zone filler.
 
     Requires KiCad's pcbnew Python bindings to be installed.
@@ -737,7 +802,7 @@ def fill_zones(pcb_path: str = PCB_PATH) -> str:
     pcb_path = str(Path(pcb_path).resolve())
     python, env = _find_pcbnew_python()
     if not python:
-        return json.dumps({"error": "pcbnew Python bindings not found. Ensure KiCad is installed."})
+        raise ToolError("pcbnew Python bindings not found. Ensure KiCad is installed.")
     script = (
         "import pcbnew; "
         f"b = pcbnew.LoadBoard({pcb_path!r}); "
@@ -751,12 +816,12 @@ def fill_zones(pcb_path: str = PCB_PATH) -> str:
         [python, "-c", script], capture_output=True, text=True, timeout=120, env=env
     )
     if result.returncode != 0:
-        return json.dumps({"error": f"Zone fill failed: {result.stderr.strip()}"})
+        raise ToolError(f"Zone fill failed: {result.stderr.strip()}")
     try:
         zone_count = int(result.stdout.strip())
     except ValueError:
         zone_count = 0
-    return json.dumps({"zones_filled": zone_count, "status": "ok"})
+    return FillZonesResult(zones_filled=zone_count, status="ok")
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -769,7 +834,7 @@ def set_trace_width(
     x_max: float | None = None,
     y_max: float | None = None,
     pcb_path: str = PCB_PATH,
-) -> str:
+) -> TraceWidthResult:
     """Change the width of existing traces matching the given filters.
     At least one filter (net_name, layer, or bounding box) is required.
 
@@ -787,11 +852,11 @@ def set_trace_width(
     try:
         segments = _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max)
     except ValueError as e:
-        return json.dumps({"error": str(e)})
+        raise ToolError(str(e)) from e
     for seg in segments:
         seg.width = width
     board.to_file()
-    return json.dumps({"traces_modified": len(segments), "net": net_name, "new_width_mm": width})
+    return TraceWidthResult(traces_modified=len(segments), net=net_name, new_width_mm=width)
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
@@ -803,7 +868,7 @@ def remove_traces(
     x_max: float | None = None,
     y_max: float | None = None,
     pcb_path: str = PCB_PATH,
-) -> str:
+) -> RemoveTracesResult:
     """Remove trace segments matching the given filters. Does not remove vias.
     At least one filter (net_name, layer, or bounding box) is required.
 
@@ -820,11 +885,11 @@ def remove_traces(
     try:
         segments = _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max)
     except ValueError as e:
-        return json.dumps({"error": str(e)})
+        raise ToolError(str(e)) from e
     for seg in segments:
         board.traceItems.remove(seg)
     board.to_file()
-    return json.dumps({"traces_removed": len(segments), "net": net_name, "layer": layer})
+    return RemoveTracesResult(traces_removed=len(segments), net=net_name, layer=layer)
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -838,7 +903,7 @@ def add_thermal_vias(
     via_drill: float = 0.3,
     net_name: str | None = None,
     pcb_path: str = PCB_PATH,
-) -> str:
+) -> ThermalViasResult:
     """Add a grid of thermal vias under a footprint pad.
 
     Args:
@@ -861,7 +926,7 @@ def add_thermal_vias(
             fp = f
             break
     if fp is None:
-        return json.dumps({"error": f"Footprint {reference!r} not found."})
+        raise ToolError(f"Footprint {reference!r} not found.")
 
     # Find pad
     pad = None
@@ -871,7 +936,7 @@ def add_thermal_vias(
                 pad = p
                 break
         if pad is None:
-            return json.dumps({"error": f"Pad {pad_number!r} not found on {reference}."})
+            raise ToolError(f"Pad {pad_number!r} not found on {reference}.")
     else:
         # Auto-detect: largest SMD pad by area
         best_area = 0
@@ -882,9 +947,7 @@ def add_thermal_vias(
                     best_area = area
                     pad = p
         if pad is None:
-            return json.dumps(
-                {"error": f"No SMD pad found on {reference}. Specify pad_number explicitly."}
-            )
+            raise ToolError(f"No SMD pad found on {reference}. Specify pad_number explicitly.")
 
     # Compute pad center in board coordinates with rotation
     fp_x = fp.position.X
@@ -899,7 +962,7 @@ def add_thermal_vias(
         try:
             via_net, _ = _find_net(board, net_name)
         except ValueError as e:
-            return json.dumps({"error": str(e)})
+            raise ToolError(str(e)) from e
     elif pad.net is not None:
         via_net = pad.net.number
 
@@ -920,14 +983,12 @@ def add_thermal_vias(
             vias_added += 1
 
     board.to_file()
-    return json.dumps(
-        {
-            "vias_added": vias_added,
-            "reference": reference,
-            "pad": pad.number,
-            "net": net_name or (pad.net.name if pad.net else ""),
-            "center": {"x": round(pad_x, 4), "y": round(pad_y, 4)},
-        }
+    return ThermalViasResult(
+        vias_added=vias_added,
+        reference=reference,
+        pad=pad.number,
+        net=net_name or (pad.net.name if pad.net else ""),
+        center={"x": round(pad_x, 4), "y": round(pad_y, 4)},
     )
 
 
@@ -940,7 +1001,7 @@ def set_net_class(
     via_size: float | None = None,
     via_drill: float | None = None,
     pcb_path: str = PCB_PATH,
-) -> str:
+) -> NetClassResult:
     """Create or update a net class with design rules and assign nets.
 
     Edits the KiCad project file (.kicad_pro) alongside the board to
@@ -959,18 +1020,16 @@ def set_net_class(
     pro_file = pcb_file.with_suffix(".kicad_pro")
 
     if not pro_file.exists():
-        return json.dumps(
-            {
-                "error": f"Project file not found: {pro_file}. "
-                "A .kicad_pro file must exist alongside the .kicad_pcb file."
-            }
+        raise ToolError(
+            f"Project file not found: {pro_file}. "
+            "A .kicad_pro file must exist alongside the .kicad_pcb file."
         )
 
     # Read existing project JSON
     try:
         pro_data = json.loads(pro_file.read_text())
     except (json.JSONDecodeError, OSError) as exc:
-        return json.dumps({"error": f"Failed to read project file: {exc}"})
+        raise ToolError(f"Failed to read project file: {exc}") from exc
 
     # Ensure net_settings structure exists
     if "net_settings" not in pro_data:
@@ -1012,20 +1071,18 @@ def set_net_class(
     try:
         pro_file.write_text(json.dumps(pro_data, indent=2) + "\n")
     except OSError as exc:
-        return json.dumps({"error": f"Failed to write project file: {exc}"})
+        raise ToolError(f"Failed to write project file: {exc}") from exc
 
-    return json.dumps(
-        {
-            "net_class": name,
-            "nets_assigned": len(nets),
-            "track_width_mm": track_width,
-            "clearance_mm": clearance,
-        }
+    return NetClassResult(
+        net_class=name,
+        nets_assigned=len(nets),
+        track_width_mm=track_width,
+        clearance_mm=clearance,
     )
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
-def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> str:
+def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
     """Detect and remove trace segments with unconnected endpoints.
 
     Iteratively removes dangling segments until no more are found.
@@ -1105,7 +1162,7 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> str:
     if total_removed > 0:
         board.to_file()
 
-    return json.dumps({"tracks_removed": total_removed, "iterations": iterations})
+    return DanglingTracksResult(tracks_removed=total_removed, iterations=iterations)
 
 
 # ---------------------------------------------------------------------------
@@ -1114,10 +1171,10 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> str:
 
 
 @mcp.tool(annotations=_EXPORT)
-def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
+def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> DrcResult:
     """Run Design Rules Check (DRC) on a PCB.
 
-    Returns JSON report with violations.
+    Returns structured report with violations.
 
     Args:
         pcb_path: Path to .kicad_pcb file
@@ -1133,19 +1190,16 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
         with open(out_path) as f:
             report = json.load(f)
     except FileNotFoundError:
-        return json.dumps({"error": "DRC failed to produce output file"}, indent=2)
+        raise ToolError("DRC failed to produce output file")
     violations = report.get("violations", [])
     unconnected = report.get("unconnected_items", [])
-    return json.dumps(
-        {
-            "source": report.get("source", ""),
-            "kicad_version": report.get("kicad_version", ""),
-            "violation_count": len(violations),
-            "violations": violations,
-            "unconnected_count": len(unconnected),
-            "unconnected_items": unconnected,
-        },
-        indent=2,
+    return DrcResult(
+        source=report.get("source", ""),
+        kicad_version=report.get("kicad_version", ""),
+        violation_count=len(violations),
+        violations=violations,
+        unconnected_count=len(unconnected),
+        unconnected_items=unconnected,
     )
 
 
@@ -1165,7 +1219,7 @@ def export_pcb(
     exclude_value: bool = False,
     use_contours: bool = False,
     include_border_title: bool = False,
-) -> str:
+) -> PcbExportResult:
     """Export PCB to PDF, SVG, or DXF format.
 
     Args:
@@ -1181,11 +1235,11 @@ def export_pcb(
     """
     fmt = format.lower()
     if fmt not in ("pdf", "svg", "dxf"):
-        return json.dumps({"error": f"Unknown format: {format}. Use: pdf, svg, dxf"})
+        raise ToolError(f"Unknown format: {format}. Use: pdf, svg, dxf")
 
     if fmt == "dxf":
         if not layers:
-            return json.dumps({"error": "layers parameter is required for DXF export"})
+            raise ToolError("layers parameter is required for DXF export")
         out_dir = output_dir or str(Path(pcb_path).parent)
         out_path = str(Path(out_dir) / (Path(pcb_path).stem + ".dxf"))
         args = ["pcb", "export", "dxf", pcb_path, "-o", out_path, "-l", ",".join(layers)]
@@ -1199,40 +1253,38 @@ def export_pcb(
             args.append("--use-contours")
         if include_border_title:
             args.append("--include-border-title")
-        try:
-            result = _run_cli(args, check=False)
-            if result.returncode != 0:
-                return json.dumps({"error": result.stderr.strip()})
-            return json.dumps({**_file_meta(out_path), "format": "dxf", "layers": layers})
-        except (RuntimeError, FileNotFoundError) as e:
-            return json.dumps({"error": str(e), "format": "dxf"}, indent=2)
+        result = _run_cli(args, check=False)
+        if result.returncode != 0:
+            raise ToolError(result.stderr.strip())
+        meta = _file_meta(out_path)
+        return PcbExportResult(
+            path=meta["path"], size_bytes=meta["size_bytes"], format="dxf", layers=layers
+        )
 
     # PDF / SVG path
-    try:
-        out_dir = output_dir or str(Path(pcb_path).parent)
-        ext = ".pdf" if fmt == "pdf" else ".svg"
-        out_path = str(Path(out_dir) / (Path(pcb_path).stem + ext))
-        if fmt == "pdf":
-            layer_list = layers or ["F.Cu", "B.Cu"]
-        else:
-            layer_list = layers or ["F.Cu"]
-        _run_cli(
-            [
-                "pcb",
-                "export",
-                fmt,
-                "--layers",
-                ",".join(layer_list),
-                "--output",
-                out_path,
-                pcb_path,
-            ]
-        )
-        meta = _file_meta(out_path)
-        meta.update({"format": fmt, "layers": layer_list})
-        return json.dumps(meta, indent=2)
-    except (RuntimeError, FileNotFoundError) as e:
-        return json.dumps({"error": str(e), "format": fmt}, indent=2)
+    out_dir = output_dir or str(Path(pcb_path).parent)
+    ext = ".pdf" if fmt == "pdf" else ".svg"
+    out_path = str(Path(out_dir) / (Path(pcb_path).stem + ext))
+    if fmt == "pdf":
+        layer_list = layers or ["F.Cu", "B.Cu"]
+    else:
+        layer_list = layers or ["F.Cu"]
+    _run_cli(
+        [
+            "pcb",
+            "export",
+            fmt,
+            "--layers",
+            ",".join(layer_list),
+            "--output",
+            out_path,
+            pcb_path,
+        ]
+    )
+    meta = _file_meta(out_path)
+    return PcbExportResult(
+        path=meta["path"], size_bytes=meta["size_bytes"], format=fmt, layers=layer_list
+    )
 
 
 @mcp.tool(annotations=_EXPORT)
@@ -1241,7 +1293,7 @@ def export_gerbers(
     output_dir: str = OUTPUT_DIR,
     include_drill: bool = True,
     layers: list[str] | None = None,
-) -> str:
+) -> SingleGerberExportResult | GerberExportResult:
     """Export Gerber files for manufacturing.
 
     When layers contains exactly one layer, exports a single Gerber file.
@@ -1255,41 +1307,37 @@ def export_gerbers(
     """
     # Single-layer mode: one file, like the old export_gerber
     if layers and len(layers) == 1:
-        try:
-            layer = layers[0]
-            out_dir = output_dir or str(Path(pcb_path).parent)
-            out_path = str(Path(out_dir) / f"{Path(pcb_path).stem}-{layer.replace('.', '_')}.gbr")
-            _run_cli(["pcb", "export", "gerber", "--layers", layer, "--output", out_path, pcb_path])
-            meta = _file_meta(out_path)
-            meta.update({"format": "gerber", "layer": layer})
-            return json.dumps(meta, indent=2)
-        except (RuntimeError, FileNotFoundError) as e:
-            return json.dumps({"error": str(e), "format": "gerber", "layer": layer}, indent=2)
+        layer = layers[0]
+        out_dir = output_dir or str(Path(pcb_path).parent)
+        out_path = str(Path(out_dir) / f"{Path(pcb_path).stem}-{layer.replace('.', '_')}.gbr")
+        _run_cli(["pcb", "export", "gerber", "--layers", layer, "--output", out_path, pcb_path])
+        meta = _file_meta(out_path)
+        return SingleGerberExportResult(
+            path=meta["path"], size_bytes=meta["size_bytes"], format="gerber", layer=layer
+        )
 
-    try:
-        # Multi-layer mode: directory of files
-        out = output_dir or str(Path(pcb_path).parent / "gerbers")
-        os.makedirs(out, exist_ok=True)
-        cmd = ["pcb", "export", "gerbers"]
-        if layers:
-            cmd += ["--layers", ",".join(layers)]
-        cmd += ["--output", out, pcb_path]
-        _run_cli(cmd)
-        files = sorted(Path(out).glob("*"))
-        result = {
-            "path": out,
-            "format": "gerber",
-            "files": [f.name for f in files],
-            "count": len(files),
-        }
-        if include_drill:
-            _run_cli(["pcb", "export", "drill", "--output", out, pcb_path])
-            drill_files = sorted(Path(out).glob("*.drl")) + sorted(Path(out).glob("*.DRL"))
-            result["drill_files"] = [f.name for f in drill_files]
-            result["drill_count"] = len(drill_files)
-        return json.dumps(result, indent=2)
-    except (RuntimeError, FileNotFoundError) as e:
-        return json.dumps({"error": str(e)}, indent=2)
+    # Multi-layer mode: directory of files
+    out = output_dir or str(Path(pcb_path).parent / "gerbers")
+    os.makedirs(out, exist_ok=True)
+    cmd = ["pcb", "export", "gerbers"]
+    if layers:
+        cmd += ["--layers", ",".join(layers)]
+    cmd += ["--output", out, pcb_path]
+    _run_cli(cmd)
+    files = sorted(Path(out).glob("*"))
+    drill_file_names: list[str] = []
+    if include_drill:
+        _run_cli(["pcb", "export", "drill", "--output", out, pcb_path])
+        drill_files = sorted(Path(out).glob("*.drl")) + sorted(Path(out).glob("*.DRL"))
+        drill_file_names = [f.name for f in drill_files]
+    return GerberExportResult(
+        path=out,
+        format="gerber",
+        files=[f.name for f in files],
+        count=len(files),
+        drill_files=drill_file_names,
+        drill_count=len(drill_file_names),
+    )
 
 
 @mcp.tool(annotations=_EXPORT)
@@ -1301,7 +1349,7 @@ def export_3d(
     height: int = 900,
     side: str = "top",
     quality: str = "basic",
-) -> str:
+) -> RenderExportResult | ExportResult:
     """Export PCB 3D model or render 3D view to image.
 
     Args:
@@ -1315,66 +1363,68 @@ def export_3d(
     """
     fmt = format.lower()
     if fmt not in ("step", "stl", "glb", "render"):
-        return json.dumps({"error": f"Unknown format: {format}. Use: step, stl, glb, render"})
+        raise ToolError(f"Unknown format: {format}. Use: step, stl, glb, render")
 
     if fmt == "render":
-        try:
-            out_dir = output_dir or str(Path(pcb_path).parent)
-            out_path = str(Path(out_dir) / (Path(pcb_path).stem + f"-3d-{side}.png"))
-            _run_cli(
-                [
-                    "pcb",
-                    "render",
-                    "--width",
-                    str(width),
-                    "--height",
-                    str(height),
-                    "--side",
-                    side,
-                    "--quality",
-                    quality,
-                    "--output",
-                    out_path,
-                    pcb_path,
-                ]
-            )
-            meta = _file_meta(out_path)
-            meta.update({"format": "png", "width": width, "height": height, "side": side})
-            return json.dumps(meta, indent=2)
-        except (RuntimeError, FileNotFoundError) as e:
-            return json.dumps({"error": str(e), "format": "png"}, indent=2)
+        out_dir = output_dir or str(Path(pcb_path).parent)
+        out_path = str(Path(out_dir) / (Path(pcb_path).stem + f"-3d-{side}.png"))
+        _run_cli(
+            [
+                "pcb",
+                "render",
+                "--width",
+                str(width),
+                "--height",
+                str(height),
+                "--side",
+                side,
+                "--quality",
+                quality,
+                "--output",
+                out_path,
+                pcb_path,
+            ]
+        )
+        meta = _file_meta(out_path)
+        return RenderExportResult(
+            path=meta["path"],
+            size_bytes=meta["size_bytes"],
+            format="png",
+            width=width,
+            height=height,
+            side=side,
+        )
 
     # STEP / STL / GLB path
-    try:
-        out_dir = output_dir or str(Path(pcb_path).parent)
-        out_path = str(Path(out_dir) / (Path(pcb_path).stem + f".{fmt}"))
-        _run_cli(["pcb", "export", fmt, "--output", out_path, pcb_path])
-        meta = _file_meta(out_path)
-        meta["format"] = fmt
-        return json.dumps(meta, indent=2)
-    except (RuntimeError, FileNotFoundError) as e:
-        return json.dumps({"error": str(e), "format": fmt}, indent=2)
+    out_dir = output_dir or str(Path(pcb_path).parent)
+    out_path = str(Path(out_dir) / (Path(pcb_path).stem + f".{fmt}"))
+    _run_cli(["pcb", "export", fmt, "--output", out_path, pcb_path])
+    meta = _file_meta(out_path)
+    return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format=fmt)
 
 
 @mcp.tool(annotations=_EXPORT)
-def export_positions(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> str:
+def export_positions(
+    pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR
+) -> PositionExportResult:
     """Export component position file (pick and place).
 
     Args:
         pcb_path: Path to .kicad_pcb file
         output_dir: Output directory
     """
-    try:
-        out_dir = output_dir or str(Path(pcb_path).parent)
-        out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-pos.csv"))
-        _run_cli(["pcb", "export", "pos", "--format", "csv", "--output", out_path, pcb_path])
-        meta = _file_meta(out_path)
-        meta["format"] = "csv"
-        with open(out_path) as f:
-            meta["component_count"] = max(0, len(f.readlines()) - 1)
-        return json.dumps(meta, indent=2)
-    except (RuntimeError, FileNotFoundError) as e:
-        return json.dumps({"error": str(e)}, indent=2)
+    out_dir = output_dir or str(Path(pcb_path).parent)
+    out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-pos.csv"))
+    _run_cli(["pcb", "export", "pos", "--format", "csv", "--output", out_path, pcb_path])
+    meta = _file_meta(out_path)
+    with open(out_path) as f:
+        component_count = max(0, len(f.readlines()) - 1)
+    return PositionExportResult(
+        path=meta["path"],
+        size_bytes=meta["size_bytes"],
+        format="csv",
+        component_count=component_count,
+    )
 
 
 @mcp.tool(annotations=_EXPORT)
@@ -1385,7 +1435,7 @@ def export_ipc2581(
     compress: bool = False,
     version: str = "C",
     units: str = "mm",
-) -> str:
+) -> ExportResult:
     """Export PCB in IPC-2581 format for manufacturing data exchange.
 
     Args:
@@ -1408,8 +1458,9 @@ def export_ipc2581(
         args += ["--units", units]
     result = _run_cli(args, check=False)
     if result.returncode != 0:
-        return json.dumps({"error": result.stderr.strip()})
-    return json.dumps(_file_meta(out))
+        raise ToolError(result.stderr.strip())
+    meta = _file_meta(out)
+    return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format="ipc2581")
 
 
 _FP_TEXT_DISPLACEMENT_THRESHOLD_MM = 5.0
@@ -1461,7 +1512,7 @@ def autoroute_pcb(
     num_threads: int = 4,
     timeout: int = 600,
     output_dir: str = OUTPUT_DIR,
-) -> str:
+) -> AutorouteResult:
     """Autoroute PCB traces using the Freerouting autorouter.
 
     Exports the board to Specctra DSN format, runs Freerouting for automated
@@ -1484,12 +1535,12 @@ def autoroute_pcb(
     # Pre-flight: check Java
     java_err = _check_java()
     if java_err:
-        return json.dumps({"error": java_err})
+        raise ToolError(java_err)
 
     # Pre-flight: ensure Freerouting JAR
     jar_path, jar_err = _ensure_jar()
     if jar_err or not jar_path:
-        return json.dumps({"error": jar_err or "Freerouting JAR not found."})
+        raise ToolError(jar_err or "Freerouting JAR not found.")
 
     # Count existing traces/vias for before/after comparison
     board = _load_board(pcb_path)
@@ -1507,7 +1558,7 @@ def autoroute_pcb(
         # Step 1: Export DSN
         dsn_err = _export_dsn(pcb_path, dsn_path)
         if dsn_err:
-            return json.dumps({"error": dsn_err})
+            raise ToolError(dsn_err)
 
         # Step 2: Run Freerouting
         route_err = _run_freerouting(
@@ -1519,15 +1570,15 @@ def autoroute_pcb(
             timeout=timeout,
         )
         if route_err:
-            return json.dumps({"error": route_err})
+            raise ToolError(route_err)
 
         if not Path(ses_path).exists():
-            return json.dumps({"error": "Freerouting did not produce a session file."})
+            raise ToolError("Freerouting did not produce a session file.")
 
         # Step 3: Import SES into new PCB
         ses_err = _import_ses(pcb_path, ses_path, routed_path)
         if ses_err:
-            return json.dumps({"error": ses_err})
+            raise ToolError(ses_err)
 
     # Step 4: Fix displaced footprint text fields
     # The Freerouting DSN->SES round-trip often scrambles FpText positions
@@ -1541,12 +1592,8 @@ def autoroute_pcb(
     traces_after = sum(1 for t in routed_board.traceItems if isinstance(t, Segment))
     vias_after = sum(1 for t in routed_board.traceItems if isinstance(t, Via))
 
-    result = {
-        "routed_path": str(Path(routed_path).resolve()),
-        "traces_added": traces_after - traces_before,
-        "vias_added": vias_after - vias_before,
-        "text_fields_fixed": text_fields_fixed,
-    }
+    drc_violations: int | None = None
+    drc_unconnected: int | None = None
 
     # Optional DRC
     try:
@@ -1557,16 +1604,23 @@ def autoroute_pcb(
         )
         with open(drc_out) as f:
             drc = json.load(f)
-        result["drc_violations"] = len(drc.get("violations", []))
-        result["drc_unconnected"] = len(drc.get("unconnected_items", []))
+        drc_violations = len(drc.get("violations", []))
+        drc_unconnected = len(drc.get("unconnected_items", []))
     except Exception:
         pass  # DRC is optional — kicad-cli may not be available
 
-    return json.dumps(result, indent=2)
+    return AutorouteResult(
+        routed_path=str(Path(routed_path).resolve()),
+        traces_added=traces_after - traces_before,
+        vias_added=vias_after - vias_before,
+        text_fields_fixed=text_fields_fixed,
+        drc_violations=drc_violations,
+        drc_unconnected=drc_unconnected,
+    )
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> str:
+def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintBoundsResult:
     """Get the board-coordinate bounding box of a placed footprint.
 
     Args:
@@ -1580,7 +1634,7 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> str:
             fp = f
             break
     if fp is None:
-        return json.dumps({"error": f"Footprint {reference!r} not found."})
+        raise ToolError(f"Footprint {reference!r} not found.")
 
     bbox = _courtyard_bbox(fp)
     courtyard = None
@@ -1612,19 +1666,17 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> str:
             "height": round(max_y - min_y, 4),
         }
 
-    return json.dumps(
-        {
-            "reference": reference,
-            "position": {"x": fp.position.X, "y": fp.position.Y},
-            "rotation": fp.position.angle or 0,
-            "courtyard": courtyard,
-            "layer": fp.layer,
-        }
+    return FootprintBoundsResult(
+        reference=reference,
+        position={"x": fp.position.X, "y": fp.position.Y},
+        rotation=fp.position.angle or 0,
+        courtyard=courtyard,
+        layer=fp.layer,
     )
 
 
 @mcp.tool(annotations=_READ_ONLY)
-def validate_board(pcb_path: str = PCB_PATH) -> str:
+def validate_board(pcb_path: str = PCB_PATH) -> BoardValidationResult:
     """Validate all footprint placements against keep-out zones and board edge.
 
     Args:
@@ -1662,13 +1714,11 @@ def validate_board(pcb_path: str = PCB_PATH) -> str:
 
     total = len(board.footprints)
     status = f"{len(violations)} violations found" if violations else "ok"
-    return json.dumps(
-        {
-            "total_footprints": total,
-            "violations": violations,
-            "board_edge_checked": board_edge_checked,
-            "status": status,
-        }
+    return BoardValidationResult(
+        total_footprints=total,
+        violations=violations,
+        board_edge_checked=board_edge_checked,
+        status=status,
     )
 
 

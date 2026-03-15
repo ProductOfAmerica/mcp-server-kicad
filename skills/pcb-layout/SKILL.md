@@ -49,7 +49,12 @@ refinement. Keep status updates to one line each.
 These are the kicad MCP tools you should be using during PCB layout:
 
 **Reading / inspection:**
-- `list_pcb_items` — list footprints, traces, vias, zones, etc.
+- `list_pcb_footprints` — list footprints on the board
+- `list_pcb_traces` — list traces on the board
+- `list_pcb_nets` — list nets on the board
+- `list_pcb_zones` — list zones on the board
+- `list_pcb_layers` — list layers on the board
+- `list_pcb_graphic_items` — list graphic items on the board
 - `get_board_info` — get board outline, layer count, design rules
 - `get_footprint_pads` — get pad positions and net assignments
 - `get_footprint_bounds` — get board-coordinate bounding box of a placed footprint

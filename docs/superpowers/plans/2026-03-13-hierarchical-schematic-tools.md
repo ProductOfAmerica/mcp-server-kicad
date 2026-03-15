@@ -4,7 +4,7 @@
 
 **Goal:** Add 19 new tools and fix 3 existing tools to enable autonomous agent workflows on multi-sheet KiCad schematics.
 
-**Architecture:** Bug fixes and `list_schematic_items` expansion go in `schematic.py` (single-sheet operations). Hierarchy traversal, validation, annotation, and sheet management go in `project.py` (cross-sheet operations). Shared helpers (`_resolve_root`, new kiutils re-exports) go in `_shared.py`.
+**Architecture:** Bug fixes and per-type schematic list tools (e.g. `list_schematic_components`, `list_schematic_labels`, etc.) go in `schematic.py` (single-sheet operations). Hierarchy traversal, validation, annotation, and sheet management go in `project.py` (cross-sheet operations). Shared helpers (`_resolve_root`, new kiutils re-exports) go in `_shared.py`.
 
 **Tech Stack:** Python 3.10+, kiutils, FastMCP, pytest, kicad-cli (optional for export/ERC tools)
 
@@ -509,7 +509,7 @@ git commit -m "feat: add project_path param to run_erc and list_unconnected_pins
 
 ---
 
-### Task 6: Expand `list_schematic_items` with 5 new item types
+### Task 6: Split `list_schematic_items` into per-type tools
 
 **Files:**
 - Modify: `mcp_server_kicad/schematic.py`
@@ -538,8 +538,8 @@ class TestListSchematicItemsExpanded:
         sch.filePath = str(path)
         sch.to_file()
 
-        result = json.loads(schematic.list_schematic_items(
-            item_type="hierarchical_labels", schematic_path=str(path)
+        result = json.loads(schematic.list_schematic_hierarchical_labels(
+            schematic_path=str(path)
         ))
         assert len(result) == 1
         assert result[0]["text"] == "VIN"
@@ -560,8 +560,8 @@ class TestListSchematicItemsExpanded:
             pins=[{"name": "VIN", "direction": "input"}],
         )
 
-        result = json.loads(schematic.list_schematic_items(
-            item_type="sheets", schematic_path=str(parent)
+        result = json.loads(schematic.list_schematic_sheets(
+            schematic_path=str(parent)
         ))
         assert len(result) == 1
         assert result[0]["sheet_name"] == "Power"
@@ -586,8 +586,8 @@ class TestListSchematicItemsExpanded:
         sch.filePath = str(path)
         sch.to_file()
 
-        result = json.loads(schematic.list_schematic_items(
-            item_type="junctions", schematic_path=str(path)
+        result = json.loads(schematic.list_schematic_junctions(
+            schematic_path=str(path)
         ))
         assert len(result) == 1
         assert result[0]["x"] == 50
@@ -608,8 +608,8 @@ class TestListSchematicItemsExpanded:
         sch.filePath = str(path)
         sch.to_file()
 
-        result = json.loads(schematic.list_schematic_items(
-            item_type="no_connects", schematic_path=str(path)
+        result = json.loads(schematic.list_schematic_no_connects(
+            schematic_path=str(path)
         ))
         assert len(result) == 1
         assert result[0]["x"] == 75
@@ -631,8 +631,8 @@ class TestListSchematicItemsExpanded:
         sch.filePath = str(path)
         sch.to_file()
 
-        result = json.loads(schematic.list_schematic_items(
-            item_type="bus_entries", schematic_path=str(path)
+        result = json.loads(schematic.list_schematic_bus_entries(
+            schematic_path=str(path)
         ))
         assert len(result) == 1
         assert result[0]["x"] == 40
@@ -661,8 +661,8 @@ class TestListSchematicItemsExpanded:
         sch.filePath = str(path)
         sch.to_file()
 
-        result = schematic.list_schematic_items(
-            item_type="summary", schematic_path=str(path)
+        result = schematic.get_schematic_summary(
+            schematic_path=str(path)
         )
         assert "Hierarchical labels: 1" in result
         assert "Junctions: 1" in result
@@ -675,7 +675,7 @@ Expected: FAIL
 
 - [ ] **Step 3: Add all 5 item type handlers**
 
-In `mcp_server_kicad/schematic.py`, function `list_schematic_items`, add new `elif` blocks before the `else` clause:
+In `mcp_server_kicad/schematic.py`, add per-type tool functions (split from the former `list_schematic_items`):
 
 ```python
     elif item_type == "hierarchical_labels":
@@ -776,7 +776,7 @@ Expected: All tests pass
 
 ```bash
 git add mcp_server_kicad/schematic.py tests/test_read_tools.py
-git commit -m "feat: add hierarchical_labels, sheets, junctions, no_connects, bus_entries to list_schematic_items"
+git commit -m "feat: split list_schematic_items into per-type tools"
 ```
 
 ---

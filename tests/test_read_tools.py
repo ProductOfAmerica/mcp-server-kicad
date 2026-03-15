@@ -1,13 +1,14 @@
 """Tests for the read-only tools in schematic.py.
 
-Covers: list_schematic_items, get_symbol_pins, get_pin_positions.
+Covers: list_schematic_components, list_schematic_labels, list_schematic_wires,
+list_schematic_global_labels, get_schematic_summary, get_symbol_pins, get_pin_positions.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
+import pytest
 from conftest import (
     _default_effects,
     _default_stroke,
@@ -18,8 +19,13 @@ from conftest import (
 )
 from kiutils.items.common import Effects, Font, Position, Property
 from kiutils.items.schitems import Connection, LocalLabel, SchematicSymbol
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import schematic
+from mcp_server_kicad.models import (
+    NetConnectionsResult,
+    SchematicSummary,
+)
 
 # ---------------------------------------------------------------------------
 # Helper: build a schematic with R1 at a given rotation/mirror
@@ -83,45 +89,41 @@ def _make_rotated_sch(tmp_path: Path, rotation: float = 0, mirror: str = "") -> 
 
 
 # ---------------------------------------------------------------------------
-# Tests: list_schematic_items (consolidated)
+# Tests: list_schematic_* (split tools, consolidated)
 # ---------------------------------------------------------------------------
 
 
 class TestListSchematicItems:
     def test_list_components(self, scratch_sch):
-        result = json.loads(schematic.list_schematic_items("components", str(scratch_sch)))
+        result = schematic.list_schematic_components(str(scratch_sch))
         assert isinstance(result, list)
 
     def test_list_components_has_data(self, scratch_sch):
-        result = json.loads(schematic.list_schematic_items("components", str(scratch_sch)))
+        result = schematic.list_schematic_components(str(scratch_sch))
         assert len(result) > 0
 
     def test_list_labels(self, scratch_sch):
-        result = json.loads(schematic.list_schematic_items("labels", str(scratch_sch)))
+        result = schematic.list_schematic_labels(str(scratch_sch))
         assert isinstance(result, list)
 
     def test_list_wires(self, scratch_sch):
-        result = json.loads(schematic.list_schematic_items("wires", str(scratch_sch)))
+        result = schematic.list_schematic_wires(str(scratch_sch))
         assert isinstance(result, list)
 
     def test_list_global_labels(self, scratch_sch):
-        result = json.loads(schematic.list_schematic_items("global_labels", str(scratch_sch)))
+        result = schematic.list_schematic_global_labels(str(scratch_sch))
         assert isinstance(result, list)
 
-    def test_invalid_item_type(self, scratch_sch):
-        result = json.loads(schematic.list_schematic_items("invalid", str(scratch_sch)))
-        assert "error" in result
-
     def test_empty_components(self, empty_sch):
-        result = json.loads(schematic.list_schematic_items("components", str(empty_sch)))
+        result = schematic.list_schematic_components(str(empty_sch))
         assert result == []
 
     def test_empty_labels(self, empty_sch):
-        result = json.loads(schematic.list_schematic_items("labels", str(empty_sch)))
+        result = schematic.list_schematic_labels(str(empty_sch))
         assert result == []
 
     def test_empty_wires(self, empty_sch):
-        result = json.loads(schematic.list_schematic_items("wires", str(empty_sch)))
+        result = schematic.list_schematic_wires(str(empty_sch))
         assert result == []
 
 
@@ -139,8 +141,8 @@ class TestGetSymbolPins:
         assert "passive" in result
 
     def test_unknown_symbol(self, scratch_sch: Path) -> None:
-        result = schematic.get_symbol_pins("NonExistent", str(scratch_sch))
-        assert "not found" in result
+        with pytest.raises(ToolError, match="not found"):
+            schematic.get_symbol_pins("NonExistent", str(scratch_sch))
 
 
 # ---------------------------------------------------------------------------
@@ -228,31 +230,33 @@ class TestGetPinPositions:
         assert "103.81" in pin2_line
 
     def test_unknown_reference(self, scratch_sch: Path) -> None:
-        result = schematic.get_pin_positions("X99", str(scratch_sch))
-        assert "not found" in result
+        with pytest.raises(ToolError, match="not found"):
+            schematic.get_pin_positions("X99", str(scratch_sch))
 
 
 # ---------------------------------------------------------------------------
-# Tests: list_schematic_items(item_type="summary")
+# Tests: get_schematic_summary
 # ---------------------------------------------------------------------------
 
 
-class TestListSchematicItemsSummary:
+class TestGetSchematicSummary:
     def test_returns_page_and_counts(self, scratch_sch: Path) -> None:
-        result = schematic.list_schematic_items("summary", str(scratch_sch))
-        assert "A4" in result
-        assert "297" in result
-        assert "210" in result
-        assert "Components:" in result
-        assert "Labels:" in result
-        assert "Wires:" in result
+        result = schematic.get_schematic_summary(str(scratch_sch))
+        assert isinstance(result, SchematicSummary)
+        assert result.page_size == "A4"
+        assert result.page_width_mm == 297
+        assert result.page_height_mm == 210
+        assert result.components >= 0
+        assert result.labels >= 0
+        assert result.wires >= 0
 
     def test_empty_schematic(self, empty_sch: Path) -> None:
-        result = schematic.list_schematic_items("summary", str(empty_sch))
-        assert "A4" in result
-        assert "Components: 0" in result
-        assert "Labels: 0" in result
-        assert "Wires: 0" in result
+        result = schematic.get_schematic_summary(str(empty_sch))
+        assert isinstance(result, SchematicSummary)
+        assert result.page_size == "A4"
+        assert result.components == 0
+        assert result.labels == 0
+        assert result.wires == 0
 
 
 # ---------------------------------------------------------------------------
@@ -310,21 +314,20 @@ class TestGetNetConnectionsMultiHop:
         sch.filePath = str(path)
         sch.to_file()
 
-        result = json.loads(
-            schematic.get_net_connections(
-                label_text="MULTI_HOP",
-                schematic_path=str(path),
-            )
+        result = schematic.get_net_connections(
+            label_text="MULTI_HOP",
+            schematic_path=str(path),
         )
-        assert result["label_count"] == 1
+        assert isinstance(result, NetConnectionsResult)
+        assert result.label_count == 1
         # With BFS, all 3 hops are traversed and R1 pin 1 at (100, 96.19) is found.
         # Old single-hop would only reach (40, 96.19) and miss the pin.
-        conn_refs = {c["reference"] for c in result["connections"]}
-        assert "R1" in conn_refs, f"BFS should reach R1 via 3 hops, got: {result['connections']}"
+        conn_refs = {c["reference"] for c in result.connections}
+        assert "R1" in conn_refs, f"BFS should reach R1 via 3 hops, got: {result.connections}"
 
 
 # ---------------------------------------------------------------------------
-# Tests: list_schematic_items expanded (5 new item types)
+# Tests: list_schematic_* expanded (5 new item types)
 # ---------------------------------------------------------------------------
 
 
@@ -346,15 +349,11 @@ class TestListSchematicItemsExpanded:
         sch.filePath = str(path)
         sch.to_file()
 
-        result = json.loads(
-            schematic.list_schematic_items(
-                item_type="hierarchical_labels", schematic_path=str(path)
-            )
-        )
+        result = schematic.list_schematic_hierarchical_labels(schematic_path=str(path))
         assert len(result) == 1
-        assert result[0]["text"] == "VIN"
-        assert result[0]["shape"] == "input"
-        assert result[0]["x"] == 25.4
+        assert result[0].text == "VIN"
+        assert result[0].shape == "input"
+        assert result[0].x == 25.4
 
     def test_sheets(self, tmp_path: Path):
         from mcp_server_kicad import project
@@ -370,14 +369,12 @@ class TestListSchematicItemsExpanded:
             pins=[{"name": "VIN", "direction": "input"}],
         )
 
-        result = json.loads(
-            schematic.list_schematic_items(item_type="sheets", schematic_path=str(parent))
-        )
+        result = schematic.list_schematic_sheets(schematic_path=str(parent))
         assert len(result) == 1
-        assert result[0]["sheet_name"] == "Power"
-        assert result[0]["file_name"] == "child.kicad_sch"
-        assert result[0]["pin_count"] == 1
-        assert "uuid" in result[0]
+        assert result[0].sheet_name == "Power"
+        assert result[0].file_name == "child.kicad_sch"
+        assert result[0].pin_count == 1
+        assert result[0].uuid
 
     def test_junctions(self, tmp_path: Path):
         from kiutils.items.common import ColorRGBA
@@ -396,12 +393,10 @@ class TestListSchematicItemsExpanded:
         sch.filePath = str(path)
         sch.to_file()
 
-        result = json.loads(
-            schematic.list_schematic_items(item_type="junctions", schematic_path=str(path))
-        )
+        result = schematic.list_schematic_junctions(schematic_path=str(path))
         assert len(result) == 1
-        assert result[0]["x"] == 50
-        assert result[0]["y"] == 50
+        assert result[0].x == 50
+        assert result[0].y == 50
 
     def test_no_connects(self, tmp_path: Path):
         from kiutils.items.schitems import NoConnect
@@ -417,12 +412,10 @@ class TestListSchematicItemsExpanded:
         sch.filePath = str(path)
         sch.to_file()
 
-        result = json.loads(
-            schematic.list_schematic_items(item_type="no_connects", schematic_path=str(path))
-        )
+        result = schematic.list_schematic_no_connects(schematic_path=str(path))
         assert len(result) == 1
-        assert result[0]["x"] == 75
-        assert result[0]["y"] == 80
+        assert result[0].x == 75
+        assert result[0].y == 80
 
     def test_bus_entries(self, tmp_path: Path):
         from kiutils.items.schitems import BusEntry
@@ -439,12 +432,10 @@ class TestListSchematicItemsExpanded:
         sch.filePath = str(path)
         sch.to_file()
 
-        result = json.loads(
-            schematic.list_schematic_items(item_type="bus_entries", schematic_path=str(path))
-        )
+        result = schematic.list_schematic_bus_entries(schematic_path=str(path))
         assert len(result) == 1
-        assert result[0]["x"] == 40
-        assert result[0]["size_x"] == 2.54
+        assert result[0].x == 40
+        assert result[0].size_x == 2.54
 
     def test_summary_includes_new_counts(self, tmp_path: Path):
         from kiutils.items.common import ColorRGBA
@@ -472,9 +463,10 @@ class TestListSchematicItemsExpanded:
         sch.filePath = str(path)
         sch.to_file()
 
-        result = schematic.list_schematic_items(item_type="summary", schematic_path=str(path))
-        assert "Hierarchical labels: 1" in result
-        assert "Junctions: 1" in result
+        result = schematic.get_schematic_summary(schematic_path=str(path))
+        assert isinstance(result, SchematicSummary)
+        assert result.hierarchical_labels == 1
+        assert result.junctions == 1
 
 
 # ---------------------------------------------------------------------------

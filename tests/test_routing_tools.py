@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import shutil
 from pathlib import Path
 
@@ -18,6 +17,7 @@ from conftest import (
 )
 from kiutils.items.common import Effects, Font, Position, Property, Stroke
 from kiutils.items.schitems import Connection, SchematicSymbol
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 
@@ -207,20 +207,20 @@ class TestWirePinToLabel:
         assert abs(dx - 5.08) < 1.27
 
     def test_bad_reference(self, scratch_sch):
-        result = schematic.wire_pins_to_net(
-            pins=[{"reference": "X99", "pin": "1"}],
-            label_text="BAD",
-            schematic_path=str(scratch_sch),
-        )
-        assert "error" in result.lower() or "not found" in result.lower()
+        with pytest.raises(ToolError, match="not found"):
+            schematic.wire_pins_to_net(
+                pins=[{"reference": "X99", "pin": "1"}],
+                label_text="BAD",
+                schematic_path=str(scratch_sch),
+            )
 
     def test_bad_pin(self, scratch_sch):
-        result = schematic.wire_pins_to_net(
-            pins=[{"reference": "R1", "pin": "NONEXIST"}],
-            label_text="BAD",
-            schematic_path=str(scratch_sch),
-        )
-        assert "error" in result.lower() or "not found" in result.lower()
+        with pytest.raises(ToolError, match="not found"):
+            schematic.wire_pins_to_net(
+                pins=[{"reference": "R1", "pin": "NONEXIST"}],
+                label_text="BAD",
+                schematic_path=str(scratch_sch),
+            )
 
     def test_avoids_conflicting_label(self, scratch_sch):
         """Auto-redirect stub when a different net label would collide."""
@@ -418,8 +418,7 @@ class TestGetNetConnections:
             label_text="NET_X",
             schematic_path=str(scratch_sch),
         )
-        data = json.loads(result)
-        refs = [c["reference"] for c in data["connections"]]
+        refs = [c["reference"] for c in result.connections]
         assert "R1" in refs
 
     def test_finds_multiple_pins(self, scratch_sch):
@@ -449,8 +448,7 @@ class TestGetNetConnections:
             label_text="SHARED",
             schematic_path=str(scratch_sch),
         )
-        data = json.loads(result)
-        refs = [c["reference"] for c in data["connections"]]
+        refs = [c["reference"] for c in result.connections]
         assert "R1" in refs
         assert "R2" in refs
 
@@ -459,8 +457,7 @@ class TestGetNetConnections:
             label_text="NONEXISTENT",
             schematic_path=str(scratch_sch),
         )
-        data = json.loads(result)
-        assert data["connections"] == []
+        assert result.connections == []
 
 
 # ===========================================================================
@@ -502,12 +499,12 @@ class TestWirePinsToNet:
         assert "0 pins" in result
 
     def test_bad_reference(self, scratch_sch):
-        result = schematic.wire_pins_to_net(
-            pins=[{"reference": "R999", "pin": "1"}],
-            label_text="VCC",
-            schematic_path=str(scratch_sch),
-        )
-        assert "error" in result.lower() or "not found" in result.lower()
+        with pytest.raises(ToolError, match="not found"):
+            schematic.wire_pins_to_net(
+                pins=[{"reference": "R999", "pin": "1"}],
+                label_text="VCC",
+                schematic_path=str(scratch_sch),
+            )
 
 
 # ===========================================================================

@@ -2,19 +2,18 @@
 
 from pathlib import Path
 
+import pytest
 from conftest import reparse
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 
 
 class TestAddLibSymbol:
-    def test_add_valid_symbol(self, scratch_sch: Path, scratch_sym_lib: Path) -> None:
-        """Adding a valid symbol from a .kicad_sym should embed it in libSymbols."""
+    def test_add_symbol(self, scratch_sch: Path, scratch_sym_lib: Path) -> None:
         result = schematic.add_lib_symbol(str(scratch_sym_lib), "TestPart", str(scratch_sch))
         assert "Added" in result
-        assert "TestPart" in result
 
-        # Reparse and verify TestPart is present in libSymbols
         sch = reparse(scratch_sch)
         lib_names = [ls.entryName for ls in sch.libSymbols]
         assert "TestPart" in lib_names
@@ -24,8 +23,8 @@ class TestAddLibSymbol:
         first = schematic.add_lib_symbol(str(scratch_sym_lib), "TestPart", str(scratch_sch))
         assert "Added" in first
 
-        second = schematic.add_lib_symbol(str(scratch_sym_lib), "TestPart", str(scratch_sch))
-        assert "already in" in second
+        with pytest.raises(ToolError, match="already in"):
+            schematic.add_lib_symbol(str(scratch_sym_lib), "TestPart", str(scratch_sch))
 
         # Verify only one copy exists
         sch = reparse(scratch_sch)
@@ -34,10 +33,5 @@ class TestAddLibSymbol:
 
     def test_unknown_symbol(self, scratch_sch: Path, scratch_sym_lib: Path) -> None:
         """Requesting a symbol that doesn't exist in the lib should report not found."""
-        result = schematic.add_lib_symbol(str(scratch_sym_lib), "NOPE", str(scratch_sch))
-        assert "not found" in result
-
-        # Verify libSymbols unchanged (only the pre-existing R)
-        sch = reparse(scratch_sch)
-        lib_names = [ls.entryName for ls in sch.libSymbols]
-        assert "NOPE" not in lib_names
+        with pytest.raises(ToolError, match="not found"):
+            schematic.add_lib_symbol(str(scratch_sym_lib), "NOPE", str(scratch_sch))

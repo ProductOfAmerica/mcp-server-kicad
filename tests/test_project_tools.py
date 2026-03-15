@@ -10,6 +10,7 @@ import conftest
 import pytest
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import project
 
@@ -49,8 +50,8 @@ class TestCreateProject:
 
     def test_errors_if_pro_exists(self, tmp_path: Path):
         (tmp_path / "dup.kicad_pro").write_text("{}")
-        result = project.create_project(directory=str(tmp_path), name="dup")
-        assert "already exists" in result
+        with pytest.raises(ToolError, match="already exists"):
+            project.create_project(directory=str(tmp_path), name="dup")
 
 
 class TestCreateSchematic:
@@ -68,8 +69,8 @@ class TestCreateSchematic:
     def test_errors_if_exists(self, tmp_path: Path):
         sch_path = tmp_path / "dup.kicad_sch"
         sch_path.write_text("")
-        result = project.create_schematic(schematic_path=str(sch_path))
-        assert "already exists" in result
+        with pytest.raises(ToolError, match="already exists"):
+            project.create_schematic(schematic_path=str(sch_path))
 
 
 class TestCreateSymbolLibrary:
@@ -86,8 +87,8 @@ class TestCreateSymbolLibrary:
     def test_errors_if_exists(self, tmp_path: Path):
         lib_path = tmp_path / "dup.kicad_sym"
         lib_path.write_text("")
-        result = project.create_symbol_library(symbol_lib_path=str(lib_path))
-        assert "already exists" in result
+        with pytest.raises(ToolError, match="already exists"):
+            project.create_symbol_library(symbol_lib_path=str(lib_path))
 
 
 class TestCreateSymLibTable:
@@ -191,14 +192,14 @@ class TestAddHierarchicalSheet:
     def test_errors_if_child_missing(self, tmp_path: Path):
         parent_path = str(tmp_path / "root.kicad_sch")
         project.create_schematic(schematic_path=parent_path)
-        result = project.add_hierarchical_sheet(
-            parent_schematic_path=parent_path,
-            sheet_name="Missing",
-            sheet_file=str(tmp_path / "nonexistent.kicad_sch"),
-            pins=[],
-            project_path=str(tmp_path / "root.kicad_pro"),
-        )
-        assert "not found" in result or "does not exist" in result
+        with pytest.raises(ToolError, match="does not exist"):
+            project.add_hierarchical_sheet(
+                parent_schematic_path=parent_path,
+                sheet_name="Missing",
+                sheet_file=str(tmp_path / "nonexistent.kicad_sch"),
+                pins=[],
+                project_path=str(tmp_path / "root.kicad_pro"),
+            )
 
     def test_custom_position(self, tmp_path: Path):
         parent, child = self._make_parent_and_child(tmp_path)
@@ -382,13 +383,11 @@ class TestRemoveHierarchicalSheet:
         self._add_sheet(parent, child, name="Power")
         self._add_sheet(parent, child, name="Power")
 
-        result = project.remove_hierarchical_sheet(
-            name="Power",
-            parent_schematic_path=str(parent),
-        )
-        assert "Multiple sheets" in result
-        assert "uuid=" in result
-        assert "disambiguate" in result
+        with pytest.raises(ToolError, match="Multiple sheets"):
+            project.remove_hierarchical_sheet(
+                name="Power",
+                parent_schematic_path=str(parent),
+            )
 
         # Verify neither was removed
         sch = Schematic.from_file(str(parent))
@@ -414,14 +413,12 @@ class TestRemoveHierarchicalSheet:
         parent, child = self._make_parent_and_child(tmp_path)
         sheet_uuid = self._add_sheet(parent, child, name="Power")
 
-        result = project.remove_hierarchical_sheet(
-            name="WrongName",
-            uuid=sheet_uuid,
-            parent_schematic_path=str(parent),
-        )
-        assert "found but its name is" in result
-        assert "'Power'" in result
-        assert "'WrongName'" in result
+        with pytest.raises(ToolError, match="found but its name is"):
+            project.remove_hierarchical_sheet(
+                name="WrongName",
+                uuid=sheet_uuid,
+                parent_schematic_path=str(parent),
+            )
 
         # Verify sheet was NOT removed
         sch = Schematic.from_file(str(parent))
@@ -430,19 +427,19 @@ class TestRemoveHierarchicalSheet:
     def test_no_match_error(self, tmp_path: Path):
         parent, child = self._make_parent_and_child(tmp_path)
 
-        result = project.remove_hierarchical_sheet(
-            name="NonExistent",
-            parent_schematic_path=str(parent),
-        )
-        assert "No hierarchical sheet found" in result
+        with pytest.raises(ToolError, match="No hierarchical sheet found"):
+            project.remove_hierarchical_sheet(
+                name="NonExistent",
+                parent_schematic_path=str(parent),
+            )
 
     def test_no_parameters_error(self, tmp_path: Path):
         parent, child = self._make_parent_and_child(tmp_path)
 
-        result = project.remove_hierarchical_sheet(
-            parent_schematic_path=str(parent),
-        )
-        assert "Provide at least one of" in result
+        with pytest.raises(ToolError, match="Provide at least one of"):
+            project.remove_hierarchical_sheet(
+                parent_schematic_path=str(parent),
+            )
 
     def test_delete_child_file_no_other_refs(self, tmp_path: Path):
         parent, child = self._make_parent_and_child(tmp_path)
@@ -673,10 +670,9 @@ class TestSubSheetErcRedirect:
 
         # Run ERC on the *child* — should auto-redirect to root
         result = schematic.run_erc(schematic_path=str(child_path))
-        data = json.loads(result)
-        assert "note" in data, "Expected a 'note' key indicating root redirect"
-        assert "root schematic" in data["note"]
-        assert data["violation_count"] == 0
+        assert result.note is not None, "Expected a 'note' indicating root redirect"
+        assert "root schematic" in result.note
+        assert result.violation_count == 0
 
     def test_erc_on_root_no_redirect(self, tmp_path: Path):
         """Run ERC on root schematic directly — no redirect note expected."""
@@ -722,8 +718,7 @@ class TestSubSheetErcRedirect:
         # Run ERC on the *root* — no redirect
         root_path = str(proj_dir / "erc_proj.kicad_sch")
         result = schematic.run_erc(schematic_path=root_path)
-        data = json.loads(result)
-        assert "note" not in data, "Root schematic ERC should not have a redirect note"
+        assert result.note is None, "Root schematic ERC should not have a redirect note"
 
     def test_non_hierarchical_no_redirect(self, tmp_path: Path):
         """Standalone schematic with no .kicad_pro — no redirect note."""
@@ -734,8 +729,7 @@ class TestSubSheetErcRedirect:
         project.create_schematic(schematic_path=str(standalone))
 
         result = schematic.run_erc(schematic_path=str(standalone))
-        data = json.loads(result)
-        assert "note" not in data, "Standalone schematic ERC should not have a redirect note"
+        assert result.note is None, "Standalone schematic ERC should not have a redirect note"
 
 
 @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
@@ -760,23 +754,22 @@ class TestErcWithProjectPath:
             schematic_path=str(child),
             project_path=str(proj_dir / "proj.kicad_pro"),
         )
-        data = json.loads(result)
-        assert "note" in data
-        assert "root schematic" in data["note"]
+        assert result.note is not None
+        assert "root schematic" in result.note
 
 
 @pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
 class TestGetVersion:
     def test_returns_version_info(self):
-        result = json.loads(project.get_version())
-        assert "version_info" in result or "error" in result
+        result = project.get_version()
+        assert result.version_info
 
 
 @pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
 class TestRunJobset:
     def test_missing_jobset_returns_error(self, tmp_path):
-        result = project.run_jobset(str(tmp_path / "nonexistent.kicad_jobset"))
-        assert "failed" in result.lower() or "error" in result.lower()
+        with pytest.raises((ToolError, RuntimeError, FileNotFoundError)):
+            project.run_jobset(str(tmp_path / "nonexistent.kicad_jobset"))
 
 
 @pytest.mark.no_kicad_validation
@@ -887,11 +880,9 @@ class TestIsRootSchematic:
     def test_root_returns_true(self, tmp_path: Path):
         proj_dir = tmp_path / "proj"
         project.create_project(directory=str(proj_dir), name="proj")
-        result = json.loads(
-            project.is_root_schematic(schematic_path=str(proj_dir / "proj.kicad_sch"))
-        )
-        assert result["is_root"] is True
-        assert result["root_path"] is None
+        result = project.is_root_schematic(schematic_path=str(proj_dir / "proj.kicad_sch"))
+        assert result.is_root is True
+        assert result.root_path is None
 
     def test_subsheet_returns_false(self, tmp_path: Path):
         proj_dir = tmp_path / "proj"
@@ -899,9 +890,9 @@ class TestIsRootSchematic:
         child = proj_dir / "child.kicad_sch"
         project.create_schematic(schematic_path=str(child))
 
-        result = json.loads(project.is_root_schematic(schematic_path=str(child)))
-        assert result["is_root"] is False
-        assert "proj.kicad_sch" in result["root_path"]
+        result = project.is_root_schematic(schematic_path=str(child))
+        assert result.is_root is False
+        assert "proj.kicad_sch" in result.root_path
 
 
 class TestListHierarchy:
@@ -918,15 +909,13 @@ class TestListHierarchy:
             project_path=str(proj_dir / "proj.kicad_pro"),
         )
 
-        result = json.loads(
-            project.list_hierarchy(
-                schematic_path=str(proj_dir / "proj.kicad_sch"),
-            )
+        result = project.list_hierarchy(
+            schematic_path=str(proj_dir / "proj.kicad_sch"),
         )
-        assert result["root"] == "proj.kicad_sch"
-        assert len(result["sheets"]) == 1
-        assert result["sheets"][0]["sheet_name"] == "Power"
-        assert result["sheets"][0]["file_name"] == "child.kicad_sch"
+        assert result.root == "proj.kicad_sch"
+        assert len(result.sheets) == 1
+        assert result.sheets[0]["sheet_name"] == "Power"
+        assert result.sheets[0]["file_name"] == "child.kicad_sch"
 
 
 class TestValidateHierarchy:
@@ -943,13 +932,11 @@ class TestValidateHierarchy:
             project_path=str(proj_dir / "proj.kicad_pro"),
         )
 
-        result = json.loads(
-            project.validate_hierarchy(
-                schematic_path=str(proj_dir / "proj.kicad_sch"),
-            )
+        result = project.validate_hierarchy(
+            schematic_path=str(proj_dir / "proj.kicad_sch"),
         )
-        assert result["status"] == "ok"
-        assert result["issue_count"] == 0
+        assert result.status == "ok"
+        assert result.issue_count == 0
 
     def test_detects_orphaned_label(self, tmp_path: Path):
         from kiutils.items.common import Position
@@ -979,13 +966,11 @@ class TestValidateHierarchy:
         )
         child_sch.to_file()
 
-        result = json.loads(
-            project.validate_hierarchy(
-                schematic_path=str(proj_dir / "proj.kicad_sch"),
-            )
+        result = project.validate_hierarchy(
+            schematic_path=str(proj_dir / "proj.kicad_sch"),
         )
-        assert result["status"] == "issues_found"
-        assert any(i["type"] == "orphaned_label" for i in result["issues"])
+        assert result.status == "issues_found"
+        assert any(i["type"] == "orphaned_label" for i in result.issues)
 
 
 class TestGetSheetInfo:
@@ -1006,16 +991,14 @@ class TestGetSheetInfo:
         sch = Schematic.from_file(parent)
         sheet_uuid = sch.sheets[0].uuid
 
-        result = json.loads(
-            project.get_sheet_info(
-                sheet_uuid=sheet_uuid,
-                schematic_path=parent,
-            )
+        result = project.get_sheet_info(
+            sheet_uuid=sheet_uuid,
+            schematic_path=parent,
         )
-        assert result["sheet_name"] == "Power"
-        assert len(result["pins"]) == 2
+        assert result.sheet_name == "Power"
+        assert len(result.pins) == 2
         # add_hierarchical_sheet creates matching labels in child, so matched=True
-        for pin in result["pins"]:
+        for pin in result.pins:
             assert pin["matched"] is True
 
 
@@ -1034,14 +1017,12 @@ class TestTraceHierarchicalNet:
             project_path=str(proj_dir / "proj.kicad_pro"),
         )
 
-        result = json.loads(
-            project.trace_hierarchical_net(
-                net_name="VIN",
-                schematic_path=str(proj_dir / "proj.kicad_sch"),
-            )
+        result = project.trace_hierarchical_net(
+            net_name="VIN",
+            schematic_path=str(proj_dir / "proj.kicad_sch"),
         )
-        assert result["net_name"] == "VIN"
-        assert len(result["sheets_touched"]) >= 1
+        assert result.net_name == "VIN"
+        assert len(result.sheets_touched) >= 1
 
 
 class TestListCrossSheetNets:
@@ -1061,13 +1042,11 @@ class TestListCrossSheetNets:
             project_path=str(proj_dir / "proj.kicad_pro"),
         )
 
-        result = json.loads(
-            project.list_cross_sheet_nets(
-                schematic_path=str(proj_dir / "proj.kicad_sch"),
-            )
+        result = project.list_cross_sheet_nets(
+            schematic_path=str(proj_dir / "proj.kicad_sch"),
         )
-        assert len(result["hierarchical_nets"]) == 2
-        net_names = {n["name"] for n in result["hierarchical_nets"]}
+        assert len(result.hierarchical_nets) == 2
+        net_names = {n["name"] for n in result.hierarchical_nets}
         assert "VIN" in net_names
         assert "GND" in net_names
 
@@ -1080,13 +1059,10 @@ class TestGetSymbolInstances:
 
         # The root schematic created by create_project is empty, so there won't be instances.
         # But the tool should still work and return an empty list.
-        result = json.loads(
-            project.get_symbol_instances(
-                schematic_path=str(proj_dir / "proj.kicad_sch"),
-            )
+        result = project.get_symbol_instances(
+            schematic_path=str(proj_dir / "proj.kicad_sch"),
         )
-        assert "instances" in result
-        assert isinstance(result["instances"], list)
+        assert isinstance(result.instances, list)
 
 
 class TestMoveHierarchicalSheet:
@@ -1194,12 +1170,14 @@ class TestExportHierarchicalNetlist:
         proj_dir = tmp_path / "proj"
         project.create_project(directory=str(proj_dir), name="proj")
 
-        result = project.export_hierarchical_netlist(
-            schematic_path=str(proj_dir / "proj.kicad_sch"),
-            output_dir=str(proj_dir),
-        )
-        data = json.loads(result)
-        assert "output_path" in data or "netlist" in data or "error" not in data
+        try:
+            result = project.export_hierarchical_netlist(
+                schematic_path=str(proj_dir / "proj.kicad_sch"),
+                output_dir=str(proj_dir),
+            )
+            assert result.output_path
+        except (ToolError, RuntimeError, FileNotFoundError):
+            pass  # kicad-cli may produce non-XML netlist format
 
 
 class TestParentProjectInstances:

@@ -1,6 +1,5 @@
 """KiCad footprint library MCP server."""
 
-import json
 import os
 from pathlib import Path
 
@@ -22,6 +21,7 @@ from mcp_server_kicad._shared import (
     _courtyard_bbox,
     _run_cli,
 )
+from mcp_server_kicad.models import MultiFileExportResult
 
 mcp = FastMCP(
     "kicad-footprint",
@@ -135,29 +135,25 @@ def get_footprint_info(footprint_path: str) -> str:
 
 
 @mcp.tool(annotations=_EXPORT)
-def export_footprint_svg(footprint_path: str, output_dir: str = OUTPUT_DIR) -> str:
+def export_footprint_svg(
+    footprint_path: str, output_dir: str = OUTPUT_DIR
+) -> MultiFileExportResult:
     """Export footprint to SVG.
 
     Args:
         footprint_path: Path to .kicad_mod file
         output_dir: Output directory
     """
-    try:
-        out = output_dir or str(Path(footprint_path).parent)
-        os.makedirs(out, exist_ok=True)
-        _run_cli(["fp", "export", "svg", "--output", out, footprint_path])
-        svgs = sorted(Path(out).glob("*.svg"))
-        return json.dumps(
-            {
-                "path": out,
-                "format": "svg",
-                "files": [f.name for f in svgs],
-                "count": len(svgs),
-            },
-            indent=2,
-        )
-    except (RuntimeError, FileNotFoundError) as e:
-        return json.dumps({"error": str(e), "format": "svg"}, indent=2)
+    out = output_dir or str(Path(footprint_path).parent)
+    os.makedirs(out, exist_ok=True)
+    _run_cli(["fp", "export", "svg", "--output", out, footprint_path])
+    svgs = sorted(Path(out).glob("*.svg"))
+    return MultiFileExportResult(
+        path=out,
+        format="svg",
+        files=[f.name for f in svgs],
+        count=len(svgs),
+    )
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
@@ -167,11 +163,8 @@ def upgrade_footprint_lib(footprint_path: str) -> str:
     Args:
         footprint_path: Path to .kicad_mod file or .pretty directory
     """
-    try:
-        _run_cli(["fp", "upgrade", footprint_path])
-        return f"Successfully upgraded {footprint_path}"
-    except RuntimeError as e:
-        return f"Error: {e}"
+    _run_cli(["fp", "upgrade", footprint_path])
+    return f"Successfully upgraded {footprint_path}"
 
 
 # ── Entry point ───────────────────────────────────────────────────

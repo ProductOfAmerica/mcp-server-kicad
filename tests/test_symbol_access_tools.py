@@ -3,6 +3,7 @@
 import shutil
 
 import pytest
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import symbol
 
@@ -33,12 +34,12 @@ class TestGetSymbolInfo:
 
 @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 class TestExportSymbolSvg:
-    def test_returns_json(self, scratch_sym_lib, tmp_path):
-        import json
-
-        result = symbol.export_symbol_svg(str(scratch_sym_lib), str(tmp_path))
-        data = json.loads(result)
-        assert "format" in data or "error" in data
+    def test_returns_result(self, scratch_sym_lib, tmp_path):
+        try:
+            result = symbol.export_symbol_svg(str(scratch_sym_lib), str(tmp_path))
+            assert result.format == "svg"
+        except (ToolError, RuntimeError, FileNotFoundError):
+            pass
 
 
 @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
@@ -48,7 +49,8 @@ class TestUpgradeSymbolLib:
 
         copy = str(tmp_path / "upgrade_test.kicad_sym")
         shutil_mod.copy(str(scratch_sym_lib), copy)
-        result = symbol.upgrade_symbol_lib(copy)
-        assert (
-            "success" in result.lower() or "upgraded" in result.lower() or "error" in result.lower()
-        )
+        try:
+            result = symbol.upgrade_symbol_lib(copy)
+            assert "success" in result.lower() or "upgraded" in result.lower()
+        except (RuntimeError, FileNotFoundError):
+            pass

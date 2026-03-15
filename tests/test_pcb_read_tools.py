@@ -1,8 +1,8 @@
 """Tests for PCB read tools."""
 
-import json
 import uuid
 
+import pytest
 from conftest import _default_effects
 from kiutils.board import Board
 from kiutils.footprint import Footprint, Pad
@@ -10,15 +10,20 @@ from kiutils.items.common import Net, Position
 from kiutils.items.fpitems import FpRect, FpText
 from kiutils.items.gritems import GrLine
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import pcb
+from mcp_server_kicad.models import (
+    BoardValidationResult,
+    FootprintBoundsResult,
+)
 
 
 class TestListPcbItems:
     def test_list_footprints(self, scratch_pcb):
-        result = json.loads(pcb.list_pcb_items("footprints", str(scratch_pcb)))
+        result = pcb.list_pcb_footprints(str(scratch_pcb))
         assert isinstance(result, list)
-        refs = [fp["reference"] for fp in result]
+        refs = [fp.reference for fp in result]
         assert "R1" in refs
 
     def test_list_footprints_empty(self, tmp_path):
@@ -28,11 +33,11 @@ class TestListPcbItems:
         path = str(tmp_path / "empty.kicad_pcb")
         b.filePath = path
         b.to_file()
-        result = json.loads(pcb.list_pcb_items("footprints", path))
+        result = pcb.list_pcb_footprints(path)
         assert result == []
 
     def test_list_traces(self, scratch_pcb):
-        result = json.loads(pcb.list_pcb_items("traces", str(scratch_pcb)))
+        result = pcb.list_pcb_traces(str(scratch_pcb))
         assert isinstance(result, list)
 
     def test_list_traces_empty(self, tmp_path):
@@ -42,33 +47,29 @@ class TestListPcbItems:
         path = str(tmp_path / "empty.kicad_pcb")
         b.filePath = path
         b.to_file()
-        result = json.loads(pcb.list_pcb_items("traces", path))
+        result = pcb.list_pcb_traces(path)
         assert result == []
 
     def test_list_nets(self, scratch_pcb):
-        result = json.loads(pcb.list_pcb_items("nets", str(scratch_pcb)))
+        result = pcb.list_pcb_nets(str(scratch_pcb))
         assert isinstance(result, list)
-        names = [n["name"] for n in result]
+        names = [n.name for n in result]
         assert "Net1" in names
         assert "Net2" in names
 
     def test_list_zones(self, scratch_pcb):
-        result = json.loads(pcb.list_pcb_items("zones", str(scratch_pcb)))
+        result = pcb.list_pcb_zones(str(scratch_pcb))
         assert isinstance(result, list)
         assert result == []
 
     def test_list_layers(self, scratch_pcb):
-        result = json.loads(pcb.list_pcb_items("layers", str(scratch_pcb)))
+        result = pcb.list_pcb_layers(str(scratch_pcb))
         assert isinstance(result, list)
         assert len(result) > 0
 
     def test_list_graphic_items(self, scratch_pcb):
-        result = json.loads(pcb.list_pcb_items("graphic_items", str(scratch_pcb)))
+        result = pcb.list_pcb_graphic_items(str(scratch_pcb))
         assert isinstance(result, list)
-
-    def test_invalid_item_type(self, scratch_pcb):
-        result = json.loads(pcb.list_pcb_items("invalid", str(scratch_pcb)))
-        assert "error" in result
 
 
 class TestGetBoardInfo:
@@ -84,8 +85,8 @@ class TestGetFootprintPads:
         assert "Pad 2" in result or "pad 2" in result.lower()
 
     def test_unknown_footprint(self, scratch_pcb):
-        result = pcb.get_footprint_pads("R999", str(scratch_pcb))
-        assert "not found" in result
+        with pytest.raises(ToolError, match="not found"):
+            pcb.get_footprint_pads("R999", str(scratch_pcb))
 
 
 # ---------------------------------------------------------------------------
@@ -148,23 +149,23 @@ def _make_keepout_board(tmp_path, *, with_copper_zone=False):
 class TestListZonesKeepout:
     def test_list_zones_includes_keepout_info(self, tmp_path):
         pcb_path = _make_keepout_board(tmp_path)
-        result = json.loads(pcb.list_pcb_items("zones", str(pcb_path)))
+        result = pcb.list_pcb_zones(str(pcb_path))
         assert len(result) >= 1
         kz = result[0]
-        assert kz["is_keepout"] is True
-        assert "keepout" in kz
-        assert kz["keepout"]["footprints"] == "not_allowed"
-        assert "polygon" in kz
+        assert kz.is_keepout is True
+        assert kz.keepout is not None
+        assert kz.keepout["footprints"] == "not_allowed"
+        assert kz.polygon is not None
 
     def test_list_zones_copper_vs_keepout(self, tmp_path):
         pcb_path = _make_keepout_board(tmp_path, with_copper_zone=True)
-        result = json.loads(pcb.list_pcb_items("zones", str(pcb_path)))
+        result = pcb.list_pcb_zones(str(pcb_path))
         assert len(result) == 2
-        keepouts = [z for z in result if z["is_keepout"]]
-        coppers = [z for z in result if not z["is_keepout"]]
+        keepouts = [z for z in result if z.is_keepout]
+        coppers = [z for z in result if not z.is_keepout]
         assert len(keepouts) == 1
         assert len(coppers) == 1
-        assert coppers[0]["net_name"] == "Net1"
+        assert coppers[0].net_name == "Net1"
 
 
 # ---------------------------------------------------------------------------
@@ -220,10 +221,11 @@ def _make_board_with_courtyard_fp(tmp_path, *, rotation=0):
 class TestGetFootprintBounds:
     def test_basic_bounds(self, tmp_path):
         pcb_path = _make_board_with_courtyard_fp(tmp_path, rotation=0)
-        result = json.loads(pcb.get_footprint_bounds("U1", pcb_path=str(pcb_path)))
-        assert result["reference"] == "U1"
-        assert result["courtyard"] is not None
-        cy = result["courtyard"]
+        result = pcb.get_footprint_bounds("U1", pcb_path=str(pcb_path))
+        assert isinstance(result, FootprintBoundsResult)
+        assert result.reference == "U1"
+        assert result.courtyard is not None
+        cy = result.courtyard
         # FP at (100,100) with local courtyard -5..5 => board coords 95..105
         assert cy["min_x"] == 95
         assert cy["max_x"] == 105
@@ -232,9 +234,10 @@ class TestGetFootprintBounds:
 
     def test_rotated_90(self, tmp_path):
         pcb_path = _make_board_with_courtyard_fp(tmp_path, rotation=90)
-        result = json.loads(pcb.get_footprint_bounds("U1", pcb_path=str(pcb_path)))
-        assert result["courtyard"] is not None
-        cy = result["courtyard"]
+        result = pcb.get_footprint_bounds("U1", pcb_path=str(pcb_path))
+        assert isinstance(result, FootprintBoundsResult)
+        assert result.courtyard is not None
+        cy = result.courtyard
         # Square courtyard rotated 90 degrees should still be ~95..105
         import pytest as pt
 
@@ -267,19 +270,20 @@ class TestGetFootprintBounds:
         board.filePath = str(path)
         board.to_file()
 
-        result = json.loads(pcb.get_footprint_bounds("J1", pcb_path=str(path)))
-        assert result["courtyard"] is None
+        result = pcb.get_footprint_bounds("J1", pcb_path=str(path))
+        assert isinstance(result, FootprintBoundsResult)
+        assert result.courtyard is None
 
     def test_not_found(self, tmp_path):
-        """Invalid reference returns an error."""
+        """Invalid reference raises ToolError."""
         board = Board.create_new()
         board.nets = [Net(number=0, name="")]
         path = tmp_path / "empty.kicad_pcb"
         board.filePath = str(path)
         board.to_file()
 
-        result = json.loads(pcb.get_footprint_bounds("R999", pcb_path=str(path)))
-        assert "error" in result
+        with pytest.raises(ToolError, match="not found"):
+            pcb.get_footprint_bounds("R999", pcb_path=str(path))
 
 
 # ---------------------------------------------------------------------------
@@ -361,15 +365,17 @@ def _make_board_for_validation(tmp_path, *, fp_inside_keepout=False):
 class TestValidateBoard:
     def test_validate_board_clean(self, tmp_path):
         pcb_path = _make_board_for_validation(tmp_path, fp_inside_keepout=False)
-        result = json.loads(pcb.validate_board(pcb_path=str(pcb_path)))
-        assert result["status"] == "ok"
-        assert len(result["violations"]) == 0
+        result = pcb.validate_board(pcb_path=str(pcb_path))
+        assert isinstance(result, BoardValidationResult)
+        assert result.status == "ok"
+        assert len(result.violations) == 0
 
     def test_validate_board_with_violations(self, tmp_path):
         pcb_path = _make_board_for_validation(tmp_path, fp_inside_keepout=True)
-        result = json.loads(pcb.validate_board(pcb_path=str(pcb_path)))
-        assert result["status"] != "ok"
-        assert len(result["violations"]) >= 1
+        result = pcb.validate_board(pcb_path=str(pcb_path))
+        assert isinstance(result, BoardValidationResult)
+        assert result.status != "ok"
+        assert len(result.violations) >= 1
         # The violating footprint should be R1
-        refs = [v["reference"] for v in result["violations"]]
+        refs = [v["reference"] for v in result.violations]
         assert "R1" in refs

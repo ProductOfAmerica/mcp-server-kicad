@@ -163,7 +163,16 @@ These are the ONLY kicad MCP tools you should use during planning
 - `get_footprint_info` — check pad dimensions
 
 **Schematic inspection (if schematic already exists):**
-- `list_schematic_items` — list items by type (components, labels, wires, hierarchical_labels, sheets, junctions, no_connects, bus_entries, summary)
+- `get_schematic_summary` — get item counts for a sheet
+- `list_schematic_components` — list symbols on a sheet
+- `list_schematic_labels` — list net labels on a sheet
+- `list_schematic_wires` — list wires on a sheet
+- `list_schematic_global_labels` — list global labels on a sheet
+- `list_schematic_hierarchical_labels` — list hierarchical labels on a sheet
+- `list_schematic_sheets` — list hierarchical sheet blocks on a sheet
+- `list_schematic_junctions` — list junctions on a sheet
+- `list_schematic_no_connects` — list no-connect flags on a sheet
+- `list_schematic_bus_entries` — list bus entries on a sheet
 - `is_root_schematic` — check if a schematic is root or sub-sheet
 - `list_hierarchy` — view the full sheet hierarchy tree
 - `get_sheet_info` — get sheet details with pin/label matching status

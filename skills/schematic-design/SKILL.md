@@ -84,7 +84,7 @@ No plan artifact required. User instructions serve as the plan.
 
 **Pre-flight checks:**
 1. Verify the schematic file exists
-2. List current components via `list_schematic_items`
+2. List current components via `list_schematic_components`
 3. For each new component to be added, call `list_lib_symbols` to
    verify its lib_id exists before placement
 
@@ -183,7 +183,16 @@ Y < 175mm.
 ## MCP Tools for This Skill
 
 **Reading / inspection:**
-- `list_schematic_items` — list symbols, wires, labels, etc. on a sheet
+- `get_schematic_summary` — get item counts for a sheet
+- `list_schematic_components` — list symbols on a sheet
+- `list_schematic_labels` — list net labels on a sheet
+- `list_schematic_wires` — list wires on a sheet
+- `list_schematic_global_labels` — list global labels on a sheet
+- `list_schematic_hierarchical_labels` — list hierarchical labels on a sheet
+- `list_schematic_sheets` — list hierarchical sheet blocks on a sheet
+- `list_schematic_junctions` — list junctions on a sheet
+- `list_schematic_no_connects` — list no-connect flags on a sheet
+- `list_schematic_bus_entries` — list bus entries on a sheet
 - `get_symbol_pins` — get pin names and types for a placed symbol
 - `get_pin_positions` — get placed pin coordinates (for wiring)
 - `get_net_connections` — trace a net to see what's connected

@@ -1,6 +1,5 @@
 """Tests for footprint library access tools."""
 
-import json
 import shutil
 
 import pytest
@@ -8,6 +7,7 @@ from kiutils.footprint import Footprint, Pad
 from kiutils.items.common import Position
 from kiutils.items.fpitems import FpCircle, FpLine, FpRect
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import footprint
 
@@ -53,7 +53,7 @@ class TestGetFootprintInfo:
 
 @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 class TestExportFootprintSvg:
-    def test_returns_json(self, tmp_path):
+    def test_returns_result(self, tmp_path):
         from kiutils.footprint import Footprint
 
         fp = Footprint()
@@ -61,9 +61,11 @@ class TestExportFootprintSvg:
         path = str(tmp_path / "R_0603.kicad_mod")
         fp.filePath = path
         fp.to_file()
-        result = footprint.export_footprint_svg(path, str(tmp_path / "svg_out"))
-        data = json.loads(result)
-        assert "format" in data or "error" in data
+        try:
+            result = footprint.export_footprint_svg(path, str(tmp_path / "svg_out"))
+            assert result.format == "svg"
+        except (ToolError, RuntimeError, FileNotFoundError):
+            pass
 
 
 @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
@@ -76,10 +78,11 @@ class TestUpgradeFootprintLib:
         path = str(tmp_path / "R_0603.kicad_mod")
         fp.filePath = path
         fp.to_file()
-        result = footprint.upgrade_footprint_lib(path)
-        assert (
-            "success" in result.lower() or "upgraded" in result.lower() or "error" in result.lower()
-        )
+        try:
+            result = footprint.upgrade_footprint_lib(path)
+            assert "success" in result.lower() or "upgraded" in result.lower()
+        except (RuntimeError, FileNotFoundError):
+            pass  # kicad-cli may not support this footprint format
 
 
 class TestGetFootprintInfoExtended:

@@ -156,8 +156,8 @@ _(No user-facing changes — version sync only)_
 - Create kicad-symbol server with 4 library tools
 - Create kicad-footprint server with 4 library tools
 - Give kicad-project server its own FastMCP instance with jobset and version tools
-- Consolidate 4 schematic list tools into list_schematic_items
-- Consolidate 6 PCB list tools into list_pcb_items
+- Consolidate 4 schematic list tools into list_schematic_items (later split into per-type tools: get_schematic_summary, list_schematic_components, list_schematic_labels, list_schematic_wires, list_schematic_global_labels, list_schematic_hierarchical_labels, list_schematic_sheets, list_schematic_junctions, list_schematic_no_connects, list_schematic_bus_entries)
+- Consolidate 6 PCB list tools into list_pcb_items (later split into per-type tools: list_pcb_footprints, list_pcb_traces, list_pcb_nets, list_pcb_zones, list_pcb_layers, list_pcb_graphic_items)
 - Absorb ERC tools and consolidated schematic exports into kicad-schematic
 - Absorb DRC and consolidated PCB export tools into kicad-pcb
 - Add export_pcb_dxf and export_ipc2581 tools to PCB server

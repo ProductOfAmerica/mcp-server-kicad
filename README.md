@@ -10,8 +10,8 @@ MCP servers for KiCad schematic, PCB, symbol, footprint, and project automation.
 
 | Server | Tools | Description |
 |--------|-------|-------------|
-| `mcp-server-kicad-schematic` | 31 | Schematic read/write, ERC analysis, hierarchical labels, and exports (PDF, SVG, DXF, netlist, BOM) |
-| `mcp-server-kicad-pcb` | 24 | PCB read/write, DRC analysis, autorouting, and exports (Gerber, drill, 3D models, pick-and-place) |
+| `mcp-server-kicad-schematic` | 40 | Schematic read/write, ERC analysis, hierarchical labels, and exports (PDF, SVG, DXF, netlist, BOM) |
+| `mcp-server-kicad-pcb` | 29 | PCB read/write, DRC analysis, autorouting, and exports (Gerber, drill, 3D models, pick-and-place) |
 | `mcp-server-kicad-symbol` | 5 | Symbol library browsing, creation, SVG export, and library upgrade |
 | `mcp-server-kicad-footprint` | 4 | Footprint library browsing, SVG export, and library upgrade |
 | `mcp-server-kicad-project` | 24 | Project scaffolding, hierarchical sheets, hierarchy validation, annotation, and exports |
@@ -103,13 +103,22 @@ The servers resolve file paths in this order:
 
 ## Available Tools
 
-### Schematic Tools (31 tools)
+### Schematic Tools (40 tools)
 
 #### Read Tools
 
 | Tool | Description |
 |------|-------------|
-| `list_schematic_items` | List items by type (components, labels, wires, global_labels, hierarchical_labels, sheets, junctions, no_connects, bus_entries, summary) |
+| `get_schematic_summary` | Get item counts for a schematic sheet |
+| `list_schematic_components` | List all components (symbols) on a schematic sheet |
+| `list_schematic_labels` | List all net labels on a schematic sheet |
+| `list_schematic_wires` | List all wires on a schematic sheet |
+| `list_schematic_global_labels` | List all global labels on a schematic sheet |
+| `list_schematic_hierarchical_labels` | List all hierarchical labels on a schematic sheet |
+| `list_schematic_sheets` | List all hierarchical sheet blocks on a schematic sheet |
+| `list_schematic_junctions` | List all junctions on a schematic sheet |
+| `list_schematic_no_connects` | List all no-connect flags on a schematic sheet |
+| `list_schematic_bus_entries` | List all bus entries on a schematic sheet |
 | `get_symbol_pins` | Get pin info for a symbol in the schematic's lib_symbols |
 | `get_pin_positions` | Get absolute pin positions for a placed component (accounts for rotation/mirror) |
 | `get_net_connections` | Get all connections for a named net (multi-hop BFS wire tracing) |
@@ -156,13 +165,18 @@ The servers resolve file paths in this order:
 | `export_netlist` | Export schematic netlist |
 | `export_bom` | Export Bill of Materials (BOM) as CSV |
 
-### PCB Tools (24 tools)
+### PCB Tools (29 tools)
 
 #### Read Tools
 
 | Tool | Description |
 |------|-------------|
-| `list_pcb_items` | List PCB items by type (footprints, traces, nets, zones, layers, graphic_items) |
+| `list_pcb_footprints` | List all footprints on the PCB |
+| `list_pcb_traces` | List all traces on the PCB |
+| `list_pcb_nets` | List all nets on the PCB |
+| `list_pcb_zones` | List all zones on the PCB |
+| `list_pcb_layers` | List all layers on the PCB |
+| `list_pcb_graphic_items` | List all graphic items on the PCB |
 | `get_board_info` | Get board summary: footprint count, trace count, net count, thickness |
 | `get_footprint_pads` | Get pad info for a placed footprint on the PCB |
 

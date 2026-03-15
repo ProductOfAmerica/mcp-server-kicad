@@ -213,7 +213,7 @@ ahead." Asking a question or requesting changes is NOT approval.
 
 The KiCad MCP server gives you tools to drive KiCad programmatically.
 You do not need the user to click anything in KiCad — the tools do it
-for you. Tool groups (89 tools total):
+for you. Tool groups (107 tools total):
 
 - **Project:** `create_project`, `create_schematic`,
   `create_symbol_library`, `create_sym_lib_table`,
@@ -229,7 +229,12 @@ for you. Tool groups (89 tools total):
   `no_connect_pin`, `remove_label`, `remove_wire`, `remove_junction`
 - **Schematic — Power:** `add_power_symbol`,
   `auto_place_decoupling_cap`
-- **Schematic — Inspect:** `list_schematic_items`, `get_symbol_pins`,
+- **Schematic — Inspect:** `get_schematic_summary`,
+  `list_schematic_components`, `list_schematic_labels`,
+  `list_schematic_wires`, `list_schematic_global_labels`,
+  `list_schematic_hierarchical_labels`, `list_schematic_sheets`,
+  `list_schematic_junctions`, `list_schematic_no_connects`,
+  `list_schematic_bus_entries`, `get_symbol_pins`,
   `get_pin_positions`, `get_net_connections`,
   `list_unconnected_pins`, `add_text`
 - **Schematic — Export:** `run_erc`, `export_schematic`,
@@ -251,7 +256,9 @@ for you. Tool groups (89 tools total):
   `set_net_class`, `remove_dangling_tracks`, `add_copper_zone`,
   `fill_zones`
 - **PCB — Draw:** `add_pcb_text`, `add_pcb_line`
-- **PCB — Inspect:** `list_pcb_items`, `get_board_info`,
+- **PCB — Inspect:** `list_pcb_footprints`, `list_pcb_traces`,
+  `list_pcb_nets`, `list_pcb_zones`, `list_pcb_layers`,
+  `list_pcb_graphic_items`, `get_board_info`,
   `get_footprint_pads`
 - **PCB — Export:** `run_drc`, `export_pcb`, `export_gerbers`,
   `export_3d`, `export_positions`, `export_ipc2581`

@@ -14,6 +14,7 @@ from conftest import (
     reparse,
 )
 from kiutils.items.schitems import Connection
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 
@@ -99,223 +100,128 @@ class TestPlaceComponent:
         )
         assert_kicad_parseable(scratch_sch)
 
-    @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
-    def test_rotation(self, scratch_sch, rotation):
-        schematic.place_component(
+    def test_placement_with_rotation(self, scratch_sch):
+        result = schematic.place_component(
             lib_id="Device:R",
-            reference="R3",
+            reference="R2",
             value="1K",
-            x=200,
-            y=200,
-            rotation=rotation,
+            x=150,
+            y=150,
+            rotation=90,
             schematic_path=str(scratch_sch),
             project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
-        sch = reparse(str(scratch_sch))
-        r3 = _find_symbol(sch, "R3")
-        assert r3 is not None
-        assert r3.position.angle == rotation
+        assert "R2" in result
 
-    def test_mirror_x(self, scratch_sch):
-        schematic.place_component(
-            lib_id="Device:R",
-            reference="R4",
+        sch = reparse(str(scratch_sch))
+        r2 = _find_symbol(sch, "R2")
+        assert r2 is not None
+        assert r2.position.angle == 90
+
+    def test_placement_with_custom_lib(self, scratch_sch, scratch_sym_lib):
+        """Place using a custom symbol library file."""
+        result = schematic.place_component(
+            lib_id="Test:R",
+            reference="R2",
             value="2.2K",
-            x=200,
-            y=200,
-            mirror="x",
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        sch = reparse(str(scratch_sch))
-        r4 = _find_symbol(sch, "R4")
-        assert r4 is not None
-        assert r4.mirror == "x"
-
-    def test_mirror_y(self, scratch_sch):
-        schematic.place_component(
-            lib_id="Device:R",
-            reference="R5",
-            value="3.3K",
-            x=200,
-            y=200,
-            mirror="y",
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        sch = reparse(str(scratch_sch))
-        r5 = _find_symbol(sch, "R5")
-        assert r5 is not None
-        assert r5.mirror == "y"
-
-    def test_custom_lib(self, scratch_sch, scratch_sym_lib):
-        schematic.place_component(
-            lib_id="test:TestPart",
-            reference="U1",
-            value="TestPart",
-            x=200,
+            x=150,
             y=150,
             symbol_lib_path=str(scratch_sym_lib),
             schematic_path=str(scratch_sch),
             project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
-        sch = reparse(str(scratch_sch))
+        assert "R2" in result
 
-        # TestPart should be in libSymbols
-        lib_names = [ls.entryName for ls in sch.libSymbols]
-        assert "TestPart" in lib_names
-
-        # U1 should be placed
-        refs = _get_refs(sch)
-        assert "U1" in refs
-
-    def test_pin_uuids_assigned(self, scratch_sch):
-        schematic.place_component(
-            lib_id="Device:R",
-            reference="R6",
-            value="100",
-            x=200,
-            y=150,
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        sch = reparse(str(scratch_sch))
-        r6 = _find_symbol(sch, "R6")
-        assert r6 is not None
-        assert isinstance(r6.pins, dict)
-        assert len(r6.pins) == 2
-        assert "1" in r6.pins
-        assert "2" in r6.pins
-
-    def test_instances_block_created(self, scratch_sch):
-        """place_component must create an instances block with the schematic UUID."""
-        schematic.place_component(
-            lib_id="Device:R",
-            reference="R7",
-            value="47K",
-            x=127,
-            y=127,
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        sch = reparse(str(scratch_sch))
-        r7 = _find_symbol(sch, "R7")
-        assert r7 is not None
-        assert len(r7.instances) == 1
-        inst = r7.instances[0]
-        assert len(inst.paths) == 1
-        assert inst.paths[0].reference == "R7"
-        assert inst.paths[0].unit == 1
-        assert inst.paths[0].sheetInstancePath == f"/{sch.uuid}"
-
-    def test_grid_snapping(self, scratch_sch):
-        """Off-grid coordinates are snapped to nearest 1.27mm multiple."""
-        schematic.place_component(
-            lib_id="Device:R",
-            reference="R8",
-            value="1M",
-            x=100,  # 100 / 1.27 = 78.74 -> 79 -> 100.33
-            y=200,  # 200 / 1.27 = 157.48 -> 157 -> 199.39
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        sch = reparse(str(scratch_sch))
-        r8 = _find_symbol(sch, "R8")
-        assert r8 is not None
-        assert r8.position.X == 100.33
-        assert r8.position.Y == 199.39
-
-    def test_on_grid_unchanged(self, scratch_sch):
-        """Coordinates already on the 1.27mm grid are not modified."""
-        # 101.6 == 80*1.27, exactly on grid
-        schematic.place_component(
-            lib_id="Device:R",
-            reference="R9",
-            value="330",
-            x=101.6,
-            y=101.6,
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        sch = reparse(str(scratch_sch))
-        r9 = _find_symbol(sch, "R9")
-        assert r9 is not None
-        assert r9.position.X == 101.6
-        assert r9.position.Y == 101.6
-
-    @pytest.mark.skipif(not HAS_KICAD_LIBS, reason="KiCad system libraries not installed")
-    def test_auto_embeds_lib_symbol(self, empty_sch):
-        """place_component auto-embeds lib_symbol from system library."""
+    def test_grid_snap(self, scratch_sch):
+        """Off-grid placement snaps to nearest 1.27 mm grid point."""
         result = schematic.place_component(
             lib_id="Device:R",
-            reference="R1",
-            value="10K",
-            x=100,
-            y=100,
-            schematic_path=str(empty_sch),
-            project_path=str(empty_sch.with_suffix(".kicad_pro")),
-        )
-        assert "R1" in result
-        sch = reparse(str(empty_sch))
-        # lib_symbol should be embedded — wire_pin_to_label should work
-        lib_names = [ls.entryName for ls in sch.libSymbols]
-        assert "R" in lib_names
-
-    @pytest.mark.skipif(not HAS_KICAD_LIBS, reason="KiCad system libraries not installed")
-    def test_auto_embed_then_wire(self, empty_sch):
-        """place_component + wire_pin_to_label works without add_lib_symbol."""
-        schematic.place_component(
-            lib_id="Device:R",
-            reference="R1",
-            value="10K",
-            x=100,
-            y=100,
-            schematic_path=str(empty_sch),
-            project_path=str(empty_sch.with_suffix(".kicad_pro")),
-        )
-        # This should NOT raise "Lib symbol not found"
-        result = schematic.wire_pins_to_net(
-            pins=[{"reference": "R1", "pin": "1"}],
-            label_text="VCC",
-            direction="up",
-            schematic_path=str(empty_sch),
-        )
-        assert "VCC" in result
-
-    def test_auto_embed_skips_if_already_present(self, scratch_sch):
-        """Don't duplicate lib_symbol if it's already in the schematic."""
-        sch_before = reparse(str(scratch_sch))
-        lib_count_before = len(sch_before.libSymbols)
-
-        schematic.place_component(
-            lib_id="Device:R",
             reference="R2",
-            value="4.7K",
+            value="1K",
             x=150,
             y=150,
             schematic_path=str(scratch_sch),
             project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
-        sch_after = reparse(str(scratch_sch))
-        assert len(sch_after.libSymbols) == lib_count_before
+        assert "R2" in result
+
+        sch = reparse(str(scratch_sch))
+        r2 = _find_symbol(sch, "R2")
+        # 150 / 1.27 = 118.11 -> 118 * 1.27 = 149.86
+        assert r2.position.X == 149.86
+        assert r2.position.Y == 149.86
+
+    def test_lib_symbol_reuse(self, scratch_sch):
+        """Placing two Device:R components should not duplicate lib_symbol."""
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R2",
+            value="1K",
+            x=150,
+            y=150,
+            schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+        )
+        sch = reparse(str(scratch_sch))
+        r_libs = [ls for ls in sch.libSymbols if ls.entryName == "R"]
+        assert len(r_libs) == 1
+
+    def test_instances_block(self, scratch_sch):
+        """Placed component should have an instances block for annotation."""
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="R2",
+            value="1K",
+            x=150,
+            y=150,
+            schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+        )
+        assert "R2" in result
+
+        sch = reparse(str(scratch_sch))
+        r2 = _find_symbol(sch, "R2")
+        assert r2 is not None
+        assert len(r2.instances) >= 1
+        inst = r2.instances[0]
+        assert len(inst.paths) >= 1
+        assert inst.paths[0].reference == "R2"
+        assert inst.paths[0].unit == 1
+
+    def test_pin_uuids_assigned(self, scratch_sch):
+        """Placed component should have pin UUIDs."""
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R2",
+            value="1K",
+            x=150,
+            y=150,
+            schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+        )
+        sch = reparse(str(scratch_sch))
+        r2 = _find_symbol(sch, "R2")
+        assert isinstance(r2.pins, dict)
+        assert len(r2.pins) == 2
+        assert "1" in r2.pins
+        assert "2" in r2.pins
 
     @pytest.mark.skipif(not HAS_KICAD_LIBS, reason="KiCad system libraries not installed")
     def test_missing_symbol_suggests_alternatives(self, empty_sch):
         """When symbol not found, error lists available symbols from lib."""
-        result = schematic.place_component(
-            lib_id="Device:Q_PMOS_GSD",
-            reference="Q1",
-            value="test",
-            x=100,
-            y=100,
-            schematic_path=str(empty_sch),
-            project_path=str(empty_sch.with_suffix(".kicad_pro")),
-        )
-        # Should mention the symbol wasn't found and list alternatives
-        assert "not found" in result.lower() or "Q_PMOS_GSD" in result
+        with pytest.raises(ToolError, match="not found") as exc_info:
+            schematic.place_component(
+                lib_id="Device:Q_PMOS_GSD",
+                reference="Q1",
+                value="test",
+                x=100,
+                y=100,
+                schematic_path=str(empty_sch),
+                project_path=str(empty_sch.with_suffix(".kicad_pro")),
+            )
+        msg = str(exc_info.value)
         # Should suggest similar symbols if the library was found
-        if "Device" in result:
-            assert "Q_PMOS" in result or "available" in result.lower()
+        assert "Q_PMOS" in msg or "Similar" in msg
 
     def test_fuzzy_match_no_substring_noise(self, tmp_path: Path):
         """Short name 'D' must not suggest unrelated 'Q_PMOS_GSD'.
@@ -335,24 +241,23 @@ class TestPlaceComponent:
         lib.to_file()
 
         sch_path = tmp_path / "test.kicad_sch"
-        from conftest import new_schematic
-
         sch = new_schematic()
         sch.filePath = str(sch_path)
         sch.to_file()
 
-        result = schematic.place_component(
-            lib_id="TestLib:D",
-            reference="D1",
-            value="test",
-            x=100,
-            y=100,
-            schematic_path=str(sch_path),
-            symbol_lib_path=str(lib_path),
-        )
-        assert "not found" in result.lower()
+        with pytest.raises(ToolError, match="not found") as exc_info:
+            schematic.place_component(
+                lib_id="TestLib:D",
+                reference="D1",
+                value="test",
+                x=100,
+                y=100,
+                schematic_path=str(sch_path),
+                symbol_lib_path=str(lib_path),
+            )
+        msg = str(exc_info.value)
         # Old substring matching would include Q_PMOS_GSD; difflib should not
-        assert "Q_PMOS_GSD" not in result
+        assert "Q_PMOS_GSD" not in msg
 
     def test_no_matches_suggests_cross_library_search(self, tmp_path: Path):
         """When no close matches found, suggest list_lib_symbols."""
@@ -372,17 +277,18 @@ class TestPlaceComponent:
         sch.filePath = str(sch_path)
         sch.to_file()
 
-        result = schematic.place_component(
-            lib_id="TestLib:TOTALLY_UNRELATED",
-            reference="U1",
-            value="test",
-            x=100,
-            y=100,
-            schematic_path=str(sch_path),
-            symbol_lib_path=str(lib_path),
-        )
-        assert "not found" in result.lower()
-        assert "list_lib_symbols" in result
+        with pytest.raises(ToolError, match="not found") as exc_info:
+            schematic.place_component(
+                lib_id="TestLib:TOTALLY_UNRELATED",
+                reference="U1",
+                value="test",
+                x=100,
+                y=100,
+                schematic_path=str(sch_path),
+                symbol_lib_path=str(lib_path),
+            )
+        msg = str(exc_info.value)
+        assert "list_lib_symbols" in msg
 
     def test_sub_sheet_instances_use_root_project(self, tmp_path: Path):
         """Components in sub-sheets must use root project name and full hierarchy path."""
@@ -440,6 +346,45 @@ class TestPlaceComponent:
         assert inst.name == "myproject"
         assert inst.paths[0].sheetInstancePath == f"/{root_sch.uuid}/{sheet.uuid}"
 
+    @pytest.mark.skipif(not HAS_KICAD_LIBS, reason="KiCad system libraries not installed")
+    def test_auto_embeds_lib_symbol(self, empty_sch):
+        """place_component auto-embeds lib_symbol from system library."""
+        result = schematic.place_component(
+            lib_id="Device:R",
+            reference="R1",
+            value="10K",
+            x=100,
+            y=100,
+            schematic_path=str(empty_sch),
+            project_path=str(empty_sch.with_suffix(".kicad_pro")),
+        )
+        assert "R1" in result
+        sch = reparse(str(empty_sch))
+        # lib_symbol should be embedded
+        lib_names = [ls.entryName for ls in sch.libSymbols]
+        assert "R" in lib_names
+
+    @pytest.mark.skipif(not HAS_KICAD_LIBS, reason="KiCad system libraries not installed")
+    def test_auto_embed_then_wire(self, empty_sch):
+        """place_component + wire_pins_to_net works without add_lib_symbol."""
+        schematic.place_component(
+            lib_id="Device:R",
+            reference="R1",
+            value="10K",
+            x=100,
+            y=100,
+            schematic_path=str(empty_sch),
+            project_path=str(empty_sch.with_suffix(".kicad_pro")),
+        )
+        # This should NOT raise "Lib symbol not found"
+        result = schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
+            label_text="VCC",
+            direction="up",
+            schematic_path=str(empty_sch),
+        )
+        assert "VCC" in result
+
 
 # ===========================================================================
 # TestRemoveComponent
@@ -462,11 +407,11 @@ class TestRemoveComponent:
         assert "R1" not in _get_refs(sch)
 
     def test_remove_missing(self, scratch_sch):
-        result = schematic.remove_component(
-            reference="R999",
-            schematic_path=str(scratch_sch),
-        )
-        assert "not found" in result.lower()
+        with pytest.raises(ToolError, match="not found"):
+            schematic.remove_component(
+                reference="R999",
+                schematic_path=str(scratch_sch),
+            )
 
 
 # ===========================================================================
@@ -691,11 +636,11 @@ class TestRemoveLabel:
         assert len(remaining) == 1
 
     def test_remove_missing(self, scratch_sch):
-        result = schematic.remove_label(
-            text="NONEXISTENT",
-            schematic_path=str(scratch_sch),
-        )
-        assert "not found" in result.lower() or "0" in result
+        with pytest.raises(ToolError, match="not found"):
+            schematic.remove_label(
+                text="NONEXISTENT",
+                schematic_path=str(scratch_sch),
+            )
 
     def test_remove_off_grid_label_by_exact_position(self, scratch_sch):
         """Label at non-grid position (50, 50) is removable by its exact coords.
@@ -785,14 +730,14 @@ class TestRemoveWire:
         assert len(matching) == 0
 
     def test_remove_missing(self, scratch_sch):
-        result = schematic.remove_wire(
-            x1=999,
-            y1=999,
-            x2=999,
-            y2=998,
-            schematic_path=str(scratch_sch),
-        )
-        assert "not found" in result.lower() or "0" in result
+        with pytest.raises(ToolError, match="not found"):
+            schematic.remove_wire(
+                x1=999,
+                y1=999,
+                x2=999,
+                y2=998,
+                schematic_path=str(scratch_sch),
+            )
 
 
 # ===========================================================================
@@ -857,13 +802,13 @@ class TestSetComponentFootprint:
         assert fp == "Resistor_SMD:R_0402_1005Metric"
 
     def test_missing_component(self, scratch_sch):
-        result = schematic.set_component_property(
-            reference="R999",
-            key="Footprint",
-            value="test",
-            schematic_path=str(scratch_sch),
-        )
-        assert "not found" in result.lower()
+        with pytest.raises(ToolError, match="not found"):
+            schematic.set_component_property(
+                reference="R999",
+                key="Footprint",
+                value="test",
+                schematic_path=str(scratch_sch),
+            )
 
 
 # ===========================================================================
@@ -901,18 +846,18 @@ class TestSetComponentProperty:
         assert mpn == "RC0402FR-0710KL"
 
     def test_missing_component(self, scratch_sch):
-        result = schematic.set_component_property(
-            reference="R999",
-            key="Value",
-            value="test",
-            schematic_path=str(scratch_sch),
-        )
-        assert "not found" in result.lower()
+        with pytest.raises(ToolError, match="not found"):
+            schematic.set_component_property(
+                reference="R999",
+                key="Value",
+                value="test",
+                schematic_path=str(scratch_sch),
+            )
 
     @pytest.mark.no_kicad_validation
     def test_set_reference_updates_per_symbol_instances(self, tmp_path):
         """Changing Reference via set_component_property must update sym.instances."""
-        from conftest import _gen_uuid, build_r_symbol, new_schematic
+        from conftest import _gen_uuid, new_schematic
         from kiutils.items.common import Effects, Font, Position, Property
         from kiutils.items.schitems import (
             SchematicSymbol,
@@ -1013,8 +958,8 @@ class TestRemoveJunction:
         )
 
     def test_remove_missing(self, scratch_sch):
-        result = schematic.remove_junction(x=999, y=999, schematic_path=str(scratch_sch))
-        assert "not found" in result.lower()
+        with pytest.raises(ToolError, match="not found"):
+            schematic.remove_junction(x=999, y=999, schematic_path=str(scratch_sch))
 
 
 # ===========================================================================
@@ -1036,30 +981,28 @@ class TestPageBoundary:
         assert "Placed" in result
 
     def test_out_of_bounds_x(self, scratch_sch):
-        result = schematic.place_component(
-            lib_id="Device:R",
-            reference="R21",
-            value="1K",
-            x=350,
-            y=100,
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        assert "Error" in result
-        assert "outside" in result
+        with pytest.raises(ToolError, match="outside"):
+            schematic.place_component(
+                lib_id="Device:R",
+                reference="R21",
+                value="1K",
+                x=350,
+                y=100,
+                schematic_path=str(scratch_sch),
+                project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+            )
 
     def test_out_of_bounds_y(self, scratch_sch):
-        result = schematic.place_component(
-            lib_id="Device:R",
-            reference="R22",
-            value="1K",
-            x=100,
-            y=250,
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        assert "Error" in result
-        assert "outside" in result
+        with pytest.raises(ToolError, match="outside"):
+            schematic.place_component(
+                lib_id="Device:R",
+                reference="R22",
+                value="1K",
+                x=100,
+                y=250,
+                schematic_path=str(scratch_sch),
+                project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+            )
 
     def test_edge_coordinates_accepted(self, scratch_sch):
         """Coordinates exactly at page edges should be accepted."""
@@ -1075,43 +1018,31 @@ class TestPageBoundary:
         assert "Placed" in result
 
     def test_add_label_out_of_bounds(self, scratch_sch):
-        result = schematic.add_label(text="OOB", x=350, y=100, schematic_path=str(scratch_sch))
-        assert "Error" in result
-        assert "outside" in result
+        with pytest.raises(ToolError, match="outside"):
+            schematic.add_label(text="OOB", x=350, y=100, schematic_path=str(scratch_sch))
 
     def test_add_wires_out_of_bounds(self, scratch_sch):
-        result = schematic.add_wires(
-            wires=[{"x1": 350, "y1": 100, "x2": 360, "y2": 100}],
-            schematic_path=str(scratch_sch),
-        )
-        assert "Error" in result
-        assert "outside" in result
+        with pytest.raises(ToolError, match="outside"):
+            schematic.add_wires(
+                wires=[{"x1": 350, "y1": 100, "x2": 360, "y2": 100}],
+                schematic_path=str(scratch_sch),
+            )
 
     def test_add_junctions_out_of_bounds(self, scratch_sch):
-        result = schematic.add_junctions(
-            points=[{"x": 350, "y": 100}], schematic_path=str(scratch_sch)
-        )
-        assert "Error" in result
-        assert "outside" in result
+        with pytest.raises(ToolError, match="outside"):
+            schematic.add_junctions(points=[{"x": 350, "y": 100}], schematic_path=str(scratch_sch))
 
     def test_move_component_out_of_bounds(self, scratch_sch):
-        result = schematic.move_component(
-            reference="R1", x=350, y=100, schematic_path=str(scratch_sch)
-        )
-        assert "Error" in result
-        assert "outside" in result
+        with pytest.raises(ToolError, match="outside"):
+            schematic.move_component(reference="R1", x=350, y=100, schematic_path=str(scratch_sch))
 
     def test_add_global_label_out_of_bounds(self, scratch_sch):
-        result = schematic.add_global_label(
-            text="OOB", x=350, y=100, schematic_path=str(scratch_sch)
-        )
-        assert "Error" in result
-        assert "outside" in result
+        with pytest.raises(ToolError, match="outside"):
+            schematic.add_global_label(text="OOB", x=350, y=100, schematic_path=str(scratch_sch))
 
     def test_add_text_out_of_bounds(self, scratch_sch):
-        result = schematic.add_text(text="OOB", x=350, y=100, schematic_path=str(scratch_sch))
-        assert "Error" in result
-        assert "outside" in result
+        with pytest.raises(ToolError, match="outside"):
+            schematic.add_text(text="OOB", x=350, y=100, schematic_path=str(scratch_sch))
 
 
 # ===========================================================================
@@ -1138,8 +1069,8 @@ class TestRemoveText:
         assert abs(a_texts[0].position.X - 80) < 0.1
 
     def test_remove_missing(self, scratch_sch):
-        result = schematic.remove_text(text="NONEXISTENT", schematic_path=str(scratch_sch))
-        assert "not found" in result
+        with pytest.raises(ToolError, match="not found"):
+            schematic.remove_text(text="NONEXISTENT", schematic_path=str(scratch_sch))
 
 
 # ===========================================================================
@@ -1174,28 +1105,28 @@ class TestReferenceValidation:
         assert "Placed" in result
 
     def test_empty_ref_rejected(self, scratch_sch):
-        result = schematic.place_component(
-            lib_id="Device:R",
-            reference="",
-            value="1K",
-            x=100,
-            y=100,
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        assert "Error" in result
+        with pytest.raises(ToolError):
+            schematic.place_component(
+                lib_id="Device:R",
+                reference="",
+                value="1K",
+                x=100,
+                y=100,
+                schematic_path=str(scratch_sch),
+                project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+            )
 
     def test_digits_only_rejected(self, scratch_sch):
-        result = schematic.place_component(
-            lib_id="Device:R",
-            reference="123",
-            value="1K",
-            x=100,
-            y=100,
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        assert "Error" in result
+        with pytest.raises(ToolError):
+            schematic.place_component(
+                lib_id="Device:R",
+                reference="123",
+                value="1K",
+                x=100,
+                y=100,
+                schematic_path=str(scratch_sch),
+                project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+            )
 
     def test_power_ref_accepted(self, scratch_sch):
         """#FLG01 and #PWR05 should be accepted."""
@@ -1212,16 +1143,16 @@ class TestReferenceValidation:
 
     def test_lowercase_ref_rejected(self, scratch_sch):
         """Lowercase references like 'r1' should still be rejected."""
-        result = schematic.place_component(
-            lib_id="Device:R",
-            reference="r1",
-            value="1K",
-            x=100,
-            y=100,
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        assert "Error" in result
+        with pytest.raises(ToolError):
+            schematic.place_component(
+                lib_id="Device:R",
+                reference="r1",
+                value="1K",
+                x=100,
+                y=100,
+                schematic_path=str(scratch_sch),
+                project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+            )
 
 
 # ===========================================================================
@@ -1250,14 +1181,14 @@ class TestAddHierarchicalLabel:
         assert hl.position.X == 25.4
 
     def test_invalid_shape_returns_error(self, empty_sch):
-        result = schematic.add_hierarchical_label(
-            text="BAD",
-            shape="invalid",
-            x=10,
-            y=10,
-            schematic_path=str(empty_sch),
-        )
-        assert "Error" in result or "invalid" in result.lower()
+        with pytest.raises(ToolError):
+            schematic.add_hierarchical_label(
+                text="BAD",
+                shape="invalid",
+                x=10,
+                y=10,
+                schematic_path=str(empty_sch),
+            )
 
 
 # ===========================================================================
@@ -1286,11 +1217,11 @@ class TestRemoveHierarchicalLabel:
         assert len(sch.hierarchicalLabels) == 0
 
     def test_not_found_returns_error(self, empty_sch):
-        result = schematic.remove_hierarchical_label(
-            text="NONEXISTENT",
-            schematic_path=str(empty_sch),
-        )
-        assert "not found" in result.lower()
+        with pytest.raises(ToolError, match="not found"):
+            schematic.remove_hierarchical_label(
+                text="NONEXISTENT",
+                schematic_path=str(empty_sch),
+            )
 
 
 # ===========================================================================

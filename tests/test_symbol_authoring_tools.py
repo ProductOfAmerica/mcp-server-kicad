@@ -1,6 +1,8 @@
 """Tests for symbol authoring tools on the symbol server."""
 
+import pytest
 from kiutils.symbol import SymbolLib
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import symbol
 from mcp_server_kicad.symbol import _auto_body_rect
@@ -122,51 +124,48 @@ class TestAddSymbol:
         assert lib_path.exists()
 
     def test_duplicate_name_rejected(self, scratch_sym_lib):
-        result = symbol.add_symbol(
-            name="TestPart",
-            pins=_two_pin_passive(),
-            symbol_lib_path=str(scratch_sym_lib),
-        )
-        assert "Error" in result
-        assert "already exists" in result
+        with pytest.raises(ToolError, match="already exists"):
+            symbol.add_symbol(
+                name="TestPart",
+                pins=_two_pin_passive(),
+                symbol_lib_path=str(scratch_sym_lib),
+            )
 
     def test_empty_name(self, tmp_path):
-        result = symbol.add_symbol(
-            name="",
-            pins=_two_pin_passive(),
-            symbol_lib_path=str(tmp_path / "lib.kicad_sym"),
-        )
-        assert "Error" in result
+        with pytest.raises(ToolError):
+            symbol.add_symbol(
+                name="",
+                pins=_two_pin_passive(),
+                symbol_lib_path=str(tmp_path / "lib.kicad_sym"),
+            )
 
     def test_empty_pins(self, tmp_path):
-        result = symbol.add_symbol(
-            name="NoPins",
-            pins=[],
-            symbol_lib_path=str(tmp_path / "lib.kicad_sym"),
-        )
-        assert "Error" in result
+        with pytest.raises(ToolError):
+            symbol.add_symbol(
+                name="NoPins",
+                pins=[],
+                symbol_lib_path=str(tmp_path / "lib.kicad_sym"),
+            )
 
     def test_empty_lib_path(self):
-        result = symbol.add_symbol(name="X", pins=_two_pin_passive(), symbol_lib_path="")
-        assert "Error" in result
+        with pytest.raises(ToolError):
+            symbol.add_symbol(name="X", pins=_two_pin_passive(), symbol_lib_path="")
 
     def test_missing_pin_key(self, tmp_path):
-        result = symbol.add_symbol(
-            name="Bad",
-            pins=[{"number": "1", "name": "A"}],  # missing "type"
-            symbol_lib_path=str(tmp_path / "lib.kicad_sym"),
-        )
-        assert "Error" in result
-        assert "type" in result
+        with pytest.raises(ToolError, match="type"):
+            symbol.add_symbol(
+                name="Bad",
+                pins=[{"number": "1", "name": "A"}],  # missing "type"
+                symbol_lib_path=str(tmp_path / "lib.kicad_sym"),
+            )
 
     def test_invalid_pin_type(self, tmp_path):
-        result = symbol.add_symbol(
-            name="Bad",
-            pins=[{"number": "1", "name": "A", "type": "bogus"}],
-            symbol_lib_path=str(tmp_path / "lib.kicad_sym"),
-        )
-        assert "Error" in result
-        assert "bogus" in result
+        with pytest.raises(ToolError, match="bogus"):
+            symbol.add_symbol(
+                name="Bad",
+                pins=[{"number": "1", "name": "A", "type": "bogus"}],
+                symbol_lib_path=str(tmp_path / "lib.kicad_sym"),
+            )
 
     def test_pin_defaults(self, tmp_path):
         """Pins with only required keys should use defaults for x/y/rotation/length."""
