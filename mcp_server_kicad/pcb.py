@@ -953,7 +953,12 @@ def add_thermal_vias(
     fp_x = fp.position.X
     fp_y = fp.position.Y
     pad_x, pad_y = _transform_local_to_board(
-        fp_x, fp_y, fp.position.angle or 0, pad.position.X, pad.position.Y
+        fp_x,
+        fp_y,
+        fp.position.angle or 0,
+        pad.position.X,
+        pad.position.Y,
+        mirrored=fp.layer == "B.Cu",
     )
 
     # Determine net
@@ -1107,7 +1112,12 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
             fp_y = fp.position.Y
             for pad in fp.pads:
                 px, py = _transform_local_to_board(
-                    fp_x, fp_y, fp.position.angle or 0, pad.position.X, pad.position.Y
+                    fp_x,
+                    fp_y,
+                    fp.position.angle or 0,
+                    pad.position.X,
+                    pad.position.Y,
+                    mirrored=fp.layer == "B.Cu",
                 )
                 connection_points.append((round(px, 3), round(py, 3)))
 
@@ -1650,7 +1660,8 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintB
             (bbox["min_x"], bbox["max_y"]),
         ]
         board_corners = [
-            _transform_local_to_board(fp_x, fp_y, angle, lx, ly) for lx, ly in local_corners
+            _transform_local_to_board(fp_x, fp_y, angle, lx, ly, mirrored=fp.layer == "B.Cu")
+            for lx, ly in local_corners
         ]
         # Recompute axis-aligned bounding box from transformed corners
         xs = [c[0] for c in board_corners]
