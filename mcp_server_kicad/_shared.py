@@ -877,12 +877,16 @@ def _transform_local_to_board(
     angle: float,
     local_x: float,
     local_y: float,
+    mirrored: bool = False,
 ) -> tuple[float, float]:
     """Convert footprint-local coordinates to board coordinates.
 
     Applies rotation by *angle* (degrees) around the footprint origin
-    ``(fp_x, fp_y)``.
+    ``(fp_x, fp_y)``.  When *mirrored* is True (back-side footprint),
+    the local X coordinate is negated before rotation.
     """
+    if mirrored:
+        local_x = -local_x
     theta = math.radians(angle or 0)
     cos_t = math.cos(theta)
     sin_t = math.sin(theta)
@@ -1099,7 +1103,9 @@ def _check_footprint_keepout_violations(board: Board, x: float, y: float, layer:
             # Transform polygon from footprint-local to board coordinates
             poly_coords: list[tuple[float, float]] = []
             for c in zone.polygons[0].coordinates:
-                bx, by = _transform_local_to_board(fp_x, fp_y, fp_angle, c.X, c.Y)
+                bx, by = _transform_local_to_board(
+                    fp_x, fp_y, fp_angle, c.X, c.Y, mirrored=fp.layer == "B.Cu"
+                )
                 poly_coords.append((round(bx, 3), round(by, 3)))
             if _point_in_polygon(x, y, poly_coords):
                 violations.append(
