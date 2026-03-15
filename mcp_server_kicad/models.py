@@ -311,6 +311,7 @@ class AutorouteResult(BaseModel):
     text_fields_fixed: int
     drc_violations: int | None = None
     drc_unconnected: int | None = None
+    keepouts_promoted: int = 0
 
 
 # ---------------------------------------------------------------------------
