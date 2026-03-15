@@ -63,6 +63,7 @@ from mcp_server_kicad._shared import (
     _gen_uuid,
     _load_board,
     _point_in_polygon,
+    _promote_footprint_keepouts,
     _run_cli,
     _transform_local_to_board,
 )
@@ -1565,12 +1566,17 @@ def autoroute_pcb(
         dsn_path = str(Path(tmp_dir) / f"{stem}.dsn")
         ses_path = str(Path(tmp_dir) / f"{stem}.ses")
 
-        # Step 1: Export DSN
-        dsn_err = _export_dsn(pcb_path, dsn_path)
+        # Step 1: Promote footprint-level keepout zones to board-level
+        temp_pcb_path = str(Path(tmp_dir) / f"{stem}_keepouts.kicad_pcb")
+        keepouts_promoted = _promote_footprint_keepouts(pcb_path, temp_pcb_path)
+        dsn_source = temp_pcb_path if keepouts_promoted > 0 else pcb_path
+
+        # Step 2: Export DSN
+        dsn_err = _export_dsn(dsn_source, dsn_path)
         if dsn_err:
             raise ToolError(dsn_err)
 
-        # Step 2: Run Freerouting
+        # Step 3: Run Freerouting
         route_err = _run_freerouting(
             jar_path=jar_path,
             dsn_path=dsn_path,
@@ -1585,12 +1591,12 @@ def autoroute_pcb(
         if not Path(ses_path).exists():
             raise ToolError("Freerouting did not produce a session file.")
 
-        # Step 3: Import SES into new PCB
+        # Step 4: Import SES into new PCB
         ses_err = _import_ses(pcb_path, ses_path, routed_path)
         if ses_err:
             raise ToolError(ses_err)
 
-    # Step 4: Fix displaced footprint text fields
+    # Step 5: Fix displaced footprint text fields
     # The Freerouting DSN->SES round-trip often scrambles FpText positions
     # (Reference, Value, etc.), displacing them far from their parent footprint.
     # Reset any text field whose position is more than 5mm from the footprint
@@ -1626,6 +1632,7 @@ def autoroute_pcb(
         text_fields_fixed=text_fields_fixed,
         drc_violations=drc_violations,
         drc_unconnected=drc_unconnected,
+        keepouts_promoted=keepouts_promoted,
     )
 
 
