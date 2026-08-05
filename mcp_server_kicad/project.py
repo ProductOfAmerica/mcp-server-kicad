@@ -1907,8 +1907,8 @@ def get_version() -> VersionResult:
     """Get KiCad version information including build details and library versions."""
     try:
         result = _run_cli(["version", "--format", "about"], check=False)
-    except FileNotFoundError:
-        raise ToolError("kicad-cli not found on PATH")
+    except (FileNotFoundError, RuntimeError) as exc:
+        raise ToolError(str(exc))
     if result.returncode != 0:
         raise ToolError(result.stderr.strip())
     return VersionResult(version_info=result.stdout.strip())

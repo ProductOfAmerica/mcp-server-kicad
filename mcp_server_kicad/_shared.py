@@ -3,8 +3,11 @@
 import math
 import os
 import re
+import shutil
 import subprocess
+import sys
 import uuid
+from functools import lru_cache
 from pathlib import Path
 
 from kiutils.board import Board
@@ -140,6 +143,8 @@ __all__ = [
     "_default_effects",
     "_default_stroke",
     "_run_cli",
+    "_find_kicad_cli",
+    "_SYSTEM_CLI_PATHS",
     "_file_meta",
     "_fp_ref",
     "_fp_val",
@@ -607,10 +612,74 @@ def _load_board(path: str = PCB_PATH) -> Board:
     return board
 
 
+def _windows_cli_candidates() -> list[Path]:
+    """Enumerate kicad-cli.exe under the standard Windows install root."""
+    candidates: list[Path] = []
+    for root in (os.environ.get("ProgramFiles"), os.environ.get("ProgramFiles(x86)")):
+        if not root:
+            continue
+        kicad_root = Path(root) / "KiCad"
+        if not kicad_root.is_dir():
+            continue
+        # Versioned install dirs, newest first: KiCad/9.0/bin/kicad-cli.exe
+        for version_dir in sorted(kicad_root.iterdir(), reverse=True):
+            candidates.append(version_dir / "bin" / "kicad-cli.exe")
+    return candidates
+
+
+# Standard kicad-cli install locations, searched when it is absent from PATH.
+# macOS is the important case: the KiCad installer never adds kicad-cli to
+# PATH, so a stock install would otherwise look like "KiCad not installed".
+_SYSTEM_CLI_PATHS: list[Path] = (
+    _windows_cli_candidates()
+    if sys.platform == "win32"
+    else [
+        Path("/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli"),
+        Path("/usr/bin/kicad-cli"),
+        Path("/usr/local/bin/kicad-cli"),
+        Path("/opt/homebrew/bin/kicad-cli"),
+    ]
+)
+
+
+@lru_cache(maxsize=1)
+def _find_kicad_cli() -> str | None:
+    """Locate the kicad-cli executable, returning an absolute path.
+
+    Resolution order: KICAD_CLI_PATH, then PATH, then standard install
+    locations. Returns None if kicad-cli cannot be found.
+
+    The absolute path matters. KiCad resolves its stock symbol and
+    footprint libraries relative to the executable's own directory
+    (<exe_dir>/../SharedSupport). If kicad-cli is reached through a
+    symlink placed elsewhere on PATH, it searches the wrong
+    SharedSupport and DRC/ERC report spurious "library not found"
+    violations while otherwise appearing to work.
+    """
+    env_path = os.environ.get("KICAD_CLI_PATH")
+    if env_path and os.access(env_path, os.X_OK) and Path(env_path).is_file():
+        return str(Path(env_path).resolve())
+
+    on_path = shutil.which("kicad-cli")
+    if on_path:
+        return on_path
+
+    for candidate in _SYSTEM_CLI_PATHS:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
+
+    return None
+
+
 def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
     """Run a kicad-cli command, return CompletedProcess."""
+    executable = _find_kicad_cli()
+    if executable is None:
+        raise RuntimeError(
+            "kicad-cli not found. Install KiCad, or set KICAD_CLI_PATH to the kicad-cli executable."
+        )
     result = subprocess.run(
-        ["kicad-cli"] + args,
+        [executable] + args,
         capture_output=True,
         text=True,
         timeout=120,

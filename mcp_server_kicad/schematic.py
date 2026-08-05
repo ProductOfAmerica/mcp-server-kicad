@@ -36,6 +36,7 @@ from mcp_server_kicad._shared import (
     _default_effects,
     _default_stroke,
     _file_meta,
+    _find_kicad_cli,
     _gen_uuid,
     _load_sch,
     _load_system_lib_symbol,
@@ -2161,10 +2162,10 @@ def list_unconnected_pins(
         output_dir: Directory for ERC report file
         project_path: Path to .kicad_pro file for explicit root resolution
     """
-    import shutil
-
-    if not shutil.which("kicad-cli"):
-        raise ToolError("kicad-cli not found")
+    if _find_kicad_cli() is None:
+        raise ToolError(
+            "kicad-cli not found. Install KiCad, or set KICAD_CLI_PATH to the kicad-cli executable."
+        )
 
     # Auto-redirect sub-sheets to root for full hierarchy context
     root_path = _resolve_root(schematic_path, project_path)

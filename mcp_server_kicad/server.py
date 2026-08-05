@@ -1,10 +1,9 @@
 """Unified MCP server registering all KiCad tools."""
 
-import shutil
-
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad import footprint, pcb, project, schematic, symbol
+from mcp_server_kicad._shared import _find_kicad_cli
 
 mcp = FastMCP(
     "kicad",
@@ -65,7 +64,7 @@ def _copy_tools(source_mcp: FastMCP, target_mcp: FastMCP, has_cli: bool) -> None
 
 def main() -> None:
     """Entry point for unified mcp-server-kicad console script."""
-    has_cli = shutil.which("kicad-cli") is not None
+    has_cli = _find_kicad_cli() is not None
     for mod in [schematic, pcb, symbol, footprint, project]:
         _copy_tools(mod.mcp, mcp, has_cli)
     mcp.run(transport="stdio")
