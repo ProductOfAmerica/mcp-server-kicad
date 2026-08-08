@@ -17,14 +17,9 @@ from kiutils.items.schitems import Connection
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import schematic
+from mcp_server_kicad._shared import _resolve_system_lib
 
-HAS_KICAD_LIBS = any(
-    (p / "Device.kicad_sym").exists()
-    for p in [
-        __import__("pathlib").Path("/usr/share/kicad/symbols"),
-        __import__("pathlib").Path("/usr/local/share/kicad/symbols"),
-    ]
-)
+HAS_KICAD_LIBS = _resolve_system_lib("Device") is not None
 
 # ---------------------------------------------------------------------------
 # Helpers

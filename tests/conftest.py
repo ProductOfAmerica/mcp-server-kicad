@@ -7,6 +7,7 @@ Provides:
     - reparse: re-read a schematic from disk
     - run_erc: run kicad-cli ERC and return parsed JSON
     - assert_kicad_parseable: assert kicad-cli can parse the file
+    - requires_cli: skip marker for tests that shell out to kicad-cli
     - Builder helpers importable by test files for custom fixture creation
 """
 
@@ -41,6 +42,11 @@ from kiutils.symbol import Symbol, SymbolLib, SymbolPin
 from mcp_server_kicad._shared import _find_kicad_cli, _run_cli
 
 HAS_KICAD_CLI = _find_kicad_cli() is not None
+
+# Mark the tests that actually shell out.  Class-level ``pytestmark = []`` cannot
+# cancel a module-level skip: pytest unions marks down Module -> Class -> Function
+# and never subtracts them.
+requires_cli = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 
 # ---------------------------------------------------------------------------
 # Constants
