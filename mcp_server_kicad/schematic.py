@@ -2135,11 +2135,6 @@ def list_unconnected_pins(
         output_dir: Directory for ERC report file
         project_path: Path to .kicad_pro file for explicit root resolution
     """
-    import shutil
-
-    if not shutil.which("kicad-cli"):
-        raise ToolError("kicad-cli not found")
-
     # Auto-redirect sub-sheets to root for full hierarchy context
     root_path = _resolve_root(schematic_path, project_path)
     erc_target = root_path or schematic_path
