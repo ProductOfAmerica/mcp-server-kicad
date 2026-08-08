@@ -294,7 +294,7 @@ The servers resolve file paths in this order:
 ## System Requirements
 
 - **Python 3.10+**
-- **KiCad 9.x** -- required for CLI-based tools (ERC, DRC, exports). The `kicad-cli` binary must be on `PATH`.
+- **KiCad 9.x** -- required for CLI-based tools (ERC, DRC, exports). `kicad-cli` is found on `PATH`, or inside `/Applications/KiCad/KiCad.app` on macOS, where the installer does not add it to `PATH`. Set `KICAD_CLI_PATH` to the executable if it lives anywhere else. These tools are always registered; without `kicad-cli` they fail with a message naming `KICAD_CLI_PATH` rather than disappearing from the tool list.
 - The schematic and PCB read/write tools use [kiutils](https://github.com/mvnmgrx/kiutils) for file parsing and do not require a KiCad installation.
 
 ## Debugging
