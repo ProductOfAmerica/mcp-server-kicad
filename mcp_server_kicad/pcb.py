@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import json
-import math  # noqa: F401 – used by upcoming post-autoroute tools
 import os
-import subprocess  # noqa: F401 – used by upcoming post-autoroute tools
+import subprocess
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from kiutils.board import Board
-
+from kiutils.board import Board
+from kiutils.footprint import Footprint
+from kiutils.items.brditems import Segment, Via
+from kiutils.items.common import Position
+from kiutils.items.fpitems import FpText
+from kiutils.items.gritems import GrLine, GrText
+from kiutils.items.zones import FillSettings, Hatch, KeepoutSettings, Zone, ZonePolygon
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -26,7 +28,7 @@ from mcp_server_kicad._freerouting import (
     export_dsn as _export_dsn,
 )
 from mcp_server_kicad._freerouting import (
-    find_pcbnew_python as _find_pcbnew_python,  # noqa: F401
+    find_pcbnew_python as _find_pcbnew_python,
 )
 from mcp_server_kicad._freerouting import (
     import_ses as _import_ses,
@@ -41,18 +43,6 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     OUTPUT_DIR,
     PCB_PATH,
-    FillSettings,  # noqa: F401
-    Footprint,
-    FpText,
-    GrLine,
-    GrText,
-    Hatch,
-    KeepoutSettings,
-    Position,
-    Segment,
-    Via,
-    Zone,
-    ZonePolygon,
     _board_edge_polygon,
     _check_footprint_keepout_violations,
     _courtyard_bbox,
@@ -61,6 +51,7 @@ from mcp_server_kicad._shared import (
     _fp_ref,
     _fp_val,
     _gen_uuid,
+    _keepout_restrictions,
     _load_board,
     _point_in_polygon,
     _promote_footprint_keepouts,
@@ -131,6 +122,14 @@ def _find_net(board, net_name: str) -> tuple[int, str]:
             return n.number, n.name
     available = [n.name for n in board.nets if n.name]
     raise ValueError(f"Net {net_name!r} not found. Available nets: {available}")
+
+
+def _find_fp(board: Board, reference: str) -> Footprint:
+    """Return the footprint with *reference*, or raise ToolError."""
+    for fp in board.footprints:
+        if _fp_ref(fp) == reference:
+            return fp
+    raise ToolError(f"Footprint {reference!r} not found.")
 
 
 def _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max):
@@ -260,14 +259,7 @@ def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
     for z in board.zones:
         keepout = None
         if z.keepoutSettings is not None:
-            ks = z.keepoutSettings
-            keepout = {
-                "tracks": ks.tracks,
-                "vias": ks.vias,
-                "pads": ks.pads,
-                "copperpour": ks.copperpour,
-                "footprints": ks.footprints,
-            }
+            keepout = _keepout_restrictions(z.keepoutSettings)
         polygon = None
         if z.polygons:
             polygon = [{"x": pt.X, "y": pt.Y} for pt in z.polygons[0].coordinates]
@@ -363,21 +355,17 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
         reference: Footprint reference (e.g. "R1", "U1")
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    for fp in board.footprints:
-        ref = _fp_ref(fp)
-        if ref == reference:
-            lines = [f"{reference} pads:"]
-            for pad in fp.pads:
-                net_name = pad.net.name if pad.net else "none"
-                lines.append(
-                    f"  Pad {pad.number}: {pad.type} {pad.shape} "
-                    f"@ ({pad.position.X}, {pad.position.Y}) "
-                    f"size=({pad.size.X}, {pad.size.Y}) "
-                    f"layers={pad.layers} net={net_name}"
-                )
-            return "\n".join(lines)
-    raise ToolError(f"Footprint {reference} not found.")
+    fp = _find_fp(_load_board(pcb_path), reference)
+    lines = [f"{reference} pads:"]
+    for pad in fp.pads:
+        net_name = pad.net.name if pad.net else "none"
+        lines.append(
+            f"  Pad {pad.number}: {pad.type} {pad.shape} "
+            f"@ ({pad.position.X}, {pad.position.Y}) "
+            f"size=({pad.size.X}, {pad.size.Y}) "
+            f"layers={pad.layers} net={net_name}"
+        )
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
@@ -452,33 +440,29 @@ def move_footprint(
         pcb_path: Path to .kicad_pcb file
     """
     board = _load_board(pcb_path)
-    for fp in board.footprints:
-        if _fp_ref(fp) == reference:
-            fp.position.X = x
-            fp.position.Y = y
-            if rotation is not None:
-                fp.position.angle = rotation
-            if layer:
-                fp.layer = layer
-            board.to_file()
-            # Validation (never blocks the move)
-            warnings: list[str] = []
-            try:
-                violations = _check_footprint_keepout_violations(board, x, y, fp.layer)
-                if violations:
-                    warnings.append(
-                        "WARNING: position is inside a keep-out zone (footprints not allowed)"
-                    )
-                edge_poly = _board_edge_polygon(board)
-                if edge_poly is not None and not _point_in_polygon(x, y, edge_poly):
-                    warnings.append("WARNING: position is outside the board edge")
-            except Exception:
-                pass  # Validation must never block the move
-            msg = f"Moved {reference} to ({x}, {y})"
-            if warnings:
-                msg += " " + " ".join(warnings)
-            return msg
-    raise ToolError(f"Footprint {reference} not found.")
+    fp = _find_fp(board, reference)
+    fp.position.X = x
+    fp.position.Y = y
+    if rotation is not None:
+        fp.position.angle = rotation
+    if layer:
+        fp.layer = layer
+    board.to_file()
+    # Validation (never blocks the move)
+    warnings: list[str] = []
+    try:
+        violations = _check_footprint_keepout_violations(board, x, y, fp.layer)
+        if violations:
+            warnings.append("WARNING: position is inside a keep-out zone (footprints not allowed)")
+        edge_poly = _board_edge_polygon(board)
+        if edge_poly is not None and not _point_in_polygon(x, y, edge_poly):
+            warnings.append("WARNING: position is outside the board edge")
+    except Exception:
+        pass  # Validation must never block the move
+    msg = f"Moved {reference} to ({x}, {y})"
+    if warnings:
+        msg += " " + " ".join(warnings)
+    return msg
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -499,13 +483,7 @@ def check_placement(
         pcb_path: Path to .kicad_pcb file
     """
     board = _load_board(pcb_path)
-    fp = None
-    for f in board.footprints:
-        if _fp_ref(f) == reference:
-            fp = f
-            break
-    if fp is None:
-        raise ToolError(f"Footprint {reference!r} not found.")
+    fp = _find_fp(board, reference)
 
     keepout_violations = _check_footprint_keepout_violations(board, x, y, fp.layer)
     edge_poly = _board_edge_polygon(board)
@@ -532,14 +510,7 @@ def remove_footprint(reference: str, pcb_path: str = PCB_PATH) -> str:
         pcb_path: Path to .kicad_pcb file
     """
     board = _load_board(pcb_path)
-    target = None
-    for fp in board.footprints:
-        if _fp_ref(fp) == reference:
-            target = fp
-            break
-    if target is None:
-        raise ToolError(f"Footprint {reference} not found.")
-    board.footprints.remove(target)
+    board.footprints.remove(_find_fp(board, reference))
     board.to_file()
     return f"Removed {reference}"
 
@@ -781,13 +752,7 @@ def add_keepout_zone(
     return KeepoutZoneResult(
         corners=len(corners),
         layers=zone.layers,
-        restrictions={
-            "tracks": "not_allowed" if no_tracks else "allowed",
-            "vias": "not_allowed" if no_vias else "allowed",
-            "pads": "not_allowed" if no_pads else "allowed",
-            "copperpour": "not_allowed" if no_copper_pour else "allowed",
-            "footprints": "not_allowed" if no_footprints else "allowed",
-        },
+        restrictions=_keepout_restrictions(zone.keepoutSettings),
     )
 
 
@@ -919,15 +884,7 @@ def add_thermal_vias(
         pcb_path: Path to .kicad_pcb file
     """
     board = _load_board(pcb_path)
-
-    # Find footprint
-    fp = None
-    for f in board.footprints:
-        if _fp_ref(f) == reference:
-            fp = f
-            break
-    if fp is None:
-        raise ToolError(f"Footprint {reference!r} not found.")
+    fp = _find_fp(board, reference)
 
     # Find pad
     pad = None
@@ -1487,7 +1444,7 @@ _FP_TEXT_DEFAULT_OFFSETS: dict[str, tuple[float, float]] = {
 center.  Any displaced text type not listed here is reset to (0, 0)."""
 
 
-def _fix_displaced_fp_text(board: Board, routed_path: str) -> int:
+def _fix_displaced_fp_text(board: Board) -> int:
     """Reset footprint text fields displaced by Freerouting round-trip.
 
     After the DSN->SES round-trip, FpText items (Reference, Value, etc.)
@@ -1597,11 +1554,7 @@ def autoroute_pcb(
             raise ToolError(ses_err)
 
     # Step 5: Fix displaced footprint text fields
-    # The Freerouting DSN->SES round-trip often scrambles FpText positions
-    # (Reference, Value, etc.), displacing them far from their parent footprint.
-    # Reset any text field whose position is more than 5mm from the footprint
-    # center back to a sensible default offset.
-    text_fields_fixed = _fix_displaced_fp_text(_load_board(routed_path), routed_path)
+    text_fields_fixed = _fix_displaced_fp_text(_load_board(routed_path))
 
     # Count traces/vias in routed board
     routed_board = _load_board(routed_path)
@@ -1644,14 +1597,7 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintB
         reference: Footprint reference designator
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    fp = None
-    for f in board.footprints:
-        if _fp_ref(f) == reference:
-            fp = f
-            break
-    if fp is None:
-        raise ToolError(f"Footprint {reference!r} not found.")
+    fp = _find_fp(_load_board(pcb_path), reference)
 
     bbox = _courtyard_bbox(fp)
     courtyard = None
