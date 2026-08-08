@@ -1555,7 +1555,7 @@ def get_version() -> VersionResult:
     except (RuntimeError, FileNotFoundError) as e:
         raise ToolError(str(e)) from e
     if result.returncode != 0:
-        raise ToolError(result.stderr.strip())
+        raise ToolError(result.stderr.strip() or f"kicad-cli exited {result.returncode}")
     return VersionResult(version_info=result.stdout.strip())
 
 

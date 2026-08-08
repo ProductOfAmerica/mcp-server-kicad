@@ -521,10 +521,14 @@ def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess
         [executable] + args,
         capture_output=True,
         text=True,
+        errors="replace",
         timeout=120,
     )
     if check and result.returncode != 0:
-        raise RuntimeError(f"kicad-cli failed: {result.stderr.strip()}")
+        # kicad-cli can die with an empty stderr, e.g. the Windows access
+        # violation when it cannot write to a OneDrive-redirected Documents.
+        detail = result.stderr.strip() or f"no error output, exit code {result.returncode}"
+        raise RuntimeError(f"kicad-cli failed: {detail}")
     return result
 
 

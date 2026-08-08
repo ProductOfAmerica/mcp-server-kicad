@@ -1,6 +1,7 @@
 """Tests for kicad-cli executable resolution."""
 
 import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -35,4 +36,16 @@ def test_missing_cli_raises_actionable_error(monkeypatch):
     """Registering CLI tools unconditionally is only safe if the failure names the fix."""
     monkeypatch.setattr("mcp_server_kicad._shared._find_kicad_cli", lambda: None)
     with pytest.raises(RuntimeError, match="Install KiCad, or set KICAD_CLI_PATH"):
+        _run_cli(["version"])
+
+
+def test_failure_without_stderr_reports_exit_code(monkeypatch):
+    """kicad-cli can exit non-zero with nothing on stderr (see #6, OneDrive)."""
+    monkeypatch.setattr("mcp_server_kicad._shared._find_kicad_cli", lambda: "/bin/kicad-cli")
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 3221225477, stdout="", stderr=""),
+    )
+    with pytest.raises(RuntimeError, match="exit code 3221225477"):
         _run_cli(["version"])
