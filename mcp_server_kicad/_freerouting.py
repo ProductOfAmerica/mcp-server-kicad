@@ -10,6 +10,8 @@ import subprocess
 from pathlib import Path
 from urllib.request import Request, urlopen
 
+from mcp_server_kicad._shared import _kicad_root
+
 _GITHUB_RELEASES_URL = "https://api.github.com/repos/freerouting/freerouting/releases/latest"
 
 _KICAD_PYTHON_PATHS = [
@@ -118,6 +120,23 @@ def ensure_jar() -> tuple[str | None, str | None]:
     return None, "JAR download appeared to succeed but file not found."
 
 
+def _kicad_python_candidates() -> list[str]:
+    """KiCad's own interpreter, which imports pcbnew directly without PYTHONPATH.
+
+    On Windows this is the only one that works out of the box: bare "python3"
+    resolves to the Microsoft Store alias in WindowsApps.
+    """
+    root = _kicad_root()
+    if root is None:
+        return []
+    found = []
+    for name in ("python.exe", "python3"):
+        p = root / "bin" / name
+        if p.is_file():
+            found.append(str(p))
+    return found
+
+
 def find_pcbnew_python() -> tuple[str | None, dict | None]:
     """Find a Python interpreter that can import pcbnew.
 
@@ -145,8 +164,9 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
 
     # Try multiple python binaries — when running inside a uvx/venv environment,
     # "python3" may resolve to the venv python which can't import pcbnew.
-    # System python (e.g. /usr/bin/python3) typically can.
-    python_candidates = ["python3"]
+    # System python (e.g. /usr/bin/python3) typically can, and KiCad's own
+    # bundled interpreter always can, so it goes first.
+    python_candidates = _kicad_python_candidates() + ["python3"]
     sys_python = "/usr/bin/python3"
     if Path(sys_python).is_file() and sys_python not in python_candidates:
         python_candidates.append(sys_python)

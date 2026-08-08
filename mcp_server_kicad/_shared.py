@@ -274,7 +274,8 @@ _RAW_LIB_SYMBOLS: dict[str, str] = {}
 def _resolve_system_lib(lib_prefix: str) -> str | None:
     """Resolve a KiCad library prefix to its system .kicad_sym path.
 
-    Checks KICAD_SYMBOL_DIR env var first, then standard install locations.
+    Checks KICAD_SYMBOL_DIR env var first, then the install tree belonging to
+    the resolved kicad-cli, then standard install locations.
     Returns the full path string, or None if not found.
     """
     if not lib_prefix:
@@ -288,7 +289,17 @@ def _resolve_system_lib(lib_prefix: str) -> str | None:
         if candidate.exists():
             return str(candidate)
 
-    # Check standard system locations
+    # Then KiCad's own tree. A Unix prefix and a Windows install both use
+    # share/kicad; the macOS .app bundle uses SharedSupport.
+    root = _kicad_root()
+    if root:
+        for sub in ("share/kicad/symbols", "SharedSupport/symbols"):
+            candidate = root / sub / filename
+            if candidate.exists():
+                return str(candidate)
+
+    # Finally the standard locations, which still cover a symbols-only install
+    # (Debian ships kicad-symbols separately from kicad).
     for d in _SYSTEM_SYM_DIRS:
         candidate = d / filename
         if candidate.exists():
@@ -510,6 +521,18 @@ def _find_kicad_cli() -> str | None:
     if not found and os.path.isfile(_KICAD_APP):
         found = _KICAD_APP
     return str(Path(found).resolve()) if found else None
+
+
+@lru_cache(maxsize=1)
+def _kicad_root() -> Path | None:
+    """The KiCad install root, derived from the resolved kicad-cli.
+
+    KiCad locates its own data relative to the executable, so following the
+    binary is correct on install layouts nobody has enumerated. Beats a list
+    of hardcoded prefixes, which is what #6 was.
+    """
+    cli = _find_kicad_cli()
+    return Path(cli).parent.parent if cli else None
 
 
 def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess:

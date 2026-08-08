@@ -297,6 +297,20 @@ The servers resolve file paths in this order:
 - **KiCad 9.x** -- required for CLI-based tools (ERC, DRC, exports). `kicad-cli` is found on `PATH`, or inside `/Applications/KiCad/KiCad.app` on macOS, where the installer does not add it to `PATH`. Set `KICAD_CLI_PATH` to the executable if it lives anywhere else. These tools are always registered; without `kicad-cli` they fail with a message naming `KICAD_CLI_PATH` rather than disappearing from the tool list.
 - The schematic and PCB read/write tools use [kiutils](https://github.com/mvnmgrx/kiutils) for file parsing and do not require a KiCad installation.
 
+### Finding your KiCad install
+
+Everything else in the KiCad tree is located relative to `kicad-cli`, the same way KiCad itself does it, so a stock install on any platform needs no configuration. The stock symbol libraries and the bundled Python that provides `pcbnew` are both found automatically.
+
+Override any of it if your install is unusual:
+
+| Variable | Overrides |
+| --- | --- |
+| `KICAD_CLI_PATH` | the `kicad-cli` executable, and with it everything derived from its location |
+| `KICAD_SYMBOL_DIR` | the directory holding the stock `.kicad_sym` libraries |
+| `KICAD_PYTHON` | the interpreter used for `pcbnew` (`fill_zones`, `autoroute_pcb`) |
+
+**Windows and OneDrive:** if your Documents folder is redirected to OneDrive, `kicad-cli` can die at startup with an access violation (exit `3221225477`) because it cannot create its `KiCad` subfolder there. Every invocation fails, including `kicad-cli --version`. Point KiCad's own `KICAD_DOCUMENTS_HOME` at a non-synced directory to fix it.
+
 ## Debugging
 
 Use the [MCP Inspector](https://github.com/modelcontextprotocol/inspector) to test and debug the servers interactively:
