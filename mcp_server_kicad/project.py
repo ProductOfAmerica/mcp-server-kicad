@@ -9,6 +9,21 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from kiutils.items.common import ColorRGBA, Effects, Font, Position, Property, Stroke
+from kiutils.items.schitems import (
+    Connection,
+    HierarchicalLabel,
+    HierarchicalPin,
+    HierarchicalSheet,
+    HierarchicalSheetProjectInstance,
+    HierarchicalSheetProjectPath,
+    LocalLabel,
+    SchematicSymbol,
+    SymbolProjectInstance,
+    SymbolProjectPath,
+)
+from kiutils.schematic import Schematic
+from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -18,25 +33,6 @@ from mcp_server_kicad._shared import (
     _EXPORT,
     _READ_ONLY,
     SCH_PATH,
-    # kiutils types via _shared re-exports
-    ColorRGBA,
-    Connection,
-    Effects,
-    Font,
-    HierarchicalLabel,
-    HierarchicalPin,
-    HierarchicalSheet,
-    HierarchicalSheetProjectInstance,
-    HierarchicalSheetProjectPath,
-    LocalLabel,
-    Position,
-    Property,
-    Schematic,
-    SchematicSymbol,
-    Stroke,
-    SymbolLib,
-    SymbolProjectInstance,
-    SymbolProjectPath,
     _default_effects,
     _default_stroke,
     _find_root_schematic,
@@ -101,7 +97,16 @@ mcp = FastMCP(
 )
 
 
-def _create_project(directory: str, name: str) -> str:
+def _find_sheet(sch: Schematic, sheet_uuid: str) -> HierarchicalSheet:
+    """Return the hierarchical sheet with the given UUID, or raise ToolError."""
+    sheet = next((s for s in sch.sheets if s.uuid == sheet_uuid), None)
+    if sheet is None:
+        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
+    return sheet
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def create_project(directory: str, name: str) -> str:
     """Create a KiCad 9 project (.kicad_pro + .kicad_prl + .kicad_sch).
 
     Args:
@@ -113,7 +118,7 @@ def _create_project(directory: str, name: str) -> str:
 
     pro_path = d / f"{name}.kicad_pro"
     if pro_path.exists():
-        raise ValueError(f"{pro_path} already exists.")
+        raise ToolError(f"{pro_path} already exists.")
 
     pro_data = {"meta": {"filename": f"{name}.kicad_pro", "version": 1}}
     pro_path.write_text(json.dumps(pro_data, indent=2) + "\n")
@@ -127,12 +132,13 @@ def _create_project(directory: str, name: str) -> str:
     # only reached on a fresh project, but a stray .kicad_sch could exist.
     sch_path = d / f"{name}.kicad_sch"
     if not sch_path.exists():
-        _create_schematic(str(sch_path))
+        create_schematic(str(sch_path))
 
     return f"Created project at {pro_path} (including root schematic)"
 
 
-def _create_schematic(schematic_path: str) -> str:
+@mcp.tool(annotations=_ADDITIVE)
+def create_schematic(schematic_path: str) -> str:
     """Create a valid empty KiCad 9 schematic file.
 
     Args:
@@ -140,7 +146,7 @@ def _create_schematic(schematic_path: str) -> str:
     """
     p = Path(schematic_path)
     if p.exists():
-        raise ValueError(f"{p} already exists.")
+        raise ToolError(f"{p} already exists.")
 
     p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -153,7 +159,8 @@ def _create_schematic(schematic_path: str) -> str:
     return f"Created schematic at {p}"
 
 
-def _create_symbol_library(symbol_lib_path: str) -> str:
+@mcp.tool(annotations=_ADDITIVE)
+def create_symbol_library(symbol_lib_path: str) -> str:
     """Create a valid empty KiCad 9 symbol library.
 
     Args:
@@ -161,7 +168,7 @@ def _create_symbol_library(symbol_lib_path: str) -> str:
     """
     p = Path(symbol_lib_path)
     if p.exists():
-        raise ValueError(f"{p} already exists.")
+        raise ToolError(f"{p} already exists.")
 
     p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -171,8 +178,12 @@ def _create_symbol_library(symbol_lib_path: str) -> str:
     return f"Created symbol library at {p}"
 
 
-def _create_sym_lib_table(directory: str, entries: list[dict]) -> str:
-    """Create a sym-lib-table file.
+@mcp.tool(annotations=_ADDITIVE)
+def create_sym_lib_table(directory: str, entries: list[dict]) -> str:
+    """Create a sym-lib-table file in the given directory.
+
+    Each entry dict needs 'name' and 'uri' keys.
+    Overwrites existing sym-lib-table if present.
 
     Args:
         directory: Directory to write sym-lib-table in
@@ -193,7 +204,8 @@ def _create_sym_lib_table(directory: str, entries: list[dict]) -> str:
     return f"Created sym-lib-table with {len(entries)} entries at {table_path}"
 
 
-def _add_hierarchical_sheet(
+@mcp.tool(annotations=_ADDITIVE)
+def add_hierarchical_sheet(
     parent_schematic_path: str,
     sheet_name: str,
     sheet_file: str,
@@ -204,14 +216,18 @@ def _add_hierarchical_sheet(
 ) -> str:
     """Add a hierarchical sheet to a parent schematic with matching labels in the child.
 
+    Creates the sheet block in the parent and corresponding hierarchical
+    labels in the child schematic. The child schematic must already exist
+    (create it with create_schematic first).
+
     Args:
         parent_schematic_path: Path to parent .kicad_sch
-        sheet_name: Display name for the sheet block
-        sheet_file: Path to the child .kicad_sch (must exist)
-        pins: List of dicts with 'name' and 'direction' keys
-              (direction: input, output, bidirectional, tri_state, passive)
-        x: X position of sheet block in parent
-        y: Y position of sheet block in parent
+        sheet_name: Display name for the sheet
+        sheet_file: Path to child .kicad_sch (must exist)
+        pins: List of dicts with 'name' (str) and 'direction' (str) keys.
+              Direction: input, output, bidirectional, tri_state, passive.
+        x: X position of sheet block (default 25.4)
+        y: Y position of sheet block (default 25.4)
         project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
     child_path = Path(sheet_file)
@@ -395,7 +411,8 @@ def _add_hierarchical_sheet(
     return f"Added sheet '{sheet_name}' with {len(pins)} pins to {parent_schematic_path}"
 
 
-def _remove_hierarchical_sheet(
+@mcp.tool(annotations=_DESTRUCTIVE)
+def remove_hierarchical_sheet(
     parent_schematic_path: str,
     name: str | None = None,
     uuid: str | None = None,
@@ -403,11 +420,15 @@ def _remove_hierarchical_sheet(
 ) -> str:
     """Remove a hierarchical sheet block from a parent schematic.
 
+    Identify the sheet by name, uuid, or both. If name matches multiple sheets,
+    returns an error with UUIDs for disambiguation.
+
     Args:
         parent_schematic_path: Path to parent .kicad_sch
-        name: Sheet name to match (via sheet.sheetName.value)
+        name: Sheet name to match
         uuid: Sheet UUID for unambiguous identification
-        delete_child_file: If True, delete the child .kicad_sch file (unless still referenced)
+        delete_child_file: If True, delete the child .kicad_sch file
+              (unless still referenced by another sheet)
     """
     if not name and not uuid:
         raise ToolError("Provide at least one of 'name' or 'uuid'.")
@@ -471,9 +492,10 @@ def _remove_hierarchical_sheet(
     return msg
 
 
-def _modify_hierarchical_sheet(
+@mcp.tool(annotations=_DESTRUCTIVE)
+def modify_hierarchical_sheet(
     sheet_uuid: str,
-    schematic_path: str,
+    schematic_path: str = SCH_PATH,
     sheet_name: str = "",
     file_name: str = "",
     width: float | None = None,
@@ -490,13 +512,7 @@ def _modify_hierarchical_sheet(
         height: New height in mm (None = keep)
     """
     sch = _load_sch(schematic_path)
-    target = None
-    for s in sch.sheets:
-        if s.uuid == sheet_uuid:
-            target = s
-            break
-    if target is None:
-        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
+    target = _find_sheet(sch, sheet_uuid)
     changes = []
     if sheet_name:
         target.sheetName.value = sheet_name
@@ -514,11 +530,12 @@ def _modify_hierarchical_sheet(
     return f"Modified sheet: {', '.join(changes)}"
 
 
-def _add_sheet_pin(
+@mcp.tool(annotations=_ADDITIVE)
+def add_sheet_pin(
     sheet_uuid: str,
     pin_name: str,
     connection_type: str,
-    schematic_path: str,
+    schematic_path: str = SCH_PATH,
     side: str = "left",
 ) -> str:
     """Add a pin to an existing hierarchical sheet block.
@@ -536,13 +553,7 @@ def _add_sheet_pin(
             f"Invalid connection_type '{connection_type}'. Use: {', '.join(sorted(_valid_types))}"
         )
     sch = _load_sch(schematic_path)
-    target = None
-    for s in sch.sheets:
-        if s.uuid == sheet_uuid:
-            target = s
-            break
-    if target is None:
-        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
+    target = _find_sheet(sch, sheet_uuid)
     # Calculate pin position on sheet edge
     existing_pins_on_side = len(target.pins)
     pin_y = target.position.Y + 2.54 * (existing_pins_on_side + 1)
@@ -561,7 +572,12 @@ def _add_sheet_pin(
     return f"Added sheet pin '{pin_name}' ({connection_type}) to sheet"
 
 
-def _remove_sheet_pin(sheet_uuid: str, pin_name: str, schematic_path: str) -> str:
+@mcp.tool(annotations=_DESTRUCTIVE)
+def remove_sheet_pin(
+    sheet_uuid: str,
+    pin_name: str,
+    schematic_path: str = SCH_PATH,
+) -> str:
     """Remove a pin from a hierarchical sheet block.
 
     Args:
@@ -570,18 +586,8 @@ def _remove_sheet_pin(sheet_uuid: str, pin_name: str, schematic_path: str) -> st
         schematic_path: Path to parent .kicad_sch
     """
     sch = _load_sch(schematic_path)
-    target = None
-    for s in sch.sheets:
-        if s.uuid == sheet_uuid:
-            target = s
-            break
-    if target is None:
-        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
-    pin = None
-    for p in target.pins:
-        if p.name == pin_name:
-            pin = p
-            break
+    target = _find_sheet(sch, sheet_uuid)
+    pin = next((p for p in target.pins if p.name == pin_name), None)
     if pin is None:
         raise ToolError(f"Pin '{pin_name}' not found on sheet")
     target.pins.remove(pin)
@@ -599,7 +605,8 @@ def _collect_refs(sch) -> set[str]:
     return refs
 
 
-def _annotate_schematic(schematic_path: str, project_path: str = "") -> str:
+@mcp.tool(annotations=_ADDITIVE)
+def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -> str:
     """Auto-assign reference designators to unannotated components.
 
     Finds components with '?' in their reference (e.g. R?, U?) and assigns
@@ -713,7 +720,8 @@ def _annotate_schematic(schematic_path: str, project_path: str = "") -> str:
     return f"Annotated {total} components: {', '.join(parts)}"
 
 
-def _validate_hierarchy(schematic_path: str) -> HierarchyValidationResult:
+@mcp.tool(annotations=_READ_ONLY)
+def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationResult:
     """Validate hierarchical schematic for common issues.
 
     Checks for orphaned labels/pins, direction mismatches, duplicate
@@ -826,7 +834,8 @@ def _validate_hierarchy(schematic_path: str) -> HierarchyValidationResult:
     )
 
 
-def _is_root_schematic(schematic_path: str) -> RootSchematicResult:
+@mcp.tool(annotations=_READ_ONLY)
+def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:
     """Check if a schematic is the root or a sub-sheet.
 
     Args:
@@ -839,7 +848,8 @@ def _is_root_schematic(schematic_path: str) -> RootSchematicResult:
     )
 
 
-def _list_hierarchy(schematic_path: str) -> HierarchyResult:
+@mcp.tool(annotations=_READ_ONLY)
+def list_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyResult:
     """List the full sheet hierarchy starting from a root schematic.
 
     Args:
@@ -887,7 +897,8 @@ def _list_hierarchy(schematic_path: str) -> HierarchyResult:
     )
 
 
-def _get_sheet_info(sheet_uuid: str, schematic_path: str) -> SheetInfoResult:
+@mcp.tool(annotations=_READ_ONLY)
+def get_sheet_info(sheet_uuid: str, schematic_path: str = SCH_PATH) -> SheetInfoResult:
     """Get detailed info about a hierarchical sheet including pin/label matching.
 
     Args:
@@ -895,13 +906,7 @@ def _get_sheet_info(sheet_uuid: str, schematic_path: str) -> SheetInfoResult:
         schematic_path: Path to parent .kicad_sch
     """
     sch = _load_sch(schematic_path)
-    target = None
-    for s in sch.sheets:
-        if s.uuid == sheet_uuid:
-            target = s
-            break
-    if target is None:
-        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
+    target = _find_sheet(sch, sheet_uuid)
 
     sch_dir = Path(schematic_path).parent
     child_path = sch_dir / target.fileName.value
@@ -943,7 +948,8 @@ def _get_sheet_info(sheet_uuid: str, schematic_path: str) -> SheetInfoResult:
     )
 
 
-def _trace_hierarchical_net(net_name: str, schematic_path: str) -> NetTraceResult:
+@mcp.tool(annotations=_READ_ONLY)
+def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> NetTraceResult:
     """Trace a net across the hierarchy, following hierarchical pins and labels.
 
     Args:
@@ -1027,7 +1033,8 @@ def _trace_hierarchical_net(net_name: str, schematic_path: str) -> NetTraceResul
     )
 
 
-def _list_cross_sheet_nets(schematic_path: str) -> CrossSheetNetsResult:
+@mcp.tool(annotations=_READ_ONLY)
+def list_cross_sheet_nets(schematic_path: str = SCH_PATH) -> CrossSheetNetsResult:
     """List all nets that cross sheet boundaries (hierarchical pins and global labels).
 
     Args:
@@ -1077,7 +1084,8 @@ def _list_cross_sheet_nets(schematic_path: str) -> CrossSheetNetsResult:
     )
 
 
-def _get_symbol_instances(schematic_path: str) -> SymbolInstancesResult:
+@mcp.tool(annotations=_READ_ONLY)
+def get_symbol_instances(schematic_path: str = SCH_PATH) -> SymbolInstancesResult:
     """List all symbol instances from a root schematic's symbolInstances table.
 
     Args:
@@ -1098,8 +1106,12 @@ def _get_symbol_instances(schematic_path: str) -> SymbolInstancesResult:
     return SymbolInstancesResult(instances=instances, count=len(instances))
 
 
-def _move_hierarchical_sheet(
-    sheet_uuid: str, new_x: float, new_y: float, schematic_path: str
+@mcp.tool(annotations=_DESTRUCTIVE)
+def move_hierarchical_sheet(
+    sheet_uuid: str,
+    new_x: float,
+    new_y: float,
+    schematic_path: str = SCH_PATH,
 ) -> str:
     """Move a hierarchical sheet block to a new position, including all pins.
 
@@ -1110,13 +1122,7 @@ def _move_hierarchical_sheet(
         schematic_path: Path to parent .kicad_sch
     """
     sch = _load_sch(schematic_path)
-    target = None
-    for s in sch.sheets:
-        if s.uuid == sheet_uuid:
-            target = s
-            break
-    if target is None:
-        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
+    target = _find_sheet(sch, sheet_uuid)
     dx = new_x - target.position.X
     dy = new_y - target.position.Y
     target.position.X = new_x
@@ -1136,7 +1142,11 @@ def _move_hierarchical_sheet(
     return f"Moved sheet to ({new_x}, {new_y})"
 
 
-def _reorder_sheet_pages(page_order: list[str], schematic_path: str) -> str:
+@mcp.tool(annotations=_DESTRUCTIVE)
+def reorder_sheet_pages(
+    page_order: list[str],
+    schematic_path: str = SCH_PATH,
+) -> str:
     """Reorder hierarchical sheets by specifying the desired UUID order.
 
     Args:
@@ -1160,10 +1170,11 @@ def _reorder_sheet_pages(page_order: list[str], schematic_path: str) -> str:
     return f"Reordered {len(page_order)} sheets"
 
 
-def _duplicate_sheet(
+@mcp.tool(annotations=_ADDITIVE)
+def duplicate_sheet(
     sheet_uuid: str,
     new_sheet_name: str,
-    schematic_path: str,
+    schematic_path: str = SCH_PATH,
     project_path: str = "",
     new_file_name: str = "",
 ) -> str:
@@ -1182,14 +1193,7 @@ def _duplicate_sheet(
     sch = _load_sch(schematic_path)
     sch_dir = Path(schematic_path).parent
 
-    # Find source sheet
-    source = None
-    for s in sch.sheets:
-        if s.uuid == sheet_uuid:
-            source = s
-            break
-    if source is None:
-        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
+    source = _find_sheet(sch, sheet_uuid)
 
     # Determine new file name
     if not new_file_name:
@@ -1298,12 +1302,14 @@ def _duplicate_sheet(
     return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
 
 
-def _flatten_hierarchy(
-    schematic_path: str,
+@mcp.tool(annotations=_ADDITIVE)
+def flatten_hierarchy(
+    schematic_path: str = SCH_PATH,
     output_path: str = "",
 ) -> str:
     """Flatten a hierarchical schematic into a single sheet.
 
+    Merges all child sheet content into one schematic with offset positions.
     Creates a new file — does NOT modify the original hierarchy.
 
     Args:
@@ -1433,10 +1439,20 @@ def _flatten_hierarchy(
     return f"Flattened hierarchy to {Path(output_path).name}: {total_components} components"
 
 
-def _export_hierarchical_netlist(
-    schematic_path: str,
+@mcp.tool(annotations=_EXPORT)
+def export_hierarchical_netlist(
+    schematic_path: str = SCH_PATH,
     output_dir: str = "",
 ) -> HierarchicalNetlistResult:
+    """Export a netlist from the root schematic, including hierarchy info.
+
+    Runs kicad-cli to generate a netlist and returns parsed component/net data
+    with sheet path information for each component.
+
+    Args:
+        schematic_path: Path to root .kicad_sch file
+        output_dir: Directory for netlist output (defaults to schematic directory)
+    """
     import xml.etree.ElementTree as ET
 
     if not output_dir:
@@ -1515,377 +1531,6 @@ def _export_hierarchical_netlist(
         )
     except ET.ParseError as e:
         raise ToolError(f"Failed to parse netlist at {output_path}: {e}") from e
-
-
-# Public aliases — tests call these directly without going through MCP
-create_project = _create_project
-create_schematic = _create_schematic
-create_symbol_library = _create_symbol_library
-create_sym_lib_table = _create_sym_lib_table
-add_hierarchical_sheet = _add_hierarchical_sheet
-remove_hierarchical_sheet = _remove_hierarchical_sheet
-modify_hierarchical_sheet = _modify_hierarchical_sheet
-add_sheet_pin = _add_sheet_pin
-remove_sheet_pin = _remove_sheet_pin
-annotate_schematic = _annotate_schematic
-validate_hierarchy = _validate_hierarchy
-is_root_schematic = _is_root_schematic
-list_hierarchy = _list_hierarchy
-get_sheet_info = _get_sheet_info
-trace_hierarchical_net = _trace_hierarchical_net
-list_cross_sheet_nets = _list_cross_sheet_nets
-get_symbol_instances = _get_symbol_instances
-move_hierarchical_sheet = _move_hierarchical_sheet
-reorder_sheet_pages = _reorder_sheet_pages
-duplicate_sheet = _duplicate_sheet
-flatten_hierarchy = _flatten_hierarchy
-export_hierarchical_netlist = _export_hierarchical_netlist
-
-
-# ── MCP tool wrappers ─────────────────────────────────────────────
-
-
-@mcp.tool(annotations=_ADDITIVE)
-def create_project(directory: str, name: str) -> str:  # noqa: F811
-    """Create a KiCad 9 project (.kicad_pro + .kicad_prl + .kicad_sch).
-
-    Args:
-        directory: Directory to create the project in (created if missing)
-        name: Project name (used for filenames)
-    """
-    try:
-        return _create_project(directory, name)
-    except ValueError as e:
-        raise ToolError(str(e)) from e
-
-
-@mcp.tool(annotations=_ADDITIVE)
-def create_schematic(schematic_path: str) -> str:  # noqa: F811
-    """Create a valid empty KiCad 9 schematic file.
-
-    Args:
-        schematic_path: Path for the new .kicad_sch file
-    """
-    try:
-        return _create_schematic(schematic_path)
-    except ValueError as e:
-        raise ToolError(str(e)) from e
-
-
-@mcp.tool(annotations=_ADDITIVE)
-def create_symbol_library(symbol_lib_path: str) -> str:  # noqa: F811
-    """Create a valid empty KiCad 9 symbol library.
-
-    Args:
-        symbol_lib_path: Path for the new .kicad_sym file
-    """
-    try:
-        return _create_symbol_library(symbol_lib_path)
-    except ValueError as e:
-        raise ToolError(str(e)) from e
-
-
-@mcp.tool(annotations=_ADDITIVE)
-def create_sym_lib_table(directory: str, entries: list[dict]) -> str:  # noqa: F811
-    """Create a sym-lib-table file in the given directory.
-
-    Each entry dict needs 'name' and 'uri' keys.
-    Overwrites existing sym-lib-table if present.
-
-    Args:
-        directory: Directory to write sym-lib-table in
-        entries: List of dicts with 'name' and 'uri' keys
-    """
-    return _create_sym_lib_table(directory, entries)
-
-
-@mcp.tool(annotations=_ADDITIVE)
-def add_hierarchical_sheet(  # noqa: F811
-    parent_schematic_path: str,
-    sheet_name: str,
-    sheet_file: str,
-    pins: list[dict],
-    x: float = 25.4,
-    y: float = 25.4,
-    project_path: str = "",
-) -> str:
-    """Add a hierarchical sheet to a parent schematic with matching labels in the child.
-
-    Creates the sheet block in the parent and corresponding hierarchical
-    labels in the child schematic. The child schematic must already exist
-    (create it with create_schematic first).
-
-    Args:
-        parent_schematic_path: Path to parent .kicad_sch
-        sheet_name: Display name for the sheet
-        sheet_file: Path to child .kicad_sch (must exist)
-        pins: List of dicts with 'name' (str) and 'direction' (str) keys.
-              Direction: input, output, bidirectional, tri_state, passive.
-        x: X position of sheet block (default 25.4)
-        y: Y position of sheet block (default 25.4)
-        project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
-    """
-    return _add_hierarchical_sheet(
-        parent_schematic_path, sheet_name, sheet_file, pins, x, y, project_path
-    )
-
-
-@mcp.tool(annotations=_DESTRUCTIVE)
-def remove_hierarchical_sheet(  # noqa: F811
-    parent_schematic_path: str,
-    name: str | None = None,
-    uuid: str | None = None,
-    delete_child_file: bool = False,
-) -> str:
-    """Remove a hierarchical sheet block from a parent schematic.
-
-    Identify the sheet by name, uuid, or both. If name matches multiple sheets,
-    returns an error with UUIDs for disambiguation.
-
-    Args:
-        parent_schematic_path: Path to parent .kicad_sch
-        name: Sheet name to match
-        uuid: Sheet UUID for unambiguous identification
-        delete_child_file: If True, delete the child .kicad_sch file
-              (unless still referenced by another sheet)
-    """
-    return _remove_hierarchical_sheet(parent_schematic_path, name, uuid, delete_child_file)
-
-
-@mcp.tool(annotations=_DESTRUCTIVE)
-def modify_hierarchical_sheet(  # noqa: F811
-    sheet_uuid: str,
-    schematic_path: str = SCH_PATH,
-    sheet_name: str = "",
-    file_name: str = "",
-    width: float | None = None,
-    height: float | None = None,
-) -> str:
-    """Modify properties of an existing hierarchical sheet block.
-
-    Args:
-        sheet_uuid: UUID of the sheet to modify (from list_schematic_sheets)
-        schematic_path: Path to parent .kicad_sch
-        sheet_name: New display name (empty = keep)
-        file_name: New file path (empty = keep)
-        width: New width in mm (None = keep)
-        height: New height in mm (None = keep)
-    """
-    return _modify_hierarchical_sheet(
-        sheet_uuid, schematic_path, sheet_name, file_name, width, height
-    )
-
-
-@mcp.tool(annotations=_ADDITIVE)
-def add_sheet_pin(  # noqa: F811
-    sheet_uuid: str,
-    pin_name: str,
-    connection_type: str,
-    schematic_path: str = SCH_PATH,
-    side: str = "left",
-) -> str:
-    """Add a pin to an existing hierarchical sheet block.
-
-    Args:
-        sheet_uuid: UUID of the sheet
-        pin_name: Pin name (should match a hierarchical label in the child schematic)
-        connection_type: input, output, bidirectional, tri_state, passive
-        schematic_path: Path to parent .kicad_sch
-        side: Which sheet edge to place pin on (left or right)
-    """
-    return _add_sheet_pin(sheet_uuid, pin_name, connection_type, schematic_path, side)
-
-
-@mcp.tool(annotations=_DESTRUCTIVE)
-def remove_sheet_pin(  # noqa: F811
-    sheet_uuid: str,
-    pin_name: str,
-    schematic_path: str = SCH_PATH,
-) -> str:
-    """Remove a pin from a hierarchical sheet block.
-
-    Args:
-        sheet_uuid: UUID of the sheet
-        pin_name: Name of the pin to remove
-        schematic_path: Path to parent .kicad_sch
-    """
-    return _remove_sheet_pin(sheet_uuid, pin_name, schematic_path)
-
-
-@mcp.tool(annotations=_ADDITIVE)
-def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -> str:  # noqa: F811
-    """Auto-assign reference designators to unannotated components.
-
-    Finds components with '?' in their reference (e.g. R?, U?) and assigns
-    sequential numbers, respecting existing references in the schematic
-    and across the hierarchy when project_path is provided.
-
-    Args:
-        schematic_path: Path to .kicad_sch file
-        project_path: Path to .kicad_pro file (scans hierarchy for existing refs)
-    """
-    return _annotate_schematic(schematic_path, project_path)
-
-
-@mcp.tool(annotations=_READ_ONLY)
-def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationResult:  # noqa: F811
-    """Validate hierarchical schematic for common issues.
-
-    Checks for orphaned labels/pins, direction mismatches, duplicate
-    reference designators, unannotated components, and missing files.
-
-    Args:
-        schematic_path: Path to root .kicad_sch file
-    """
-    return _validate_hierarchy(schematic_path)
-
-
-@mcp.tool(annotations=_READ_ONLY)
-def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:  # noqa: F811
-    """Check if a schematic is the root or a sub-sheet.
-
-    Args:
-        schematic_path: Path to .kicad_sch file
-    """
-    return _is_root_schematic(schematic_path)
-
-
-@mcp.tool(annotations=_READ_ONLY)
-def list_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyResult:  # noqa: F811
-    """List the full sheet hierarchy starting from a root schematic.
-
-    Args:
-        schematic_path: Path to root .kicad_sch file
-    """
-    return _list_hierarchy(schematic_path)
-
-
-@mcp.tool(annotations=_READ_ONLY)
-def get_sheet_info(sheet_uuid: str, schematic_path: str = SCH_PATH) -> SheetInfoResult:  # noqa: F811
-    """Get detailed info about a hierarchical sheet including pin/label matching.
-
-    Args:
-        sheet_uuid: UUID of the sheet
-        schematic_path: Path to parent .kicad_sch
-    """
-    return _get_sheet_info(sheet_uuid, schematic_path)
-
-
-@mcp.tool(annotations=_READ_ONLY)
-def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> NetTraceResult:  # noqa: F811
-    """Trace a net across the hierarchy, following hierarchical pins and labels.
-
-    Args:
-        net_name: Net/label name to trace
-        schematic_path: Path to root .kicad_sch file
-    """
-    return _trace_hierarchical_net(net_name, schematic_path)
-
-
-@mcp.tool(annotations=_READ_ONLY)
-def list_cross_sheet_nets(schematic_path: str = SCH_PATH) -> CrossSheetNetsResult:  # noqa: F811
-    """List all nets that cross sheet boundaries (hierarchical pins and global labels).
-
-    Args:
-        schematic_path: Path to root .kicad_sch file
-    """
-    return _list_cross_sheet_nets(schematic_path)
-
-
-@mcp.tool(annotations=_READ_ONLY)
-def get_symbol_instances(schematic_path: str = SCH_PATH) -> SymbolInstancesResult:  # noqa: F811
-    """List all symbol instances from a root schematic's symbolInstances table.
-
-    Args:
-        schematic_path: Path to root .kicad_sch file
-    """
-    return _get_symbol_instances(schematic_path)
-
-
-@mcp.tool(annotations=_DESTRUCTIVE)
-def move_hierarchical_sheet(  # noqa: F811
-    sheet_uuid: str,
-    new_x: float,
-    new_y: float,
-    schematic_path: str = SCH_PATH,
-) -> str:
-    """Move a hierarchical sheet block to a new position, including all pins.
-
-    Args:
-        sheet_uuid: UUID of the sheet to move
-        new_x: New X position in mm
-        new_y: New Y position in mm
-        schematic_path: Path to parent .kicad_sch
-    """
-    return _move_hierarchical_sheet(sheet_uuid, new_x, new_y, schematic_path)
-
-
-@mcp.tool(annotations=_DESTRUCTIVE)
-def reorder_sheet_pages(  # noqa: F811
-    page_order: list[str],
-    schematic_path: str = SCH_PATH,
-) -> str:
-    """Reorder hierarchical sheets by specifying the desired UUID order.
-
-    Args:
-        page_order: List of sheet UUIDs in desired order
-        schematic_path: Path to root .kicad_sch file
-    """
-    return _reorder_sheet_pages(page_order, schematic_path)
-
-
-@mcp.tool(annotations=_ADDITIVE)
-def duplicate_sheet(  # noqa: F811
-    sheet_uuid: str,
-    new_sheet_name: str,
-    schematic_path: str = SCH_PATH,
-    project_path: str = "",
-    new_file_name: str = "",
-) -> str:
-    """Duplicate a hierarchical sheet, copying the child file with new UUIDs.
-
-    Args:
-        sheet_uuid: UUID of the sheet to duplicate
-        new_sheet_name: Display name for the new sheet
-        schematic_path: Path to parent .kicad_sch
-        project_path: Path to .kicad_pro (for hierarchy metadata)
-        new_file_name: Name for the copied file (auto-generated if empty)
-    """
-    return _duplicate_sheet(sheet_uuid, new_sheet_name, schematic_path, project_path, new_file_name)
-
-
-@mcp.tool(annotations=_ADDITIVE)
-def flatten_hierarchy(  # noqa: F811
-    schematic_path: str = SCH_PATH,
-    output_path: str = "",
-) -> str:
-    """Flatten a hierarchical schematic into a single sheet.
-
-    Merges all child sheet content into one schematic with offset positions.
-    Creates a new file — does NOT modify the original hierarchy.
-
-    Args:
-        schematic_path: Path to root .kicad_sch file
-        output_path: Path for flattened output (defaults to *_flat.kicad_sch)
-    """
-    return _flatten_hierarchy(schematic_path, output_path)
-
-
-@mcp.tool(annotations=_EXPORT)
-def export_hierarchical_netlist(  # noqa: F811
-    schematic_path: str = SCH_PATH,
-    output_dir: str = "",
-) -> HierarchicalNetlistResult:
-    """Export a netlist from the root schematic, including hierarchy info.
-
-    Runs kicad-cli to generate a netlist and returns parsed component/net data
-    with sheet path information for each component.
-
-    Args:
-        schematic_path: Path to root .kicad_sch file
-        output_dir: Directory for netlist output (defaults to schematic directory)
-    """
-    return _export_hierarchical_netlist(schematic_path, output_dir)
 
 
 @mcp.tool(annotations=_EXPORT)
