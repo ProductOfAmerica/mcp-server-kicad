@@ -1,15 +1,14 @@
 """Tests for CLI analysis tools (ERC, DRC)."""
 
 import json
-import shutil
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from conftest import HAS_KICAD_CLI
 
 from mcp_server_kicad import pcb, schematic
 
-HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 
 
