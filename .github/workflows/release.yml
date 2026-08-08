@@ -37,51 +37,13 @@ jobs:
       # Test
       - run: uv run pytest -v
 
-      # Bump version
+      # Bump version (uv version re-locks, so no separate uv lock step)
       - name: Bump version
         id: bump
         run: |
-          python - "${{ inputs.bump }}" <<'PYEOF'
-          import re, sys
-
-          bump_type = sys.argv[1]
-          path = "pyproject.toml"
-          text = open(path).read()
-
-          match = re.search(r'^version = "(\d+)\.(\d+)\.(\d+)"', text, re.MULTILINE)
-          major, minor, patch = int(match.group(1)), int(match.group(2)), int(match.group(3))
-
-          if bump_type == "major":
-              major, minor, patch = major + 1, 0, 0
-          elif bump_type == "minor":
-              major, minor, patch = major, minor + 1, 0
-          else:
-              major, minor, patch = major, minor, patch + 1
-
-          new_version = f"{major}.{minor}.{patch}"
-          text = re.sub(r'^version = ".*"', f'version = "{new_version}"', text, count=1, flags=re.MULTILINE)
-          open(path, "w").write(text)
-
-          # Also bump plugin.json
-          import json
-          plugin_path = ".claude-plugin/plugin.json"
-          plugin = json.loads(open(plugin_path).read())
-          plugin["version"] = new_version
-          open(plugin_path, "w").write(json.dumps(plugin, indent=2) + "\n")
-
-          print(f"new_version={new_version}")
-          PYEOF
-
-          NEW_VERSION=$(python -c "
-          import re
-          text = open('pyproject.toml').read()
-          m = re.search(r'^version = \"(.+?)\"', text, re.MULTILINE)
-          print(m.group(1))
-          ")
-          echo "version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
-
-      # Update lock file
-      - run: uv lock
+          V=$(uv version --bump "${{ inputs.bump }}" --short)
+          node -e 'const fs=require("fs"),p=".claude-plugin/plugin.json",d=JSON.parse(fs.readFileSync(p,"utf8"));d.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n")' "$V"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
 
       # Commit and push
       - name: Commit and push
