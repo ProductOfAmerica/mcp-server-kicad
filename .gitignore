@@ -6,7 +6,6 @@ dist/
 build/
 .venv/
 .env
-.mypy_cache/
 .ruff_cache/
 .pytest_cache/
 *.egg
