@@ -7,6 +7,20 @@ import os
 import re
 from pathlib import Path
 
+from kiutils.items.common import ColorRGBA, Effects, Font, Position, Property
+from kiutils.items.schitems import (
+    Connection,
+    GlobalLabel,
+    HierarchicalLabel,
+    Junction,
+    LocalLabel,
+    NoConnect,
+    SchematicSymbol,
+    SymbolProjectInstance,
+    SymbolProjectPath,
+    Text,
+)
+from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -17,22 +31,6 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     OUTPUT_DIR,
     SCH_PATH,
-    ColorRGBA,
-    Connection,
-    Effects,
-    Font,
-    GlobalLabel,
-    HierarchicalLabel,
-    Junction,
-    LocalLabel,
-    NoConnect,
-    Position,
-    Property,
-    SchematicSymbol,
-    SymbolLib,
-    SymbolProjectInstance,
-    SymbolProjectPath,
-    Text,
     _default_effects,
     _default_stroke,
     _file_meta,
@@ -184,6 +182,14 @@ def _lib_symbol_file_name(ls) -> str:
     return getattr(ls, "libId", None) or ls.entryName
 
 
+def _find_sym(sch, reference: str):
+    """Return the first placed symbol whose Reference property matches, or None."""
+    for sym in sch.schematicSymbols:
+        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
+            return sym
+    return None
+
+
 def _transform_pin_pos(
     px: float,
     py: float,
@@ -233,11 +239,7 @@ def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, floa
     If multiple pins share a name, returns the first match.
     Raises ValueError if reference or pin not found.
     """
-    target = None
-    for sym in sch.schematicSymbols:
-        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
-            target = sym
-            break
+    target = _find_sym(sch, reference)
     if target is None:
         raise ValueError(f"Component {reference} not found")
 
@@ -581,11 +583,7 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
     """
     sch = _load_sch(schematic_path)
 
-    target = None
-    for sym in sch.schematicSymbols:
-        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
-            target = sym
-            break
+    target = _find_sym(sch, reference)
     if target is None:
         raise ToolError(f"{reference} not found.")
 
@@ -921,11 +919,7 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
-    target = None
-    for sym in sch.schematicSymbols:
-        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
-            target = sym
-            break
+    target = _find_sym(sch, reference)
     if target is None:
         raise ToolError(f"Component {reference} not found.")
     sch.schematicSymbols.remove(target)
@@ -955,8 +949,6 @@ def remove_label(
     """
     sch = _load_sch(schematic_path)
     tol = 0.1
-    if x is not None and y is not None:
-        pass  # Compare directly against stored positions — no grid snapping
     removed = []
     remaining = []
     for lbl in sch.labels:
@@ -1171,15 +1163,15 @@ def move_component(
     sch = _load_sch(schematic_path)
     _validate_position(x, y, sch)
     x, y = _snap_grid(x), _snap_grid(y)
-    for sym in sch.schematicSymbols:
-        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
-            sym.position.X = x
-            sym.position.Y = y
-            if rotation is not None:
-                sym.position.angle = rotation
-            _save_sch(sch)
-            return f"Moved {reference} to ({x}, {y})"
-    raise ToolError(f"Component {reference} not found.")
+    sym = _find_sym(sch, reference)
+    if sym is None:
+        raise ToolError(f"Component {reference} not found.")
+    sym.position.X = x
+    sym.position.Y = y
+    if rotation is not None:
+        sym.position.angle = rotation
+    _save_sch(sch)
+    return f"Moved {reference} to ({x}, {y})"
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1198,56 +1190,42 @@ def set_component_property(
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
-    for sym in sch.schematicSymbols:
-        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
-            # Update existing property
-            for prop in sym.properties:
-                if prop.key == key:
-                    prop.value = value
-                    if key == "Reference":
-                        for inst in getattr(sym, "instances", []):
-                            for path_entry in getattr(inst, "paths", []):
-                                path_entry.reference = value
-                    _save_sch(sch)
-                    if key in ("Reference", "Value", "Footprint"):
-                        ref, val, fp_val = _sym_ref_val_fp(sym)
-                        _upsert_root_symbol_instance(
-                            schematic_path,
-                            "",
-                            sym.uuid or "",
-                            ref,
-                            value=val,
-                            footprint=fp_val,
-                        )
-                    return f"Set {reference}.{key} = {value}"
-            # Create new property (hidden, at component center)
-            new_id = max((p.id for p in sym.properties if p.id is not None), default=-1) + 1
-            sym.properties.append(
-                Property(
-                    key=key,
-                    value=value,
-                    id=new_id,
-                    effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                    position=Position(X=sym.position.X, Y=sym.position.Y, angle=0),
-                )
+    sym = _find_sym(sch, reference)
+    if sym is None:
+        raise ToolError(f"Component {reference} not found.")
+    prop = next((p for p in sym.properties if p.key == key), None)
+    if prop is not None:
+        prop.value = value
+        created = ""
+    else:
+        # Create new property (hidden, at component center)
+        new_id = max((p.id for p in sym.properties if p.id is not None), default=-1) + 1
+        sym.properties.append(
+            Property(
+                key=key,
+                value=value,
+                id=new_id,
+                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+                position=Position(X=sym.position.X, Y=sym.position.Y, angle=0),
             )
-            if key == "Reference":
-                for inst in getattr(sym, "instances", []):
-                    for path_entry in getattr(inst, "paths", []):
-                        path_entry.reference = value
-            _save_sch(sch)
-            if key in ("Reference", "Value", "Footprint"):
-                ref, val, fp_val = _sym_ref_val_fp(sym)
-                _upsert_root_symbol_instance(
-                    schematic_path,
-                    "",
-                    sym.uuid or "",
-                    ref,
-                    value=val,
-                    footprint=fp_val,
-                )
-            return f"Set {reference}.{key} = {value} (new property)"
-    raise ToolError(f"Component {reference} not found.")
+        )
+        created = " (new property)"
+    if key == "Reference":
+        for inst in getattr(sym, "instances", []):
+            for path_entry in getattr(inst, "paths", []):
+                path_entry.reference = value
+    _save_sch(sch)
+    if key in ("Reference", "Value", "Footprint"):
+        ref, val, fp_val = _sym_ref_val_fp(sym)
+        _upsert_root_symbol_instance(
+            schematic_path,
+            "",
+            sym.uuid or "",
+            ref,
+            value=val,
+            footprint=fp_val,
+        )
+    return f"Set {reference}.{key} = {value}{created}"
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1799,11 +1777,7 @@ def wire_pins_to_net(
 
         # Track pin electrical types for auto PWR_FLAG logic
         if first_power_in_pos is None or not has_power_out:
-            target = None
-            for sym in sch.schematicSymbols:
-                if any(p.key == "Reference" and p.value == ref for p in sym.properties):
-                    target = sym
-                    break
+            target = _find_sym(sch, ref)
             if target:
                 lib_sym = _find_lib_symbol(sch, target.libId)
                 if lib_sym:
