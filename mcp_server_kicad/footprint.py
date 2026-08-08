@@ -3,6 +3,8 @@
 import os
 from pathlib import Path
 
+from kiutils.footprint import Footprint
+from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpText
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
@@ -11,13 +13,6 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     FP_LIB_PATH,
     OUTPUT_DIR,
-    Footprint,
-    FpArc,
-    FpCircle,
-    FpLine,
-    FpPoly,
-    FpRect,
-    FpText,
     _courtyard_bbox,
     _run_cli,
 )

@@ -1,4 +1,4 @@
-"""Shared constants, helpers, and kiutils re-exports for KiCad MCP servers."""
+"""Shared constants and helpers for KiCad MCP servers."""
 
 import math
 import os
@@ -8,31 +8,12 @@ import uuid
 from pathlib import Path
 
 from kiutils.board import Board
-from kiutils.footprint import Footprint, Pad
-from kiutils.items.brditems import Segment, Via
-from kiutils.items.common import ColorRGBA, Effects, Font, Net, Position, Property, Stroke
+from kiutils.footprint import Footprint
+from kiutils.items.common import Effects, Font, Position, Stroke
 from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpText
-from kiutils.items.gritems import GrArc, GrLine, GrText
-from kiutils.items.schitems import (
-    BusEntry,
-    Connection,
-    GlobalLabel,
-    HierarchicalLabel,
-    HierarchicalPin,
-    HierarchicalSheet,
-    HierarchicalSheetInstance,
-    HierarchicalSheetProjectInstance,
-    HierarchicalSheetProjectPath,
-    Junction,
-    LocalLabel,
-    NoConnect,
-    SchematicSymbol,
-    SymbolInstance,
-    SymbolProjectInstance,
-    SymbolProjectPath,
-    Text,
-)
-from kiutils.items.zones import FillSettings, Hatch, KeepoutSettings, Zone, ZonePolygon
+from kiutils.items.gritems import GrArc, GrLine
+from kiutils.items.schitems import SymbolInstance
+from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
 from mcp.types import ToolAnnotations
@@ -62,111 +43,13 @@ _DESTRUCTIVE = ToolAnnotations(
     openWorldHint=False,
 )
 
+# Every tool carrying _EXPORT writes an output file, so it is not read-only.
 _EXPORT = ToolAnnotations(
-    readOnlyHint=True,
+    readOnlyHint=False,
     destructiveHint=False,
     idempotentHint=True,
     openWorldHint=False,
 )
-
-# ---------------------------------------------------------------------------
-# Re-exports (for convenient "from _shared import ..." in server modules)
-# ---------------------------------------------------------------------------
-
-__all__ = [
-    # kiutils types
-    "Board",
-    "BusEntry",
-    "ColorRGBA",
-    "Connection",
-    "Effects",
-    "Font",
-    "Footprint",
-    "FpArc",
-    "FpCircle",
-    "FpLine",
-    "FpPoly",
-    "FpRect",
-    "FpText",
-    "GlobalLabel",
-    "GrArc",
-    "GrLine",
-    "GrText",
-    "HierarchicalLabel",
-    "HierarchicalPin",
-    "HierarchicalSheet",
-    "HierarchicalSheetInstance",
-    "HierarchicalSheetProjectInstance",
-    "HierarchicalSheetProjectPath",
-    "Junction",
-    "KeepoutSettings",
-    "LocalLabel",
-    "Net",
-    "NoConnect",
-    "Pad",
-    "Position",
-    "Property",
-    "Schematic",
-    "SchematicSymbol",
-    "SymbolInstance",
-    "SymbolProjectInstance",
-    "SymbolProjectPath",
-    "Segment",
-    "Stroke",
-    "SymbolLib",
-    "Text",
-    "Via",
-    "FillSettings",
-    "Hatch",
-    "Zone",
-    "ZonePolygon",
-    # path constants
-    "SCH_PATH",
-    "SYM_LIB_PATH",
-    "PCB_PATH",
-    "FP_LIB_PATH",
-    "OUTPUT_DIR",
-    # tool annotation presets
-    "_READ_ONLY",
-    "_ADDITIVE",
-    "_DESTRUCTIVE",
-    "_EXPORT",
-    # helpers
-    "_cwd",
-    "_resolve_config",
-    "_load_sch",
-    "_load_board",
-    "_gen_uuid",
-    "_default_effects",
-    "_default_stroke",
-    "_run_cli",
-    "_file_meta",
-    "_fp_ref",
-    "_fp_val",
-    "_GRID_MM",
-    "_snap_grid",
-    "_SYSTEM_SYM_DIRS",
-    "_resolve_system_lib",
-    "_resolve_hierarchy_path",
-    "_find_root_schematic",
-    "_resolve_root",
-    "_RAW_LIB_SYMBOLS",
-    "_save_sch",
-    "_load_system_lib_symbol",
-    "_extract_raw_symbol",
-    "_sym_ref_val_fp",
-    "_upsert_root_symbol_instance",
-    "_remove_root_symbol_instance",
-    # geometry helpers
-    "_courtyard_bbox",
-    "_point_in_polygon",
-    "_transform_local_to_board",
-    "_board_edge_polygon",
-    "_linearize_arc",
-    "_keepout_restrictions",
-    "_check_footprint_keepout_violations",
-    "_promote_footprint_keepouts",
-]
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ from pathlib import Path
 
 from kiutils.items.common import Effects, Fill, Font, Position, Property, Stroke
 from kiutils.items.syitems import SyRect
-from kiutils.symbol import Symbol, SymbolPin
+from kiutils.symbol import Symbol, SymbolLib, SymbolPin
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -17,7 +17,6 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     OUTPUT_DIR,
     SYM_LIB_PATH,
-    SymbolLib,
     _run_cli,
 )
 from mcp_server_kicad.models import MultiFileExportResult

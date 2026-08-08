@@ -6,7 +6,7 @@ Provides:
     - scratch_sym_lib: .kicad_sym with a custom TestPart symbol
     - reparse: re-read a schematic from disk
     - run_erc: run kicad-cli ERC and return parsed JSON
-    - assert_erc_clean: assert zero ERC violations
+    - assert_kicad_parseable: assert kicad-cli can parse the file
     - Builder helpers importable by test files for custom fixture creation
 """
 
@@ -304,25 +304,11 @@ def run_erc(path: str | Path) -> dict:
         return json.load(f)
 
 
-def assert_erc_clean(path: str | Path) -> None:
-    """Run ERC and assert zero violations."""
-    report = run_erc(path)
-    violations = []
-    for sheet in report.get("sheets", []):
-        violations.extend(sheet.get("violations", []))
-    # Fallback: also check top-level (older KiCad formats)
-    violations.extend(report.get("violations", []))
-    assert violations == [], f"Expected 0 ERC violations, got {len(violations)}:\n" + "\n".join(
-        f"  {v.get('severity', '?')}: {v.get('description', '?')}" for v in violations
-    )
-
-
 def assert_kicad_parseable(path: str | Path) -> None:
     """Assert that kicad-cli can parse the file without errors.
 
-    Unlike ``assert_erc_clean``, this ignores ERC violations — it only
-    fails when the file itself is malformed (missing S-expression fields,
-    invalid syntax, etc.).
+    Ignores ERC violations: this only fails when the file itself is
+    malformed (missing S-expression fields, invalid syntax, etc.).
     """
     try:
         run_erc(path)
