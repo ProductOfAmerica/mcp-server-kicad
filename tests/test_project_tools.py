@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import conftest
@@ -557,10 +556,7 @@ class TestRemoveSheetPin:
         assert sch2.sheets[0].pins[0].name == "B"
 
 
-HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
-
-
-@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+@pytest.mark.skipif(not conftest.HAS_KICAD_CLI, reason="kicad-cli not found")
 class TestHierarchicalSheetParseable:
     """Integration test: hierarchical sheet output should be parseable by kicad-cli.
 
@@ -623,7 +619,7 @@ class TestHierarchicalSheetParseable:
         assert_kicad_parseable(str(proj_dir / "erc_proj.kicad_sch"))
 
 
-@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+@pytest.mark.skipif(not conftest.HAS_KICAD_CLI, reason="kicad-cli not found")
 class TestSubSheetErcRedirect:
     """Tests for sub-sheet ERC auto-redirect to root schematic."""
 
@@ -732,7 +728,7 @@ class TestSubSheetErcRedirect:
         assert result.note is None, "Standalone schematic ERC should not have a redirect note"
 
 
-@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+@pytest.mark.skipif(not conftest.HAS_KICAD_CLI, reason="kicad-cli not found")
 class TestErcWithProjectPath:
     def test_run_erc_with_explicit_project_path(self, tmp_path: Path):
         """run_erc should accept project_path for explicit root resolution."""
@@ -758,14 +754,14 @@ class TestErcWithProjectPath:
         assert "root schematic" in result.note
 
 
-@pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
+@pytest.mark.skipif(not conftest.HAS_KICAD_CLI, reason="kicad-cli not found")
 class TestGetVersion:
     def test_returns_version_info(self):
         result = project.get_version()
         assert result.version_info
 
 
-@pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
+@pytest.mark.skipif(not conftest.HAS_KICAD_CLI, reason="kicad-cli not found")
 class TestRunJobset:
     def test_missing_jobset_returns_error(self, tmp_path):
         with pytest.raises((ToolError, RuntimeError, FileNotFoundError)):
@@ -1164,7 +1160,7 @@ class TestDuplicateSheet:
         assert len(files) == 2  # Two different files
 
 
-@pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+@pytest.mark.skipif(not conftest.HAS_KICAD_CLI, reason="kicad-cli not found")
 class TestExportHierarchicalNetlist:
     def test_exports_netlist(self, tmp_path: Path):
         proj_dir = tmp_path / "proj"

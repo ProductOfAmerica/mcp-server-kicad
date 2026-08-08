@@ -1,13 +1,12 @@
 """Tests for IPC-2581 export tool."""
 
-import shutil
-
 import pytest
+from conftest import HAS_KICAD_CLI
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import pcb
 
-pytestmark = pytest.mark.skipif(shutil.which("kicad-cli") is None, reason="kicad-cli not found")
+pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 
 
 class TestExportIpc2581:

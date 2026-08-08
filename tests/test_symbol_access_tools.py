@@ -1,13 +1,10 @@
 """Tests for symbol library access tools on the symbol server."""
 
-import shutil
-
 import pytest
+from conftest import HAS_KICAD_CLI
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import symbol
-
-HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
 
 class TestListLibSymbols:

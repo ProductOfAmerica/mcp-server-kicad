@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
 from conftest import (
+    HAS_KICAD_CLI,
     assert_kicad_parseable,
     build_power_symbol,
     build_r_symbol,
@@ -18,7 +18,6 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 
-HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 HAS_KICAD_LIBS = any(
     (p / "Device.kicad_sym").exists()
     for p in [

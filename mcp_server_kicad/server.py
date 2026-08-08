@@ -1,7 +1,5 @@
 """Unified MCP server registering all KiCad tools."""
 
-import shutil
-
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad import footprint, pcb, project, schematic, symbol
@@ -22,52 +20,21 @@ mcp = FastMCP(
     ),
 )
 
-# Tools that require kicad-cli on PATH
-_CLI_TOOLS: set[str] = {
-    # schematic
-    "export_schematic",
-    "export_netlist",
-    "export_bom",
-    "run_erc",
-    "list_unconnected_pins",
-    # pcb
-    "export_pcb",
-    "export_gerbers",
-    "export_3d",
-    "export_positions",
-    "export_ipc2581",
-    "run_drc",
-    # symbol
-    "export_symbol_svg",
-    "upgrade_symbol_lib",
-    # footprint
-    "export_footprint_svg",
-    "upgrade_footprint_lib",
-    # project
-    "run_jobset",
-    "get_version",
-    "export_hierarchical_netlist",
-}
 
-
-def _copy_tools(source_mcp: FastMCP, target_mcp: FastMCP, has_cli: bool) -> None:
+def _copy_tools(source_mcp: FastMCP, target_mcp: FastMCP) -> None:
     """Copy tools from a source FastMCP instance into the target server.
 
     Uses _tool_manager._tools (private API) because FastMCP has no public
     tool-copy API.  The project's test suite (test_tool_annotations.py) already
     depends on this internal structure.
     """
-    for name, tool in source_mcp._tool_manager._tools.items():
-        if not has_cli and name in _CLI_TOOLS:
-            continue
-        target_mcp._tool_manager._tools[name] = tool
+    target_mcp._tool_manager._tools.update(source_mcp._tool_manager._tools)
 
 
 def main() -> None:
     """Entry point for unified mcp-server-kicad console script."""
-    has_cli = shutil.which("kicad-cli") is not None
     for mod in [schematic, pcb, symbol, footprint, project]:
-        _copy_tools(mod.mcp, mcp, has_cli)
+        _copy_tools(mod.mcp, mcp)
     mcp.run(transport="stdio")
 
 

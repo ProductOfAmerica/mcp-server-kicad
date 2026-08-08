@@ -1,13 +1,11 @@
 """Tests for CLI PCB export tools."""
 
-import shutil
-
 import pytest
+from conftest import HAS_KICAD_CLI
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import pcb
 
-HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 
 

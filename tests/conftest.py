@@ -15,7 +15,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 import uuid as _uuid
 from pathlib import Path
 
@@ -39,7 +38,9 @@ from kiutils.items.syitems import SyRect
 from kiutils.schematic import Schematic
 from kiutils.symbol import Symbol, SymbolLib, SymbolPin
 
-HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
+from mcp_server_kicad._shared import _find_kicad_cli, _run_cli
+
+HAS_KICAD_CLI = _find_kicad_cli() is not None
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -281,20 +282,9 @@ def run_erc(path: str | Path) -> dict:
     """
     path = str(path)
     erc_out = path + ".erc.json"
-    result = subprocess.run(
-        [
-            "kicad-cli",
-            "sch",
-            "erc",
-            "--format",
-            "json",
-            "--severity-all",
-            "--output",
-            erc_out,
-            path,
-        ],
-        capture_output=True,
-        text=True,
+    result = _run_cli(
+        ["sch", "erc", "--format", "json", "--severity-all", "--output", erc_out, path],
+        check=False,
     )
     if not os.path.exists(erc_out):
         raise RuntimeError(

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
 import pytest
 from conftest import (
+    HAS_KICAD_CLI,
     _default_effects,
     _gen_uuid,
     build_r_symbol,
@@ -20,8 +20,6 @@ from kiutils.items.schitems import Connection, SchematicSymbol
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import schematic
-
-HAS_KICAD_CLI = shutil.which("kicad-cli") is not None
 
 # ---------------------------------------------------------------------------
 # Helpers
