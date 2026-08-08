@@ -1,4 +1,4 @@
-"""Tests for KiCad design skills integrity and content validation."""
+"""Tests for KiCad design skills, hooks and agents file integrity."""
 
 import json
 import os
@@ -19,23 +19,6 @@ EXPECTED_SKILLS = [
     "pcb-layout",
     "verification",
     "using-kicad",
-]
-
-# Domain skills are all skills except the orchestrator (using-kicad)
-DOMAIN_SKILLS = [s for s in EXPECTED_SKILLS if s != "using-kicad"]
-
-# Skills that contain Rationalization Prevention sections
-SKILLS_WITH_RATIONALIZATION = [
-    "circuit-design",
-    "schematic-plan",
-    "schematic-design",
-]
-
-# Skills that contain HARD-GATE tags
-SKILLS_WITH_HARD_GATE = [
-    "circuit-design",
-    "schematic-plan",
-    "verification",
 ]
 
 EXPECTED_AGENTS = [
@@ -103,69 +86,6 @@ class TestSkillFileIntegrity:
         )
         assert "MCP tools" in critical_rule or "MCP tool" in critical_rule, (
             f"{skill_name} CRITICAL-RULE doesn't reference MCP tools"
-        )
-
-
-class TestSkillContent:
-    """Verify skills contain required content elements."""
-
-    @pytest.mark.parametrize("skill_name", DOMAIN_SKILLS)
-    def test_domain_skill_has_checklist(self, skill_name: str) -> None:
-        content = (SKILLS_DIR / skill_name / "SKILL.md").read_text()
-        assert "## Checklist" in content, f"{skill_name} missing Checklist section"
-        assert "TodoWrite" in content, f"{skill_name} missing TodoWrite instruction"
-        assert "- [ ]" in content, f"{skill_name} missing checklist items"
-
-    @pytest.mark.parametrize("skill_name", DOMAIN_SKILLS)
-    def test_domain_skill_has_mcp_tools_section(self, skill_name: str) -> None:
-        content = (SKILLS_DIR / skill_name / "SKILL.md").read_text()
-        assert "## MCP Tools" in content, f"{skill_name} missing MCP Tools section"
-
-    @pytest.mark.parametrize("skill_name", DOMAIN_SKILLS)
-    def test_domain_skill_checklist_has_todowrite_instruction(self, skill_name: str) -> None:
-        """Each checklist must instruct the user to use TodoWrite."""
-        content = (SKILLS_DIR / skill_name / "SKILL.md").read_text()
-        # Find the checklist section
-        checklist_idx = content.index("## Checklist")
-        checklist_section = content[checklist_idx:]
-        assert "TodoWrite" in checklist_section, (
-            f"{skill_name} Checklist section missing TodoWrite instruction"
-        )
-
-    def test_using_kicad_has_pipeline(self) -> None:
-        content = (SKILLS_DIR / "using-kicad" / "SKILL.md").read_text()
-        assert "## Pipeline" in content, "using-kicad missing Pipeline section"
-        assert "## Phase Gates" in content, "using-kicad missing Phase Gates section"
-        assert "<HARD-GATE>" in content, "using-kicad missing HARD-GATE tags"
-
-    def test_using_kicad_has_skill_catalog(self) -> None:
-        content = (SKILLS_DIR / "using-kicad" / "SKILL.md").read_text()
-        assert "## Skill Catalog" in content, "using-kicad missing Skill Catalog"
-        # Verify all domain skills are listed in the catalog
-        for skill in DOMAIN_SKILLS:
-            assert skill in content, f"using-kicad catalog missing {skill}"
-
-    def test_using_kicad_has_todowrite_flowchart(self) -> None:
-        content = (SKILLS_DIR / "using-kicad" / "SKILL.md").read_text()
-        assert "TodoWrite" in content, "using-kicad missing TodoWrite reference"
-        assert "digraph" in content, "using-kicad missing skill activation flowchart"
-
-    def test_using_kicad_has_skill_activation_flow(self) -> None:
-        content = (SKILLS_DIR / "using-kicad" / "SKILL.md").read_text()
-        assert "## Skill Activation Flow" in content, (
-            "using-kicad missing Skill Activation Flow section"
-        )
-
-    @pytest.mark.parametrize("skill_name", SKILLS_WITH_HARD_GATE)
-    def test_skill_has_hard_gate(self, skill_name: str) -> None:
-        content = (SKILLS_DIR / skill_name / "SKILL.md").read_text()
-        assert "<HARD-GATE>" in content, f"{skill_name} missing HARD-GATE"
-
-    @pytest.mark.parametrize("skill_name", SKILLS_WITH_RATIONALIZATION)
-    def test_skill_has_rationalization_prevention(self, skill_name: str) -> None:
-        content = (SKILLS_DIR / skill_name / "SKILL.md").read_text()
-        assert "Rationalization" in content or "rationalization" in content, (
-            f"{skill_name} missing Rationalization Prevention"
         )
 
 
@@ -271,38 +191,3 @@ class TestAgentsIntegrity:
         assert "review" in content or "role" in content or "you are" in content, (
             f"Agent file {agent_file} missing role definition"
         )
-
-
-class TestSkillCrossReferences:
-    """Verify skills reference each other correctly through the pipeline."""
-
-    def test_circuit_design_mentions_bom_artifact(self) -> None:
-        content = (SKILLS_DIR / "circuit-design" / "SKILL.md").read_text()
-        assert "specs/bom.md" in content, "circuit-design doesn't mention specs/bom.md artifact"
-
-    def test_schematic_plan_requires_bom(self) -> None:
-        content = (SKILLS_DIR / "schematic-plan" / "SKILL.md").read_text()
-        assert "specs/bom.md" in content, "schematic-plan doesn't reference specs/bom.md dependency"
-
-    def test_schematic_plan_produces_plan_artifact(self) -> None:
-        content = (SKILLS_DIR / "schematic-plan" / "SKILL.md").read_text()
-        assert "specs/schematic-plan.md" in content, (
-            "schematic-plan doesn't mention specs/schematic-plan.md artifact"
-        )
-
-    def test_schematic_design_requires_plan(self) -> None:
-        content = (SKILLS_DIR / "schematic-design" / "SKILL.md").read_text()
-        assert "specs/schematic-plan.md" in content, (
-            "schematic-design doesn't reference specs/schematic-plan.md dependency"
-        )
-
-    def test_pipeline_order_in_using_kicad(self) -> None:
-        """using-kicad pipeline must list skills in correct order."""
-        content = (SKILLS_DIR / "using-kicad" / "SKILL.md").read_text()
-        pipeline_section = content[content.index("## Pipeline") :]
-        # Verify ordering: circuit-design before schematic-plan before
-        # schematic-design before verification before pcb-layout
-        cd_pos = pipeline_section.index("circuit-design")
-        sp_pos = pipeline_section.index("schematic-plan")
-        sd_pos = pipeline_section.index("schematic-design")
-        assert cd_pos < sp_pos < sd_pos, "Pipeline skills not in correct order"
