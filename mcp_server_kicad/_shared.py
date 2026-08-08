@@ -3,8 +3,10 @@
 import math
 import os
 import re
+import shutil
 import subprocess
 import uuid
+from functools import lru_cache
 from pathlib import Path
 
 from kiutils.board import Board
@@ -490,10 +492,33 @@ def _load_board(path: str = PCB_PATH) -> Board:
     return board
 
 
+# macOS keeps kicad-cli inside the .app bundle and never puts it on PATH.
+_KICAD_APP = "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli"
+
+
+@lru_cache(maxsize=1)
+def _find_kicad_cli() -> str | None:
+    """Absolute path to kicad-cli: KICAD_CLI_PATH, then PATH, then the macOS bundle.
+
+    Resolved, not raw.  KiCad finds its stock symbol and footprint libraries at
+    ``<exe_dir>/../SharedSupport``, so reaching it through a symlink on PATH
+    makes DRC/ERC report bogus "library not found" violations while otherwise
+    appearing to work.  ``shutil.which`` can also return a relative path: on
+    Windows it searches the current directory before PATH.
+    """
+    found = os.environ.get("KICAD_CLI_PATH") or shutil.which("kicad-cli")
+    if not found and os.path.isfile(_KICAD_APP):
+        found = _KICAD_APP
+    return str(Path(found).resolve()) if found else None
+
+
 def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
     """Run a kicad-cli command, return CompletedProcess."""
+    executable = _find_kicad_cli()
+    if executable is None:
+        raise RuntimeError("kicad-cli not found. Install KiCad, or set KICAD_CLI_PATH.")
     result = subprocess.run(
-        ["kicad-cli"] + args,
+        [executable] + args,
         capture_output=True,
         text=True,
         timeout=120,
