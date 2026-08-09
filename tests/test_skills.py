@@ -182,19 +182,21 @@ class TestVersionConsistency:
             "release.yml bumps both together, don't bump one by hand"
         )
 
-    def test_marketplace_entry_carries_no_version(self) -> None:
+    def test_marketplace_entries_carry_no_version(self) -> None:
         marketplace_file = REPO_ROOT / ".claude-plugin" / "marketplace.json"
-        entry = json.loads(marketplace_file.read_text())["plugins"][0]
-        assert "version" not in entry, (
-            "marketplace.json must not pin a version: Claude Code silently uses "
-            "plugin.json's version instead, and release.yml only bumps plugin.json"
-        )
+        for entry in json.loads(marketplace_file.read_text())["plugins"]:
+            assert "version" not in entry, (
+                f"marketplace entry '{entry['name']}' must not pin a version: Claude Code "
+                "silently uses plugin.json's version instead, and release.yml only bumps "
+                "plugin.json"
+            )
 
     def test_marketplace_source_is_relative(self) -> None:
         marketplace_file = REPO_ROOT / ".claude-plugin" / "marketplace.json"
-        entry = json.loads(marketplace_file.read_text())["plugins"][0]
+        plugins = json.loads(marketplace_file.read_text())["plugins"]
+        entry = next(e for e in plugins if e["name"] == "kicad")
         assert entry["source"] == "./", (
-            "the plugin lives in this repo, so the marketplace source must be the "
+            "the kicad plugin lives in this repo, so its marketplace source must be the "
             "relative './'; a machine-local or SSH source breaks `claude plugin install`"
         )
 
