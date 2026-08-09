@@ -13,6 +13,7 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     FP_LIB_PATH,
     OUTPUT_DIR,
+    _check_format_version,
     _courtyard_bbox,
     _run_cli,
 )
@@ -61,6 +62,7 @@ def get_footprint_info(footprint_path: str) -> str:
     Args:
         footprint_path: Path to .kicad_mod file
     """
+    _check_format_version(footprint_path)
     fp = Footprint.from_file(footprint_path)
     lines = [f"Footprint: {fp.entryName}"]
     lines.append(f"  Layer: {fp.layer}")

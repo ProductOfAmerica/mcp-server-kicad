@@ -17,6 +17,7 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     OUTPUT_DIR,
     SYM_LIB_PATH,
+    _check_format_version,
     _run_cli,
 )
 from mcp_server_kicad.models import MultiFileExportResult
@@ -64,6 +65,7 @@ def list_lib_symbols(symbol_lib_path: str = SYM_LIB_PATH) -> str:
     Args:
         symbol_lib_path: Path to .kicad_sym file
     """
+    _check_format_version(symbol_lib_path)
     lib = SymbolLib.from_file(symbol_lib_path)
     lines = []
     for sym in lib.symbols:
@@ -80,6 +82,7 @@ def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> st
         symbol_name: Symbol name (e.g. "LM7805")
         symbol_lib_path: Path to .kicad_sym file
     """
+    _check_format_version(symbol_lib_path)
     lib = SymbolLib.from_file(symbol_lib_path)
     for sym in lib.symbols:
         if sym.entryName == symbol_name:
@@ -196,6 +199,7 @@ def add_symbol(
     # Load or create library
     lib_path = Path(symbol_lib_path)
     if lib_path.exists():
+        _check_format_version(str(lib_path))
         lib = SymbolLib.from_file(str(lib_path))
         for existing in lib.symbols:
             if existing.entryName == name:

@@ -31,6 +31,7 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     OUTPUT_DIR,
     SCH_PATH,
+    _check_format_version,
     _default_effects,
     _default_stroke,
     _file_meta,
@@ -763,6 +764,7 @@ def place_component(
     _loaded_sym_lib = None
     if not _find_lib_symbol(sch, lib_id):
         if symbol_lib_path:
+            _check_format_version(symbol_lib_path)
             _loaded_sym_lib = SymbolLib.from_file(symbol_lib_path)
             for s in _loaded_sym_lib.symbols:
                 if s.entryName == symbol_name:
@@ -1141,6 +1143,7 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
         schematic_path: Path to .kicad_sch file
     """
     sch = _load_sch(schematic_path)
+    _check_format_version(symbol_lib_path)
     sym_lib = SymbolLib.from_file(symbol_lib_path)
     for s in sym_lib.symbols:
         if s.entryName == symbol_name:
