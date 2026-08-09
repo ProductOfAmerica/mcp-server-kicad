@@ -311,6 +311,66 @@ class TestWiresPreservation:
         assert kicad_native_sch.read_bytes() == before
 
 
+class TestHybridRoutingPreservation:
+    """Slice 6: kiutils reads for pin math, CST splices for every write.
+    Fixture R1 at (100,100): pin 1 at (100, 96.19), pin 2 at (100, 103.81)."""
+
+    def test_no_connect_pure_insertion(self, kicad_native_sch):
+        before = kicad_native_sch.read_bytes()
+        result = schematic.no_connect_pin("R1", "1", schematic_path=str(kicad_native_sch))
+        assert result == "No-connect on R1:1 at (100.0, 96.19)"
+        after = kicad_native_sch.read_bytes()
+        assert _pure_insertion(before, after)
+        assert b"generator_version" in after and b"(embedded_fonts" in after
+        nc = reparse(kicad_native_sch).noConnects[0]
+        assert (nc.position.X, nc.position.Y) == (100.0, 96.19)
+
+    def test_no_connect_idempotent_no_write(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        schematic.no_connect_pin("R1", "1", schematic_path=p)
+        mid = kicad_native_sch.read_bytes()
+        assert "already present" in schematic.no_connect_pin("R1", "1", schematic_path=p)
+        assert kicad_native_sch.read_bytes() == mid
+
+    def test_remove_no_connect_span(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        schematic.no_connect_pin("R1", "1", schematic_path=p)
+        before = kicad_native_sch.read_bytes()
+        assert "Removed 1 no-connect" in schematic.remove_no_connect("R1", "1", schematic_path=p)
+        after = kicad_native_sch.read_bytes()
+        assert _span_preserved(before, after)
+        assert reparse(kicad_native_sch).noConnects == []
+        with pytest.raises(ToolError, match="No no-connect"):
+            schematic.remove_no_connect("R1", "1", schematic_path=p)
+        assert kicad_native_sch.read_bytes() == after
+
+    def test_connect_pins_straight_and_label(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        result = schematic.connect_pins("R1", "1", "R1", "2", schematic_path=p)
+        assert result == "Connected R1:1 -> R1:2 via 1 wire segment"
+        after = kicad_native_sch.read_bytes()
+        assert b"generator_version" in after and b"(embedded_fonts" in after
+        assert _cst.serialize(_cst.parse(after)) == after
+        sch = reparse(kicad_native_sch)
+        new = _wires_of(sch)[-1]
+        assert (new.points[0].X, new.points[0].Y) == (100.0, 96.19)
+        assert (new.points[1].X, new.points[1].Y) == (100.0, 103.81)
+        assert any(lbl.text == "Net-(R1-1)" for lbl in sch.labels)
+
+    @pytest.mark.no_kicad_validation
+    def test_guard_still_refuses_hybrid_tools(self, kicad_native_sch):
+        # Hybrid tools keep the kiutils read, so they refuse future formats;
+        # byte preservation is on KiCad 9 files only until the read goes CST.
+        bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
+        kicad_native_sch.write_bytes(bumped)
+        p = str(kicad_native_sch)
+        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
+            schematic.no_connect_pin("R1", "1", schematic_path=p)
+        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
+            schematic.connect_pins("R1", "1", "R1", "2", schematic_path=p)
+        assert kicad_native_sch.read_bytes() == bumped
+
+
 def _kicad_cli_major() -> int:
     result = _run_cli(["version"], check=False)
     try:

@@ -12,7 +12,6 @@ from kiutils.items.schitems import (
     Connection,
     Junction,
     LocalLabel,
-    NoConnect,
     SchematicSymbol,
     SymbolProjectInstance,
     SymbolProjectPath,
@@ -1063,15 +1062,7 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
             _bounds_check(w[xk], w[yk], page_w, page_h, page_name)
     all_points = []
     for w in wires:
-        node = _WIRE_TPL.copy()
-        xys = node.find("pts").find_all("xy")
-        for xy, xk, yk in [(xys[0], "x1", "y1"), (xys[1], "x2", "y2")]:
-            px, py = round(w[xk], 4), round(w[yk], 4)
-            xy.atoms[1].set_text(_num(px))
-            xy.atoms[2].set_text(_num(py))
-            all_points.append((px, py))
-        node.find("uuid").atoms[1].set_text(_gen_uuid())
-        _splice_sch_node(root, "wire", node)
+        all_points += _splice_wire(root, w["x1"], w["y1"], w["x2"], w["y2"])
     # Auto-add junctions where new wire endpoints hit wire interiors (the scan
     # includes the wires just spliced, matching the kiutils-era behavior)
     _auto_junctions_cst(root, all_points)
@@ -1109,6 +1100,8 @@ _WIRE_TPL = _cst.parse(
     b"(wire\n\t(pts\n\t\t(xy 0 0) (xy 0 0)\n\t)\n\t(stroke\n\t\t(width 0)\n\t\t(type default)\n\t)"
     b'\n\t(uuid "x")\n)'
 ).lists[0]
+
+_NC_TPL = _cst.parse(b'(no_connect\n\t(at 0 0)\n\t(uuid "x")\n)').lists[0]
 
 
 def _num(v: float) -> str:
@@ -1194,6 +1187,21 @@ def _wire_xys(node) -> list[tuple[float, float]]:
     return [
         (float(p.atoms[1].text), float(p.atoms[2].text)) for p in node.find("pts").find_all("xy")
     ]
+
+
+def _splice_wire(root, x1: float, y1: float, x2: float, y2: float) -> list[tuple[float, float]]:
+    """Splice one wire node; returns its rounded endpoints for auto-junction scans."""
+    node = _WIRE_TPL.copy()
+    xys = node.find("pts").find_all("xy")
+    points = []
+    for xy, vx, vy in [(xys[0], x1, y1), (xys[1], x2, y2)]:
+        px, py = round(vx, 4), round(vy, 4)
+        xy.atoms[1].set_text(_num(px))
+        xy.atoms[2].set_text(_num(py))
+        points.append((px, py))
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_sch_node(root, "wire", node)
+    return points
 
 
 def _auto_junctions_cst(root, new_points: list[tuple[float, float]], tol: float = 0.01) -> None:
@@ -2088,54 +2096,37 @@ def connect_pins(
         pin2: Second pin name or number
         schematic_path: Path to .kicad_sch file
     """
+    # Hybrid tool: kiutils parse is read-only (pin positions); all writes are
+    # CST splices so unedited bytes reach the disk unchanged.
     sch = _load_sch(schematic_path)
     x1, y1, _ = _get_pin_pos(sch, ref1, pin1)
     x2, y2, _ = _get_pin_pos(sch, ref2, pin2)
 
-    segments = []
+    tree, root, *_ = _open_sch_cst(schematic_path)
     if x1 == x2 or y1 == y2:
         # Axis-aligned: single straight wire
-        segments.append(
-            Connection(
-                type="wire",
-                points=[Position(X=x1, Y=y1), Position(X=x2, Y=y2)],
-                stroke=_default_stroke(),
-                uuid=_gen_uuid(),
-            )
-        )
+        segments = [(x1, y1, x2, y2)]
     else:
         # L-shaped: horizontal from pin1 to x2, then vertical to pin2
-        mid_x, mid_y = x2, y1
-        segments.append(
-            Connection(
-                type="wire",
-                points=[Position(X=x1, Y=y1), Position(X=mid_x, Y=mid_y)],
-                stroke=_default_stroke(),
-                uuid=_gen_uuid(),
-            )
-        )
-        segments.append(
-            Connection(
-                type="wire",
-                points=[Position(X=mid_x, Y=mid_y), Position(X=x2, Y=y2)],
-                stroke=_default_stroke(),
-                uuid=_gen_uuid(),
-            )
-        )
-
+        segments = [(x1, y1, x2, y1), (x2, y1, x2, y2)]
     for seg in segments:
-        sch.graphicalItems.append(seg)
+        _splice_wire(root, *seg)
 
     # Collect all new wire endpoints (pin positions + L-shape corner)
     new_points = [(x1, y1), (x2, y2)]
     if x1 != x2 and y1 != y2:
         new_points.append((x2, y1))  # L-shape corner
-    _auto_junctions(sch, new_points)
+    _auto_junctions_cst(root, new_points)
 
     # Auto-add net label for hierarchical ERC compatibility
     # Walk wires from both pin endpoints to find all connected points,
     # then skip if any connected point already has a label.
     tol = 0.01
+    wire_ends = []
+    for wire in root.find_all("wire"):
+        pts = _wire_xys(wire)
+        if len(pts) >= 2:
+            wire_ends.append((pts[0], pts[-1]))
 
     def _connected_points(seed_x: float, seed_y: float) -> set[tuple[float, float]]:
         """BFS over wires to collect all points electrically connected to seed."""
@@ -2146,47 +2137,35 @@ def connect_pins(
             if (cx, cy) in visited:
                 continue
             visited.add((cx, cy))
-            for item in sch.graphicalItems:
-                if getattr(item, "type", None) != "wire" or len(item.points) < 2:
-                    continue
-                p0 = item.points[0]
-                p1 = item.points[-1]
-                if abs(p0.X - cx) < tol and abs(p0.Y - cy) < tol:
-                    nxt = (p1.X, p1.Y)
+            for (p0x, p0y), (p1x, p1y) in wire_ends:
+                if abs(p0x - cx) < tol and abs(p0y - cy) < tol:
+                    nxt = (p1x, p1y)
                     if nxt not in visited:
                         queue.append(nxt)
-                elif abs(p1.X - cx) < tol and abs(p1.Y - cy) < tol:
-                    nxt = (p0.X, p0.Y)
+                elif abs(p1x - cx) < tol and abs(p1y - cy) < tol:
+                    nxt = (p0x, p0y)
                     if nxt not in visited:
                         queue.append(nxt)
         return visited
 
     net_points = _connected_points(x1, y1) | _connected_points(x2, y2)
 
-    has_label = False
-    for lbl in sch.labels:
-        lx, ly = lbl.position.X, lbl.position.Y
-        if any(abs(lx - px) < tol and abs(ly - py) < tol for px, py in net_points):
-            has_label = True
-            break
+    label_positions = [
+        _node_xy(n) for token in ("label", "global_label") for n in root.find_all(token)
+    ]
+    has_label = any(
+        abs(lx - px) < tol and abs(ly - py) < tol
+        for lx, ly in label_positions
+        for px, py in net_points
+    )
     if not has_label:
-        for gl in sch.globalLabels:
-            lx, ly = gl.position.X, gl.position.Y
-            if any(abs(lx - px) < tol and abs(ly - py) < tol for px, py in net_points):
-                has_label = True
-                break
-    if not has_label:
-        net_name = f"Net-({ref1}-{pin1})"
-        sch.labels.append(
-            LocalLabel(
-                text=net_name,
-                position=Position(X=x1, Y=y1, angle=0),
-                effects=_default_effects(),
-                uuid=_gen_uuid(),
-            )
-        )
+        node = _LABEL_TPL.copy()
+        node.atoms[1].set_text(f"Net-({ref1}-{pin1})")
+        _fill_at(node, round(x1, 4), round(y1, 4), 0)
+        node.find("uuid").atoms[1].set_text(_gen_uuid())
+        _splice_sch_node(root, "label", node)
 
-    _save_sch(sch)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
 
     n = len(segments)
     return f"Connected {ref1}:{pin1} -> {ref2}:{pin2} via {n} wire segment{'s' if n > 1 else ''}"
@@ -2212,15 +2191,18 @@ def no_connect_pin(
     px, py, _ = _get_pin_pos(sch, reference, pin_name)
     px, py = round(px, 4), round(py, 4)
 
+    tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
-    if any(
-        abs(nc.position.X - px) < tol and abs(nc.position.Y - py) < tol for nc in sch.noConnects
-    ):
-        return f"No-connect already present on {reference}:{pin_name} at ({px}, {py})"
+    for nc in root.find_all("no_connect"):
+        nx, ny = _node_xy(nc)
+        if abs(nx - px) < tol and abs(ny - py) < tol:
+            return f"No-connect already present on {reference}:{pin_name} at ({px}, {py})"
 
-    nc = NoConnect(position=Position(X=px, Y=py), uuid=_gen_uuid())
-    sch.noConnects.append(nc)
-    _save_sch(sch)
+    node = _NC_TPL.copy()
+    _fill_at(node, px, py)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_sch_node(root, "no_connect", node)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
 
     return f"No-connect on {reference}:{pin_name} at ({px}, {py})"
 
@@ -2244,18 +2226,19 @@ def remove_no_connect(
     sch = _load_sch(schematic_path)
     px, py, _ = _get_pin_pos(sch, reference, pin_name)
 
+    tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
-    before = len(sch.noConnects)
-    sch.noConnects = [
+    matched = [
         nc
-        for nc in sch.noConnects
-        if not (abs(nc.position.X - px) < tol and abs(nc.position.Y - py) < tol)
+        for nc in root.find_all("no_connect")
+        if abs(_node_xy(nc)[0] - px) < tol and abs(_node_xy(nc)[1] - py) < tol
     ]
-    removed = before - len(sch.noConnects)
-    if removed == 0:
+    if not matched:
         raise ToolError(f"No no-connect flag on {reference}:{pin_name}.")
-    _save_sch(sch)
-    return f"Removed {removed} no-connect flag(s) from {reference}:{pin_name}"
+    for nc in matched:
+        root.remove_child(nc)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    return f"Removed {len(matched)} no-connect flag(s) from {reference}:{pin_name}"
 
 
 # ---------------------------------------------------------------------------
