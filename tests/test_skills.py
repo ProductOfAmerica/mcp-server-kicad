@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import stat
 from pathlib import Path
 
@@ -165,6 +166,36 @@ class TestHooksIntegrity:
         data = json.loads(plugin_json.read_text())
         assert "hooks" not in data, (
             "plugin.json still has inline hooks -- they should be in hooks/hooks.json"
+        )
+
+
+class TestVersionConsistency:
+    """plugin.json is the single source of truth for the plugin version (issue #1)."""
+
+    def test_plugin_json_matches_pyproject(self) -> None:
+        plugin = json.loads((REPO_ROOT / ".claude-plugin" / "plugin.json").read_text())
+        pyproject = (REPO_ROOT / "pyproject.toml").read_text()
+        match = re.search(r'^version = "([^"]+)"', pyproject, re.MULTILINE)
+        assert match, "pyproject.toml missing version"
+        assert plugin["version"] == match.group(1), (
+            f"plugin.json {plugin['version']} != pyproject.toml {match.group(1)}; "
+            "release.yml bumps both together, don't bump one by hand"
+        )
+
+    def test_marketplace_entry_carries_no_version(self) -> None:
+        marketplace_file = REPO_ROOT / ".claude-plugin" / "marketplace.json"
+        entry = json.loads(marketplace_file.read_text())["plugins"][0]
+        assert "version" not in entry, (
+            "marketplace.json must not pin a version: Claude Code silently uses "
+            "plugin.json's version instead, and release.yml only bumps plugin.json"
+        )
+
+    def test_marketplace_source_is_relative(self) -> None:
+        marketplace_file = REPO_ROOT / ".claude-plugin" / "marketplace.json"
+        entry = json.loads(marketplace_file.read_text())["plugins"][0]
+        assert entry["source"] == "./", (
+            "the plugin lives in this repo, so the marketplace source must be the "
+            "relative './'; a machine-local or SSH source breaks `claude plugin install`"
         )
 
 
