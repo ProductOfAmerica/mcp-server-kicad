@@ -271,6 +271,58 @@ def new_schematic() -> Schematic:
     return sch
 
 
+def make_power_sch(tmp_path, pin_type="power_in", ref="#PWR01", value="VCC") -> str:
+    """Schematic with one placed power symbol (pin 1 at (100, 100)). Returns path."""
+    sch = new_schematic()
+    sch.libSymbols.append(build_power_symbol(value, pin_type))
+
+    sym = SchematicSymbol()
+    sym.libId = f"power:{value}"
+    sym.libName = value
+    sym.position = Position(X=100, Y=100, angle=0)
+    sym.uuid = _gen_uuid()
+    sym.unit = 1
+    sym.inBom = False
+    sym.onBoard = True
+    sym.properties = [
+        Property(
+            key="Reference",
+            value=ref,
+            id=0,
+            effects=_default_effects(hide=True),
+            position=Position(X=100, Y=96.19, angle=0),
+        ),
+        Property(
+            key="Value",
+            value=value,
+            id=1,
+            effects=_default_effects(),
+            position=Position(X=100, Y=103.81, angle=0),
+        ),
+        Property(
+            key="Footprint",
+            value="",
+            id=2,
+            effects=_default_effects(hide=True),
+            position=Position(X=100, Y=100, angle=0),
+        ),
+        Property(
+            key="Datasheet",
+            value="~",
+            id=3,
+            effects=_default_effects(hide=True),
+            position=Position(X=100, Y=100, angle=0),
+        ),
+    ]
+    sym.pins = {"1": _gen_uuid()}
+    sch.schematicSymbols.append(sym)
+
+    path = str(tmp_path / "power.kicad_sch")
+    sch.filePath = path
+    sch.to_file()
+    return path
+
+
 # ---------------------------------------------------------------------------
 # Helpers (public — importable and used by tests directly)
 # ---------------------------------------------------------------------------

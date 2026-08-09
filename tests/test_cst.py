@@ -19,17 +19,32 @@ from mcp_server_kicad._shared import _resolve_system_lib, _run_cli
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
 
 
-def _pure_insertion(before: bytes, after: bytes) -> bool:
-    """True if *after* is *before* with one contiguous run of bytes inserted."""
-    if len(after) < len(before):
-        return False
+def _diff_spans(before: bytes, after: bytes) -> tuple[int, int]:
+    """Byte counts of the single differing region on each side, after
+    stripping the common prefix and suffix."""
     p = 0
-    while p < len(before) and before[p] == after[p]:
+    lo = min(len(before), len(after))
+    while p < lo and before[p] == after[p]:
         p += 1
     s = 0
-    while s < len(before) - p and before[-1 - s] == after[-1 - s]:
+    while s < lo - p and before[-1 - s] == after[-1 - s]:
         s += 1
-    return p + s >= len(before)
+    return len(before) - p - s, len(after) - p - s
+
+
+def _pure_insertion(before: bytes, after: bytes) -> bool:
+    """*after* is *before* with one contiguous run of bytes inserted."""
+    return len(after) >= len(before) and _diff_spans(before, after)[0] == 0
+
+
+def _span_preserved(before: bytes, after: bytes) -> bool:
+    """One contiguous insertion OR deletion: the shorter side is untouched."""
+    return min(_diff_spans(before, after)) == 0
+
+
+def _confined(before: bytes, after: bytes, limit: int = 200) -> bool:
+    """All differences sit inside one span of <= limit bytes on each side."""
+    return max(_diff_spans(before, after)) <= limit
 
 
 class TestRoundTrip:
@@ -157,19 +172,6 @@ class TestAddFamilyPreservation:
                 schematic_path=str(kicad_native_sch),
             )
         assert kicad_native_sch.read_bytes() == before
-
-
-def _span_preserved(before: bytes, after: bytes) -> bool:
-    """True when all bytes of the shorter side survive as a common prefix+suffix,
-    i.e. the change is one contiguous span (insertion, deletion, or substitution)."""
-    p = 0
-    lo = min(len(before), len(after))
-    while p < lo and before[p] == after[p]:
-        p += 1
-    s = 0
-    while s < lo - p and before[-1 - s] == after[-1 - s]:
-        s += 1
-    return p + s >= lo
 
 
 class TestRemoveFamilyPreservation:
@@ -412,44 +414,9 @@ class TestHybridRoutingPreservation:
 
 def _power_in_sch(tmp_path):
     """Schematic with a placed power_in VCC symbol #PWR01 at (100, 100)."""
-    import uuid as _uuid
+    from conftest import make_power_sch
 
-    from conftest import build_power_symbol, new_schematic
-    from kiutils.items.common import Effects, Font, Position, Property
-    from kiutils.items.schitems import SchematicSymbol
-
-    sch = new_schematic()
-    sch.libSymbols.append(build_power_symbol("VCC", "power_in"))
-    vcc = SchematicSymbol()
-    vcc.libId = "power:VCC"
-    vcc.libName = "VCC"
-    vcc.position = Position(X=100, Y=100, angle=0)
-    vcc.uuid = str(_uuid.uuid4())
-    vcc.unit = 1
-    vcc.inBom = False
-    vcc.onBoard = True
-    vcc.properties = [
-        Property(
-            key="Reference",
-            value="#PWR01",
-            id=0,
-            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-            position=Position(X=100, Y=96.19, angle=0),
-        ),
-        Property(
-            key="Value",
-            value="VCC",
-            id=1,
-            effects=Effects(font=Font(height=1.27, width=1.27)),
-            position=Position(X=100, Y=103.81, angle=0),
-        ),
-    ]
-    vcc.pins = {"1": str(_uuid.uuid4())}
-    sch.schematicSymbols.append(vcc)
-    path = tmp_path / "pwr_cst.kicad_sch"
-    sch.filePath = str(path)
-    sch.to_file()
-    return path
+    return Path(make_power_sch(tmp_path))
 
 
 class TestWirePinsToNetPreservation:
@@ -525,19 +492,6 @@ class TestWirePinsToNetPreservation:
         )
         root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
         assert "K10NET" in [n.atoms[1].text for n in root.find_all("label")]
-
-
-def _confined(before: bytes, after: bytes, limit: int = 200) -> bool:
-    """True when all differences sit inside one contiguous span of <= limit
-    bytes on each side: an in-place substitution with everything else intact."""
-    p = 0
-    lo = min(len(before), len(after))
-    while p < lo and before[p] == after[p]:
-        p += 1
-    s = 0
-    while s < lo - p and before[-1 - s] == after[-1 - s]:
-        s += 1
-    return (len(before) - p - s) <= limit and (len(after) - p - s) <= limit
 
 
 class TestSymbolFamilyPreservation:
