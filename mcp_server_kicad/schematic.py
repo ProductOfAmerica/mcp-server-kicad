@@ -996,34 +996,33 @@ def remove_wire(
         y2: End Y
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
-    removed = []
-    remaining = []
-    for item in sch.graphicalItems:
-        if isinstance(item, Connection) and item.type == "wire" and len(item.points) >= 2:
-            p0, p1 = item.points[0], item.points[1]
-            fwd = (
-                abs(p0.X - x1) < tol
-                and abs(p0.Y - y1) < tol
-                and abs(p1.X - x2) < tol
-                and abs(p1.Y - y2) < tol
-            )
-            rev = (
-                abs(p0.X - x2) < tol
-                and abs(p0.Y - y2) < tol
-                and abs(p1.X - x1) < tol
-                and abs(p1.Y - y1) < tol
-            )
-            if fwd or rev:
-                removed.append(item)
-                continue
-        remaining.append(item)
+    removed = 0
+    for node in root.find_all("wire"):
+        pts = _wire_xys(node)
+        if len(pts) < 2:
+            continue
+        (p0x, p0y), (p1x, p1y) = pts[0], pts[1]
+        fwd = (
+            abs(p0x - x1) < tol
+            and abs(p0y - y1) < tol
+            and abs(p1x - x2) < tol
+            and abs(p1y - y2) < tol
+        )
+        rev = (
+            abs(p0x - x2) < tol
+            and abs(p0y - y2) < tol
+            and abs(p1x - x1) < tol
+            and abs(p1y - y1) < tol
+        )
+        if fwd or rev:
+            root.remove_child(node)
+            removed += 1
     if not removed:
         raise ToolError(f"Wire ({x1},{y1})->({x2},{y2}) not found.")
-    sch.graphicalItems = remaining
-    _save_sch(sch)
-    return f"Removed {len(removed)} wire(s)."
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    return f"Removed {removed} wire(s)."
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
@@ -1058,27 +1057,25 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
         wires: List of wire defs [{x1, y1, x2, y2}, ...]
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     for w in wires:
         for xk, yk in [("x1", "y1"), ("x2", "y2")]:
-            _validate_position(w[xk], w[yk], sch)
-        wire = Connection(
-            type="wire",
-            points=[
-                Position(X=round(w["x1"], 4), Y=round(w["y1"], 4)),
-                Position(X=round(w["x2"], 4), Y=round(w["y2"], 4)),
-            ],
-            stroke=_default_stroke(),
-            uuid=_gen_uuid(),
-        )
-        sch.graphicalItems.append(wire)
-    # Auto-add junctions where new wire endpoints hit existing wire interiors
+            _bounds_check(w[xk], w[yk], page_w, page_h, page_name)
     all_points = []
     for w in wires:
-        all_points.append((round(w["x1"], 4), round(w["y1"], 4)))
-        all_points.append((round(w["x2"], 4), round(w["y2"], 4)))
-    _auto_junctions(sch, all_points)
-    _save_sch(sch)
+        node = _WIRE_TPL.copy()
+        xys = node.find("pts").find_all("xy")
+        for xy, xk, yk in [(xys[0], "x1", "y1"), (xys[1], "x2", "y2")]:
+            px, py = round(w[xk], 4), round(w[yk], 4)
+            xy.atoms[1].set_text(_num(px))
+            xy.atoms[2].set_text(_num(py))
+            all_points.append((px, py))
+        node.find("uuid").atoms[1].set_text(_gen_uuid())
+        _splice_sch_node(root, "wire", node)
+    # Auto-add junctions where new wire endpoints hit wire interiors (the scan
+    # includes the wires just spliced, matching the kiutils-era behavior)
+    _auto_junctions_cst(root, all_points)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Added {len(wires)} wires"
 
 
@@ -1106,6 +1103,11 @@ _TEXT_TPL = _cst.parse(
 
 _JUNCTION_TPL = _cst.parse(
     b'(junction\n\t(at 0 0)\n\t(diameter 0)\n\t(color 0 0 0 0)\n\t(uuid "x")\n)'
+).lists[0]
+
+_WIRE_TPL = _cst.parse(
+    b"(wire\n\t(pts\n\t\t(xy 0 0) (xy 0 0)\n\t)\n\t(stroke\n\t\t(width 0)\n\t\t(type default)\n\t)"
+    b'\n\t(uuid "x")\n)'
 ).lists[0]
 
 
@@ -1186,6 +1188,32 @@ def _node_xy(node) -> tuple[float, float]:
 def _node_uuid(node) -> str:
     u = node.find("uuid")
     return u.atoms[1].text if u is not None else ""
+
+
+def _wire_xys(node) -> list[tuple[float, float]]:
+    return [
+        (float(p.atoms[1].text), float(p.atoms[2].text)) for p in node.find("pts").find_all("xy")
+    ]
+
+
+def _auto_junctions_cst(root, new_points: list[tuple[float, float]], tol: float = 0.01) -> None:
+    """CST twin of _auto_junctions for the guard-free wire path."""
+    junctions = [_node_xy(j) for j in root.find_all("junction")]
+    for px, py in new_points:
+        if any(abs(jx - px) < tol and abs(jy - py) < tol for jx, jy in junctions):
+            continue
+        for wire in root.find_all("wire"):
+            pts = _wire_xys(wire)
+            if len(pts) < 2:
+                continue
+            (ax, ay), (bx, by) = pts[0], pts[1]
+            if _point_on_wire_interior(px, py, ax, ay, bx, by, tol):
+                node = _JUNCTION_TPL.copy()
+                _fill_at(node, px, py)
+                node.find("uuid").atoms[1].set_text(_gen_uuid())
+                _splice_sch_node(root, "junction", node)
+                junctions.append((px, py))
+                break
 
 
 @mcp.tool(annotations=_ADDITIVE)

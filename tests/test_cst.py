@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from conftest import reparse, requires_cli
+from kiutils.items.schitems import Connection
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import _cst, schematic
@@ -243,6 +244,73 @@ class TestRemoveFamilyPreservation:
         assert b"generator_version" in after and b"(embedded_fonts" in after
 
 
+def _wires_of(sch):
+    return [g for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"]
+
+
+class TestWiresPreservation:
+    """Slice 5: add_wires/remove_wire via CST splices. Fixture wire: (50,100)-(80,100)."""
+
+    def test_add_wires_pure_insertion(self, kicad_native_sch):
+        before = kicad_native_sch.read_bytes()
+        n = len(_wires_of(reparse(kicad_native_sch)))
+        schematic.add_wires(
+            [{"x1": 96.19, "y1": 20.5, "x2": 103.81, "y2": 20.5}],
+            schematic_path=str(kicad_native_sch),
+        )
+        after = kicad_native_sch.read_bytes()
+        assert _pure_insertion(before, after)
+        assert b"generator_version" in after and b"(embedded_fonts" in after
+        wires = _wires_of(reparse(kicad_native_sch))
+        assert len(wires) == n + 1
+        new = wires[-1]
+        assert (new.points[0].X, new.points[0].Y) == (96.19, 20.5)
+        assert (new.points[1].X, new.points[1].Y) == (103.81, 20.5)
+
+    def test_auto_junction_on_t_connection(self, kicad_native_sch):
+        schematic.add_wires(
+            [{"x1": 65, "y1": 80, "x2": 65, "y2": 100}],
+            schematic_path=str(kicad_native_sch),
+        )
+        sch = reparse(kicad_native_sch)
+        assert len(_wires_of(sch)) == 2
+        assert (65, 100) in [(j.position.X, j.position.Y) for j in sch.junctions]
+
+    def test_no_junction_at_wire_endpoint(self, kicad_native_sch):
+        schematic.add_wires(
+            [{"x1": 80, "y1": 80, "x2": 80, "y2": 100}],
+            schematic_path=str(kicad_native_sch),
+        )
+        sch = reparse(kicad_native_sch)
+        assert len(_wires_of(sch)) == 2
+        assert sch.junctions == []
+
+    def test_remove_wire_reversed_and_span(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        schematic.add_wires([{"x1": 20, "y1": 20, "x2": 30, "y2": 20}], schematic_path=p)
+        before = kicad_native_sch.read_bytes()
+        n = len(_wires_of(reparse(kicad_native_sch)))
+        assert "Removed 1 wire(s)." == schematic.remove_wire(30, 20, 20, 20, schematic_path=p)
+        after = kicad_native_sch.read_bytes()
+        assert _span_preserved(before, after)
+        assert len(_wires_of(reparse(kicad_native_sch))) == n - 1
+        with pytest.raises(ToolError, match="not found"):
+            schematic.remove_wire(30, 20, 20, 20, schematic_path=p)
+        assert kicad_native_sch.read_bytes() == after
+
+    def test_add_wires_all_validated_before_any_write(self, kicad_native_sch):
+        before = kicad_native_sch.read_bytes()
+        with pytest.raises(ToolError, match="outside the sheet boundary"):
+            schematic.add_wires(
+                [
+                    {"x1": 20, "y1": 20, "x2": 30, "y2": 20},
+                    {"x1": 9999, "y1": 20, "x2": 30, "y2": 20},
+                ],
+                schematic_path=str(kicad_native_sch),
+            )
+        assert kicad_native_sch.read_bytes() == before
+
+
 def _kicad_cli_major() -> int:
     result = _run_cli(["version"], check=False)
     try:
@@ -298,6 +366,10 @@ class TestGuardRelax:
             "H1X", schematic_path=p, new_shape="output"
         )
         assert "Removed junction" in schematic.remove_junction(60, 96, schematic_path=p)
+        assert "Added 1 wires" in schematic.add_wires(
+            [{"x1": 20, "y1": 20, "x2": 30, "y2": 20}], schematic_path=p
+        )
+        assert "Removed 1 wire(s)." in schematic.remove_wire(20, 20, 30, 20, schematic_path=p)
 
 
 @requires_cli
@@ -376,3 +448,17 @@ class TestKicad10E2E:
         node = _cst.parse(kicad_native_sch.read_bytes()).lists[0].find("hierarchical_label")
         assert node.atoms[1].text == "K10_M2"
         assert node.find("shape").atoms[1].text == "output"
+
+    def test_wires_on_real_kicad10(self, kicad_native_sch):
+        self._mint(kicad_native_sch)
+        p = str(kicad_native_sch)
+        # T-connects onto the fixture wire (50,100)-(80,100): auto-junction path
+        # runs against a real KiCad 10 file.
+        schematic.add_wires([{"x1": 65, "y1": 80, "x2": 65, "y2": 100}], schematic_path=p)
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        assert len(root.find_all("wire")) == 2
+        assert root.find("junction") is not None
+        assert "Removed 1 wire(s)." in schematic.remove_wire(65, 80, 65, 100, schematic_path=p)
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        assert len(root.find_all("wire")) == 1
+        assert root.find("junction") is not None
