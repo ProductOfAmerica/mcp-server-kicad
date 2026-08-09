@@ -948,32 +948,31 @@ def remove_label(
         y: Optional Y position filter
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
 
-    def _split(items):
-        removed, remaining = [], []
-        for lbl in items:
-            if lbl.text == text and (
-                x is None
-                or y is None
-                or (abs(lbl.position.X - x) < tol and abs(lbl.position.Y - y) < tol)
-            ):
-                removed.append(lbl)
-            else:
-                remaining.append(lbl)
-        return removed, remaining
+    def _matches(node) -> bool:
+        if _node_text(node) != text:
+            return False
+        if x is None or y is None:
+            return True
+        nx, ny = _node_xy(node)
+        return abs(nx - x) < tol and abs(ny - y) < tol
 
-    removed_local, sch.labels = _split(sch.labels)
-    removed_global, sch.globalLabels = _split(sch.globalLabels)
-    if not removed_local and not removed_global:
+    counts = {}
+    for token in ("label", "global_label"):
+        matched = [n for n in root.find_all(token) if _matches(n)]
+        for n in matched:
+            root.remove_child(n)
+        counts[token] = len(matched)
+    if not counts["label"] and not counts["global_label"]:
         raise ToolError(f"Label '{text}' not found.")
-    _save_sch(sch)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     parts = []
-    if removed_local:
-        parts.append(f"{len(removed_local)} label(s)")
-    if removed_global:
-        parts.append(f"{len(removed_global)} global label(s)")
+    if counts["label"]:
+        parts.append(f"{counts['label']} label(s)")
+    if counts["global_label"]:
+        parts.append(f"{counts['global_label']} global label(s)")
     return f"Removed {' and '.join(parts)} '{text}'."
 
 
@@ -1040,12 +1039,13 @@ def remove_junction(
         y: Y position
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
-    for i, junc in enumerate(sch.junctions):
-        if abs(junc.position.X - x) < tol and abs(junc.position.Y - y) < tol:
-            sch.junctions.pop(i)
-            _save_sch(sch)
+    for node in root.find_all("junction"):
+        nx, ny = _node_xy(node)
+        if abs(nx - x) < tol and abs(ny - y) < tol:
+            root.remove_child(node)
+            Path(schematic_path).write_bytes(_cst.serialize(tree))
             return f"Removed junction at ({x}, {y})"
     raise ToolError(f"Junction at ({x}, {y}) not found.")
 
@@ -1172,6 +1172,20 @@ def _fill_at(node, x: float, y: float, rotation: float | None = None) -> None:
     at.atoms[2].set_text(_num(y))
     if rotation is not None:
         at.atoms[3].set_text(_num(rotation))
+
+
+def _node_text(node) -> str:
+    return node.atoms[1].text
+
+
+def _node_xy(node) -> tuple[float, float]:
+    at = node.find("at")
+    return float(at.atoms[1].text), float(at.atoms[2].text)
+
+
+def _node_uuid(node) -> str:
+    u = node.find("uuid")
+    return u.atoms[1].text if u is not None else ""
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1452,20 +1466,21 @@ def remove_hierarchical_label(
         schematic_path: Path to .kicad_sch file
         uuid: Optional UUID for disambiguation when multiple labels share a name
     """
-    sch = _load_sch(schematic_path)
+    tree, root, *_ = _open_sch_cst(schematic_path)
     target = None
-    for hl in sch.hierarchicalLabels:
-        if uuid and hl.uuid == uuid:
-            target = hl
+    for node in root.find_all("hierarchical_label"):
+        if uuid and _node_uuid(node) == uuid:
+            target = node
             break
-        if hl.text == text and not uuid:
-            target = hl
+        if _node_text(node) == text and not uuid:
+            target = node
             break
     if target is None:
         raise ToolError(f"Hierarchical label '{text}' not found")
-    sch.hierarchicalLabels.remove(target)
-    _save_sch(sch)
-    return f"Removed hierarchical label '{target.text}'"
+    target_text = _node_text(target)
+    root.remove_child(target)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    return f"Removed hierarchical label '{target_text}'"
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
@@ -1493,31 +1508,32 @@ def modify_hierarchical_label(
         raise ToolError(
             f"invalid shape '{new_shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}"
         )
-    sch = _load_sch(schematic_path)
+    tree, root, *_ = _open_sch_cst(schematic_path)
     target = None
-    for hl in sch.hierarchicalLabels:
-        if uuid and hl.uuid == uuid:
-            target = hl
+    for node in root.find_all("hierarchical_label"):
+        if uuid and _node_uuid(node) == uuid:
+            target = node
             break
-        if hl.text == text and not uuid:
-            target = hl
+        if _node_text(node) == text and not uuid:
+            target = node
             break
     if target is None:
         raise ToolError(f"Hierarchical label '{text}' not found")
     changes = []
     if new_text:
-        target.text = new_text
+        target.atoms[1].set_text(new_text)
         changes.append(f"text='{new_text}'")
     if new_shape:
-        target.shape = new_shape
+        target.find("shape").atoms[1].set_text(new_shape)
         changes.append(f"shape={new_shape}")
+    at = target.find("at")
     if new_x is not None:
-        target.position.X = round(new_x, 4)
+        at.atoms[1].set_text(_num(round(new_x, 4)))
         changes.append(f"x={new_x}")
     if new_y is not None:
-        target.position.Y = round(new_y, 4)
+        at.atoms[2].set_text(_num(round(new_y, 4)))
         changes.append(f"y={new_y}")
-    _save_sch(sch)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     warning = ""
     if new_text:
         warning = " Warning: update the matching sheet pin in the parent schematic."
@@ -1712,25 +1728,23 @@ def remove_text(
         y: Optional Y position filter
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
-    removed = []
-    remaining = []
-    for t in sch.texts:
-        if t.text == text:
-            if x is not None and y is not None:
-                if abs(t.position.X - x) < tol and abs(t.position.Y - y) < tol:
-                    removed.append(t)
-                    continue
-            else:
-                removed.append(t)
+    matched = []
+    for node in root.find_all("text"):
+        if _node_text(node) != text:
+            continue
+        if x is not None and y is not None:
+            nx, ny = _node_xy(node)
+            if not (abs(nx - x) < tol and abs(ny - y) < tol):
                 continue
-        remaining.append(t)
-    if not removed:
+        matched.append(node)
+    if not matched:
         raise ToolError(f"Text '{text}' not found.")
-    sch.texts = remaining
-    _save_sch(sch)
-    return f"Removed {len(removed)} text(s) '{text}'."
+    for node in matched:
+        root.remove_child(node)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    return f"Removed {len(matched)} text(s) '{text}'."
 
 
 # ---------------------------------------------------------------------------
