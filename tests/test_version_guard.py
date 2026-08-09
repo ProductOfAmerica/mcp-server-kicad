@@ -146,12 +146,14 @@ class TestToolRefusal:
             schematic.get_schematic_summary(schematic_path=str(f))
 
     def test_rmw_tool_refuses_and_leaves_file_untouched(self, tmp_path):
-        # add_wires went CST-native in slice 5, so the representative guarded
-        # RMW tool is now move_component (still on the kiutils path).
+        # The representative guarded RMW tool tracks the migration: since
+        # slice 9 the last kiutils writer in schematic.py is place_component.
         f = self._future_sch(tmp_path)
         before = f.read_bytes()
         with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.move_component(reference="R1", x=10, y=10, schematic_path=str(f))
+            schematic.place_component(
+                lib_id="Device:R", reference="R1", value="10K", x=10, y=10, schematic_path=str(f)
+            )
         assert f.read_bytes() == before
 
     def test_symbol_lib_tool_refuses(self, tmp_path):

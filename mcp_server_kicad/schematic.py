@@ -39,7 +39,6 @@ from mcp_server_kicad._shared import (
     _run_cli,
     _save_sch,
     _snap_grid,
-    _sym_ref_val_fp,
     _upsert_root_symbol_instance,
 )
 from mcp_server_kicad.models import (
@@ -880,13 +879,14 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
         reference: Reference designator to remove (e.g. "U2")
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
-    target = _find_sym(sch, reference)
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    target = _find_sym_cst(root, reference)
     if target is None:
         raise ToolError(f"Component {reference} not found.")
-    sch.schematicSymbols.remove(target)
-    _save_sch(sch)
-    _remove_root_symbol_instance(schematic_path, "", target.uuid or "")
+    uuid = _node_uuid(target)
+    root.remove_child(target)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _remove_root_symbol_instance(schematic_path, "", uuid)
     return f"Removed {reference}"
 
 
@@ -1066,6 +1066,13 @@ _WIRE_TPL = _cst.parse(
 
 _NC_TPL = _cst.parse(b'(no_connect\n\t(at 0 0)\n\t(uuid "x")\n)').lists[0]
 
+# New component property (hidden, at component center). Carries (id N) like
+# the kiutils writer did; KiCad 9 accepts and ignores the legacy id.
+_PROP_TPL = _cst.parse(
+    b'(property "K" "V"\n\t(id 0)\n\t(at 0 0 0)\n\t(effects\n\t\t(font'
+    b"\n\t\t\t(size 1.27 1.27)\n\t\t)\n\t\t(hide yes)\n\t)\n)"
+).lists[0]
+
 # Synthetic PWR_FLAG lib symbol for hosts without a KiCad install (CI): same
 # semantics as the system one (power flag, one power_out pin). When a system
 # library exists, the real node is copied verbatim instead.
@@ -1222,6 +1229,14 @@ def _sym_property_cst(node, key: str) -> str | None:
     return None
 
 
+def _find_sym_cst(root, reference: str):
+    """First placed symbol whose Reference property matches, or None."""
+    return next(
+        (s for s in root.find_all("symbol") if _sym_property_cst(s, "Reference") == reference),
+        None,
+    )
+
+
 def _find_lib_symbol_cst(root, lib_id: str):
     """CST twin of _find_lib_symbol: bare and prefixed names both match."""
     bare = lib_id.split(":")[-1] if ":" in lib_id else lib_id
@@ -1241,10 +1256,7 @@ def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float,
     into lib_symbols). Pin match is name-OR-number per pin in file order, and
     every unit is scanned regardless of the placed symbol's (unit N).
     """
-    target = next(
-        (s for s in root.find_all("symbol") if _sym_property_cst(s, "Reference") == reference),
-        None,
-    )
+    target = _find_sym_cst(root, reference)
     if target is None:
         raise ValueError(f"Component {reference} not found")
     lib_sym = _find_lib_symbol_cst(root, target.find("lib_id").atoms[1].text)
@@ -1295,26 +1307,35 @@ def _splice_lib_symbol_cst(root, node) -> None:
         libs.children += [_cst.Node("ws", b"\n\t\t"), node]
 
 
-def _copy_system_lib_symbol_cst(root, lib_prefix: str, symbol_name: str) -> bool:
-    """Splice a copy of a system-library symbol node into lib_symbols.
+def _copy_lib_symbol_from_file_cst(root, lib_path: str, symbol_name: str, new_name: str) -> bool:
+    """Splice a copy of a .kicad_sym symbol node into lib_symbols.
 
-    The node's bytes come straight from KiCad's own .kicad_sym (no emission
-    knowledge); only the name atom is rewritten to the prefixed lib_id, the
-    way KiCad itself imports symbols. The prefix is not cosmetic: a placed
-    symbol whose lib_id has no matching lib_symbols entry and no lib_name
-    fallback segfaults kicad-cli 9.0 on load (measured, rc=0xC0000005).
+    The node's bytes come straight from the library file (no emission
+    knowledge); only the name atom is rewritten to *new_name*.
     """
-    lib_path = _resolve_system_lib(lib_prefix)
-    if not lib_path:
-        return False
     lib_root = _cst.parse(Path(lib_path).read_bytes()).lists[0]
     for s in lib_root.find_all("symbol"):
         if s.atoms[1].text == symbol_name:
             node = s.copy()
-            node.atoms[1].set_text(f"{lib_prefix}:{symbol_name}")
+            node.atoms[1].set_text(new_name)
             _splice_lib_symbol_cst(root, node)
             return True
     return False
+
+
+def _copy_system_lib_symbol_cst(root, lib_prefix: str, symbol_name: str) -> bool:
+    """Copy a system-library symbol into lib_symbols under its prefixed lib_id.
+
+    The prefix is not cosmetic: a placed symbol whose lib_id has no matching
+    lib_symbols entry and no lib_name fallback segfaults kicad-cli 9.0 on
+    load (measured, rc=0xC0000005). KiCad itself imports symbols prefixed.
+    """
+    lib_path = _resolve_system_lib(lib_prefix)
+    if not lib_path:
+        return False
+    return _copy_lib_symbol_from_file_cst(
+        root, lib_path, symbol_name, f"{lib_prefix}:{symbol_name}"
+    )
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1371,17 +1392,14 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
         symbol_name: Symbol name (e.g. "LM7805")
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
     _check_format_version(symbol_lib_path)
-    sym_lib = SymbolLib.from_file(symbol_lib_path)
-    for s in sym_lib.symbols:
-        if s.entryName == symbol_name:
-            if _find_lib_symbol(sch, symbol_name):
-                raise ToolError(f"'{symbol_name}' already in lib_symbols.")
-            sch.libSymbols.append(s)
-            _save_sch(sch)
-            return f"Added '{symbol_name}' to lib_symbols."
-    raise ToolError(f"'{symbol_name}' not found in {symbol_lib_path}.")
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    if _find_lib_symbol_cst(root, symbol_name) is not None:
+        raise ToolError(f"'{symbol_name}' already in lib_symbols.")
+    if not _copy_lib_symbol_from_file_cst(root, symbol_lib_path, symbol_name, symbol_name):
+        raise ToolError(f"'{symbol_name}' not found in {symbol_lib_path}.")
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    return f"Added '{symbol_name}' to lib_symbols."
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1401,17 +1419,14 @@ def move_component(
         rotation: New rotation in degrees (None = keep current)
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
-    _validate_position(x, y, sch)
+    tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    _bounds_check(x, y, page_w, page_h, page_name)
     x, y = _snap_grid(x), _snap_grid(y)
-    sym = _find_sym(sch, reference)
+    sym = _find_sym_cst(root, reference)
     if sym is None:
         raise ToolError(f"Component {reference} not found.")
-    sym.position.X = x
-    sym.position.Y = y
-    if rotation is not None:
-        sym.position.angle = rotation
-    _save_sch(sch)
+    _fill_at(sym, x, y, rotation)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Moved {reference} to ({x}, {y})"
 
 
@@ -1430,38 +1445,50 @@ def set_component_property(
         value: Property value
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
-    sym = _find_sym(sch, reference)
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    sym = _find_sym_cst(root, reference)
     if sym is None:
         raise ToolError(f"Component {reference} not found.")
-    prop = next((p for p in sym.properties if p.key == key), None)
+    props = sym.find_all("property")
+    prop = next((p for p in props if p.atoms[1].text == key), None)
     if prop is not None:
-        prop.value = value
+        prop.atoms[2].set_text(value)
         created = ""
     else:
         # Create new property (hidden, at component center)
-        new_id = max((p.id for p in sym.properties if p.id is not None), default=-1) + 1
-        sym.properties.append(
-            Property(
-                key=key,
-                value=value,
-                id=new_id,
-                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                position=Position(X=sym.position.X, Y=sym.position.Y, angle=0),
-            )
-        )
+        ids = []
+        for p in props:
+            id_node = p.find("id")
+            if id_node is not None:
+                ids.append(int(id_node.atoms[1].text))
+        node = _PROP_TPL.copy()
+        node.atoms[1].set_text(key)
+        node.atoms[2].set_text(value)
+        node.find("id").atoms[1].set_text(str(max(ids, default=-1) + 1))
+        cx, cy = _node_xy(sym)
+        _fill_at(node, cx, cy)
+        if props:
+            sym.insert_after(props[-1], node)
+        else:
+            sym.children += [_cst.Node("ws", b"\n\t"), node]
         created = " (new property)"
     if key == "Reference":
-        for inst in getattr(sym, "instances", []):
-            for path_entry in getattr(inst, "paths", []):
-                path_entry.reference = value
-    _save_sch(sch)
+        instances = sym.find("instances")
+        if instances is not None:
+            for project in instances.find_all("project"):
+                for path_node in project.find_all("path"):
+                    ref_node = path_node.find("reference")
+                    if ref_node is not None:
+                        ref_node.atoms[1].set_text(value)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     if key in ("Reference", "Value", "Footprint"):
-        ref, val, fp_val = _sym_ref_val_fp(sym)
+        ref = _sym_property_cst(sym, "Reference") or "?"
+        val = _sym_property_cst(sym, "Value") or ""
+        fp_val = _sym_property_cst(sym, "Footprint") or ""
         _upsert_root_symbol_instance(
             schematic_path,
             "",
-            sym.uuid or "",
+            _node_uuid(sym),
             ref,
             value=val,
             footprint=fp_val,
@@ -1497,16 +1524,19 @@ def set_page_size(
         valid = ", ".join(list(_PAGE_SIZES.keys()) + ["User"])
         raise ToolError(f"unknown page size '{size_key}'. Valid sizes: {valid}.")
 
-    sch = _load_sch(schematic_path)
-    sch.paper.paperSize = size_key
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    parts = f'(paper "{size_key}"'
     if size_key == "User":
-        sch.paper.width = w
-        sch.paper.height = h
+        parts += f" {_num(w)} {_num(h)}"
+    if portrait:
+        parts += " portrait"
+    new_paper = _cst.parse((parts + ")").encode()).lists[0]
+    paper = root.find("paper")
+    if paper is not None:
+        root.children[root.children.index(paper)] = new_paper
     else:
-        sch.paper.width = None
-        sch.paper.height = None
-    sch.paper.portrait = portrait
-    _save_sch(sch)
+        _splice_sch_node(root, "paper", new_paper)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
 
     if portrait:
         return f"Page size set to {size_key} ({h}x{w}mm, portrait)"
@@ -1998,10 +2028,7 @@ def wire_pins_to_net(
 
         # Track pin electrical types for auto PWR_FLAG logic
         if first_power_in_pos is None or not has_power_out:
-            target = next(
-                (s for s in root.find_all("symbol") if _sym_property_cst(s, "Reference") == ref),
-                None,
-            )
+            target = _find_sym_cst(root, ref)
             if target is not None:
                 lib_sym = _find_lib_symbol_cst(root, target.find("lib_id").atoms[1].text)
                 if lib_sym is not None:
