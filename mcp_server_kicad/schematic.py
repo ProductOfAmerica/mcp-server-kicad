@@ -24,6 +24,7 @@ from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
+import mcp_server_kicad._cst as _cst
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -1084,6 +1085,18 @@ def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
     return f"Added {len(wires)} wires"
 
 
+# Native-shape label template (tabs, quoted uuid, no justify) for the CST write
+# path. Values are filled per call via set_text, which handles KiCad escaping.
+_LABEL_TPL = _cst.parse(
+    b'(label "X"\n\t(at 0 0 0)\n\t(effects\n\t\t(font\n\t\t\t(size 1.27 1.27)\n\t\t)\n\t)'
+    b'\n\t(uuid "x")\n)'
+).lists[0]
+
+
+def _num(v: float) -> str:
+    return str(int(v)) if v == int(v) else str(v)
+
+
 @mcp.tool(annotations=_ADDITIVE)
 def add_label(
     text: str, x: float, y: float, rotation: float = 0, schematic_path: str = SCH_PATH
@@ -1100,14 +1113,29 @@ def add_label(
     sch = _load_sch(schematic_path)
     _validate_position(x, y, sch)
     x, y = round(x, 4), round(y, 4)
-    label = LocalLabel(
-        text=text,
-        position=Position(X=x, Y=y, angle=rotation),
-        effects=_default_effects(),
-        uuid=_gen_uuid(),
-    )
-    sch.labels.append(label)
-    _save_sch(sch)
+
+    # CST write path (docs/adr-cst-substrate.md): splice one label node into the
+    # original bytes so everything else reaches disk unchanged, instead of the
+    # kiutils full-file re-serialization that drops unmodeled tokens.
+    tree = _cst.parse(Path(schematic_path).read_bytes())
+    root = tree.lists[0]
+    node = _LABEL_TPL.copy()
+    node.atoms[1].set_text(text)
+    at = node.find("at")
+    at.atoms[1].set_text(_num(x))
+    at.atoms[2].set_text(_num(y))
+    at.atoms[3].set_text(_num(rotation))
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+
+    labels = root.find_all("label")
+    tail = root.find("sheet_instances") or root.find("embedded_fonts")
+    if labels:
+        root.insert_after(labels[-1], node)
+    elif tail is not None:
+        root.insert_before(tail, node)
+    else:
+        root.children += [_cst.Node("ws", b"\n"), node]
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Label '{text}' at ({x}, {y})"
 
 
