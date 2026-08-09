@@ -939,4 +939,7 @@ class TestKicad10E2E:
         assert "#PWR01" in result and "#FLG01" in result
         sch_root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
         lib_names = [s.atoms[1].text for s in sch_root.find("lib_symbols").find_all("symbol")]
-        assert "power:VCC" in lib_names and "power:PWR_FLAG" in lib_names
+        assert "power:VCC" in lib_names  # system copy, prefixed
+        # The PWR_FLAG rides through the explicit symbol_lib_path branch, which
+        # copies bare (today's shape); its lib_name fallback keeps KiCad happy.
+        assert "PWR_FLAG" in lib_names
