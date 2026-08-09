@@ -18,6 +18,7 @@ from kiutils.items.schitems import SymbolInstance
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
+from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 # ---------------------------------------------------------------------------
@@ -135,6 +136,75 @@ FP_LIB_PATH: str = _cfg["fp_lib_path"]
 OUTPUT_DIR: str = _cfg["output_dir"]
 
 # ---------------------------------------------------------------------------
+# Format version guard
+# ---------------------------------------------------------------------------
+
+# Read-max format versions: what KiCad 9 stable writes per file family. These
+# are distinct from the write constants in project.py/symbol.py. Newer files
+# are refused before parsing: kiutils 1.4.8 crashes on KiCad 10 boards and
+# silently rewrites KiCad 10 schematics into its 2021 dialect (measured in #9).
+_FORMAT_VERSION_LIMITS = {
+    "kicad_sch": 20250114,
+    "kicad_pcb": 20241229,
+    "kicad_symbol_lib": 20241209,
+    "footprint": 20241229,
+}
+_ROOT_TOKEN_RE = re.compile(r"^\s*\(\s*([a-z_0-9]+)")
+_FILE_VERSION_RE = re.compile(r"\(version\s+(\d+)\s*\)")
+
+
+def _check_format_version(path: str, head: str | None = None) -> None:
+    """Refuse to load *path* if its format version is newer than KiCad 9.
+
+    Callers that already read the file pass its text as *head*; otherwise only
+    the first 512 bytes are read. Files with no version token (pre-KiCad-6)
+    and non-KiCad files pass through so downstream behavior is unchanged.
+    """
+    if head is None:
+        try:
+            with open(path, "rb") as f:
+                head = f.read(512).decode("utf-8", errors="ignore")
+        except OSError:
+            return  # missing/unreadable: keep today's downstream error
+    else:
+        head = head[:512]
+    root = _ROOT_TOKEN_RE.match(head)
+    if not root:
+        return
+    limit = _FORMAT_VERSION_LIMITS.get(root.group(1))
+    if limit is None:
+        return
+    version = _FILE_VERSION_RE.search(head)
+    if not version:
+        return
+    found = int(version.group(1))
+    if found <= limit:
+        return
+    # KiCad 10 installs ship stock libraries already in newer formats
+    # (Device.kicad_sym at 20251024). We only ever read those, and refusing
+    # them would break system-symbol placement, so anything under a KiCad
+    # install or configured symbol dir is exempt. On a Linux system install
+    # _kicad_root() is /usr, so the exemption is deliberately loose.
+    resolved = Path(path).resolve()
+    system_dirs = list(_SYSTEM_SYM_DIRS)
+    install_root = _kicad_root()
+    if install_root is not None:
+        system_dirs.append(install_root)
+    env_dir = os.environ.get("KICAD_SYMBOL_DIR")
+    if env_dir:
+        system_dirs.append(Path(env_dir))
+    if any(resolved.is_relative_to(d.resolve()) for d in system_dirs):
+        return
+    raise ToolError(
+        f"{Path(path).name}: format version {found} is newer than the KiCad 9 "
+        f"formats this server supports ({root.group(1)} <= {limit}). Loading "
+        "would silently drop KiCad 10+ data and a save could corrupt the "
+        "file, so it is refused. Keep editing this file in KiCad 10+; parser "
+        "upgrade tracked in #9."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -143,6 +213,7 @@ def _load_sch(path: str = SCH_PATH) -> Schematic:
     """Load a KiCad schematic from *path*."""
     if not path:
         raise ValueError("No schematic path provided. Pass sch_path parameter.")
+    _check_format_version(path)
     sch = Schematic.from_file(path)
     # Cache raw system lib symbol text to prevent kiutils round-trip corruption.
     # lib_symbols inside schematics have libraryNickname=None, so we build a
@@ -495,6 +566,7 @@ def _load_board(path: str = PCB_PATH) -> Board:
     from kiutils.utils import sexpr
 
     raw = Path(path).read_text()
+    _check_format_version(path, raw)
     fixed = _EMPTY_TSTAMP_RE.sub(lambda _m: f'(tstamp "{uuid.uuid4()}")', raw)
     board = Board.from_sexpr(sexpr.parse_sexp(fixed))
     board.filePath = path
@@ -1067,8 +1139,6 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
     is not written.
     """
     import copy
-
-    from mcp.server.fastmcp.exceptions import ToolError
 
     board = _load_board(pcb_path)
     count = 0
