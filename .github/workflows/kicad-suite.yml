@@ -1,0 +1,90 @@
+name: KiCad suite (Linux)
+
+# Separate from ci.yml because installing KiCad costs minutes of wall clock, and
+# ci.yml's four-version matrix should stay fast. Same reasoning as
+# macos-discovery.yml, whose structure this mirrors.
+#
+# It exists because ci.yml installs no KiCad, so 46 of 649 tests skip there. That
+# was tolerable while most of them could not fail anyway: they wrapped their only
+# assertion in `except (ToolError, RuntimeError, FileNotFoundError): pass`, and a
+# bad scratch_pcb fixture meant every PCB export took the except branch on every
+# machine. Removing that exposed three defects that had already shipped, so the
+# gate is now a real coverage hole rather than a formality.
+#
+# Unlike macos-discovery.yml, this does run on pull requests: Linux runners are far
+# cheaper than macos-15, and this guards the whole suite rather than checking one
+# derivation. Drop the pull_request trigger if the added latency stops being worth
+# it.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master, "ci/**"]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  suite:
+    # Pinned rather than ubuntu-latest: this depends on an external PPA, and a
+    # runner image bump to a series the PPA has not built for would break the job
+    # for reasons that have nothing to do with the code.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      # KiCad 9, not the 10.0 series kicad.org ships as current stable: this repo
+      # targets 9, and KICAD_SCH_VERSION is the KiCad 9 schematic format.
+      #
+      # kicad-symbols and kicad-footprints are Recommends of kicad, so
+      # --no-install-recommends would drop them, break _resolve_system_lib, and
+      # leave ERC reporting bogus "library not found" violations, disabling the
+      # coverage this job exists to add. Keep the recommends and exclude only the
+      # multi-GB 3D models, via apt's trailing-dash syntax.
+      - name: Install KiCad 9
+        run: |
+          sudo add-apt-repository -y ppa:kicad/kicad-9.0-releases
+          sudo apt-get update
+          sudo apt-get install -y kicad kicad-packages3d-
+
+      - uses: astral-sh/setup-uv@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.10"
+      - run: uv sync --frozen --all-extras --dev
+
+      # Non-fatal. This is the first look at a real Linux install, so record what
+      # resolved even when the suite passes. If tests fail on library lookup, this
+      # is the step that says which resolution returned None.
+      - name: Report the Linux layout
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import shutil
+          import subprocess
+
+          from mcp_server_kicad._freerouting import find_pcbnew_python
+          from mcp_server_kicad._shared import (
+              _find_kicad_cli,
+              _kicad_root,
+              _resolve_system_lib,
+          )
+
+          print("kicad-cli version:")
+          subprocess.run(["kicad-cli", "version"])
+          print("shutil.which      :", shutil.which("kicad-cli"))
+          print("_find_kicad_cli() :", _find_kicad_cli())
+          print("_kicad_root()     :", _kicad_root())
+          print("Device.kicad_sym  :", _resolve_system_lib("Device"))
+          print("find_pcbnew_python:", find_pcbnew_python()[0])
+
+          root = _kicad_root()
+          if root:
+              print("\n--- entries under the resolved root ---")
+              for p in sorted(root.iterdir()):
+                  print("   ", p.name + ("/" if p.is_dir() else ""))
+          PY
+
+      # Only one Python version. kicad-cli is a subprocess and does not behave
+      # differently across 3.10-3.13, so spreading this over ci.yml's four matrix
+      # legs would quadruple a multi-minute install for nothing.
+      - run: uv run pytest -v
