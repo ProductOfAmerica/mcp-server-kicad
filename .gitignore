@@ -11,3 +11,4 @@ build/
 *.egg
 .idea/
 .worktrees/
+bash.exe.stackdump
