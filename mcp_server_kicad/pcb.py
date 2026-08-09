@@ -41,8 +41,10 @@ from mcp_server_kicad._shared import (
     _DESTRUCTIVE,
     _EXPORT,
     _READ_ONLY,
+    FP_LIB_PATH,
     OUTPUT_DIR,
     PCB_PATH,
+    SCH_PATH,
     _board_edge_polygon,
     _check_footprint_keepout_violations,
     _courtyard_bbox,
@@ -52,9 +54,11 @@ from mcp_server_kicad._shared import (
     _fp_val,
     _gen_uuid,
     _keepout_restrictions,
+    _kicad_root,
     _load_board,
     _point_in_polygon,
     _promote_footprint_keepouts,
+    _resolve_root,
     _run_cli,
     _transform_local_to_board,
 )
@@ -82,6 +86,7 @@ from mcp_server_kicad.models import (
     ThermalViasResult,
     TraceSegmentItem,
     TraceWidthResult,
+    UpdatePcbResult,
     ZoneItem,
     ZoneResult,
 )
@@ -788,6 +793,106 @@ def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
     except ValueError:
         zone_count = 0
     return FillZonesResult(zones_filled=zone_count, status="ok")
+
+
+def _netlist_lib_dirs(schematic_path: str, pcb_path: str) -> list[str]:
+    """Footprint library search dirs: project .pretty dirs, KICAD_FP_LIB, stock libs."""
+    dirs: list[str] = []
+    parents = dict.fromkeys(str(Path(p).resolve().parent) for p in (schematic_path, pcb_path))
+    for parent in parents:
+        for pretty in sorted(Path(parent).glob("*.pretty")):
+            if pretty.is_dir():
+                dirs.append(str(pretty))
+    if FP_LIB_PATH and Path(FP_LIB_PATH).is_dir():
+        dirs.append(FP_LIB_PATH)
+    root = _kicad_root()
+    if root:
+        for sub in ("share/kicad/footprints", "SharedSupport/footprints"):
+            cand = root / sub
+            if cand.is_dir():
+                dirs.append(str(cand))
+    return dirs
+
+
+@mcp.tool(annotations=_ADDITIVE)
+def update_pcb_from_schematic(
+    schematic_path: str = SCH_PATH,
+    pcb_path: str = PCB_PATH,
+    delete_stale: bool = False,
+    project_path: str = "",
+) -> UpdatePcbResult:
+    """Update the PCB from the schematic (headless Tools -> Update PCB from Schematic).
+
+    Exports the schematic's netlist, loads the assigned footprints from
+    libraries, and binds every pad to its net. Creates the .kicad_pcb if
+    it does not exist; new footprints land in a grid cluster. Existing
+    footprints are matched by reference and keep their position; a
+    changed footprint assignment swaps the footprint in place. Stale
+    board footprints are reported, and removed only with delete_stale
+    (locked ones are never removed). Zones are NOT refilled — run
+    fill_zones afterward. Net names arrive exactly as KiCad's F8
+    produces them (local labels sheet-prefixed, e.g. "/SIG"); read them
+    with list_pcb_nets.
+
+    Requires kicad-cli and KiCad's pcbnew Python bindings.
+
+    Args:
+        schematic_path: Path to .kicad_sch file
+        pcb_path: Path to .kicad_pcb file (created if missing)
+        delete_stale: Remove unlocked board footprints absent from the schematic
+        project_path: Path to .kicad_pro for explicit root resolution (sub-sheets)
+    """
+    if not schematic_path:
+        raise ToolError("No schematic path provided. Pass schematic_path parameter.")
+    if not pcb_path:
+        raise ToolError("No PCB path provided. Pass pcb_path parameter.")
+
+    python, env = _find_pcbnew_python()
+    if not python:
+        raise ToolError("pcbnew Python bindings not found. Ensure KiCad is installed.")
+
+    # Netlist must come from the root schematic so the full hierarchy's
+    # connectivity is included (same redirect run_erc does).
+    sch_target = _resolve_root(schematic_path, project_path) or schematic_path
+    pcb_file = str(Path(pcb_path).resolve())
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        netlist_path = str(Path(tmp_dir) / "netlist.xml")
+        result = _run_cli(
+            [
+                "sch",
+                "export",
+                "netlist",
+                "--format",
+                "kicadxml",
+                "--output",
+                netlist_path,
+                sch_target,
+            ],
+            check=False,
+        )
+        if result.returncode != 0 or not Path(netlist_path).exists():
+            detail = result.stderr.strip() or f"exit code {result.returncode}"
+            raise ToolError(f"Netlist export failed: {detail}")
+
+        script = str(Path(__file__).with_name("_netlist_import.py"))
+        cmd = [python, script, netlist_path, pcb_file]
+        for lib_dir in _netlist_lib_dirs(schematic_path, pcb_file):
+            cmd += ["--lib-dir", lib_dir]
+        if delete_stale:
+            cmd.append("--delete-stale")
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
+        raise ToolError(f"Netlist import failed: {detail}")
+    # The summary is the last stdout line; earlier lines may be pcbnew chatter.
+    lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
+    try:
+        summary = json.loads(lines[-1])
+    except (IndexError, ValueError) as exc:
+        raise ToolError(f"Netlist import produced no summary: {proc.stdout!r}") from exc
+    return UpdatePcbResult(**summary)
 
 
 @mcp.tool(annotations=_ADDITIVE)

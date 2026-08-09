@@ -11,7 +11,7 @@ MCP servers for KiCad schematic, PCB, symbol, footprint, and project automation.
 | Server | Tools | Description |
 |--------|-------|-------------|
 | `mcp-server-kicad-schematic` | 41 | Schematic read/write, ERC analysis, hierarchical labels, and exports (PDF, SVG, DXF, netlist, BOM) |
-| `mcp-server-kicad-pcb` | 29 | PCB read/write, DRC analysis, autorouting, and exports (Gerber, drill, 3D models, pick-and-place) |
+| `mcp-server-kicad-pcb` | 30 | PCB read/write, netlist import, DRC analysis, autorouting, and exports (Gerber, drill, 3D models, pick-and-place) |
 | `mcp-server-kicad-symbol` | 5 | Symbol library browsing, creation, SVG export, and library upgrade |
 | `mcp-server-kicad-footprint` | 4 | Footprint library browsing, SVG export, and library upgrade |
 | `mcp-server-kicad-project` | 24 | Project scaffolding, hierarchical sheets, hierarchy validation, annotation, and exports |
@@ -103,7 +103,7 @@ The servers resolve file paths in this order:
 
 ## Available Tools
 
-### Schematic Tools (40 tools)
+### Schematic Tools (41 tools)
 
 #### Read Tools
 
@@ -166,7 +166,7 @@ The servers resolve file paths in this order:
 | `export_netlist` | Export schematic netlist |
 | `export_bom` | Export Bill of Materials (BOM) as CSV |
 
-### PCB Tools (29 tools)
+### PCB Tools (30 tools)
 
 #### Read Tools
 
@@ -194,6 +194,7 @@ The servers resolve file paths in this order:
 | `add_pcb_line` | Add a graphic line to the PCB (edge cuts, silkscreen, etc.) |
 | `add_copper_zone` | Create an unfilled copper zone |
 | `fill_zones` | Fill all copper zones on the board |
+| `update_pcb_from_schematic` | Import/sync the schematic netlist onto the board (footprints + pad nets) |
 | `set_trace_width` | Change the width of existing traces |
 | `remove_traces` | Remove trace segments matching filters |
 | `add_thermal_vias` | Add a grid of thermal vias under a footprint pad |

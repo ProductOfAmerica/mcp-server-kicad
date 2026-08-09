@@ -153,6 +153,7 @@ def test_pcb_read_only(tool_name):
         "set_trace_width",
         "add_thermal_vias",
         "set_net_class",
+        "update_pcb_from_schematic",
     ],
 )
 def test_pcb_additive(tool_name):
