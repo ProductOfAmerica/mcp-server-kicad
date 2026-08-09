@@ -213,7 +213,7 @@ ahead." Asking a question or requesting changes is NOT approval.
 
 The KiCad MCP server gives you tools to drive KiCad programmatically.
 You do not need the user to click anything in KiCad — the tools do it
-for you. Tool groups (107 tools total):
+for you. Tool groups (109 tools total):
 
 - **Project:** `create_project`, `create_schematic`,
   `create_symbol_library`, `create_sym_lib_table`,
@@ -226,7 +226,8 @@ for you. Tool groups (107 tools total):
   `add_lib_symbol`
 - **Schematic — Wiring:** `connect_pins`, `wire_pins_to_net`,
   `add_wires`, `add_label`, `add_global_label`, `add_junctions`,
-  `no_connect_pin`, `remove_label`, `remove_wire`, `remove_junction`
+  `no_connect_pin`, `remove_no_connect`, `remove_label`,
+  `remove_wire`, `remove_junction`
 - **Schematic — Power:** `add_power_symbol`,
   `auto_place_decoupling_cap`
 - **Schematic — Inspect:** `get_schematic_summary`,
@@ -249,8 +250,8 @@ for you. Tool groups (107 tools total):
   `flatten_hierarchy`, `duplicate_sheet`, `reorder_sheet_pages`,
   `remove_text`, `add_hierarchical_label`,
   `remove_hierarchical_label`, `modify_hierarchical_label`
-- **PCB — Place & Edit:** `place_footprint`, `move_footprint`,
-  `remove_footprint`
+- **PCB — Place & Edit:** `update_pcb_from_schematic`,
+  `place_footprint`, `move_footprint`, `remove_footprint`
 - **PCB — Route & Refine:** `add_trace`, `add_via`, `autoroute_pcb`,
   `set_trace_width`, `remove_traces`, `add_thermal_vias`,
   `set_net_class`, `remove_dangling_tracks`, `add_copper_zone`,

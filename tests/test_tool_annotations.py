@@ -92,6 +92,7 @@ def test_schematic_additive(tool_name):
         "remove_label",
         "remove_wire",
         "remove_junction",
+        "remove_no_connect",
         "remove_text",
         "remove_hierarchical_label",
         "modify_hierarchical_label",
@@ -152,6 +153,7 @@ def test_pcb_read_only(tool_name):
         "set_trace_width",
         "add_thermal_vias",
         "set_net_class",
+        "update_pcb_from_schematic",
     ],
 )
 def test_pcb_additive(tool_name):

@@ -60,6 +60,12 @@ These are the kicad MCP tools you should be using during PCB layout:
 - `get_footprint_bounds` — get board-coordinate bounding box of a placed footprint
 - `check_placement` — check if placing a footprint at (x, y) violates keepout or board edge
 
+**Netlist import:**
+- `update_pcb_from_schematic` — pull the schematic's netlist onto the board:
+  loads the assigned footprints, binds every pad to its net, creates the
+  .kicad_pcb if missing (requires pcbnew). Re-run after schematic edits;
+  `delete_stale=True` removes parts dropped from the schematic.
+
 **Placing and moving footprints:**
 - `place_footprint` — place a footprint on the board
 - `move_footprint` — reposition a placed footprint (warns on keepout/edge violations)
@@ -124,8 +130,11 @@ Before starting PCB layout, verify these prerequisites:
 
 ## Layout Process
 
-1. **Board setup** — define board outline, layer count, design rules.
-2. **Import netlist** — footprints appear in a cluster; all nets defined.
+1. **Import netlist** — `update_pcb_from_schematic` creates the board file
+   if missing; footprints appear in a cluster with all nets bound. Net
+   names match the schematic's netlist (local labels sheet-prefixed,
+   e.g. "/SIG") — read them with `list_pcb_nets`.
+2. **Board setup** — define board outline, layer count, design rules.
 3. **Place footprints** — group by function, then optimize.
 4. **Route critical traces** — power, high-speed, sensitive analog.
 5. **Route remaining traces** — signal interconnects (or use `autoroute_pcb`).
@@ -279,6 +288,7 @@ Run `run_drc` and fix any remaining violations. Common post-refinement issues:
 - [ ] Pre-flight: verify ERC = 0 violations
 - [ ] Pre-flight: run `validate_hierarchy` — no unannotated/duplicate refs
 - [ ] Pre-flight: verify all footprints exist
+- [ ] Import netlist: `update_pcb_from_schematic` (check `skipped` is empty)
 - [ ] Define board outline and design rules
 - [ ] Place footprints by functional group
 - [ ] Route critical traces (power, high-speed)

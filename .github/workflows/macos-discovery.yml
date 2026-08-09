@@ -112,16 +112,16 @@ jobs:
           lib = _resolve_system_lib("Device")
           assert lib and "SharedSupport" in lib, f"symbol lookup failed: {lib!r}"
 
-          # #2's headline symptom: 89 tools instead of 107.
+          # #2's headline symptom: 89 tools instead of the full count.
           target = FastMCP("probe")
           for mod in (schematic, pcb, symbol, footprint, project):
               _copy_tools(mod.mcp, target)
           count = len(target._tool_manager._tools)
-          assert count == 107, f"expected 107 tools, got {count}"
+          assert count == 109, f"expected 109 tools, got {count}"
 
           print("ok:", resolved)
           print("ok:", lib)
-          print("ok: 107 tools")
+          print("ok: 109 tools")
           PY
 
       - name: Discovery test suite

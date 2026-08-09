@@ -397,6 +397,54 @@ class TestNoConnectPin:
                 schematic_path=str(scratch_sch),
             )
 
+    def test_idempotent(self, scratch_sch):
+        """Second call for the same pin is a no-op, not a duplicate (issue #4)."""
+        schematic.no_connect_pin(reference="R1", pin_name="1", schematic_path=str(scratch_sch))
+        result = schematic.no_connect_pin(
+            reference="R1", pin_name="1", schematic_path=str(scratch_sch)
+        )
+        assert "already present" in result
+        sch = reparse(str(scratch_sch))
+        assert len(sch.noConnects) == 1
+
+
+# ===========================================================================
+# TestRemoveNoConnect
+# ===========================================================================
+
+
+class TestRemoveNoConnect:
+    def test_remove(self, scratch_sch):
+        schematic.no_connect_pin(reference="R1", pin_name="1", schematic_path=str(scratch_sch))
+        result = schematic.remove_no_connect(
+            reference="R1", pin_name="1", schematic_path=str(scratch_sch)
+        )
+        assert "Removed 1" in result
+        assert len(reparse(str(scratch_sch)).noConnects) == 0
+
+    def test_remove_stacked_duplicates(self, scratch_sch):
+        """Schematics written before the idempotency fix have stacked
+        no-connects on one pin; a single call clears all of them."""
+        from kiutils.items.schitems import NoConnect
+
+        schematic.no_connect_pin(reference="R1", pin_name="1", schematic_path=str(scratch_sch))
+        sch = reparse(str(scratch_sch))
+        dup = NoConnect(position=sch.noConnects[0].position, uuid=_gen_uuid())
+        sch.noConnects.append(dup)
+        sch.to_file()
+
+        result = schematic.remove_no_connect(
+            reference="R1", pin_name="1", schematic_path=str(scratch_sch)
+        )
+        assert "Removed 2" in result
+        assert len(reparse(str(scratch_sch)).noConnects) == 0
+
+    def test_remove_missing(self, scratch_sch):
+        with pytest.raises(ToolError, match="No no-connect"):
+            schematic.remove_no_connect(
+                reference="R1", pin_name="1", schematic_path=str(scratch_sch)
+            )
+
 
 # ===========================================================================
 # TestGetNetConnections

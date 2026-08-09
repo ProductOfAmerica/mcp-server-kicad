@@ -213,8 +213,9 @@ Y < 175mm.
 - `add_label` — place a net label
 - `add_global_label` — place a global (cross-sheet) label
 - `add_junctions` — add junction dots at wire intersections
-- `no_connect_pin` — mark a pin as intentionally unconnected
-- `remove_label` / `remove_wire` / `remove_junction` — cleanup
+- `no_connect_pin` — mark a pin as intentionally unconnected (idempotent)
+- `remove_no_connect` — clear no-connect flag(s) from a pin
+- `remove_label` / `remove_wire` / `remove_junction` — cleanup (labels and global labels)
 
 **Power and decoupling:**
 - `add_power_symbol` — place VCC, GND, +3V3, PWR_FLAG, etc.
@@ -283,7 +284,7 @@ Y < 175mm.
 **Verification and export:**
 - `run_erc` — run electrical rules check
 - `export_schematic` — export schematic as PDF/SVG
-- `export_netlist` — generate netlist for PCB import
+- `export_netlist` — generate a netlist file (PCB import itself is `update_pcb_from_schematic` on the PCB server)
 - `export_bom` — export bill of materials
 
 **Symbol authoring (when a part isn't in KiCad's libraries):**

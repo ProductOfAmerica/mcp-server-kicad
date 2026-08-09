@@ -692,6 +692,46 @@ class TestRemoveLabel:
         assert len(remaining) == 1
         assert abs(remaining[0].position.X - 49.61) < 0.01
 
+    def test_remove_global_label(self, scratch_sch):
+        """Global labels are removable too (issue #4 related gap)."""
+        schematic.add_global_label(
+            text="GLB_NET",
+            x=150,
+            y=100,
+            schematic_path=str(scratch_sch),
+        )
+        result = schematic.remove_label(text="GLB_NET", schematic_path=str(scratch_sch))
+        assert "1 global label(s)" in result
+        sch = reparse(str(scratch_sch))
+        assert not any(gl.text == "GLB_NET" for gl in sch.globalLabels)
+
+    def test_remove_global_label_by_position(self, scratch_sch):
+        """Position filter applies to global labels the same as net labels."""
+        schematic.add_global_label(text="GLB_B", x=150, y=100, schematic_path=str(scratch_sch))
+        schematic.add_global_label(text="GLB_B", x=170, y=100, schematic_path=str(scratch_sch))
+        result = schematic.remove_label(
+            text="GLB_B",
+            x=150,
+            y=100,
+            schematic_path=str(scratch_sch),
+        )
+        assert "Removed 1 global label(s)" in result
+        sch = reparse(str(scratch_sch))
+        remaining = [gl for gl in sch.globalLabels if gl.text == "GLB_B"]
+        assert len(remaining) == 1
+        assert abs(remaining[0].position.X - 170) < 0.01
+
+    def test_remove_mixed_local_and_global(self, scratch_sch):
+        """One call removes both kinds when they share the text."""
+        schematic.add_label(text="MIX", x=60, y=60, schematic_path=str(scratch_sch))
+        schematic.add_global_label(text="MIX", x=80, y=60, schematic_path=str(scratch_sch))
+        result = schematic.remove_label(text="MIX", schematic_path=str(scratch_sch))
+        assert "1 label(s)" in result
+        assert "1 global label(s)" in result
+        sch = reparse(str(scratch_sch))
+        assert not any(lbl.text == "MIX" for lbl in sch.labels)
+        assert not any(gl.text == "MIX" for gl in sch.globalLabels)
+
 
 # ===========================================================================
 # TestRemoveWire

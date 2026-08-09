@@ -357,6 +357,92 @@ class TestFillZones:
         assert result.status == "ok"
 
 
+_NETLIST_SUMMARY_JSON = (
+    '{"status": "ok", "added": ["R1"], "value_updated": [], "fpid_changed": [],'
+    ' "stale_footprints": [], "stale_removed": [], "nets_added": 2, "nets_removed": 0,'
+    ' "pads_bound": 2, "orphaned_tracks": 0, "orphaned_zones": 0, "skipped": [],'
+    ' "warnings": []}'
+)
+
+
+class TestUpdatePcbFromSchematic:
+    def test_no_pcbnew_returns_error(self, tmp_path):
+        with patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=(None, None)):
+            with pytest.raises(ToolError, match="pcbnew"):
+                pcb.update_pcb_from_schematic(
+                    schematic_path=str(tmp_path / "a.kicad_sch"),
+                    pcb_path=str(tmp_path / "a.kicad_pcb"),
+                )
+
+    def test_empty_paths_rejected(self):
+        with pytest.raises(ToolError, match="path"):
+            pcb.update_pcb_from_schematic(schematic_path="", pcb_path="x.kicad_pcb")
+        with pytest.raises(ToolError, match="path"):
+            pcb.update_pcb_from_schematic(schematic_path="x.kicad_sch", pcb_path="")
+
+    def _run_mocked(self, tmp_path, delete_stale=False, returncode=0, stdout=None, stderr=""):
+        """Run the tool with kicad-cli and the pcbnew subprocess both mocked.
+
+        Returns (result_or_exception, pcbnew_argv).
+        """
+        (tmp_path / "TestLib.pretty").mkdir(exist_ok=True)
+
+        def fake_cli(args, check=True):
+            out = args[args.index("--output") + 1]
+            Path(out).write_text('<export version="E"/>')
+            return type("R", (), {"returncode": 0, "stderr": ""})()
+
+        mock_proc = type(
+            "P",
+            (),
+            {
+                "returncode": returncode,
+                "stdout": _NETLIST_SUMMARY_JSON + "\n" if stdout is None else stdout,
+                "stderr": stderr,
+            },
+        )()
+        with (
+            patch(
+                "mcp_server_kicad.pcb._find_pcbnew_python",
+                return_value=("/usr/bin/python3", None),
+            ),
+            patch("mcp_server_kicad.pcb._run_cli", side_effect=fake_cli),
+            patch("subprocess.run", return_value=mock_proc) as sub,
+        ):
+            result = pcb.update_pcb_from_schematic(
+                schematic_path=str(tmp_path / "a.kicad_sch"),
+                pcb_path=str(tmp_path / "a.kicad_pcb"),
+                delete_stale=delete_stale,
+            )
+        return result, sub.call_args[0][0]
+
+    def test_success_mocked(self, tmp_path):
+        result, argv = self._run_mocked(tmp_path)
+        assert result.status == "ok"
+        assert result.added == ["R1"]
+        assert result.nets_added == 2
+        # argv: [python, script, netlist, pcb, --lib-dir, ...]
+        assert argv[1].endswith("_netlist_import.py")
+        assert argv[2].endswith("netlist.xml")
+        assert argv[3].endswith("a.kicad_pcb")
+        lib_dirs = [argv[i + 1] for i, a in enumerate(argv) if a == "--lib-dir"]
+        assert any(d.endswith("TestLib.pretty") for d in lib_dirs)
+
+    def test_delete_stale_flag_propagates(self, tmp_path):
+        _, argv = self._run_mocked(tmp_path, delete_stale=True)
+        assert "--delete-stale" in argv
+        _, argv = self._run_mocked(tmp_path, delete_stale=False)
+        assert "--delete-stale" not in argv
+
+    def test_script_failure_raises(self, tmp_path):
+        with pytest.raises(ToolError, match="boom"):
+            self._run_mocked(tmp_path, returncode=1, stdout="", stderr="boom")
+
+    def test_garbage_stdout_raises(self, tmp_path):
+        with pytest.raises(ToolError, match="no summary"):
+            self._run_mocked(tmp_path, stdout="not json at all\n")
+
+
 class TestSetTraceWidth:
     def test_widen_by_net(self, scratch_pcb):
         _board_with_traces(scratch_pcb)

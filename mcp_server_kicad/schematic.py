@@ -935,11 +935,12 @@ def remove_label(
     y: float | None = None,
     schematic_path: str = SCH_PATH,
 ) -> str:
-    """Remove net label(s) by text, optionally filtered by position.
+    """Remove net label(s) or global label(s) by text, optionally filtered by position.
 
     If x and y are provided, only removes labels matching both text AND
     position (within 0.1mm tolerance). Otherwise removes ALL labels with
-    matching text.
+    matching text. To move a global label, remove it and re-add with
+    add_global_label (which takes shape and rotation).
 
     Args:
         text: Label text to match (e.g. "VCC", "PGND")
@@ -949,23 +950,31 @@ def remove_label(
     """
     sch = _load_sch(schematic_path)
     tol = 0.1
-    removed = []
-    remaining = []
-    for lbl in sch.labels:
-        if lbl.text == text:
-            if x is not None and y is not None:
-                if abs(lbl.position.X - x) < tol and abs(lbl.position.Y - y) < tol:
-                    removed.append(lbl)
-                    continue
-            else:
+
+    def _split(items):
+        removed, remaining = [], []
+        for lbl in items:
+            if lbl.text == text and (
+                x is None
+                or y is None
+                or (abs(lbl.position.X - x) < tol and abs(lbl.position.Y - y) < tol)
+            ):
                 removed.append(lbl)
-                continue
-        remaining.append(lbl)
-    if not removed:
+            else:
+                remaining.append(lbl)
+        return removed, remaining
+
+    removed_local, sch.labels = _split(sch.labels)
+    removed_global, sch.globalLabels = _split(sch.globalLabels)
+    if not removed_local and not removed_global:
         raise ToolError(f"Label '{text}' not found.")
-    sch.labels = remaining
     _save_sch(sch)
-    return f"Removed {len(removed)} label(s) '{text}'."
+    parts = []
+    if removed_local:
+        parts.append(f"{len(removed_local)} label(s)")
+    if removed_global:
+        parts.append(f"{len(removed_global)} global label(s)")
+    return f"Removed {' and '.join(parts)} '{text}'."
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
@@ -2067,7 +2076,8 @@ def no_connect_pin(
 ) -> str:
     """Place a no-connect flag on a component pin.
 
-    Resolves pin position and places a no-connect flag.
+    Resolves pin position and places a no-connect flag. Idempotent:
+    calling again for a pin that already has one is a no-op.
 
     Args:
         reference: Component reference (e.g. "U2")
@@ -2078,11 +2088,50 @@ def no_connect_pin(
     px, py, _ = _get_pin_pos(sch, reference, pin_name)
     px, py = round(px, 4), round(py, 4)
 
+    tol = 0.1
+    if any(
+        abs(nc.position.X - px) < tol and abs(nc.position.Y - py) < tol for nc in sch.noConnects
+    ):
+        return f"No-connect already present on {reference}:{pin_name} at ({px}, {py})"
+
     nc = NoConnect(position=Position(X=px, Y=py), uuid=_gen_uuid())
     sch.noConnects.append(nc)
     _save_sch(sch)
 
     return f"No-connect on {reference}:{pin_name} at ({px}, {py})"
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def remove_no_connect(
+    reference: str,
+    pin_name: str,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Remove no-connect flag(s) from a component pin.
+
+    Removes every no-connect at the pin's position, so stacked
+    duplicates from repeated no_connect_pin calls clear in one go.
+
+    Args:
+        reference: Component reference (e.g. "U2")
+        pin_name: Pin name (e.g. "NC") or number (e.g. "3")
+        schematic_path: Path to .kicad_sch file
+    """
+    sch = _load_sch(schematic_path)
+    px, py, _ = _get_pin_pos(sch, reference, pin_name)
+
+    tol = 0.1
+    before = len(sch.noConnects)
+    sch.noConnects = [
+        nc
+        for nc in sch.noConnects
+        if not (abs(nc.position.X - px) < tol and abs(nc.position.Y - py) < tol)
+    ]
+    removed = before - len(sch.noConnects)
+    if removed == 0:
+        raise ToolError(f"No no-connect flag on {reference}:{pin_name}.")
+    _save_sch(sch)
+    return f"Removed {removed} no-connect flag(s) from {reference}:{pin_name}"
 
 
 # ---------------------------------------------------------------------------

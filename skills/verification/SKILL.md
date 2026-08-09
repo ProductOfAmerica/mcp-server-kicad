@@ -259,7 +259,7 @@ A net from the schematic has no physical connection on the PCB.
 |-------|-----|
 | Missing trace | Route the connection with `add_trace` |
 | Footprint pad not connected | Add trace or via to reach the net |
-| Wrong footprint assigned | Fix in schematic, re-import netlist |
+| Wrong footprint assigned | Fix in schematic, re-run `update_pcb_from_schematic` |
 
 **Category 3: Track width violations**
 

@@ -40,7 +40,7 @@ class TestUnifiedServer:
         assert "run_drc" in registered
         assert "export_gerbers" in registered
         # Total tool count
-        assert len(registered) == 107, f"Expected 107 tools, got {len(registered)}: {registered}"
+        assert len(registered) == 109, f"Expected 109 tools, got {len(registered)}: {registered}"
 
     def test_no_tool_name_collisions(self):
         """All tool names across modules are unique."""
