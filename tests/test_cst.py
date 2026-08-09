@@ -9,10 +9,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import reparse
+from conftest import reparse, requires_cli
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import _cst, schematic
-from mcp_server_kicad._shared import _resolve_system_lib
+from mcp_server_kicad._shared import _resolve_system_lib, _run_cli
 
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
 
@@ -98,3 +99,44 @@ class TestAddLabelPreservation:
         assert lbl.position.X == pytest.approx(96.19)
         assert lbl.position.Y == pytest.approx(100.5)
         assert lbl.position.angle == 90
+
+
+def _kicad_cli_major() -> int:
+    result = _run_cli(["version"], check=False)
+    try:
+        return int(result.stdout.strip().split(".")[0])
+    except (ValueError, IndexError):
+        return 0
+
+
+class TestGuardRelaxAddLabelOnly:
+    @pytest.mark.no_kicad_validation
+    def test_future_version_file_add_label_works_other_tools_refuse(self, kicad_native_sch):
+        # Simulate a KiCad-10-saved schematic: bump only the version claim.
+        bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
+        kicad_native_sch.write_bytes(bumped)
+        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
+            schematic.get_schematic_summary(schematic_path=str(kicad_native_sch))
+        before = kicad_native_sch.read_bytes()
+        schematic.add_label("RELAXED", 60, 90, schematic_path=str(kicad_native_sch))
+        after = kicad_native_sch.read_bytes()
+        assert _pure_insertion(before, after)
+        tree = _cst.parse(after)
+        assert "RELAXED" in [n.atoms[1].text for n in tree.lists[0].find_all("label")]
+
+
+@requires_cli
+class TestKicad10E2E:
+    def test_add_label_on_real_kicad10_schematic(self, kicad_native_sch):
+        if _kicad_cli_major() < 10:
+            pytest.skip("needs kicad-cli 10+ to mint a current-format schematic")
+        _run_cli(["sch", "upgrade", "--force", str(kicad_native_sch)])
+        before = kicad_native_sch.read_bytes()
+        assert b"(version 2026" in before[:80], before[:80]
+        schematic.add_label("K10_NET", 60, 90, schematic_path=str(kicad_native_sch))
+        after = kicad_native_sch.read_bytes()
+        assert _pure_insertion(before, after)
+        tree = _cst.parse(after)
+        assert "K10_NET" in [n.atoms[1].text for n in tree.lists[0].find_all("label")]
+        # The autouse _validate_kicad_output fixture then runs this runner's
+        # kicad-cli ERC over the edited KiCad-10 file: the real acceptance gate.
