@@ -210,31 +210,11 @@ def _check_format_version(path: str, head: str | None = None) -> None:
 
 
 def _load_sch(path: str = SCH_PATH) -> Schematic:
-    """Load a KiCad schematic from *path*."""
+    """Load a KiCad schematic from *path* (kiutils, read paths only)."""
     if not path:
         raise ValueError("No schematic path provided. Pass sch_path parameter.")
     _check_format_version(path)
-    sch = Schematic.from_file(path)
-    # Cache raw system lib symbol text to prevent kiutils round-trip corruption.
-    # lib_symbols inside schematics have libraryNickname=None, so we build a
-    # mapping from schematicSymbols' libId (which has "Library:Symbol" format).
-    _sym_to_lib: dict[str, str] = {}
-    for sym in sch.schematicSymbols:
-        lib_id = sym.libId or ""
-        if ":" in lib_id:
-            prefix, name = lib_id.split(":", 1)
-            if name not in _sym_to_lib:
-                _sym_to_lib[name] = prefix
-    for lib_sym in sch.libSymbols:
-        sym_name = lib_sym.entryName
-        if sym_name not in _RAW_LIB_SYMBOLS:
-            lib_prefix = _sym_to_lib.get(sym_name, "")
-            lib_path = _resolve_system_lib(lib_prefix) if lib_prefix else None
-            if lib_path:
-                raw = _extract_raw_symbol(lib_path, sym_name)
-                if raw:
-                    _RAW_LIB_SYMBOLS[sym_name] = raw
-    return sch
+    return Schematic.from_file(path)
 
 
 def _gen_uuid() -> str:
@@ -361,10 +341,6 @@ _SYSTEM_SYM_DIRS: list[Path] = [
 ]
 
 
-# Module-level cache: symbol entryName -> raw S-expression text from system library
-_RAW_LIB_SYMBOLS: dict[str, str] = {}
-
-
 def _resolve_system_lib(lib_prefix: str) -> str | None:
     """Resolve a KiCad library prefix to its system .kicad_sym path.
 
@@ -430,88 +406,6 @@ def _extract_raw_symbol(lib_path: str, symbol_name: str) -> str | None:
                     return text[idx : i + 1]
             i += 1
         return None
-
-
-def _replace_lib_symbol_block(text: str, sym_name: str, raw_text: str) -> str:
-    """Replace a lib_symbol block inside ``(lib_symbols ...)`` with *raw_text*."""
-    lib_sym_start = text.find("(lib_symbols")
-    if lib_sym_start == -1:
-        return text
-    target = f'(symbol "{sym_name}"'
-    pos = lib_sym_start
-    while True:
-        idx = text.find(target, pos)
-        if idx == -1:
-            return text
-        after = idx + len(target)
-        if after < len(text) and text[after] not in (" ", "\n", "\r"):
-            pos = after
-            continue
-        # Count balanced parens to find end of block
-        depth = 0
-        i = idx
-        while i < len(text):
-            if text[i] == "(":
-                depth += 1
-            elif text[i] == ")":
-                depth -= 1
-                if depth == 0:
-                    # Determine indent from line start
-                    line_start = text.rfind("\n", 0, idx)
-                    indent = text[line_start + 1 : idx] if line_start != -1 else ""
-                    reindented = _reindent(raw_text, indent)
-                    return text[:idx] + reindented + text[i + 1 :]
-            i += 1
-        return text
-
-
-def _reindent(sexpr: str, indent: str) -> str:
-    """Re-indent an S-expression block to use *indent* as the base."""
-    lines = sexpr.split("\n")
-    if not lines:
-        return sexpr
-    # Detect original base indent
-    orig_indent = ""
-    for ch in lines[0]:
-        if ch in (" ", "\t"):
-            orig_indent += ch
-        else:
-            break
-    result = []
-    for line in lines:
-        stripped = line.lstrip()
-        if not stripped:
-            result.append("")
-            continue
-        orig_line_indent = ""
-        for ch in line:
-            if ch in (" ", "\t"):
-                orig_line_indent += ch
-            else:
-                break
-        if orig_line_indent.startswith(orig_indent):
-            relative = orig_line_indent[len(orig_indent) :]
-        else:
-            relative = ""
-        result.append(indent + relative + stripped)
-    return "\n".join(result)
-
-
-def _save_sch(sch) -> None:
-    """Write schematic, then fix system library symbols that kiutils corrupts."""
-    sch.to_file()
-    if not _RAW_LIB_SYMBOLS:
-        return
-    path = sch.filePath
-    text = Path(path).read_text()
-    changed = False
-    for sym_name, raw_text in _RAW_LIB_SYMBOLS.items():
-        new_text = _replace_lib_symbol_block(text, sym_name, raw_text)
-        if new_text != text:
-            text = new_text
-            changed = True
-    if changed:
-        Path(path).write_text(text)
 
 
 def _fix_empty_tstamps(board: Board) -> None:
@@ -660,15 +554,6 @@ def _fp_val(fp: Footprint) -> str:
     return "?"
 
 
-def _sym_ref_val_fp(sym) -> tuple[str, str, str]:
-    """Extract (reference, value, footprint) from a SchematicSymbol's properties."""
-    ref = next((p.value for p in sym.properties if p.key == "Reference"), "?")
-    val = next((p.value for p in sym.properties if p.key == "Value"), "")
-    fp = next((p.value for p in sym.properties if p.key == "Footprint"), "")
-    return ref, val, fp
-
-
-# symbol_instances entry, matching the shape the kiutils writer produced.
 _SYM_INSTANCE_TPL = _cst.parse(
     b'(path "/x"\n\t\t\t(reference "R")\n\t\t\t(unit 1)\n\t\t\t(value "")'
     b'\n\t\t\t(footprint "")\n\t\t)'

@@ -17,7 +17,7 @@ import re
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from mcp_server_kicad import footprint, project, schematic, symbol
+from mcp_server_kicad import footprint, schematic, symbol
 from mcp_server_kicad._shared import _FORMAT_VERSION_LIMITS, _check_format_version
 
 # Real versions each file family gets from a KiCad 10 save (measured in #9).
@@ -147,12 +147,15 @@ class TestToolRefusal:
 
     def test_rmw_tool_refuses_and_leaves_file_untouched(self, tmp_path):
         # The representative guarded RMW tool tracks the migration: since
-        # slice 10 schematic.py has no kiutils writers left, so the sheet
-        # tools in project.py carry the flag.
-        f = self._future_sch(tmp_path)
+        # slice 11 every .kicad_sch writer is CST-native, so a board writer
+        # (kiutils stays on boards) carries the flag.
+        from mcp_server_kicad import pcb
+
+        f = tmp_path / "future.kicad_pcb"
+        f.write_text(_stub("kicad_pcb", 20260206))
         before = f.read_bytes()
         with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            project.annotate_schematic(schematic_path=str(f))
+            pcb.move_footprint(reference="R1", x=10, y=10, pcb_path=str(f))
         assert f.read_bytes() == before
 
     def test_symbol_lib_tool_refuses(self, tmp_path):
