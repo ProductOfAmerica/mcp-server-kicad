@@ -22,7 +22,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Install KiCad
-        run: brew install --cask --no-quarantine kicad
+        run: brew install --cask kicad
 
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --frozen --all-extras --dev
