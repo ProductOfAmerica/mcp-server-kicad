@@ -312,7 +312,8 @@ class TestWiresPreservation:
 
 
 class TestHybridRoutingPreservation:
-    """Slice 6: kiutils reads for pin math, CST splices for every write.
+    """Slices 6+7: routing trio on the substrate; slice 7 moved the pin reads
+    to a CST walk, so the trio is guard-free and single-parse.
     Fixture R1 at (100,100): pin 1 at (100, 96.19), pin 2 at (100, 103.81)."""
 
     def test_no_connect_pure_insertion(self, kicad_native_sch):
@@ -358,17 +359,55 @@ class TestHybridRoutingPreservation:
         assert any(lbl.text == "Net-(R1-1)" for lbl in sch.labels)
 
     @pytest.mark.no_kicad_validation
-    def test_guard_still_refuses_hybrid_tools(self, kicad_native_sch):
-        # Hybrid tools keep the kiutils read, so they refuse future formats;
-        # byte preservation is on KiCad 9 files only until the read goes CST.
+    def test_future_version_file_routing_tools_work(self, kicad_native_sch):
+        # Slice 7: pin reads went CST, so the routing trio is guard-free.
         bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
         kicad_native_sch.write_bytes(bumped)
         p = str(kicad_native_sch)
         with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.no_connect_pin("R1", "1", schematic_path=p)
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.connect_pins("R1", "1", "R1", "2", schematic_path=p)
-        assert kicad_native_sch.read_bytes() == bumped
+            schematic.get_schematic_summary(schematic_path=p)
+        before = kicad_native_sch.read_bytes()
+        schematic.no_connect_pin("R1", "1", schematic_path=p)
+        assert _pure_insertion(before, kicad_native_sch.read_bytes())
+        assert "Removed 1 no-connect" in schematic.remove_no_connect("R1", "1", schematic_path=p)
+        schematic.connect_pins("R1", "1", "R1", "2", schematic_path=p)
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        assert len(root.find_all("wire")) == 2
+        assert "Net-(R1-1)" in [n.atoms[1].text for n in root.find_all("label")]
+
+    def test_pin_pos_cst_matches_kiutils(self, scratch_sch, kicad_native_sch):
+        # Differential oracle: the CST walk must agree with the kiutils path
+        # exactly, on both file shapes, through rotation and mirror.
+        from mcp_server_kicad.schematic import _get_pin_pos, _get_pin_pos_cst
+
+        for path in (scratch_sch, kicad_native_sch):
+            sch = reparse(path)
+            root = _cst.parse(path.read_bytes()).lists[0]
+            for pin in ("1", "2"):
+                assert _get_pin_pos_cst(root, "R1", pin) == _get_pin_pos(sch, "R1", pin), (
+                    path.name,
+                    pin,
+                )
+        # Rotation via a real tool, then mirror via a hand-spliced token; both
+        # parsers reread the same file so the comparison stays apples-to-apples.
+        schematic.move_component("R1", 90, 80, rotation=90, schematic_path=str(scratch_sch))
+        for mutate_mirror in (False, True):
+            if mutate_mirror:
+                data = scratch_sch.read_bytes()
+                assert b"(mirror" not in data
+                scratch_sch.write_bytes(data.replace(b"(unit 1)", b"(mirror x) (unit 1)", 1))
+            sch = reparse(scratch_sch)
+            root = _cst.parse(scratch_sch.read_bytes()).lists[0]
+            for pin in ("1", "2"):
+                assert _get_pin_pos_cst(root, "R1", pin) == _get_pin_pos(sch, "R1", pin), (
+                    mutate_mirror,
+                    pin,
+                )
+        root = _cst.parse(scratch_sch.read_bytes()).lists[0]
+        with pytest.raises(ValueError, match="Component X99 not found"):
+            _get_pin_pos_cst(root, "X99", "1")
+        with pytest.raises(ValueError, match="Pin 'NOPE' not found on R1"):
+            _get_pin_pos_cst(root, "R1", "NOPE")
 
 
 def _kicad_cli_major() -> int:
@@ -522,3 +561,19 @@ class TestKicad10E2E:
         root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
         assert len(root.find_all("wire")) == 1
         assert root.find("junction") is not None
+
+    def test_routing_tools_on_real_kicad10(self, kicad_native_sch):
+        # sch upgrade rewrites lib_symbols into the KiCad 10 shape, so this is
+        # the live portability measurement for the CST pin walk and no_connect.
+        before = self._mint(kicad_native_sch)
+        p = str(kicad_native_sch)
+        assert "at (100.0, 96.19)" in schematic.no_connect_pin("R1", "1", schematic_path=p)
+        mid = kicad_native_sch.read_bytes()
+        assert _pure_insertion(before, mid)
+        assert _cst.parse(mid).lists[0].find("no_connect") is not None
+        assert "Removed 1 no-connect" in schematic.remove_no_connect("R1", "1", schematic_path=p)
+        assert _span_preserved(mid, kicad_native_sch.read_bytes())
+        schematic.connect_pins("R1", "1", "R1", "2", schematic_path=p)
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        assert len(root.find_all("wire")) == 2
+        assert "Net-(R1-1)" in [n.atoms[1].text for n in root.find_all("label")]
