@@ -4,14 +4,12 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-from conftest import HAS_KICAD_CLI
+from conftest import requires_cli
 
 from mcp_server_kicad import pcb, schematic
 
-pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 
-
+@requires_cli
 class TestRunErc:
     def test_clean_schematic(self, scratch_sch, tmp_path):
         result = schematic.run_erc(str(scratch_sch), str(tmp_path))
@@ -24,6 +22,7 @@ class TestRunErc:
 
 
 class TestRunDrc:
+    @requires_cli
     def test_clean_board(self, scratch_pcb, tmp_path):
         from mcp.server.fastmcp.exceptions import ToolError
 

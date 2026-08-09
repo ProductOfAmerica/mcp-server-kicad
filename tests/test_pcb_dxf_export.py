@@ -1,15 +1,14 @@
 """Tests for PCB DXF export via export_pcb(format='dxf')."""
 
 import pytest
-from conftest import HAS_KICAD_CLI
+from conftest import requires_cli
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import pcb
 
-pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
-
 
 class TestExportPcbDxf:
+    @requires_cli
     def test_export_runs(self, scratch_pcb, tmp_path):
         try:
             result = pcb.export_pcb(
@@ -26,6 +25,7 @@ class TestExportPcbDxf:
         with pytest.raises(ToolError):
             pcb.export_pcb(format="dxf")
 
+    @requires_cli
     def test_with_mm_units(self, scratch_pcb, tmp_path):
         try:
             result = pcb.export_pcb(
@@ -39,6 +39,7 @@ class TestExportPcbDxf:
         except (ToolError, RuntimeError, FileNotFoundError):
             pass
 
+    @requires_cli
     def test_with_options(self, scratch_pcb, tmp_path):
         try:
             result = pcb.export_pcb(

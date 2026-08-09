@@ -1,14 +1,13 @@
 """Tests for CLI PCB export tools."""
 
 import pytest
-from conftest import HAS_KICAD_CLI
+from conftest import requires_cli
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import pcb
 
-pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 
-
+@requires_cli
 class TestExportGerbers:
     def test_returns_result(self, scratch_pcb, tmp_path):
         try:
@@ -27,6 +26,7 @@ class TestExportGerbers:
             pass
 
 
+@requires_cli
 class TestExportGerberSingleLayer:
     def test_returns_result(self, scratch_pcb, tmp_path):
         try:
@@ -36,6 +36,7 @@ class TestExportGerberSingleLayer:
             pass
 
 
+@requires_cli
 class TestExportGerbersLayerFilter:
     def test_multi_layer_filter(self, scratch_pcb, tmp_path):
         try:
@@ -47,6 +48,7 @@ class TestExportGerbersLayerFilter:
             pass
 
 
+@requires_cli
 class TestExportPcbPdf:
     def test_returns_result(self, scratch_pcb, tmp_path):
         try:
@@ -61,6 +63,7 @@ class TestExportPcbPdf:
             pass
 
 
+@requires_cli
 class TestExportPcbSvg:
     def test_returns_result(self, scratch_pcb, tmp_path):
         try:
@@ -75,6 +78,7 @@ class TestExportPcbSvg:
             pass
 
 
+@requires_cli
 class TestExportPositions:
     def test_returns_result(self, scratch_pcb, tmp_path):
         try:
@@ -84,6 +88,7 @@ class TestExportPositions:
             pass
 
 
+@requires_cli
 class TestExportStep:
     def test_returns_result(self, scratch_pcb, tmp_path):
         try:
@@ -95,6 +100,7 @@ class TestExportStep:
             pass
 
 
+@requires_cli
 class TestExportStl:
     def test_returns_result(self, scratch_pcb, tmp_path):
         try:
@@ -106,6 +112,7 @@ class TestExportStl:
             pass
 
 
+@requires_cli
 class TestExportGlb:
     def test_returns_result(self, scratch_pcb, tmp_path):
         try:
@@ -117,6 +124,7 @@ class TestExportGlb:
             pass
 
 
+@requires_cli
 class TestExport3dRender:
     def test_returns_result(self, scratch_pcb, tmp_path):
         try:
@@ -129,8 +137,6 @@ class TestExport3dRender:
 
 
 class TestExportPcbInvalidFormat:
-    pytestmark = []  # no kicad-cli needed for format validation
-
     def test_export_pcb_invalid_format(self):
         with pytest.raises(ToolError):
             pcb.export_pcb(format="xyz")
