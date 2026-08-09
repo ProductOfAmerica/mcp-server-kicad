@@ -114,9 +114,5 @@ jobs:
           print("ok: 107 tools")
           PY
 
-      # -k excludes the pcbnew case: KiCad's macOS interpreter lives somewhere
-      # under Contents/Frameworks rather than <root>/bin, which the derivation
-      # added for #6 does not cover. The "Report the macOS layout" step above
-      # prints where it actually is. Drop the -k once that is wired up.
       - name: Discovery test suite
-        run: uv run pytest tests/test_cli_resolution.py -v -k "not pcbnew"
+        run: uv run pytest tests/test_cli_resolution.py -v

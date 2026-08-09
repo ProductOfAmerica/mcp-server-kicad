@@ -130,10 +130,19 @@ def _kicad_python_candidates() -> list[str]:
     if root is None:
         return []
     found = []
+    # Windows install and Unix prefix.
     for name in ("python.exe", "python3"):
         p = root / "bin" / name
         if p.is_file():
             found.append(str(p))
+    # The macOS bundle has no bin/; it ships a framework whose version
+    # component moves (KiCad 10.0.5 bundles 3.9). Every candidate is probed
+    # with "import pcbnew" below, so the order among them does not matter.
+    found += [
+        str(p)
+        for p in root.glob("Frameworks/Python.framework/Versions/*/bin/python3")
+        if p.is_file()
+    ]
     return found
 
 
