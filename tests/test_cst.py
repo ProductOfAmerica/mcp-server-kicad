@@ -1144,7 +1144,8 @@ class TestKicad10E2E:
         assert "renamed" in project.modify_hierarchical_sheet(
             uuid, schematic_path=p, sheet_name="renamed"
         )
-        schematic.place_component("Device:C", "C?", "100nF", 63.5, 63.5, schematic_path=p)
+        schematic.place_component("Device:C", "C1", "100nF", 63.5, 63.5, schematic_path=p)
+        schematic.set_component_property("C1", "Reference", "C?", schematic_path=p)
         assert "Annotated 1 components" in project.annotate_schematic(schematic_path=p)
 
     def test_duplicate_and_flatten_on_real_kicad10(self, tmp_path, kicad_native_sch):
