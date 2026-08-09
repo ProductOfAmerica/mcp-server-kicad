@@ -156,6 +156,13 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
     if _pcbnew_cache is not None:
         return _pcbnew_cache
 
+    # uv's managed-python trampoline exports PYTHONHOME, which redirects any
+    # child interpreter's module search into uv's tree; KiCad's own python
+    # then fails "import pcbnew". Probe and launch without it.
+    env = None
+    if "PYTHONHOME" in os.environ:
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONHOME"}
+
     kicad_python = os.environ.get("KICAD_PYTHON")
     if kicad_python:
         try:
@@ -164,9 +171,10 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                env=env,
             )
             if result.returncode == 0:
-                _pcbnew_cache = (kicad_python, None)
+                _pcbnew_cache = (kicad_python, env)
                 return _pcbnew_cache
         except Exception:
             pass
@@ -187,9 +195,10 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
                 capture_output=True,
                 text=True,
                 timeout=10,
+                env=env,
             )
             if result.returncode == 0:
-                _pcbnew_cache = (py, None)
+                _pcbnew_cache = (py, env)
                 return _pcbnew_cache
         except Exception:
             pass
@@ -198,17 +207,17 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
         for path in _KICAD_PYTHON_PATHS:
             if not Path(path).is_dir():
                 continue
-            env = {**os.environ, "PYTHONPATH": path}
+            path_env = {**(env or os.environ), "PYTHONPATH": path}
             try:
                 result = subprocess.run(
                     [py, "-c", "import pcbnew"],
                     capture_output=True,
                     text=True,
                     timeout=10,
-                    env=env,
+                    env=path_env,
                 )
                 if result.returncode == 0:
-                    _pcbnew_cache = (py, env)
+                    _pcbnew_cache = (py, path_env)
                     return _pcbnew_cache
             except Exception:
                 pass
