@@ -24,13 +24,8 @@ class TestRunErc:
 class TestRunDrc:
     @requires_cli
     def test_clean_board(self, scratch_pcb, tmp_path):
-        from mcp.server.fastmcp.exceptions import ToolError
-
-        try:
-            result = pcb.run_drc(str(scratch_pcb), str(tmp_path))
-            assert hasattr(result, "violation_count")
-        except ToolError:
-            pass  # kiutils-generated boards may not be loadable by kicad-cli
+        result = pcb.run_drc(str(scratch_pcb), str(tmp_path))
+        assert hasattr(result, "violation_count")
 
     def test_parses_top_level_violations(self, scratch_pcb, tmp_path):
         """DRC JSON has violations at top level, not nested under sheets."""

@@ -1277,6 +1277,7 @@ def export_gerbers(
     if layers and len(layers) == 1:
         layer = layers[0]
         out_dir = output_dir or str(Path(pcb_path).parent)
+        os.makedirs(out_dir, exist_ok=True)
         out_path = str(Path(out_dir) / f"{Path(pcb_path).stem}-{layer.replace('.', '_')}.gbr")
         _run_cli(["pcb", "export", "gerber", "--layers", layer, "--output", out_path, pcb_path])
         meta = _file_meta(out_path)

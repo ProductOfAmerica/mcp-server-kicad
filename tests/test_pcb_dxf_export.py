@@ -10,16 +10,13 @@ from mcp_server_kicad import pcb
 class TestExportPcbDxf:
     @requires_cli
     def test_export_runs(self, scratch_pcb, tmp_path):
-        try:
-            result = pcb.export_pcb(
-                format="dxf",
-                pcb_path=str(scratch_pcb),
-                output_dir=str(tmp_path),
-                layers=["F.Cu"],
-            )
-            assert result.path
-        except (ToolError, RuntimeError, FileNotFoundError):
-            pass
+        result = pcb.export_pcb(
+            format="dxf",
+            pcb_path=str(scratch_pcb),
+            output_dir=str(tmp_path),
+            layers=["F.Cu"],
+        )
+        assert result.path
 
     def test_missing_layers_returns_error(self):
         with pytest.raises(ToolError):
@@ -27,29 +24,23 @@ class TestExportPcbDxf:
 
     @requires_cli
     def test_with_mm_units(self, scratch_pcb, tmp_path):
-        try:
-            result = pcb.export_pcb(
-                format="dxf",
-                pcb_path=str(scratch_pcb),
-                output_dir=str(tmp_path),
-                layers=["F.Cu"],
-                output_units="mm",
-            )
-            assert result.path
-        except (ToolError, RuntimeError, FileNotFoundError):
-            pass
+        result = pcb.export_pcb(
+            format="dxf",
+            pcb_path=str(scratch_pcb),
+            output_dir=str(tmp_path),
+            layers=["F.Cu"],
+            output_units="mm",
+        )
+        assert result.path
 
     @requires_cli
     def test_with_options(self, scratch_pcb, tmp_path):
-        try:
-            result = pcb.export_pcb(
-                format="dxf",
-                pcb_path=str(scratch_pcb),
-                output_dir=str(tmp_path),
-                layers=["F.Cu"],
-                exclude_refdes=True,
-                exclude_value=True,
-            )
-            assert result.path
-        except (ToolError, RuntimeError, FileNotFoundError):
-            pass
+        result = pcb.export_pcb(
+            format="dxf",
+            pcb_path=str(scratch_pcb),
+            output_dir=str(tmp_path),
+            layers=["F.Cu"],
+            exclude_refdes=True,
+            exclude_value=True,
+        )
+        assert result.path
