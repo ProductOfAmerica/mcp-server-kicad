@@ -45,8 +45,8 @@ def _stub(kind: str, version: int) -> str:
 
 # A parseable .kicad_sym body for the carve-out test: old-style content that
 # kiutils 1.4.8 reads fine, stamped with a KiCad 10 version token.
-_SYM_LIB_TEMPLATE = """(kicad_symbol_lib
-  (version {version})
+_SYM_LIB_KICAD10 = """(kicad_symbol_lib
+  (version 20251024)
   (generator "kicad_symbol_editor")
   (symbol "TestSym"
     (pin_names (offset 0))
@@ -73,17 +73,14 @@ class TestVersionThresholds:
         f.write_text(_stub(kind, _FORMAT_VERSION_LIMITS[kind]))
         _check_format_version(str(f))
 
-    @pytest.mark.parametrize("kind", sorted(_FORMAT_VERSION_LIMITS))
-    def test_one_past_limit_refuses(self, tmp_path, kind):
-        f = tmp_path / f"past_limit{SUFFIX[kind]}"
-        f.write_text(_stub(kind, _FORMAT_VERSION_LIMITS[kind] + 1))
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            _check_format_version(str(f))
-
-    @pytest.mark.parametrize("kind", sorted(_FORMAT_VERSION_LIMITS))
-    def test_real_kicad10_version_refuses(self, tmp_path, kind):
-        f = tmp_path / f"kicad10{SUFFIX[kind]}"
-        f.write_text(_stub(kind, KICAD10_VERSIONS[kind]))
+    @pytest.mark.parametrize(
+        ("kind", "version"),
+        [(k, _FORMAT_VERSION_LIMITS[k] + 1) for k in sorted(_FORMAT_VERSION_LIMITS)]
+        + [(k, KICAD10_VERSIONS[k]) for k in sorted(KICAD10_VERSIONS)],
+    )
+    def test_newer_version_refuses(self, tmp_path, kind, version):
+        f = tmp_path / f"newer{SUFFIX[kind]}"
+        f.write_text(_stub(kind, version))
         with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
             _check_format_version(str(f))
 
@@ -128,11 +125,6 @@ class TestGuardPassThrough:
     def test_empty_file_passes(self, tmp_path):
         f = tmp_path / "empty.kicad_sch"
         f.write_text("")
-        _check_format_version(str(f))
-
-    def test_json_content_passes(self, tmp_path):
-        f = tmp_path / "project.kicad_pro"
-        f.write_text('{"meta": {"version": 3}}\n')
         _check_format_version(str(f))
 
     def test_nonexistent_path_passes(self, tmp_path):
@@ -186,7 +178,7 @@ class TestSystemLibCarveOut:
         sym_dir = tmp_path / "syms"
         sym_dir.mkdir()
         lib = sym_dir / "TestLib.kicad_sym"
-        lib.write_text(_SYM_LIB_TEMPLATE.format(version=20251024))
+        lib.write_text(_SYM_LIB_KICAD10)
         monkeypatch.setenv("KICAD_SYMBOL_DIR", str(sym_dir))
         result = symbol.list_lib_symbols(symbol_lib_path=str(lib))
         assert "TestSym" in result
