@@ -12,3 +12,4 @@ build/
 .idea/
 .worktrees/
 bash.exe.stackdump
+.claude/worktrees
