@@ -145,6 +145,27 @@ class TestFindPcbnewPython:
             python, env = find_pcbnew_python()
             assert python is None
 
+    def test_pythonhome_stripped_from_probe_and_returned_env(self):
+        """uv-trampoline venvs export PYTHONHOME, which breaks KiCad's own
+        interpreter; the probe and the returned launch env must both drop it."""
+        captured_envs = []
+
+        def fake_run(args, **kwargs):
+            captured_envs.append(kwargs.get("env"))
+            return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
+
+        with patch.dict(os.environ, {"KICAD_PYTHON": "/fake/py", "PYTHONHOME": "/fake/venv"}):
+            with patch("subprocess.run", side_effect=fake_run):
+                python, env = find_pcbnew_python()
+
+        assert python == "/fake/py"
+        assert env is not None
+        assert "PYTHONHOME" not in env
+        assert captured_envs
+        for probe_env in captured_envs:
+            assert probe_env is not None
+            assert "PYTHONHOME" not in probe_env
+
 
 _FIND_PY = "mcp_server_kicad._freerouting.find_pcbnew_python"
 
