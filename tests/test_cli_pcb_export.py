@@ -31,6 +31,26 @@ class TestExportGerberSingleLayer:
         result = pcb.export_gerbers(str(scratch_pcb), str(tmp_path / "fresh"), layers=["F.Cu"])
         assert result.format == "gerber"
 
+    def test_writes_only_the_named_gerber(self, scratch_pcb, tmp_path):
+        """No .gbrjob sidecar or scratch dir may survive, and the name is the promised one."""
+        out = tmp_path / "out"
+        result = pcb.export_gerbers(str(scratch_pcb), str(out), layers=["F.Cu"])
+        assert [p.name for p in out.iterdir()] == ["scratch-F_Cu.gbr"]
+        assert result.path.endswith("scratch-F_Cu.gbr")
+
+    def test_bogus_layer_name_is_an_error(self, scratch_pcb, tmp_path):
+        """kicad-cli exits 0 for an unknown layer and just writes no gerber."""
+        with pytest.raises(ToolError, match="'Nope.Cu'"):
+            pcb.export_gerbers(str(scratch_pcb), str(tmp_path / "out"), layers=["Nope.Cu"])
+
+
+class TestExportGerberSingleLayerValidation:
+    @pytest.mark.parametrize("layer", ["", "   "])
+    def test_blank_layer_name_is_an_error(self, scratch_pcb, tmp_path, layer):
+        """kicad-cli plots every enabled layer when --layers is blank; refuse before invoking."""
+        with pytest.raises(ToolError):
+            pcb.export_gerbers(str(scratch_pcb), str(tmp_path / "out"), layers=[layer])
+
 
 @requires_cli
 class TestExportGerbersLayerFilter:
