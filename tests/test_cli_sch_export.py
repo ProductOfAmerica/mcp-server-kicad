@@ -3,14 +3,13 @@
 from pathlib import Path
 
 import pytest
-from conftest import HAS_KICAD_CLI
+from conftest import requires_cli
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 
-pytestmark = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 
-
+@requires_cli
 class TestExportSchematicPdf:
     def test_produces_file(self, scratch_sch, tmp_path):
         result = schematic.export_schematic(
@@ -20,6 +19,7 @@ class TestExportSchematicPdf:
         assert result.format == "pdf"
 
 
+@requires_cli
 class TestExportSchematicSvg:
     def test_produces_file(self, scratch_sch, tmp_path):
         result = schematic.export_schematic(
@@ -28,18 +28,21 @@ class TestExportSchematicSvg:
         assert result.format == "svg"
 
 
+@requires_cli
 class TestExportSchematicNetlist:
     def test_produces_file(self, scratch_sch, tmp_path):
         result = schematic.export_netlist(schematic_path=str(scratch_sch), output_dir=str(tmp_path))
         assert Path(result.path).exists()
 
 
+@requires_cli
 class TestExportBom:
     def test_produces_file(self, scratch_sch, tmp_path):
         result = schematic.export_bom(schematic_path=str(scratch_sch), output_dir=str(tmp_path))
         assert Path(result.path).exists()
 
 
+@requires_cli
 class TestExportSchematicDxf:
     def test_produces_file(self, scratch_sch, tmp_path):
         result = schematic.export_schematic(
@@ -49,8 +52,6 @@ class TestExportSchematicDxf:
 
 
 class TestExportSchematicInvalidFormat:
-    pytestmark = []  # no kicad-cli needed for format validation
-
     def test_invalid_format(self):
         with pytest.raises(ToolError):
             schematic.export_schematic(format="xyz")
@@ -58,8 +59,6 @@ class TestExportSchematicInvalidFormat:
 
 class TestFindRootSchematic:
     """Test _find_root_schematic helper used by ERC auto-redirect."""
-
-    pytestmark = []
 
     def test_returns_none_for_root(self, tmp_path):
         """Root schematic returns None (no redirect needed)."""
@@ -85,9 +84,6 @@ class TestFindRootSchematic:
 
 
 class TestListUnconnectedPins:
-    # This test doesn't need kicad-cli — tests the parsing logic
-    pytestmark = []
-
     def test_parses_unconnected_violations(self):
         """Extracts pin info from ERC violations."""
         fake_erc_json = {
