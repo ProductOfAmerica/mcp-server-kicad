@@ -314,6 +314,22 @@ class AutorouteResult(BaseModel):
     keepouts_promoted: int = 0
 
 
+class UpdatePcbResult(BaseModel):
+    status: str
+    added: list[str]
+    value_updated: list[str]
+    fpid_changed: list[str]
+    stale_footprints: list[str]
+    stale_removed: list[str]
+    nets_added: int
+    nets_removed: int
+    pads_bound: int
+    orphaned_tracks: int
+    orphaned_zones: int
+    skipped: list[dict]
+    warnings: list[str]
+
+
 # ---------------------------------------------------------------------------
 # Schematic operation results
 # ---------------------------------------------------------------------------
