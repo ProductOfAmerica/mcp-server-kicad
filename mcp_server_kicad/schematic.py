@@ -1097,6 +1097,22 @@ def _num(v: float) -> str:
     return str(int(v)) if v == int(v) else str(v)
 
 
+def _page_size_cst(root) -> tuple[float, float, str]:
+    """(width, height, page name) from a CST schematic root; mirrors _get_page_size."""
+    paper = root.find("paper")
+    if paper is None:
+        return 297, 210, "A4"
+    atoms = paper.atoms
+    name = atoms[1].text if len(atoms) > 1 else "A4"
+    if name == "User" and len(atoms) > 3:
+        w, h = float(atoms[2].text), float(atoms[3].text)
+    else:
+        w, h = _PAGE_SIZES.get(name, (297, 210))
+    if any(a.text == "portrait" for a in atoms[1:]):
+        w, h = h, w
+    return w, h, name
+
+
 @mcp.tool(annotations=_ADDITIVE)
 def add_label(
     text: str, x: float, y: float, rotation: float = 0, schematic_path: str = SCH_PATH
@@ -1110,15 +1126,25 @@ def add_label(
         rotation: Degrees (0=right, 90=up, 180=left, 270=down)
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
-    _validate_position(x, y, sch)
+    # Fully CST-native path: no kiutils parse, so no version guard. Works on any
+    # format KiCad writes (label dialect measured portable KiCad 6-10; see
+    # docs/adr-cst-substrate.md). Every other tool keeps the guard.
+    tree = _cst.parse(Path(schematic_path).read_bytes())
+    root = tree.lists[0] if tree.lists else None
+    if root is None or root.head != "kicad_sch":
+        raise ToolError(f"{Path(schematic_path).name} is not a KiCad schematic.")
+    page_w, page_h, page_name = _page_size_cst(root)
+    if x < 0 or x > page_w or y < 0 or y > page_h:
+        sizes = ", ".join(_PAGE_SIZES.keys())
+        raise ToolError(
+            f"Position ({x}, {y}) is outside the sheet boundary "
+            f"({page_w}x{page_h}mm, page '{page_name}'). "
+            f"Use set_page_size to resize (available: {sizes}, or 'User')."
+        )
     x, y = round(x, 4), round(y, 4)
 
-    # CST write path (docs/adr-cst-substrate.md): splice one label node into the
-    # original bytes so everything else reaches disk unchanged, instead of the
-    # kiutils full-file re-serialization that drops unmodeled tokens.
-    tree = _cst.parse(Path(schematic_path).read_bytes())
-    root = tree.lists[0]
+    # Splice one label node into the original bytes so everything else reaches
+    # disk unchanged, instead of a full-file re-serialization.
     node = _LABEL_TPL.copy()
     node.atoms[1].set_text(text)
     at = node.find("at")

@@ -55,3 +55,8 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
 - Spike A's spliced-file ERC delta is +2 violations (one dangling label, one multiple_net_names), not "3 items" as most naturally read.
 - Spike C's counts were 8 fixture pairs / 32 harvest runs (7/8 fully explained), not 9/36; its "B" sizes were decoded character counts, not disk bytes.
 - Spike B's KiCad-10 anchor-2 precedence case is inferred from the violation delta, proven only on KiCad 9.
+
+## Status log
+
+- 2026-08-09: slice 1 merged (CST substrate + byte-preserving add_label; kiutils retained for validation).
+- 2026-08-09: slice 2: add_label made fully CST-native (page-size validation from the CST), which relaxes the version guard for exactly this path; KiCad 10 files get their first working edit. Every other tool keeps the guard. KiCad 10 e2e test mints a current-format schematic via sch upgrade on the gating macos runner.
