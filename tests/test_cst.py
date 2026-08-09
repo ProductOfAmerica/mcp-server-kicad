@@ -101,6 +101,61 @@ class TestAddLabelPreservation:
         assert lbl.position.angle == 90
 
 
+class TestAddFamilyPreservation:
+    """Slice 3: global_label, hierarchical_label, text, junctions via the same splice."""
+
+    def test_global_label(self, kicad_native_sch):
+        before = kicad_native_sch.read_bytes()
+        schematic.add_global_label(
+            "GNET", 60, 90, rotation=90, shape="bidirectional", schematic_path=str(kicad_native_sch)
+        )
+        assert _pure_insertion(before, kicad_native_sch.read_bytes())
+        gl = next(g for g in reparse(kicad_native_sch).globalLabels if g.text == "GNET")
+        assert gl.shape == "bidirectional"
+        assert gl.position.angle == 90
+
+    def test_hierarchical_label(self, kicad_native_sch):
+        before = kicad_native_sch.read_bytes()
+        schematic.add_hierarchical_label(
+            "HNET", "output", 25.4, 30, schematic_path=str(kicad_native_sch)
+        )
+        assert _pure_insertion(before, kicad_native_sch.read_bytes())
+        hl = next(h for h in reparse(kicad_native_sch).hierarchicalLabels if h.text == "HNET")
+        assert hl.shape == "output"
+        assert hl.position.X == pytest.approx(25.4)
+        with pytest.raises(ToolError, match="invalid shape"):
+            schematic.add_hierarchical_label("Z", "sideways", 10, 10, str(kicad_native_sch))
+
+    def test_text(self, kicad_native_sch):
+        before = kicad_native_sch.read_bytes()
+        schematic.add_text("note here", 100.123456, 50, schematic_path=str(kicad_native_sch))
+        assert _pure_insertion(before, kicad_native_sch.read_bytes())
+        t = next(t for t in reparse(kicad_native_sch).texts if t.text == "note here")
+        # add_text never rounded coordinates; the quirk is preserved.
+        assert t.position.X == pytest.approx(100.123456)
+
+    def test_junctions_two_points_one_write(self, kicad_native_sch):
+        before = kicad_native_sch.read_bytes()
+        schematic.add_junctions(
+            [{"x": 50.8, "y": 50.8}, {"x": 96.19, "y": 100.5}],
+            schematic_path=str(kicad_native_sch),
+        )
+        assert _pure_insertion(before, kicad_native_sch.read_bytes())
+        sch = reparse(kicad_native_sch)
+        assert len(sch.junctions) == 2
+        # File order is list order: the last point supplied is junctions[-1].
+        assert sch.junctions[-1].position.X == pytest.approx(96.19)
+
+    def test_junctions_all_validated_before_any_write(self, kicad_native_sch):
+        before = kicad_native_sch.read_bytes()
+        with pytest.raises(ToolError, match="outside"):
+            schematic.add_junctions(
+                [{"x": 50, "y": 50}, {"x": 9999, "y": 50}],
+                schematic_path=str(kicad_native_sch),
+            )
+        assert kicad_native_sch.read_bytes() == before
+
+
 def _kicad_cli_major() -> int:
     result = _run_cli(["version"], check=False)
     try:
@@ -124,6 +179,23 @@ class TestGuardRelaxAddLabelOnly:
         tree = _cst.parse(after)
         assert "RELAXED" in [n.atoms[1].text for n in tree.lists[0].find_all("label")]
 
+    @pytest.mark.no_kicad_validation
+    def test_future_version_file_whole_add_family_works(self, kicad_native_sch):
+        bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
+        kicad_native_sch.write_bytes(bumped)
+        p = str(kicad_native_sch)
+        before = kicad_native_sch.read_bytes()
+        schematic.add_global_label("G", 60, 90, schematic_path=p)
+        schematic.add_hierarchical_label("H", "input", 60, 92, schematic_path=p)
+        schematic.add_text("T", 60, 94, schematic_path=p)
+        schematic.add_junctions([{"x": 60, "y": 96}], schematic_path=p)
+        after = kicad_native_sch.read_bytes()
+        assert len(after) > len(before)
+        tree = _cst.parse(after)
+        root = tree.lists[0]
+        for token in ("global_label", "hierarchical_label", "text", "junction"):
+            assert root.find(token) is not None, token
+
 
 @requires_cli
 class TestKicad10E2E:
@@ -140,3 +212,39 @@ class TestKicad10E2E:
         assert "K10_NET" in [n.atoms[1].text for n in tree.lists[0].find_all("label")]
         # The autouse _validate_kicad_output fixture then runs this runner's
         # kicad-cli ERC over the edited KiCad-10 file: the real acceptance gate.
+
+    def _mint(self, path):
+        if _kicad_cli_major() < 10:
+            pytest.skip("needs kicad-cli 10+ to mint a current-format schematic")
+        _run_cli(["sch", "upgrade", "--force", str(path)])
+        before = path.read_bytes()
+        assert b"(version 2026" in before[:80], before[:80]
+        return before
+
+    def test_global_label_on_real_kicad10(self, kicad_native_sch):
+        before = self._mint(kicad_native_sch)
+        schematic.add_global_label("K10_G", 60, 90, schematic_path=str(kicad_native_sch))
+        after = kicad_native_sch.read_bytes()
+        assert _pure_insertion(before, after)
+        assert _cst.parse(after).lists[0].find("global_label") is not None
+
+    def test_hierarchical_label_on_real_kicad10(self, kicad_native_sch):
+        before = self._mint(kicad_native_sch)
+        schematic.add_hierarchical_label("K10_H", "input", 60, 90, str(kicad_native_sch))
+        after = kicad_native_sch.read_bytes()
+        assert _pure_insertion(before, after)
+        assert _cst.parse(after).lists[0].find("hierarchical_label") is not None
+
+    def test_text_on_real_kicad10(self, kicad_native_sch):
+        before = self._mint(kicad_native_sch)
+        schematic.add_text("K10 note", 60, 90, schematic_path=str(kicad_native_sch))
+        after = kicad_native_sch.read_bytes()
+        assert _pure_insertion(before, after)
+        assert _cst.parse(after).lists[0].find("text") is not None
+
+    def test_junctions_on_real_kicad10(self, kicad_native_sch):
+        before = self._mint(kicad_native_sch)
+        schematic.add_junctions([{"x": 60, "y": 90}], schematic_path=str(kicad_native_sch))
+        after = kicad_native_sch.read_bytes()
+        assert _pure_insertion(before, after)
+        assert _cst.parse(after).lists[0].find("junction") is not None
