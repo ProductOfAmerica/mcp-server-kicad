@@ -7,6 +7,8 @@ kicad-cli and KiCad's Python with pcbnew.
 
 from __future__ import annotations
 
+import re
+import subprocess
 from xml.etree.ElementTree import ParseError
 
 import pytest
@@ -14,7 +16,7 @@ from conftest import HAS_KICAD_CLI
 
 from mcp_server_kicad import _netlist_import as ni
 from mcp_server_kicad._freerouting import find_pcbnew_python
-from mcp_server_kicad._shared import _kicad_root, _resolve_system_lib
+from mcp_server_kicad._shared import _find_kicad_cli, _kicad_root, _resolve_system_lib
 from mcp_server_kicad.models import UpdatePcbResult
 
 NETLIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -142,6 +144,33 @@ requires_e2e = pytest.mark.skipif(
 )
 
 
+def _kicad_major() -> int:
+    """Major version of the installed kicad-cli, or 0 when unknown."""
+    cli = _find_kicad_cli()
+    if cli is None:
+        return 0
+    try:
+        out = subprocess.run([cli, "version"], capture_output=True, text=True, timeout=30).stdout
+        match = re.match(r"(\d+)", out.strip())
+        return int(match.group(1)) if match else 0
+    except Exception:
+        return 0
+
+
+KICAD_MAJOR = _kicad_major() if HAS_E2E_ENV else 0
+
+# The importer itself works under pcbnew 10 (status ok, pads bound); the
+# read-back through the kiutils tools is what fails, because kiutils cannot
+# parse the KiCad 10-format boards pcbnew 10's SaveBoard writes. strict=True
+# turns these into hard failures the moment a KiCad 10-capable parser lands.
+xfail_kicad10_read_gap = pytest.mark.xfail(
+    KICAD_MAJOR >= 10,
+    reason="#11: kiutils cannot read KiCad 10-format boards; "
+    "remove this marker in the #9 fork-adoption PR",
+    strict=True,
+)
+
+
 def _make_project(tmp_path):
     """Two stock resistors wired into /SIG and /GND, footprints assigned."""
     from mcp_server_kicad.project import create_project
@@ -171,6 +200,7 @@ def _make_project(tmp_path):
 
 
 @requires_e2e
+@xfail_kicad10_read_gap
 class TestUpdatePcbE2E:
     def test_initial_import(self, tmp_path):
         from mcp_server_kicad.pcb import (
