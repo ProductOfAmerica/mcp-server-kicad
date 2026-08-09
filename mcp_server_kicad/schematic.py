@@ -10,15 +10,12 @@ from pathlib import Path
 from kiutils.items.common import ColorRGBA, Effects, Font, Position, Property
 from kiutils.items.schitems import (
     Connection,
-    GlobalLabel,
-    HierarchicalLabel,
     Junction,
     LocalLabel,
     NoConnect,
     SchematicSymbol,
     SymbolProjectInstance,
     SymbolProjectPath,
-    Text,
 )
 from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp import FastMCP
@@ -1092,6 +1089,25 @@ _LABEL_TPL = _cst.parse(
     b'\n\t(uuid "x")\n)'
 ).lists[0]
 
+_GLABEL_TPL = _cst.parse(
+    b'(global_label "X"\n\t(shape input)\n\t(at 0 0 0)\n\t(effects\n\t\t(font'
+    b'\n\t\t\t(size 1.27 1.27)\n\t\t)\n\t)\n\t(uuid "x")\n)'
+).lists[0]
+
+_HLABEL_TPL = _cst.parse(
+    b'(hierarchical_label "X"\n\t(shape input)\n\t(at 0 0 0)\n\t(effects\n\t\t(font'
+    b'\n\t\t\t(size 1.27 1.27)\n\t\t)\n\t)\n\t(uuid "x")\n)'
+).lists[0]
+
+_TEXT_TPL = _cst.parse(
+    b'(text "X"\n\t(at 0 0 0)\n\t(effects\n\t\t(font\n\t\t\t(size 1.27 1.27)\n\t\t)\n\t)'
+    b'\n\t(uuid "x")\n)'
+).lists[0]
+
+_JUNCTION_TPL = _cst.parse(
+    b'(junction\n\t(at 0 0)\n\t(diameter 0)\n\t(color 0 0 0 0)\n\t(uuid "x")\n)'
+).lists[0]
+
 
 def _num(v: float) -> str:
     return str(int(v)) if v == int(v) else str(v)
@@ -1113,6 +1129,51 @@ def _page_size_cst(root) -> tuple[float, float, str]:
     return w, h, name
 
 
+def _open_sch_cst(schematic_path: str):
+    """Parse a schematic into a CST for the guard-free splice tools.
+
+    No kiutils parse, so no version guard: these paths work on any format
+    KiCad writes (portability measured per token by the KiCad 10 e2e tests;
+    see docs/adr-cst-substrate.md). Every kiutils tool keeps the guard.
+    """
+    tree = _cst.parse(Path(schematic_path).read_bytes())
+    root = tree.lists[0] if tree.lists else None
+    if root is None or root.head != "kicad_sch":
+        raise ToolError(f"{Path(schematic_path).name} is not a KiCad schematic.")
+    page_w, page_h, page_name = _page_size_cst(root)
+    return tree, root, page_w, page_h, page_name
+
+
+def _bounds_check(x: float, y: float, page_w: float, page_h: float, page_name: str) -> None:
+    if x < 0 or x > page_w or y < 0 or y > page_h:
+        sizes = ", ".join(_PAGE_SIZES.keys())
+        raise ToolError(
+            f"Position ({x}, {y}) is outside the sheet boundary "
+            f"({page_w}x{page_h}mm, page '{page_name}'). "
+            f"Use set_page_size to resize (available: {sizes}, or 'User')."
+        )
+
+
+def _splice_sch_node(root, token: str, node) -> None:
+    """Insert *node* after the last same-token sibling, else before the file tail."""
+    siblings = root.find_all(token)
+    tail = root.find("sheet_instances") or root.find("embedded_fonts")
+    if siblings:
+        root.insert_after(siblings[-1], node)
+    elif tail is not None:
+        root.insert_before(tail, node)
+    else:
+        root.children += [_cst.Node("ws", b"\n"), node]
+
+
+def _fill_at(node, x: float, y: float, rotation: float | None = None) -> None:
+    at = node.find("at")
+    at.atoms[1].set_text(_num(x))
+    at.atoms[2].set_text(_num(y))
+    if rotation is not None:
+        at.atoms[3].set_text(_num(rotation))
+
+
 @mcp.tool(annotations=_ADDITIVE)
 def add_label(
     text: str, x: float, y: float, rotation: float = 0, schematic_path: str = SCH_PATH
@@ -1126,41 +1187,14 @@ def add_label(
         rotation: Degrees (0=right, 90=up, 180=left, 270=down)
         schematic_path: Path to .kicad_sch file
     """
-    # Fully CST-native path: no kiutils parse, so no version guard. Works on any
-    # format KiCad writes (label dialect measured portable KiCad 6-10; see
-    # docs/adr-cst-substrate.md). Every other tool keeps the guard.
-    tree = _cst.parse(Path(schematic_path).read_bytes())
-    root = tree.lists[0] if tree.lists else None
-    if root is None or root.head != "kicad_sch":
-        raise ToolError(f"{Path(schematic_path).name} is not a KiCad schematic.")
-    page_w, page_h, page_name = _page_size_cst(root)
-    if x < 0 or x > page_w or y < 0 or y > page_h:
-        sizes = ", ".join(_PAGE_SIZES.keys())
-        raise ToolError(
-            f"Position ({x}, {y}) is outside the sheet boundary "
-            f"({page_w}x{page_h}mm, page '{page_name}'). "
-            f"Use set_page_size to resize (available: {sizes}, or 'User')."
-        )
+    tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    _bounds_check(x, y, page_w, page_h, page_name)
     x, y = round(x, 4), round(y, 4)
-
-    # Splice one label node into the original bytes so everything else reaches
-    # disk unchanged, instead of a full-file re-serialization.
     node = _LABEL_TPL.copy()
     node.atoms[1].set_text(text)
-    at = node.find("at")
-    at.atoms[1].set_text(_num(x))
-    at.atoms[2].set_text(_num(y))
-    at.atoms[3].set_text(_num(rotation))
+    _fill_at(node, x, y, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
-
-    labels = root.find_all("label")
-    tail = root.find("sheet_instances") or root.find("embedded_fonts")
-    if labels:
-        root.insert_after(labels[-1], node)
-    elif tail is not None:
-        root.insert_before(tail, node)
-    else:
-        root.children += [_cst.Node("ws", b"\n"), node]
+    _splice_sch_node(root, "label", node)
     Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Label '{text}' at ({x}, {y})"
 
@@ -1173,17 +1207,15 @@ def add_junctions(points: list[dict], schematic_path: str = SCH_PATH) -> str:
         points: List of junction positions [{x, y}, ...]
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     for p in points:
-        _validate_position(p["x"], p["y"], sch)
-        junc = Junction(
-            position=Position(X=round(p["x"], 4), Y=round(p["y"], 4)),
-            diameter=0,
-            color=ColorRGBA(R=0, G=0, B=0, A=0),
-            uuid=_gen_uuid(),
-        )
-        sch.junctions.append(junc)
-    _save_sch(sch)
+        _bounds_check(p["x"], p["y"], page_w, page_h, page_name)
+    for p in points:
+        node = _JUNCTION_TPL.copy()
+        _fill_at(node, round(p["x"], 4), round(p["y"], 4))
+        node.find("uuid").atoms[1].set_text(_gen_uuid())
+        _splice_sch_node(root, "junction", node)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Added {len(points)} junctions"
 
 
@@ -1357,18 +1389,16 @@ def add_global_label(
         shape: Label shape: input, output, bidirectional, tri_state, passive
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
-    _validate_position(x, y, sch)
+    tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    _bounds_check(x, y, page_w, page_h, page_name)
     x, y = round(x, 4), round(y, 4)
-    gl = GlobalLabel(
-        text=text,
-        position=Position(X=x, Y=y, angle=rotation),
-        shape=shape,
-        effects=_default_effects(),
-        uuid=_gen_uuid(),
-    )
-    sch.globalLabels.append(gl)
-    _save_sch(sch)
+    node = _GLABEL_TPL.copy()
+    node.atoms[1].set_text(text)
+    node.find("shape").atoms[1].set_text(shape)
+    _fill_at(node, x, y, rotation)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_sch_node(root, "global_label", node)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Global label '{text}' ({shape}) at ({x}, {y})"
 
 
@@ -1396,19 +1426,16 @@ def add_hierarchical_label(
     """
     if shape not in _VALID_HLABEL_SHAPES:
         raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}")
-    sch = _load_sch(schematic_path)
-    _validate_position(x, y, sch)
+    tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    _bounds_check(x, y, page_w, page_h, page_name)
     x, y = round(x, 4), round(y, 4)
-    sch.hierarchicalLabels.append(
-        HierarchicalLabel(
-            text=text,
-            shape=shape,
-            position=Position(X=x, Y=y, angle=rotation),
-            effects=_default_effects(),
-            uuid=_gen_uuid(),
-        )
-    )
-    _save_sch(sch)
+    node = _HLABEL_TPL.copy()
+    node.atoms[1].set_text(text)
+    node.find("shape").atoms[1].set_text(shape)
+    _fill_at(node, x, y, rotation)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_sch_node(root, "hierarchical_label", node)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Added hierarchical label '{text}' ({shape}) at ({x}, {y})"
 
 
@@ -1655,16 +1682,14 @@ def add_text(
         rotation: Rotation in degrees
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
-    _validate_position(x, y, sch)
-    t = Text(
-        text=text,
-        position=Position(X=x, Y=y, angle=rotation),
-        effects=_default_effects(),
-        uuid=_gen_uuid(),
-    )
-    sch.texts.append(t)
-    _save_sch(sch)
+    tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    _bounds_check(x, y, page_w, page_h, page_name)
+    node = _TEXT_TPL.copy()
+    node.atoms[1].set_text(text)
+    _fill_at(node, x, y, rotation)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_sch_node(root, "text", node)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Text '{text}' at ({x}, {y})"
 
 
