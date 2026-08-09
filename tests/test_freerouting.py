@@ -161,10 +161,9 @@ class TestFindPcbnewPython:
         assert python == "/fake/py"
         assert env is not None
         assert "PYTHONHOME" not in env
-        assert captured_envs
-        for probe_env in captured_envs:
-            assert probe_env is not None
-            assert "PYTHONHOME" not in probe_env
+        # KICAD_PYTHON pins a single probe, and it must run under the same
+        # scrubbed dict the caller gets back.
+        assert captured_envs == [env]
 
 
 _FIND_PY = "mcp_server_kicad._freerouting.find_pcbnew_python"
