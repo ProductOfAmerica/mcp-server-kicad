@@ -17,7 +17,7 @@ import re
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from mcp_server_kicad import footprint, schematic, symbol
+from mcp_server_kicad import footprint, project, schematic, symbol
 from mcp_server_kicad._shared import _FORMAT_VERSION_LIMITS, _check_format_version
 
 # Real versions each file family gets from a KiCad 10 save (measured in #9).
@@ -147,13 +147,12 @@ class TestToolRefusal:
 
     def test_rmw_tool_refuses_and_leaves_file_untouched(self, tmp_path):
         # The representative guarded RMW tool tracks the migration: since
-        # slice 9 the last kiutils writer in schematic.py is place_component.
+        # slice 10 schematic.py has no kiutils writers left, so the sheet
+        # tools in project.py carry the flag.
         f = self._future_sch(tmp_path)
         before = f.read_bytes()
         with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.place_component(
-                lib_id="Device:R", reference="R1", value="10K", x=10, y=10, schematic_path=str(f)
-            )
+            project.annotate_schematic(schematic_path=str(f))
         assert f.read_bytes() == before
 
     def test_symbol_lib_tool_refuses(self, tmp_path):

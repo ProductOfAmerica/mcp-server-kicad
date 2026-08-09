@@ -14,12 +14,12 @@ from kiutils.footprint import Footprint
 from kiutils.items.common import Effects, Font, Position, Stroke
 from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpText
 from kiutils.items.gritems import GrArc, GrLine
-from kiutils.items.schitems import SymbolInstance
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
 from kiutils.schematic import Schematic
-from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
+
+import mcp_server_kicad._cst as _cst
 
 # ---------------------------------------------------------------------------
 # Tool annotation presets
@@ -258,6 +258,28 @@ def _snap_grid(val: float, grid: float = _GRID_MM) -> float:
     return round(round(val / grid) * grid, 4)
 
 
+def _sym_property_cst(node, key: str) -> str | None:
+    """Value of a CST (property "key" "value") child, or None."""
+    for p in node.find_all("property"):
+        if p.atoms[1].text == key:
+            return p.atoms[2].text
+    return None
+
+
+def _node_uuid(node) -> str:
+    u = node.find("uuid")
+    return u.atoms[1].text if u is not None else ""
+
+
+def _sheet_file_cst(sheet) -> str | None:
+    """Sheet file name; KiCad 9 writes "Sheetfile", kiutils "Sheet file"."""
+    for key in ("Sheetfile", "Sheet file"):
+        v = _sym_property_cst(sheet, key)
+        if v is not None:
+            return v
+    return None
+
+
 def _resolve_hierarchy_path(
     project_path: str, schematic_path: str, sch_uuid: str
 ) -> tuple[str, str]:
@@ -282,12 +304,13 @@ def _resolve_hierarchy_path(
     if Path(schematic_path).resolve() == root_sch_path.resolve():
         return project_name, f"/{sch_uuid}"
 
-    # Sub-sheet — find its sheet block UUID in the root schematic
-    root_sch = _load_sch(str(root_sch_path))
+    # Sub-sheet — find its sheet block UUID in the root schematic (CST read,
+    # so no version guard and no format restriction on the root)
+    root = _cst.parse(root_sch_path.read_bytes()).lists[0]
     target_name = Path(schematic_path).name
-    for sheet in root_sch.sheets:
-        if sheet.fileName.value == target_name:
-            return project_name, f"/{root_sch.uuid}/{sheet.uuid}"
+    for sheet in root.find_all("sheet"):
+        if _sheet_file_cst(sheet) == target_name:
+            return project_name, f"/{_node_uuid(root)}/{_node_uuid(sheet)}"
 
     # Fallback: couldn't find sheet in root — use own UUID
     return project_name, f"/{sch_uuid}"
@@ -491,22 +514,6 @@ def _save_sch(sch) -> None:
         Path(path).write_text(text)
 
 
-def _load_system_lib_symbol(sch, lib_prefix: str, symbol_name: str) -> bool:
-    """Load a symbol from system library into *sch.libSymbols*, caching raw text."""
-    lib_path = _resolve_system_lib(lib_prefix)
-    if not lib_path:
-        return False
-    sym_lib = SymbolLib.from_file(lib_path)
-    for s in sym_lib.symbols:
-        if s.entryName == symbol_name:
-            sch.libSymbols.append(s)
-            raw = _extract_raw_symbol(lib_path, symbol_name)
-            if raw:
-                _RAW_LIB_SYMBOLS[symbol_name] = raw
-            return True
-    return False
-
-
 def _fix_empty_tstamps(board: Board) -> None:
     """Fill in empty tstamp fields so kiutils can round-trip the file.
 
@@ -661,6 +668,43 @@ def _sym_ref_val_fp(sym) -> tuple[str, str, str]:
     return ref, val, fp
 
 
+# symbol_instances entry, matching the shape the kiutils writer produced.
+_SYM_INSTANCE_TPL = _cst.parse(
+    b'(path "/x"\n\t\t\t(reference "R")\n\t\t\t(unit 1)\n\t\t\t(value "")'
+    b'\n\t\t\t(footprint "")\n\t\t)'
+).lists[0]
+
+
+def _root_instance_target(schematic_path: str, project_path: str):
+    """(tree, root, out_path, sym_path_prefix) for the root-instance file, or None.
+
+    Sub-sheet: the root schematic with a 3-segment path prefix. Root itself
+    (detected by a .kicad_pro sibling): the file with a 2-segment prefix.
+    """
+    root_path = _resolve_root(schematic_path, project_path)
+    if root_path is None:
+        root_path = _find_root_schematic(schematic_path)
+
+    if root_path is not None:
+        tree = _cst.parse(Path(root_path).read_bytes())
+        root = tree.lists[0]
+        target_name = Path(schematic_path).name
+        sheet_uuid = None
+        for sheet in root.find_all("sheet"):
+            if _sheet_file_cst(sheet) == target_name:
+                sheet_uuid = _node_uuid(sheet)
+                break
+        if sheet_uuid is None:
+            return None
+        return tree, root, root_path, f"/{_node_uuid(root)}/{sheet_uuid}"
+    pro_path = Path(schematic_path).with_suffix(".kicad_pro")
+    if not pro_path.exists():
+        return None
+    tree = _cst.parse(Path(schematic_path).read_bytes())
+    root = tree.lists[0]
+    return tree, root, schematic_path, f"/{_node_uuid(root)}"
+
+
 def _upsert_root_symbol_instance(
     schematic_path: str,
     project_path: str,
@@ -670,65 +714,42 @@ def _upsert_root_symbol_instance(
     value: str = "",
     footprint: str = "",
 ) -> bool:
-    """Create or update a SymbolInstance entry in the root schematic's symbolInstances list.
+    """Create or update a symbol_instances entry in the root schematic.
 
     Automatically detects whether *schematic_path* is a sub-sheet or the root
     itself and builds the correct instance path accordingly.
 
     Returns True if the root was updated, False if no root could be determined.
     """
-    root_path = _resolve_root(schematic_path, project_path)
+    target = _root_instance_target(schematic_path, project_path)
+    if target is None:
+        return False
+    tree, root, out_path, prefix = target
+    sym_path = f"{prefix}/{sym_uuid}"
 
-    if root_path is None:
-        # Also try auto-detect from directory
-        root_path = _find_root_schematic(schematic_path)
+    si = root.find("symbol_instances")
+    if si is None:
+        si = _cst.parse(b"(symbol_instances\n)").lists[0]
+        tail = root.find("sheet_instances") or root.find("embedded_fonts")
+        if tail is not None:
+            root.insert_before(tail, si)
+        else:
+            root.children += [_cst.Node("ws", b"\n"), si]
 
-    if root_path is not None:
-        # schematic_path is a sub-sheet — build 3-segment path
-        root_sch = _load_sch(root_path)
-        target_name = Path(schematic_path).name
-        sheet_uuid = None
-        for sheet in root_sch.sheets:
-            if sheet.fileName.value == target_name:
-                sheet_uuid = sheet.uuid
-                break
-        if sheet_uuid is None:
-            return False
-        sym_path = f"/{root_sch.uuid}/{sheet_uuid}/{sym_uuid}"
-    else:
-        # Check if schematic IS the root (has a .kicad_pro sibling)
-        pro_path = Path(schematic_path).with_suffix(".kicad_pro")
-        if not pro_path.exists():
-            return False
-        root_sch = _load_sch(schematic_path)
-        sym_path = f"/{root_sch.uuid}/{sym_uuid}"
-
-    si_list = getattr(root_sch, "symbolInstances", None)
-    if si_list is None:
-        root_sch.symbolInstances = []
-        si_list = root_sch.symbolInstances
-
-    # Look for existing entry
-    for si in si_list:
-        if si.path == sym_path:
-            si.reference = reference
-            si.unit = unit
-            si.value = value
-            si.footprint = footprint
-            _save_sch(root_sch)
-            return True
-
-    # Not found — append new entry
-    si_list.append(
-        SymbolInstance(
-            path=sym_path,
-            reference=reference,
-            unit=unit,
-            value=value,
-            footprint=footprint,
-        )
-    )
-    _save_sch(root_sch)
+    entry = next((e for e in si.find_all("path") if e.atoms[1].text == sym_path), None)
+    if entry is None:
+        entry = _SYM_INSTANCE_TPL.copy()
+        entry.atoms[1].set_text(sym_path)
+        entries = si.find_all("path")
+        if entries:
+            si.insert_after(entries[-1], entry)
+        else:
+            si.children += [_cst.Node("ws", b"\n\t\t"), entry]
+    entry.find("reference").atoms[1].set_text(reference)
+    entry.find("unit").atoms[1].set_text(str(unit))
+    entry.find("value").atoms[1].set_text(value)
+    entry.find("footprint").atoms[1].set_text(footprint)
+    Path(out_path).write_bytes(_cst.serialize(tree))
     return True
 
 
@@ -737,35 +758,39 @@ def _remove_root_symbol_instance(
     project_path: str,
     sym_uuid: str,
 ) -> bool:
-    """Remove a SymbolInstance entry from the root schematic's symbolInstances list.
+    """Remove a symbol_instances entry from the root schematic.
 
     Returns True if an entry was removed, False otherwise.
     """
+    # Suffix matching needs no sheet lookup, only the root file itself
+    # (the kiutils version likewise removed stale entries even when the
+    # sheet block was gone from the root).
     root_path = _resolve_root(schematic_path, project_path)
-
     if root_path is None:
         root_path = _find_root_schematic(schematic_path)
-
     if root_path is not None:
-        root_sch = _load_sch(root_path)
+        out_path = root_path
     else:
-        pro_path = Path(schematic_path).with_suffix(".kicad_pro")
-        if not pro_path.exists():
+        if not Path(schematic_path).with_suffix(".kicad_pro").exists():
             return False
-        root_sch = _load_sch(schematic_path)
+        out_path = schematic_path
+    tree = _cst.parse(Path(out_path).read_bytes())
+    root = tree.lists[0]
 
-    si_list = getattr(root_sch, "symbolInstances", None)
-    if not si_list:
+    si = root.find("symbol_instances")
+    if si is None:
         return False
-
     suffix = f"/{sym_uuid}"
-    original_len = len(si_list)
-    root_sch.symbolInstances = [si for si in si_list if not si.path.endswith(suffix)]
-
-    if len(root_sch.symbolInstances) < original_len:
-        _save_sch(root_sch)
-        return True
-    return False
+    matched = [e for e in si.find_all("path") if e.atoms[1].text.endswith(suffix)]
+    if not matched:
+        return False
+    for e in matched:
+        si.remove_child(e)
+    if not si.find_all("path"):
+        # kiutils omitted the empty section entirely; match that shape.
+        root.remove_child(si)
+    Path(out_path).write_bytes(_cst.serialize(tree))
+    return True
 
 
 # ---------------------------------------------------------------------------

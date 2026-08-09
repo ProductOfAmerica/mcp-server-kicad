@@ -494,6 +494,119 @@ class TestWirePinsToNetPreservation:
         assert "K10NET" in [n.atoms[1].text for n in root.find_all("label")]
 
 
+class TestPlaceComponentPreservation:
+    """Slice 10: place_component and the root-instance helpers on the substrate."""
+
+    def test_place_from_custom_lib_pure_insertions(self, kicad_native_sch, scratch_sym_lib):
+        p = str(kicad_native_sch)
+        before = kicad_native_sch.read_bytes()
+        result = schematic.place_component(
+            lib_id="Test:TestPart",
+            reference="U1",
+            value="TP",
+            x=150,
+            y=150,
+            symbol_lib_path=str(scratch_sym_lib),
+            schematic_path=p,
+        )
+        assert "Placed U1 (TP) at (149.86, 149.86)" == result
+        after = kicad_native_sch.read_bytes()
+        assert b"generator_version" in after and b"(embedded_fonts" in after
+        assert _cst.serialize(_cst.parse(after)) == after
+        assert before[: len(before) // 3] == after[: len(before) // 3]
+        sch = reparse(kicad_native_sch)
+        u1 = next(
+            s
+            for s in sch.schematicSymbols
+            if any(pr.key == "Reference" and pr.value == "U1" for pr in s.properties)
+        )
+        assert u1.libId == "Test:TestPart"
+        assert u1.position.X == 149.86 and u1.position.Y == 149.86
+        assert set(u1.pins) == {"1", "2"}
+        assert u1.instances and u1.instances[0].paths[0].reference == "U1"
+        assert any(pr.key == "Value" and pr.value == "TP" for pr in u1.properties)
+
+    def test_place_reuses_existing_lib_symbol(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        schematic.place_component(
+            lib_id="Device:R", reference="R2", value="4.7K", x=60, y=60, schematic_path=p
+        )
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        entries = root.find("lib_symbols").find_all("symbol")
+        assert len(entries) == 1  # reused, not duplicated
+        from mcp_server_kicad._shared import _sym_property_cst
+
+        r2 = next(s for s in root.find_all("symbol") if _sym_property_cst(s, "Reference") == "R2")
+        assert r2.find("lib_name").atoms[1].text == "Device:R"
+        assert r2.find("lib_id").atoms[1].text == "Device:R"
+
+    def test_place_missing_symbol_error_bytes_untouched(self, kicad_native_sch, scratch_sym_lib):
+        p = str(kicad_native_sch)
+        before = kicad_native_sch.read_bytes()
+        with pytest.raises(ToolError, match="not found in Test library"):
+            schematic.place_component(
+                lib_id="Test:Nonexistent",
+                reference="U9",
+                value="X",
+                x=60,
+                y=60,
+                symbol_lib_path=str(scratch_sym_lib),
+                schematic_path=p,
+            )
+        assert kicad_native_sch.read_bytes() == before
+
+    def test_place_rotation_and_mirror_differential(self, kicad_native_sch, scratch_sym_lib):
+        from mcp_server_kicad.schematic import _get_pin_pos, _get_pin_pos_cst
+
+        p = str(kicad_native_sch)
+        schematic.place_component(
+            lib_id="Test:TestPart",
+            reference="U1",
+            value="TP",
+            x=63.5,
+            y=63.5,
+            rotation=90,
+            mirror="x",
+            symbol_lib_path=str(scratch_sym_lib),
+            schematic_path=p,
+        )
+        sch = reparse(kicad_native_sch)
+        u1 = next(
+            s
+            for s in sch.schematicSymbols
+            if any(pr.key == "Reference" and pr.value == "U1" for pr in s.properties)
+        )
+        assert u1.position.angle == 90
+        assert u1.mirror == "x"
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        for pin in ("IN", "OUT"):
+            assert _get_pin_pos_cst(root, "U1", pin) == _get_pin_pos(sch, "U1", pin), pin
+
+    def test_root_symbol_instances_upsert_and_remove(self, kicad_native_sch):
+        # A .kicad_pro sibling makes this file its own root: the helpers write
+        # a symbol_instances section here via the CST now.
+        pro = kicad_native_sch.with_suffix(".kicad_pro")
+        pro.write_text("{}")
+        p = str(kicad_native_sch)
+        schematic.place_component(
+            lib_id="Device:R", reference="R2", value="4.7K", x=60, y=60, schematic_path=p
+        )
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        si = root.find("symbol_instances")
+        assert si is not None
+        entry = si.find("path")
+        assert entry.find("reference").atoms[1].text == "R2"
+        assert entry.find("value").atoms[1].text == "4.7K"
+        schematic.set_component_property("R2", "Value", "9.1K", schematic_path=p)
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        entry = root.find("symbol_instances").find("path")
+        assert entry.find("value").atoms[1].text == "9.1K"
+        schematic.remove_component("R2", schematic_path=p)
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        # Last entry removed drops the whole section, like the kiutils writer.
+        assert root.find("symbol_instances") is None
+
+
 class TestSymbolFamilyPreservation:
     """Slice 9: in-place symbol-family tools on the substrate."""
 
@@ -648,6 +761,29 @@ class TestGuardRelax:
         assert root.find("symbol") is None  # placed R1 gone; lib entries stay nested
         assert "VCC" in [s.atoms[1].text for s in root.find("lib_symbols").find_all("symbol")]
 
+    @pytest.mark.no_kicad_validation
+    def test_future_version_file_place_component_works(self, kicad_native_sch, scratch_sym_lib):
+        bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
+        kicad_native_sch.write_bytes(bumped)
+        p = str(kicad_native_sch)
+        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
+            schematic.get_schematic_summary(schematic_path=p)
+        result = schematic.place_component(
+            lib_id="Test:TestPart",
+            reference="U1",
+            value="TP",
+            x=63.5,
+            y=63.5,
+            symbol_lib_path=str(scratch_sym_lib),
+            schematic_path=p,
+        )
+        assert "Placed U1" in result
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        assert any(
+            n.find("lib_id") is not None and n.find("lib_id").atoms[1].text == "Test:TestPart"
+            for n in root.find_all("symbol")
+        )
+
 
 @requires_cli
 class TestKicad10E2E:
@@ -778,3 +914,32 @@ class TestKicad10E2E:
         root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
         assert root.find("symbol") is None
         assert root.find("paper").atoms[1].text == "A3"
+
+    def test_place_component_on_real_kicad10(self, kicad_native_sch):
+        self._mint(kicad_native_sch)
+        p = str(kicad_native_sch)
+        # System Device lib on a KiCad 10 runner is K10-format: the copied
+        # entry and the minted schematic stay format-consistent.
+        result = schematic.place_component(
+            lib_id="Device:C", reference="C1", value="100nF", x=63.5, y=63.5, schematic_path=p
+        )
+        assert "Placed C1" in result
+        sch_root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        assert any(
+            n.find("lib_id") is not None and n.find("lib_id").atoms[1].text == "Device:C"
+            for n in sch_root.find_all("symbol")
+        )
+
+    def test_add_power_symbol_on_real_kicad10(self, kicad_native_sch):
+        # Closes the slice-8 deferred measurement: the auto-PWR_FLAG path on a
+        # real KiCad 10 file, both symbols copied from the runner's K10 libs.
+        self._mint(kicad_native_sch)
+        p = str(kicad_native_sch)
+        result = schematic.add_power_symbol("power:VCC", "#PWR01", 60, 90, schematic_path=p)
+        assert "#PWR01" in result and "#FLG01" in result
+        sch_root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        lib_names = [s.atoms[1].text for s in sch_root.find("lib_symbols").find_all("symbol")]
+        assert "power:VCC" in lib_names  # system copy, prefixed
+        # The PWR_FLAG rides through the explicit symbol_lib_path branch, which
+        # copies bare (today's shape); its lib_name fallback keeps KiCad happy.
+        assert "PWR_FLAG" in lib_names

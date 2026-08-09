@@ -7,14 +7,9 @@ import os
 import re
 from pathlib import Path
 
-from kiutils.items.common import Effects, Font, Position, Property
 from kiutils.items.schitems import (
     Connection,
-    SchematicSymbol,
-    SymbolProjectInstance,
-    SymbolProjectPath,
 )
-from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -27,18 +22,18 @@ from mcp_server_kicad._shared import (
     OUTPUT_DIR,
     SCH_PATH,
     _check_format_version,
-    _default_effects,
     _file_meta,
     _gen_uuid,
     _load_sch,
-    _load_system_lib_symbol,
+    _node_uuid,
     _remove_root_symbol_instance,
     _resolve_hierarchy_path,
     _resolve_root,
     _resolve_system_lib,
     _run_cli,
-    _save_sch,
+    _sheet_file_cst,
     _snap_grid,
+    _sym_property_cst,
     _upsert_root_symbol_instance,
 )
 from mcp_server_kicad.models import (
@@ -131,19 +126,6 @@ def _get_page_size(sch) -> tuple[float, float]:
     return w, h
 
 
-def _validate_position(x: float, y: float, sch) -> None:
-    """Raise ToolError if (x, y) is outside the sheet boundary."""
-    page_w, page_h = _get_page_size(sch)
-    if x < 0 or x > page_w or y < 0 or y > page_h:
-        page_name = sch.paper.paperSize if sch.paper else "A4"
-        sizes = ", ".join(_PAGE_SIZES.keys())
-        raise ToolError(
-            f"Position ({x}, {y}) is outside the sheet boundary "
-            f"({page_w}x{page_h}mm, page '{page_name}'). "
-            f"Use set_page_size to resize (available: {sizes}, or 'User')."
-        )
-
-
 def _find_lib_symbol(sch, lib_id: str):
     """Find a lib_symbol by lib_id, checking both bare and prefixed names.
 
@@ -163,16 +145,6 @@ def _find_lib_symbol(sch, lib_id: str):
         if getattr(ls, "libId", None) == lib_id:
             return ls
     return None
-
-
-def _lib_symbol_file_name(ls) -> str:
-    """Return the name as it appears in the file (may include library prefix).
-
-    kiutils' ``entryName`` always strips the library prefix, but the
-    file may store ``"Device:C"`` or just ``"C"``.  ``libId`` preserves
-    the original.
-    """
-    return getattr(ls, "libId", None) or ls.entryName
 
 
 def _find_sym(sch, reference: str):
@@ -709,10 +681,8 @@ def place_component(
             "Must match pattern [A-Z]+[0-9]+[A-Z]* (e.g. 'R1', 'U2', 'C5B')."
         )
 
-    sch = _load_sch(schematic_path)
-
-    # Validate position against page boundaries
-    _validate_position(x, y, sch)
+    tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    _bounds_check(x, y, page_w, page_h, page_name)
 
     # Snap placement to grid
     x = _snap_grid(x)
@@ -720,112 +690,81 @@ def place_component(
 
     # Load symbol definition from custom lib or system library
     symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-    _loaded_sym_lib = None
-    if not _find_lib_symbol(sch, lib_id):
+    suggestions_lib = None
+    if _find_lib_symbol_cst(root, lib_id) is None:
         if symbol_lib_path:
             _check_format_version(symbol_lib_path)
-            _loaded_sym_lib = SymbolLib.from_file(symbol_lib_path)
-            for s in _loaded_sym_lib.symbols:
-                if s.entryName == symbol_name:
-                    sch.libSymbols.append(s)
-                    break
+            _copy_lib_symbol_from_file_cst(root, symbol_lib_path, symbol_name, symbol_name)
+            suggestions_lib = symbol_lib_path
         elif ":" in lib_id:
             lib_prefix = lib_id.split(":")[0]
-            if not _load_system_lib_symbol(sch, lib_prefix, symbol_name):
-                # Load full lib for error suggestions
-                lib_path = _resolve_system_lib(lib_prefix)
-                if lib_path:
-                    _loaded_sym_lib = SymbolLib.from_file(lib_path)
+            if not _copy_system_lib_symbol_cst(root, lib_prefix, symbol_name):
+                suggestions_lib = _resolve_system_lib(lib_prefix)
 
     # Check if lib_symbol was found; give helpful error if not
-    if not _find_lib_symbol(sch, lib_id) and ":" in lib_id:
-        if _loaded_sym_lib is not None:
-            available = [s.entryName for s in _loaded_sym_lib.symbols]
+    if _find_lib_symbol_cst(root, lib_id) is None and ":" in lib_id:
+        if suggestions_lib is not None:
+            lib_root = _cst.parse(Path(suggestions_lib).read_bytes()).lists[0]
+            available = [s.atoms[1].text for s in lib_root.find_all("symbol")]
             similar = difflib.get_close_matches(symbol_name, available, n=5, cutoff=0.4)
             lib_prefix = lib_id.split(":")[0]
-            hint = ""
             if similar:
                 hint = f" Similar: {', '.join(similar)}"
             else:
                 hint = " Try list_lib_symbols to search across all libraries."
             raise ToolError(f"symbol '{symbol_name}' not found in {lib_prefix} library.{hint}")
 
-    # Create instance — set libName to match the lib_symbol's name as stored
-    # in the file so KiCad can resolve the lookup without crashing.
-    lib_sym = _find_lib_symbol(sch, lib_id)
-    sym = SchematicSymbol()
-    sym.libId = lib_id
-    if lib_sym:
-        sym.libName = _lib_symbol_file_name(lib_sym)
-    else:
-        sym.libName = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-    sym.position = Position(X=x, Y=y, angle=rotation)
-    sym.uuid = _gen_uuid()
-    sym.unit = 1
-    sym.inBom = True
-    sym.onBoard = True
+    # Create instance — lib_name mirrors the lib_symbol's stored name so KiCad
+    # can resolve the lookup without crashing (see the slice-8 segfault note).
+    lib_sym = _find_lib_symbol_cst(root, lib_id)
+    node = _SYMBOL_TPL.copy()
+    lib_name = lib_sym.atoms[1].text if lib_sym is not None else symbol_name
+    node.find("lib_name").atoms[1].set_text(lib_name)
+    node.find("lib_id").atoms[1].set_text(lib_id)
+    _fill_at(node, x, y, rotation)
     if mirror:
-        sym.mirror = mirror
+        m = _cst.parse(b"(mirror x)").lists[0]
+        m.atoms[1].set_text(mirror)
+        node.insert_after(node.find("at"), m)
+    sym_uuid = _gen_uuid()
+    node.find("uuid").atoms[1].set_text(sym_uuid)
 
     # Properties
-    sym.properties = [
-        Property(
-            key="Reference",
-            value=reference,
-            id=0,
-            effects=_default_effects(),
-            position=Position(X=x, Y=y - 3.81, angle=0),
-        ),
-        Property(
-            key="Value",
-            value=value,
-            id=1,
-            effects=_default_effects(),
-            position=Position(X=x, Y=y + 3.81, angle=0),
-        ),
-        Property(
-            key="Footprint",
-            value="",
-            id=2,
-            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-            position=Position(X=x, Y=y, angle=0),
-        ),
-        Property(
-            key="Datasheet",
-            value="~",
-            id=3,
-            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-            position=Position(X=x, Y=y, angle=0),
-        ),
-    ]
+    props = node.find_all("property")
+    props[0].atoms[2].set_text(reference)
+    _fill_at(props[0], x, round(y - 3.81, 4))
+    props[1].atoms[2].set_text(value)
+    _fill_at(props[1], x, round(y + 3.81, 4))
+    _fill_at(props[2], x, y)
+    _fill_at(props[3], x, y)
 
-    # Find lib symbol and add pin UUIDs
-    if lib_sym:
+    # Pin UUIDs from the lib symbol
+    instances = node.find("instances")
+    if lib_sym is not None:
         pin_nums = set()
-        for unit in lib_sym.units:
-            for pin in unit.pins:
-                pin_nums.add(pin.number)
-        sym.pins = {pn: _gen_uuid() for pn in sorted(pin_nums)}
+        for unit_node in lib_sym.find_all("symbol"):
+            for pin in unit_node.find_all("pin"):
+                number = pin.find("number")
+                if number is not None:
+                    pin_nums.add(number.atoms[1].text)
+        for pn in sorted(pin_nums):
+            pnode = _PIN_REF_TPL.copy()
+            pnode.atoms[1].set_text(pn)
+            pnode.find("uuid").atoms[1].set_text(_gen_uuid())
+            node.insert_before(instances, pnode)
 
     # Instances block — required by KiCad 9 for proper annotation
-    assert sch.uuid is not None, "Schematic must have a UUID before placing components"
+    root_uuid = _node_uuid(root)
     if project_path:
-        project_name, sheet_path = _resolve_hierarchy_path(project_path, schematic_path, sch.uuid)
+        project_name, sheet_path = _resolve_hierarchy_path(project_path, schematic_path, root_uuid)
     else:
-        project_name = Path(sch.filePath).stem if sch.filePath else ""
-        sheet_path = f"/{sch.uuid}"
-    sym.instances = [
-        SymbolProjectInstance(
-            name=project_name,
-            paths=[
-                SymbolProjectPath(
-                    sheetInstancePath=sheet_path,
-                    reference=reference,
-                    unit=1,
-                ),
-            ],
-        ),
-    ]
+        project_name = Path(schematic_path).stem
+        sheet_path = f"/{root_uuid}"
+    project = instances.find("project")
+    project.atoms[1].set_text(project_name)
+    ipath = project.find("path")
+    ipath.atoms[1].set_text(sheet_path)
+    ipath.find("reference").atoms[1].set_text(reference)
 
     # If this is a sub-sheet in a parent project, also add parent instance
     if project_path:
@@ -837,33 +776,26 @@ def place_component(
                 continue
             if str(parent_sch_path.resolve()) == str(Path(schematic_path).resolve()):
                 continue
-            parent_sch = _load_sch(str(parent_sch_path))
-            for s in parent_sch.sheets:
-                if s.fileName.value == target_name:
-                    parent_path = f"/{parent_sch.uuid}/{s.uuid}"
-                    sym.instances.append(
-                        SymbolProjectInstance(
-                            name=pro_file.stem,
-                            paths=[
-                                SymbolProjectPath(
-                                    sheetInstancePath=parent_path,
-                                    reference=reference,
-                                    unit=1,
-                                )
-                            ],
-                        )
-                    )
+            parent_root = _cst.parse(parent_sch_path.read_bytes()).lists[0]
+            for s in parent_root.find_all("sheet"):
+                if _sheet_file_cst(s) == target_name:
+                    extra = project.copy()
+                    extra.atoms[1].set_text(pro_file.stem)
+                    epath = extra.find("path")
+                    epath.atoms[1].set_text(f"/{_node_uuid(parent_root)}/{_node_uuid(s)}")
+                    epath.find("reference").atoms[1].set_text(reference)
+                    instances.insert_after(project, extra)
                     break
             else:
                 continue
             break
 
-    sch.schematicSymbols.append(sym)
-    _save_sch(sch)
+    _splice_sch_node(root, "symbol", node)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     _upsert_root_symbol_instance(
         schematic_path,
         project_path,
-        sym.uuid,
+        sym_uuid,
         reference=reference,
         value=value,
         footprint="",
@@ -1066,6 +998,26 @@ _WIRE_TPL = _cst.parse(
 
 _NC_TPL = _cst.parse(b'(no_connect\n\t(at 0 0)\n\t(uuid "x")\n)').lists[0]
 
+# Placed-symbol template for place_component: native shape, Reference/Value
+# visible, Footprint/Datasheet hidden, one instances entry. Pins are spliced
+# per placement from _PIN_REF_TPL; (mirror ...) is inserted after (at) on demand.
+_SYMBOL_TPL = _cst.parse(
+    b'(symbol\n\t(lib_name "X")\n\t(lib_id "X")\n\t(at 0 0 0)\n\t(unit 1)\n\t(exclude_from_sim no)'
+    b'\n\t(in_bom yes)\n\t(on_board yes)\n\t(dnp no)\n\t(uuid "x")'
+    b'\n\t(property "Reference" "R"\n\t\t(at 0 0 0)\n\t\t(effects\n\t\t\t(font'
+    b"\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t)\n\t)"
+    b'\n\t(property "Value" "V"\n\t\t(at 0 0 0)\n\t\t(effects\n\t\t\t(font'
+    b"\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t)\n\t)"
+    b'\n\t(property "Footprint" ""\n\t\t(at 0 0 0)\n\t\t(effects\n\t\t\t(font'
+    b"\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t\t(hide yes)\n\t\t)\n\t)"
+    b'\n\t(property "Datasheet" "~"\n\t\t(at 0 0 0)\n\t\t(effects\n\t\t\t(font'
+    b"\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t\t(hide yes)\n\t\t)\n\t)"
+    b'\n\t(instances\n\t\t(project "X"\n\t\t\t(path "/x"\n\t\t\t\t(reference "R")'
+    b"\n\t\t\t\t(unit 1)\n\t\t\t)\n\t\t)\n\t)\n)"
+).lists[0]
+
+_PIN_REF_TPL = _cst.parse(b'(pin "1"\n\t(uuid "x")\n)').lists[0]
+
 # New component property (hidden, at component center). Carries (id N) like
 # the kiutils writer did; KiCad 9 accepts and ignores the legacy id.
 _PROP_TPL = _cst.parse(
@@ -1176,11 +1128,6 @@ def _node_xy(node) -> tuple[float, float]:
     return float(at.atoms[1].text), float(at.atoms[2].text)
 
 
-def _node_uuid(node) -> str:
-    u = node.find("uuid")
-    return u.atoms[1].text if u is not None else ""
-
-
 def _wire_xys(node) -> list[tuple[float, float]]:
     return [
         (float(p.atoms[1].text), float(p.atoms[2].text)) for p in node.find("pts").find_all("xy")
@@ -1220,13 +1167,6 @@ def _auto_junctions_cst(root, new_points: list[tuple[float, float]], tol: float 
                 _splice_sch_node(root, "junction", node)
                 junctions.append((px, py))
                 break
-
-
-def _sym_property_cst(node, key: str) -> str | None:
-    for p in node.find_all("property"):
-        if p.atoms[1].text == key:
-            return p.atoms[2].text
-    return None
 
 
 def _find_sym_cst(root, reference: str):
@@ -1749,12 +1689,12 @@ def add_power_symbol(
     pwr_lib = symbol_lib_path or _resolve_system_lib("power")
 
     if pwr_lib:
-        sch = _load_sch(schematic_path)
+        _, root, *_ = _open_sch_cst(schematic_path)
         existing = {
-            p.value
-            for sym in sch.schematicSymbols
-            for p in sym.properties
-            if p.key == "Reference" and p.value.startswith("#FLG")
+            r
+            for sym in root.find_all("symbol")
+            for r in [_sym_property_cst(sym, "Reference")]
+            if r is not None and r.startswith("#FLG")
         }
         n = 1
         while f"#FLG{n:02d}" in existing:
