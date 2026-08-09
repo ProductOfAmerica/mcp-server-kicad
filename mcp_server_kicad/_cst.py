@@ -101,6 +101,14 @@ class Node:
             sep = self.children[j].raw if j >= 0 and self.children[j].kind == "ws" else b"\n"
         self.children[i:i] = [node, Node("ws", sep)]
 
+    def remove_child(self, ref):
+        """Delete child *ref* and its leading whitespace: a pure one-span removal."""
+        i = self.children.index(ref)
+        if i > 0 and self.children[i - 1].kind == "ws":
+            del self.children[i - 1 : i + 1]
+        else:
+            del self.children[i : i + 1]
+
     def set_text(self, value):
         """Retext an atom, quoting only if it was quoted or now needs to be."""
         b = value.encode("utf-8")
@@ -202,12 +210,14 @@ def demo():
     assert o2.count(b'"multi\nline"') == 2 and o2.startswith(hard[:20])
     assert serialize(parse(o2)) == o2
 
-    # insert_before mirrors insert_after.
+    # insert_before mirrors insert_after; remove_child inverts both.
     t3 = parse(b"(r\n\t(x 1)\n\t(z 3)\n)")
     r = t3.lists[0]
     y = parse(b"(y 2)").lists[0]
     r.insert_before(r.find("z"), y)
     assert serialize(t3) == b"(r\n\t(x 1)\n\t(y 2)\n\t(z 3)\n)", serialize(t3)
+    r.remove_child(r.find("y"))
+    assert serialize(t3) == b"(r\n\t(x 1)\n\t(z 3)\n)", serialize(t3)
 
     # Malformed input refuses loudly.
     for bad in (b"(a (b)", b"(a))"):

@@ -158,6 +158,91 @@ class TestAddFamilyPreservation:
         assert kicad_native_sch.read_bytes() == before
 
 
+def _span_preserved(before: bytes, after: bytes) -> bool:
+    """True when all bytes of the shorter side survive as a common prefix+suffix,
+    i.e. the change is one contiguous span (insertion, deletion, or substitution)."""
+    p = 0
+    lo = min(len(before), len(after))
+    while p < lo and before[p] == after[p]:
+        p += 1
+    s = 0
+    while s < lo - p and before[-1 - s] == after[-1 - s]:
+        s += 1
+    return p + s >= lo
+
+
+class TestRemoveFamilyPreservation:
+    """Slice 4: removal/modify via CST one-span deletions and substitutions."""
+
+    def test_remove_label_local_and_global(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        schematic.add_global_label("MIX", 60, 90, schematic_path=p)
+        schematic.add_label("MIX", 60, 92, schematic_path=p)
+        result = schematic.remove_label("MIX", schematic_path=p)
+        assert "1 label(s)" in result and "1 global label(s)" in result
+        sch = reparse(kicad_native_sch)
+        assert not any(lbl.text == "MIX" for lbl in sch.labels)
+        assert not any(gl.text == "MIX" for gl in sch.globalLabels)
+
+    def test_remove_label_position_filter_no_over_deletion(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        schematic.add_label("NEAR", 49.61, 50, schematic_path=p)
+        schematic.add_label("NEAR", 49.77, 50, schematic_path=p)
+        result = schematic.remove_label("NEAR", x=49.77, y=50, schematic_path=p)
+        assert "Removed 1" in result
+        remaining = [lbl for lbl in reparse(kicad_native_sch).labels if lbl.text == "NEAR"]
+        assert len(remaining) == 1
+        assert abs(remaining[0].position.X - 49.61) < 0.01
+
+    def test_remove_junction_single_span(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        schematic.add_junctions([{"x": 50.8, "y": 50.8}], schematic_path=p)
+        before = kicad_native_sch.read_bytes()
+        assert "Removed junction" in schematic.remove_junction(50.8, 50.8, schematic_path=p)
+        after = kicad_native_sch.read_bytes()
+        assert len(after) < len(before)
+        assert _span_preserved(before, after)
+        with pytest.raises(ToolError, match="not found"):
+            schematic.remove_junction(50.8, 50.8, schematic_path=p)
+        assert kicad_native_sch.read_bytes() == after
+
+    def test_remove_text(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        schematic.add_text("gone", 60, 90, schematic_path=p)
+        before = kicad_native_sch.read_bytes()
+        assert "Removed 1 text(s)" in schematic.remove_text("gone", schematic_path=p)
+        assert _span_preserved(before, kicad_native_sch.read_bytes())
+        assert not any(t.text == "gone" for t in reparse(kicad_native_sch).texts)
+
+    def test_remove_hierarchical_label_by_uuid(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        schematic.add_hierarchical_label("DUP", "input", 60, 90, schematic_path=p)
+        schematic.add_hierarchical_label("DUP", "output", 60, 92, schematic_path=p)
+        second_uuid = reparse(kicad_native_sch).hierarchicalLabels[1].uuid
+        result = schematic.remove_hierarchical_label("DUP", schematic_path=p, uuid=second_uuid)
+        assert "Removed hierarchical label 'DUP'" in result
+        remaining = reparse(kicad_native_sch).hierarchicalLabels
+        assert len(remaining) == 1
+        assert remaining[0].shape == "input"
+
+    def test_modify_hierarchical_label_substitution(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        schematic.add_hierarchical_label("VIN", "input", 25.4, 30, schematic_path=p)
+        before = kicad_native_sch.read_bytes()
+        result = schematic.modify_hierarchical_label(
+            "VIN", schematic_path=p, new_text="VIN_PROT", new_shape="output"
+        )
+        assert "VIN_PROT" in result and "output" in result
+        hl = reparse(kicad_native_sch).hierarchicalLabels[0]
+        assert hl.text == "VIN_PROT"
+        assert hl.shape == "output"
+        # Two atom substitutions land inside the label node: everything before
+        # and after that node is untouched.
+        after = kicad_native_sch.read_bytes()
+        assert after != before
+        assert b"generator_version" in after and b"(embedded_fonts" in after
+
+
 def _kicad_cli_major() -> int:
     result = _run_cli(["version"], check=False)
     try:
@@ -166,7 +251,7 @@ def _kicad_cli_major() -> int:
         return 0
 
 
-class TestGuardRelaxAddLabelOnly:
+class TestGuardRelax:
     @pytest.mark.no_kicad_validation
     def test_future_version_file_add_label_works_other_tools_refuse(self, kicad_native_sch):
         # Simulate a KiCad-10-saved schematic: bump only the version claim.
@@ -197,6 +282,22 @@ class TestGuardRelaxAddLabelOnly:
         root = tree.lists[0]
         for token in ("global_label", "hierarchical_label", "text", "junction"):
             assert root.find(token) is not None, token
+
+    @pytest.mark.no_kicad_validation
+    def test_future_version_file_remove_and_modify_work(self, kicad_native_sch):
+        bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
+        kicad_native_sch.write_bytes(bumped)
+        p = str(kicad_native_sch)
+        schematic.add_label("R1X", 60, 90, schematic_path=p)
+        schematic.add_hierarchical_label("H1X", "input", 60, 92, schematic_path=p)
+        schematic.add_junctions([{"x": 60, "y": 96}], schematic_path=p)
+        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
+            schematic.get_schematic_summary(schematic_path=p)
+        assert "1 label(s)" in schematic.remove_label("R1X", schematic_path=p)
+        assert "output" in schematic.modify_hierarchical_label(
+            "H1X", schematic_path=p, new_shape="output"
+        )
+        assert "Removed junction" in schematic.remove_junction(60, 96, schematic_path=p)
 
 
 @requires_cli
@@ -252,3 +353,26 @@ class TestKicad10E2E:
         after = kicad_native_sch.read_bytes()
         assert _pure_insertion(before, after)
         assert _cst.parse(after).lists[0].find("junction") is not None
+
+    def test_remove_label_on_real_kicad10(self, kicad_native_sch):
+        self._mint(kicad_native_sch)
+        p = str(kicad_native_sch)
+        schematic.add_label("K10_RM", 60, 90, schematic_path=p)
+        mid = kicad_native_sch.read_bytes()
+        assert "1 label(s)" in schematic.remove_label("K10_RM", schematic_path=p)
+        after = kicad_native_sch.read_bytes()
+        assert _span_preserved(mid, after)
+        assert "K10_RM" not in [
+            n.atoms[1].text for n in _cst.parse(after).lists[0].find_all("label")
+        ]
+
+    def test_modify_hierarchical_label_on_real_kicad10(self, kicad_native_sch):
+        self._mint(kicad_native_sch)
+        p = str(kicad_native_sch)
+        schematic.add_hierarchical_label("K10_M", "input", 60, 90, schematic_path=p)
+        schematic.modify_hierarchical_label(
+            "K10_M", schematic_path=p, new_text="K10_M2", new_shape="output"
+        )
+        node = _cst.parse(kicad_native_sch.read_bytes()).lists[0].find("hierarchical_label")
+        assert node.atoms[1].text == "K10_M2"
+        assert node.find("shape").atoms[1].text == "output"
