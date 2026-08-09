@@ -7,10 +7,9 @@ import os
 import re
 from pathlib import Path
 
-from kiutils.items.common import ColorRGBA, Effects, Font, Position, Property
+from kiutils.items.common import Effects, Font, Position, Property
 from kiutils.items.schitems import (
     Connection,
-    Junction,
     SchematicSymbol,
     SymbolProjectInstance,
     SymbolProjectPath,
@@ -79,9 +78,8 @@ mcp = FastMCP(
         "WIRING WORKFLOW:\n"
         "1. Place components with place_component\n"
         "2. Discover pin names with get_pin_positions\n"
-        "3. Wire using wire_pin_to_label (pin-to-net) or connect_pins (pin-to-pin)\n"
-        "4. For bulk wiring, use wire_pins_to_net (multiple pins to one net)\n"
-        "5. Verify with list_labels and get_net_connections\n\n"
+        "3. Wire using wire_pins_to_net (pins-to-net) or connect_pins (pin-to-pin)\n"
+        "4. Verify with list_labels and get_net_connections\n\n"
         "CLEANUP WORKFLOW:\n"
         "- To find existing wires before removal, use"
         " list_schematic_wires which returns x1/y1/x2/y2"
@@ -89,7 +87,7 @@ mcp = FastMCP(
         "ERC WORKFLOW:\n"
         "1. Run run_erc to get violations\n"
         "2. Fix 'power pin not driven' with add_power_symbol (lib_id='power:PWR_FLAG')\n"
-        "3. Fix unconnected pins with wire_pin_to_label or no_connect_pin\n"
+        "3. Fix unconnected pins with wire_pins_to_net or no_connect_pin\n"
         "4. Re-run run_erc to verify fixes\n"
         "5. If blocked, report the error — do NOT edit the schematic file manually\n\n"
         "HIERARCHY WORKFLOW:\n"
@@ -290,39 +288,6 @@ def _point_on_wire_interior(
             if lo + tol < py < hi - tol:
                 return True
     return False
-
-
-def _auto_junctions(sch, new_points: list[tuple[float, float]], tol: float = 0.01):
-    """Add junctions where new wire endpoints land on existing wire interiors.
-
-    Checks each point in new_points against all wire segments in
-    sch.graphicalItems. If a point is on a wire's interior (not at its
-    endpoint), and no junction already exists there, a Junction is added.
-    """
-    for px, py in new_points:
-        # Skip if junction already exists here
-        if any(
-            abs(j.position.X - px) < tol and abs(j.position.Y - py) < tol for j in sch.junctions
-        ):
-            continue
-
-        for item in sch.graphicalItems:
-            if not (isinstance(item, Connection) and item.type == "wire"):
-                continue
-            if len(item.points) < 2:
-                continue
-            ax, ay = item.points[0].X, item.points[0].Y
-            bx, by = item.points[1].X, item.points[1].Y
-            if _point_on_wire_interior(px, py, ax, ay, bx, by, tol):
-                sch.junctions.append(
-                    Junction(
-                        position=Position(X=px, Y=py),
-                        diameter=0,
-                        color=ColorRGBA(R=0, G=0, B=0, A=0),
-                        uuid=_gen_uuid(),
-                    )
-                )
-                break  # One junction per point is enough
 
 
 # ---------------------------------------------------------------------------
@@ -1938,7 +1903,7 @@ def wire_pins_to_net(
 ) -> str:
     """Wire multiple component pins to the same net label.
 
-    Batch version of wire_pin_to_label. Single file load/save cycle.
+    Wires each pin with a short stub and a shared net label, one file write.
 
     Args:
         pins: List of {"reference": "R1", "pin": "1"} dicts
