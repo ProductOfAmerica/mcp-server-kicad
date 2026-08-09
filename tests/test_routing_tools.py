@@ -1206,17 +1206,3 @@ class TestSystemLibSymbolRoundtrip:
 # ===========================================================================
 # TestCustomLibNotAffected
 # ===========================================================================
-
-
-class TestCustomLibNotAffected:
-    def test_custom_lib_not_cached(self, tmp_path):
-        """Non-system-library symbols should not be cached for post-processing."""
-        from mcp_server_kicad._shared import _RAW_LIB_SYMBOLS
-
-        path = _make_test_part_sch(tmp_path)
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "U1", "pin": "IN"}],
-            label_text="SIG",
-            schematic_path=path,
-        )
-        assert "TestPart" not in _RAW_LIB_SYMBOLS

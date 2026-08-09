@@ -9,41 +9,31 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kiutils.items.common import ColorRGBA, Effects, Font, Position, Property, Stroke
 from kiutils.items.schitems import (
-    Connection,
-    HierarchicalLabel,
-    HierarchicalPin,
     HierarchicalSheet,
-    HierarchicalSheetProjectInstance,
-    HierarchicalSheetProjectPath,
-    LocalLabel,
-    SchematicSymbol,
-    SymbolProjectInstance,
-    SymbolProjectPath,
 )
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
+import mcp_server_kicad._cst as _cst
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
     _EXPORT,
     _READ_ONLY,
     SCH_PATH,
-    _default_effects,
-    _default_stroke,
     _find_root_schematic,
     _gen_uuid,
     _load_sch,
+    _node_uuid,
     _resolve_hierarchy_path,
     _resolve_root,
     _run_cli,
-    _save_sch,
+    _sheet_file_cst,
     _snap_grid,
-    _sym_ref_val_fp,
+    _sym_property_cst,
     _upsert_root_symbol_instance,
 )
 from mcp_server_kicad.models import (
@@ -57,10 +47,17 @@ from mcp_server_kicad.models import (
     SymbolInstancesResult,
     VersionResult,
 )
+from mcp_server_kicad.schematic import (
+    _HLABEL_TPL,
+    _LABEL_TPL,
+    _fill_at,
+    _num,
+    _open_sch_cst,
+    _splice_sch_node,
+    _splice_wire,
+)
 
 # KiCad 9 file format constants
-_KICAD_SCH_VERSION = 20250114
-_KICAD_SCH_GENERATOR = "eeschema"
 _KICAD_SYM_VERSION = "20231120"
 
 
@@ -103,6 +100,52 @@ def _find_sheet(sch: Schematic, sheet_uuid: str) -> HierarchicalSheet:
     if sheet is None:
         raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
     return sheet
+
+
+def _find_sheet_cst(root, sheet_uuid: str):
+    """CST twin of _find_sheet: same lookup, same error string."""
+    for sheet in root.find_all("sheet"):
+        if _node_uuid(sheet) == sheet_uuid:
+            return sheet
+    raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
+
+
+_SHEET_TPL = _cst.parse(
+    b"(sheet\n\t(at 0 0)\n\t(size 25.4 10.16)\n\t(fields_autoplaced yes)\n\t(stroke\n\t\t(widt"
+    b'h 0.1)\n\t\t(type default)\n\t)\n\t(fill\n\t\t(color 0 0 0 0.0000)\n\t)\n\t(uuid "x")\n'
+    b'\t(property "Sheetname" "X"\n\t\t(at 0 0 0)\n\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.'
+    b'27 1.27)\n\t\t\t)\n\t\t)\n\t)\n\t(property "Sheetfile" "x.kicad_sch"\n\t\t(at 0 0 0)\n\t'
+    b"\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t)\n\t)\n\t(instances\n\t"
+    b'\t(project "X"\n\t\t\t(path "/x"\n\t\t\t\t(page "2")\n\t\t\t)\n\t\t)\n\t)\n)'
+).lists[0]
+
+_SHEET_PIN_TPL = _cst.parse(
+    b'(pin "X" input\n\t(at 0 0 180)\n\t(effects\n\t\t(font\n\t\t\t(size 1.27 1.27)\n\t\t)\n\t'
+    b')\n\t(uuid "x")\n)'
+).lists[0]
+
+_SYM_INSTANCES_TPL = _cst.parse(
+    b'(instances\n\t(project "X"\n\t\t(path "/x"\n\t\t\t(reference "R")\n\t\t\t(unit 1)\n\t\t)'
+    b"\n\t)\n)"
+).lists[0]
+
+# Native empty KiCad 9 schematic for create_schematic; uuid filled per call.
+_EMPTY_SCH_TPL = (
+    b"(kicad_sch\n"
+    b"\t(version 20250114)\n"
+    b'\t(generator "eeschema")\n'
+    b'\t(generator_version "9.0")\n'
+    b'\t(uuid "x")\n'
+    b'\t(paper "A4")\n'
+    b"\t(lib_symbols)\n"
+    b"\t(sheet_instances\n"
+    b'\t\t(path "/"\n'
+    b'\t\t\t(page "1")\n'
+    b"\t\t)\n"
+    b"\t)\n"
+    b"\t(embedded_fonts no)\n"
+    b")\n"
+)
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -150,12 +193,9 @@ def create_schematic(schematic_path: str) -> str:
 
     p.parent.mkdir(parents=True, exist_ok=True)
 
-    sch = Schematic.create_new()
-    sch.version = _KICAD_SCH_VERSION
-    sch.generator = _KICAD_SCH_GENERATOR
-    sch.uuid = _gen_uuid()
-    sch.filePath = str(p)
-    _save_sch(sch)
+    tree = _cst.parse(_EMPTY_SCH_TPL)
+    tree.lists[0].find("uuid").atoms[1].set_text(_gen_uuid())
+    p.write_bytes(_cst.serialize(tree))
     return f"Created schematic at {p}"
 
 
@@ -234,7 +274,7 @@ def add_hierarchical_sheet(
     if not child_path.exists():
         raise ToolError(f"{child_path} does not exist. Create it with create_schematic first.")
 
-    parent_sch = _load_sch(parent_schematic_path)
+    parent_tree, parent_root, *_ = _open_sch_cst(parent_schematic_path)
     x, y = _snap_grid(x), _snap_grid(y)
 
     # Sheet dimensions: fixed width, height scales with pin count
@@ -243,170 +283,115 @@ def add_hierarchical_sheet(
     sheet_height = max(10.16, (len(pins) + 1) * pin_spacing)
 
     # Build sheet block
-    sheet = HierarchicalSheet()
-    sheet.position = Position(X=x, Y=y)
-    sheet.width = sheet_width
-    sheet.height = sheet_height
-    sheet.stroke = Stroke(width=0.1, type="default")
-    sheet.fill = ColorRGBA()  # default transparent
-    sheet.uuid = _gen_uuid()
-    sheet.fieldsAutoplaced = True
+    sheet = _SHEET_TPL.copy()
+    _fill_at(sheet, x, y)
+    size = sheet.find("size")
+    size.atoms[1].set_text(_num(sheet_width))
+    size.atoms[2].set_text(_num(sheet_height))
+    sheet_uuid = _gen_uuid()
+    sheet.find("uuid").atoms[1].set_text(sheet_uuid)
+    sheet_props = {pr.atoms[1].text: pr for pr in sheet.find_all("property")}
+    name_prop = sheet_props["Sheetname"]
+    name_prop.atoms[2].set_text(sheet_name)
+    _fill_at(name_prop, x, round(y - 1.27, 4))
+    file_prop = sheet_props["Sheetfile"]
+    file_prop.atoms[2].set_text(child_path.name)
+    _fill_at(file_prop, x, round(y + sheet_height + 1.27, 4))
 
-    # Sheet name and filename — use dedicated fields, not properties list
-    sheet.sheetName = Property(
-        key="Sheetname",
-        value=sheet_name,
-        id=0,
-        effects=Effects(font=Font(height=1.27, width=1.27)),
-        position=Position(X=x, Y=y - 1.27, angle=0),
-    )
-    sheet.fileName = Property(
-        key="Sheetfile",
-        value=child_path.name,
-        id=1,
-        effects=Effects(font=Font(height=1.27, width=1.27)),
-        position=Position(X=x, Y=round(y + sheet_height + 1.27, 4), angle=0),
-    )
-
-    # Build pins on the sheet block (positioned along left edge)
-    sheet_pins = []
+    # Pins on the sheet block (left edge) plus stubs and labels in the parent
+    inst_anchor = sheet.find("instances")
     for i, pin_def in enumerate(pins):
-        pin = HierarchicalPin()
-        pin.name = pin_def["name"]
-        pin.connectionType = pin_def["direction"]
-        pin.position = Position(
-            X=x,
-            Y=_snap_grid(y + (i + 1) * pin_spacing),
-            angle=180,
-        )
-        pin.effects = Effects(font=Font(height=1.27, width=1.27))
-        pin.uuid = _gen_uuid()
-        sheet_pins.append(pin)
-
-        # Wire stub going LEFT from pin
         pin_y = _snap_grid(y + (i + 1) * pin_spacing)
+        pin = _SHEET_PIN_TPL.copy()
+        pin.atoms[1].set_text(pin_def["name"])
+        pin.atoms[2].set_text(pin_def["direction"])
+        _fill_at(pin, x, pin_y, 180)
+        pin.find("uuid").atoms[1].set_text(_gen_uuid())
+        sheet.insert_before(inst_anchor, pin)
+
+        # Wire stub going LEFT from pin, with a net label at its end
         stub_end_x = _snap_grid(x - 2.54)
-        parent_sch.graphicalItems.append(
-            Connection(
-                type="wire",
-                points=[
-                    Position(X=x, Y=pin_y),
-                    Position(X=stub_end_x, Y=pin_y),
-                ],
-                stroke=_default_stroke(),
-                uuid=_gen_uuid(),
-            )
-        )
+        _splice_wire(parent_root, x, pin_y, stub_end_x, pin_y)
+        label = _LABEL_TPL.copy()
+        label.atoms[1].set_text(pin_def["name"])
+        _fill_at(label, stub_end_x, pin_y, 180)
+        label.find("uuid").atoms[1].set_text(_gen_uuid())
+        _splice_sch_node(parent_root, "label", label)
 
-        # Net label at stub endpoint
-        parent_sch.labels.append(
-            LocalLabel(
-                text=pin_def["name"],
-                position=Position(X=stub_end_x, Y=pin_y, angle=180),
-                effects=_default_effects(),
-                uuid=_gen_uuid(),
-            )
-        )
-    sheet.pins = sheet_pins
+    # Instances block for the sheet
+    project_name = Path(project_path).stem if project_path else Path(parent_schematic_path).stem
+    page = str(len(parent_root.find_all("sheet")) + 2)
+    inst_project = inst_anchor.find("project")
+    inst_project.atoms[1].set_text(project_name)
+    ipath = inst_project.find("path")
+    ipath.atoms[1].set_text(f"/{_node_uuid(parent_root)}/{sheet_uuid}")
+    ipath.find("page").atoms[1].set_text(page)
 
-    # Add instances block for the sheet
-    project_name = (
-        Path(project_path).stem
-        if project_path
-        else (Path(parent_sch.filePath).stem if parent_sch.filePath else "")
-    )
-    sheet.instances = [
-        HierarchicalSheetProjectInstance(
-            name=project_name,
-            paths=[
-                HierarchicalSheetProjectPath(
-                    sheetInstancePath=f"/{parent_sch.uuid}/{sheet.uuid}",
-                    page=str(len(parent_sch.sheets) + 2),
-                ),
-            ],
-        ),
-    ]
-
-    parent_sch.sheets.append(sheet)
-    _save_sch(parent_sch)
+    _splice_sch_node(parent_root, "sheet", sheet)
+    Path(parent_schematic_path).write_bytes(_cst.serialize(parent_tree))
 
     # Add matching hierarchical labels to child schematic
-    child_sch = _load_sch(sheet_file)
+    child_tree, child_root, *_ = _open_sch_cst(sheet_file)
     label_x = _snap_grid(25.4)
     for i, pin_def in enumerate(pins):
-        label = HierarchicalLabel()
-        label.text = pin_def["name"]
-        label.shape = pin_def["direction"]
-        label.position = Position(
-            X=label_x,
-            Y=_snap_grid(25.4 + i * 5.08),
-            angle=180,
-        )
-        label.effects = Effects(font=Font(height=1.27, width=1.27))
-        label.uuid = _gen_uuid()
-        child_sch.hierarchicalLabels.append(label)
-
-        # Wire stub going RIGHT from label
         label_y = _snap_grid(25.4 + i * 5.08)
-        stub_end_x = _snap_grid(label_x + 2.54)
-        child_sch.graphicalItems.append(
-            Connection(
-                type="wire",
-                points=[
-                    Position(X=label_x, Y=label_y),
-                    Position(X=stub_end_x, Y=label_y),
-                ],
-                stroke=_default_stroke(),
-                uuid=_gen_uuid(),
-            )
-        )
+        hl = _HLABEL_TPL.copy()
+        hl.atoms[1].set_text(pin_def["name"])
+        hl.find("shape").atoms[1].set_text(pin_def["direction"])
+        _fill_at(hl, label_x, label_y, 180)
+        hl.find("uuid").atoms[1].set_text(_gen_uuid())
+        _splice_sch_node(child_root, "hierarchical_label", hl)
 
-        # Net label at stub endpoint
-        child_sch.labels.append(
-            LocalLabel(
-                text=pin_def["name"],
-                position=Position(X=stub_end_x, Y=label_y, angle=0),
-                effects=_default_effects(),
-                uuid=_gen_uuid(),
-            )
-        )
+        # Wire stub going RIGHT from label, with a net label at its end
+        stub_end_x = _snap_grid(label_x + 2.54)
+        _splice_wire(child_root, label_x, label_y, stub_end_x, label_y)
+        lab = _LABEL_TPL.copy()
+        lab.atoms[1].set_text(pin_def["name"])
+        _fill_at(lab, stub_end_x, label_y, 0)
+        lab.find("uuid").atoms[1].set_text(_gen_uuid())
+        _splice_sch_node(child_root, "label", lab)
+
     # Add parent project instances to child symbols
     if project_path:
         root_sch_path = Path(project_path).with_suffix(".kicad_sch")
         if root_sch_path.exists():
-            root_sch = _load_sch(str(root_sch_path))
+            hierarchy_root = _cst.parse(root_sch_path.read_bytes()).lists[0]
             parent_project_name = Path(project_path).stem
-            parent_sheet_path = f"/{root_sch.uuid}/{sheet.uuid}"
-            for sym in child_sch.schematicSymbols:
-                instances = getattr(sym, "instances", None) or []
-                has_parent = any(inst.name == parent_project_name for inst in instances)
+            parent_sheet_path = f"/{_node_uuid(hierarchy_root)}/{sheet_uuid}"
+            for sym in child_root.find_all("symbol"):
+                instances = sym.find("instances")
+                has_parent = instances is not None and any(
+                    pj.atoms[1].text == parent_project_name for pj in instances.find_all("project")
+                )
                 if not has_parent:
-                    ref_prop = next((p for p in sym.properties if p.key == "Reference"), None)
-                    if not hasattr(sym, "instances") or sym.instances is None:
-                        sym.instances = []
-                    sym.instances.append(
-                        SymbolProjectInstance(
-                            name=parent_project_name,
-                            paths=[
-                                SymbolProjectPath(
-                                    sheetInstancePath=parent_sheet_path,
-                                    reference=ref_prop.value if ref_prop else "?",
-                                    unit=1,
-                                )
-                            ],
-                        )
-                    )
-                ref, val, fp = _sym_ref_val_fp(sym)
+                    ref = _sym_property_cst(sym, "Reference") or "?"
+                    entry = _SYM_INSTANCES_TPL.copy()
+                    pj = entry.find("project")
+                    pj.atoms[1].set_text(parent_project_name)
+                    pp = pj.find("path")
+                    pp.atoms[1].set_text(parent_sheet_path)
+                    pp.find("reference").atoms[1].set_text(ref)
+                    if instances is None:
+                        sym.children += [_cst.Node("ws", b"\n\t"), entry]
+                    else:
+                        projects = instances.find_all("project")
+                        if projects:
+                            instances.insert_after(projects[-1], pj)
+                        else:
+                            instances.children += [_cst.Node("ws", b"\n\t\t"), pj]
+                ref = _sym_property_cst(sym, "Reference") or "?"
+                val = _sym_property_cst(sym, "Value") or ""
+                fp = _sym_property_cst(sym, "Footprint") or ""
                 _upsert_root_symbol_instance(
                     str(child_path),
                     project_path,
-                    sym.uuid or "",
+                    _node_uuid(sym),
                     ref,
                     value=val,
                     footprint=fp,
                 )
 
-    _save_sch(child_sch)
+    Path(sheet_file).write_bytes(_cst.serialize(child_tree))
 
     return f"Added sheet '{sheet_name}' with {len(pins)} pins to {parent_schematic_path}"
 
@@ -433,25 +418,30 @@ def remove_hierarchical_sheet(
     if not name and not uuid:
         raise ToolError("Provide at least one of 'name' or 'uuid'.")
 
-    sch = _load_sch(parent_schematic_path)
+    tree, root, *_ = _open_sch_cst(parent_schematic_path)
+    sheets = root.find_all("sheet")
 
     def _normalize_uuid(u: str) -> str:
         return u.replace("-", "").lower()
 
+    def _sheet_name(s) -> str:
+        return _sym_property_cst(s, "Sheetname") or ""
+
     # Find matching sheets
     matches: list[int] = []
-    for i, sheet in enumerate(sch.sheets):
+    for i, sheet in enumerate(sheets):
+        s_uuid = _node_uuid(sheet)
         if uuid:
-            if sheet.uuid and _normalize_uuid(sheet.uuid) == _normalize_uuid(uuid):
-                if name and sheet.sheetName.value != name:
+            if s_uuid and _normalize_uuid(s_uuid) == _normalize_uuid(uuid):
+                if name and _sheet_name(sheet) != name:
                     raise ToolError(
                         f"Sheet with uuid={uuid} found but its name is "
-                        f"'{sheet.sheetName.value}', not '{name}'."
+                        f"'{_sheet_name(sheet)}', not '{name}'."
                     )
                 matches.append(i)
                 break
         else:
-            if sheet.sheetName.value == name:
+            if _sheet_name(sheet) == name:
                 matches.append(i)
 
     if not matches:
@@ -459,18 +449,23 @@ def remove_hierarchical_sheet(
         raise ToolError(f"No hierarchical sheet found matching {criteria}.")
 
     if len(matches) > 1:
+
+        def _xy(s):
+            s_at = s.find("at")
+            return float(s_at.atoms[1].text), float(s_at.atoms[2].text)
+
         info = ", ".join(
-            f"uuid={sch.sheets[i].uuid} at ({sch.sheets[i].position.X}, {sch.sheets[i].position.Y})"
+            f"uuid={_node_uuid(sheets[i])} at ({_xy(sheets[i])[0]}, {_xy(sheets[i])[1]})"
             for i in matches
         )
         raise ToolError(
             f"Multiple sheets named '{name}' found: [{info}]. Provide uuid to disambiguate."
         )
 
-    target = sch.sheets[matches[0]]
-    sheet_name = target.sheetName.value
-    sheet_uuid = target.uuid
-    child_filename = target.fileName.value
+    target = sheets[matches[0]]
+    sheet_name = _sheet_name(target)
+    sheet_uuid = _node_uuid(target)
+    child_filename = _sheet_file_cst(target) or ""
     msg = f"Removed hierarchical sheet '{sheet_name}' (uuid={sheet_uuid})."
 
     # Handle child file deletion
@@ -479,7 +474,7 @@ def remove_hierarchical_sheet(
         child_path = parent_dir / child_filename
         # Check if any OTHER sheet still references this child file
         other_refs = any(
-            s.fileName.value == child_filename for j, s in enumerate(sch.sheets) if j != matches[0]
+            _sheet_file_cst(s) == child_filename for j, s in enumerate(sheets) if j != matches[0]
         )
         if other_refs:
             msg += f" Kept child file '{child_filename}' — still referenced by another sheet block."
@@ -487,8 +482,8 @@ def remove_hierarchical_sheet(
             child_path.unlink()
             msg += f" Deleted child file '{child_filename}'."
 
-    sch.sheets.pop(matches[0])
-    _save_sch(sch)
+    root.remove_child(target)
+    Path(parent_schematic_path).write_bytes(_cst.serialize(tree))
     return msg
 
 
@@ -511,22 +506,24 @@ def modify_hierarchical_sheet(
         width: New width in mm (None = keep)
         height: New height in mm (None = keep)
     """
-    sch = _load_sch(schematic_path)
-    target = _find_sheet(sch, sheet_uuid)
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    target = _find_sheet_cst(root, sheet_uuid)
+    props = {pr.atoms[1].text: pr for pr in target.find_all("property")}
+    size = target.find("size")
     changes = []
     if sheet_name:
-        target.sheetName.value = sheet_name
+        props["Sheetname"].atoms[2].set_text(sheet_name)
         changes.append(f"name='{sheet_name}'")
     if file_name:
-        target.fileName.value = file_name
+        props["Sheetfile"].atoms[2].set_text(file_name)
         changes.append(f"file='{file_name}'")
     if width is not None:
-        target.width = width
+        size.atoms[1].set_text(_num(width))
         changes.append(f"width={width}")
     if height is not None:
-        target.height = height
+        size.atoms[2].set_text(_num(height))
         changes.append(f"height={height}")
-    _save_sch(sch)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Modified sheet: {', '.join(changes)}"
 
 
@@ -552,23 +549,26 @@ def add_sheet_pin(
         raise ToolError(
             f"Invalid connection_type '{connection_type}'. Use: {', '.join(sorted(_valid_types))}"
         )
-    sch = _load_sch(schematic_path)
-    target = _find_sheet(sch, sheet_uuid)
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    target = _find_sheet_cst(root, sheet_uuid)
+    at = target.find("at")
+    size = target.find("size")
+    sx, sy = float(at.atoms[1].text), float(at.atoms[2].text)
     # Calculate pin position on sheet edge
-    existing_pins_on_side = len(target.pins)
-    pin_y = target.position.Y + 2.54 * (existing_pins_on_side + 1)
-    if side == "right":
-        pin_x = target.position.X + target.width
+    existing_pins = target.find_all("pin")
+    pin_y = sy + 2.54 * (len(existing_pins) + 1)
+    pin_x = sx + float(size.atoms[1].text) if side == "right" else sx
+    pin = _SHEET_PIN_TPL.copy()
+    pin.atoms[1].set_text(pin_name)
+    pin.atoms[2].set_text(connection_type)
+    _fill_at(pin, pin_x, pin_y, 180 if side == "left" else 0)
+    pin.find("uuid").atoms[1].set_text(_gen_uuid())
+    if existing_pins:
+        target.insert_after(existing_pins[-1], pin)
     else:
-        pin_x = target.position.X
-    pin = HierarchicalPin(
-        name=pin_name,
-        connectionType=connection_type,
-        position=Position(X=pin_x, Y=pin_y, angle=180 if side == "left" else 0),
-        uuid=_gen_uuid(),
-    )
-    target.pins.append(pin)
-    _save_sch(sch)
+        props = target.find_all("property")
+        target.insert_after(props[-1], pin)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Added sheet pin '{pin_name}' ({connection_type}) to sheet"
 
 
@@ -585,13 +585,13 @@ def remove_sheet_pin(
         pin_name: Name of the pin to remove
         schematic_path: Path to parent .kicad_sch
     """
-    sch = _load_sch(schematic_path)
-    target = _find_sheet(sch, sheet_uuid)
-    pin = next((p for p in target.pins if p.name == pin_name), None)
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    target = _find_sheet_cst(root, sheet_uuid)
+    pin = next((p for p in target.find_all("pin") if p.atoms[1].text == pin_name), None)
     if pin is None:
         raise ToolError(f"Pin '{pin_name}' not found on sheet")
-    target.pins.remove(pin)
-    _save_sch(sch)
+    target.remove_child(pin)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Removed pin '{pin_name}' from sheet"
 
 
@@ -619,35 +619,43 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
     """
     import re
 
-    sch = _load_sch(schematic_path)
+    tree, root, *_ = _open_sch_cst(schematic_path)
+
+    def _collect_refs_cst(r) -> set[str]:
+        refs: set[str] = set()
+        for s in r.find_all("symbol"):
+            ref = _sym_property_cst(s, "Reference")
+            if ref and "?" not in ref:
+                refs.add(ref)
+        return refs
 
     # Collect existing refs across hierarchy
     existing_refs: set[str] = set()
 
     if project_path:
         root_path = _resolve_root(schematic_path, project_path)
-        root = root_path or schematic_path
-        root_dir = Path(root).parent
-        root_sch = _load_sch(root)
-        existing_refs.update(_collect_refs(root_sch))
-        for sheet in root_sch.sheets:
-            child_path = root_dir / sheet.fileName.value
+        root_file = root_path or schematic_path
+        root_dir = Path(root_file).parent
+        hierarchy_root = _cst.parse(Path(root_file).read_bytes()).lists[0]
+        existing_refs.update(_collect_refs_cst(hierarchy_root))
+        for sheet in hierarchy_root.find_all("sheet"):
+            child_path = root_dir / (_sheet_file_cst(sheet) or "")
             if child_path.exists() and str(child_path.resolve()) != str(
                 Path(schematic_path).resolve()
             ):
-                child_sch = _load_sch(str(child_path))
-                existing_refs.update(_collect_refs(child_sch))
+                child_root = _cst.parse(child_path.read_bytes()).lists[0]
+                existing_refs.update(_collect_refs_cst(child_root))
 
     # Also collect refs from target schematic
-    existing_refs.update(_collect_refs(sch))
+    existing_refs.update(_collect_refs_cst(root))
 
     # Find unannotated components and group by prefix
-    unannotated: list[tuple[SchematicSymbol, str]] = []  # (symbol, prefix)
+    unannotated = []  # (symbol node, prefix)
     ref_re = re.compile(r"^(#?[A-Z]+)\?$")
-    for sym in sch.schematicSymbols:
-        ref_prop = next((p for p in sym.properties if p.key == "Reference"), None)
-        if ref_prop and "?" in ref_prop.value:
-            m = ref_re.match(ref_prop.value)
+    for sym in root.find_all("symbol"):
+        ref = _sym_property_cst(sym, "Reference")
+        if ref and "?" in ref:
+            m = ref_re.match(ref)
             if m:
                 unannotated.append((sym, m.group(1)))
 
@@ -669,44 +677,47 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
         next_num = max_nums.get(prefix, 0) + 1
         max_nums[prefix] = next_num
         new_ref = f"{prefix}{next_num}"
-        ref_prop = next(p for p in sym.properties if p.key == "Reference")
-        ref_prop.value = new_ref
-        # Update SymbolProjectInstance if present
-        for inst in getattr(sym, "instances", []):
-            for path_entry in getattr(inst, "paths", []):
-                path_entry.reference = new_ref
-        # Create instances block if missing (symbols placed without it)
-        if not getattr(sym, "instances", []):
+        ref_prop = next(pr for pr in sym.find_all("property") if pr.atoms[1].text == "Reference")
+        ref_prop.atoms[2].set_text(new_ref)
+        # Update instance paths if present
+        instances = sym.find("instances")
+        if instances is not None and instances.find("project") is not None:
+            for project in instances.find_all("project"):
+                for path_node in project.find_all("path"):
+                    ref_node = path_node.find("reference")
+                    if ref_node is not None:
+                        ref_node.atoms[1].set_text(new_ref)
+        else:
+            # Create instances block if missing (symbols placed without it)
             if project_path:
                 proj_name, sheet_path = _resolve_hierarchy_path(
-                    project_path, schematic_path, sch.uuid or ""
+                    project_path, schematic_path, _node_uuid(root)
                 )
             else:
                 proj_name = Path(schematic_path).stem if schematic_path else ""
-                sheet_path = f"/{sch.uuid}"
-            sym.instances = [
-                SymbolProjectInstance(
-                    name=proj_name,
-                    paths=[
-                        SymbolProjectPath(
-                            sheetInstancePath=sheet_path,
-                            reference=new_ref,
-                            unit=1,
-                        ),
-                    ],
-                ),
-            ]
+                sheet_path = f"/{_node_uuid(root)}"
+            if instances is not None:
+                sym.remove_child(instances)
+            node = _SYM_INSTANCES_TPL.copy()
+            project = node.find("project")
+            project.atoms[1].set_text(proj_name)
+            ipath = project.find("path")
+            ipath.atoms[1].set_text(sheet_path)
+            ipath.find("reference").atoms[1].set_text(new_ref)
+            sym.children += [_cst.Node("ws", b"\n\t"), node]
         assigned.setdefault(prefix, []).append(new_ref)
 
-    _save_sch(sch)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
 
     # Sync root symbolInstances for all annotated symbols
     for sym, _prefix in unannotated:
-        ref, val, fp = _sym_ref_val_fp(sym)
+        ref = _sym_property_cst(sym, "Reference") or "?"
+        val = _sym_property_cst(sym, "Value") or ""
+        fp = _sym_property_cst(sym, "Footprint") or ""
         _upsert_root_symbol_instance(
             schematic_path,
             project_path,
-            sym.uuid or "",
+            _node_uuid(sym),
             ref,
             value=val,
             footprint=fp,
@@ -1121,24 +1132,27 @@ def move_hierarchical_sheet(
         new_y: New Y position in mm
         schematic_path: Path to parent .kicad_sch
     """
-    sch = _load_sch(schematic_path)
-    target = _find_sheet(sch, sheet_uuid)
-    dx = new_x - target.position.X
-    dy = new_y - target.position.Y
-    target.position.X = new_x
-    target.position.Y = new_y
-    # Move pins by the same delta
-    for pin in target.pins:
-        pin.position.X = round(pin.position.X + dx, 4)
-        pin.position.Y = round(pin.position.Y + dy, 4)
-    # Move property positions
-    if hasattr(target.sheetName, "position") and target.sheetName.position:
-        target.sheetName.position.X = round(target.sheetName.position.X + dx, 4)
-        target.sheetName.position.Y = round(target.sheetName.position.Y + dy, 4)
-    if hasattr(target.fileName, "position") and target.fileName.position:
-        target.fileName.position.X = round(target.fileName.position.X + dx, 4)
-        target.fileName.position.Y = round(target.fileName.position.Y + dy, 4)
-    _save_sch(sch)
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    target = _find_sheet_cst(root, sheet_uuid)
+    at = target.find("at")
+    dx = new_x - float(at.atoms[1].text)
+    dy = new_y - float(at.atoms[2].text)
+    at.atoms[1].set_text(_num(new_x))
+    at.atoms[2].set_text(_num(new_y))
+
+    def _shift(node) -> None:
+        n_at = node.find("at")
+        if n_at is None:
+            return
+        n_at.atoms[1].set_text(_num(round(float(n_at.atoms[1].text) + dx, 4)))
+        n_at.atoms[2].set_text(_num(round(float(n_at.atoms[2].text) + dy, 4)))
+
+    # Move pins and property positions by the same delta
+    for pin in target.find_all("pin"):
+        _shift(pin)
+    for prop in target.find_all("property"):
+        _shift(prop)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Moved sheet to ({new_x}, {new_y})"
 
 
@@ -1153,20 +1167,19 @@ def reorder_sheet_pages(
         page_order: List of sheet UUIDs in desired order
         schematic_path: Path to root .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
-    # Build uuid->sheet map
-    sheet_map = {s.uuid: s for s in sch.sheets}
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    sheets = root.find_all("sheet")
+    sheet_map = {_node_uuid(s): s for s in sheets}
     missing = [u for u in page_order if u not in sheet_map]
     if missing:
         raise ToolError(f"Sheet UUIDs not found: {missing}")
-    # Reorder
-    new_sheets = [sheet_map[u] for u in page_order]
-    # Add any sheets not in the order (preserve at end)
-    for s in sch.sheets:
-        if s.uuid not in page_order:
-            new_sheets.append(s)
-    sch.sheets = new_sheets
-    _save_sch(sch)
+    new_order = [sheet_map[u] for u in page_order]
+    new_order += [s for s in sheets if _node_uuid(s) not in page_order]
+    # Swap nodes in place: the whitespace slots between them never move.
+    slots = [i for i, c in enumerate(root.children) if c.kind == "list" and c.head == "sheet"]
+    for slot, node in zip(slots, new_order):
+        root.children[slot] = node
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Reordered {len(page_order)} sheets"
 
 
@@ -1190,115 +1203,95 @@ def duplicate_sheet(
     import shutil
     import uuid as _uuid_mod
 
-    sch = _load_sch(schematic_path)
+    tree, root, *_ = _open_sch_cst(schematic_path)
     sch_dir = Path(schematic_path).parent
 
-    source = _find_sheet(sch, sheet_uuid)
+    source = _find_sheet_cst(root, sheet_uuid)
+    src_at = source.find("at")
+    src_x, src_y = float(src_at.atoms[1].text), float(src_at.atoms[2].text)
+    src_size = source.find("size")
+    src_w = float(src_size.atoms[1].text)
+    src_h = float(src_size.atoms[2].text)
+    source_file = _sheet_file_cst(source) or ""
 
     # Determine new file name
     if not new_file_name:
-        base = Path(source.fileName.value).stem
+        base = Path(source_file).stem
         new_file_name = f"{base}_{new_sheet_name.replace(' ', '_').lower()}.kicad_sch"
 
     # Copy the child file
-    src_path = sch_dir / source.fileName.value
+    src_path = sch_dir / source_file
     dst_path = sch_dir / new_file_name
     if not src_path.exists():
         raise ToolError(f"Source file not found: {src_path}")
 
     shutil.copy2(str(src_path), str(dst_path))
 
-    # Regenerate UUIDs in the copy
-    copy_sch = _load_sch(str(dst_path))
-    copy_sch.uuid = str(_uuid_mod.uuid4())
-    for sym in copy_sch.schematicSymbols:
-        sym.uuid = str(_uuid_mod.uuid4())
-    for label in copy_sch.labels:
-        label.uuid = str(_uuid_mod.uuid4())
-    for gl in copy_sch.globalLabels:
-        gl.uuid = str(_uuid_mod.uuid4())
-    for hl in copy_sch.hierarchicalLabels:
-        hl.uuid = str(_uuid_mod.uuid4())
-    for gi in copy_sch.graphicalItems:
-        if hasattr(gi, "uuid"):
-            gi.uuid = str(_uuid_mod.uuid4())
-    for j in copy_sch.junctions:
-        j.uuid = str(_uuid_mod.uuid4())
-    for nc in copy_sch.noConnects:
-        nc.uuid = str(_uuid_mod.uuid4())
-    _save_sch(copy_sch)
+    # Regenerate UUIDs in the copy: the root uuid plus each top-level item's
+    # own uuid; nested uuids (e.g. symbol pin uuids) keep kiutils parity.
+    copy_tree = _cst.parse(dst_path.read_bytes())
+    copy_root = copy_tree.lists[0]
+    root_uuid_node = copy_root.find("uuid")
+    if root_uuid_node is not None:
+        root_uuid_node.atoms[1].set_text(str(_uuid_mod.uuid4()))
+    uuid_tokens = {
+        "symbol",
+        "label",
+        "global_label",
+        "hierarchical_label",
+        "wire",
+        "bus",
+        "bus_entry",
+        "polyline",
+        "junction",
+        "no_connect",
+    }
+    for item in copy_root.lists:
+        if item.head in uuid_tokens:
+            iu = item.find("uuid")
+            if iu is not None:
+                iu.atoms[1].set_text(str(_uuid_mod.uuid4()))
+    dst_path.write_bytes(_cst.serialize(copy_tree))
 
-    # Create new sheet block in parent (copy properties from source)
-    dx = source.width + 5
-    new_sheet = HierarchicalSheet()
-    new_sheet.uuid = _gen_uuid()
-    new_sheet.position = Position(
-        X=source.position.X + dx,
-        Y=source.position.Y,
-    )
-    new_sheet.width = source.width
-    new_sheet.height = source.height
-    new_sheet.stroke = Stroke(width=0.1, type="default")
-    new_sheet.fill = ColorRGBA()
-    new_sheet.fieldsAutoplaced = True
-    new_sheet.sheetName = Property(
-        key="Sheetname",
-        value=new_sheet_name,
-        id=0,
-        effects=Effects(font=Font(height=1.27, width=1.27)),
-        position=Position(
-            X=source.position.X + dx,
-            Y=source.position.Y - 1.27,
-            angle=0,
-        ),
-    )
-    new_sheet.fileName = Property(
-        key="Sheetfile",
-        value=new_file_name,
-        id=1,
-        effects=Effects(font=Font(height=1.27, width=1.27)),
-        position=Position(
-            X=source.position.X + dx,
-            Y=round(source.position.Y + source.height + 1.27, 4),
-            angle=0,
-        ),
-    )
+    # Create new sheet block in parent (geometry from source, fresh identity)
+    dx = src_w + 5
+    new_sheet = _SHEET_TPL.copy()
+    new_uuid = _gen_uuid()
+    new_sheet.find("uuid").atoms[1].set_text(new_uuid)
+    _fill_at(new_sheet, round(src_x + dx, 4), src_y)
+    new_size = new_sheet.find("size")
+    new_size.atoms[1].set_text(_num(src_w))
+    new_size.atoms[2].set_text(_num(src_h))
+    new_props = {pr.atoms[1].text: pr for pr in new_sheet.find_all("property")}
+    name_prop = new_props["Sheetname"]
+    name_prop.atoms[2].set_text(new_sheet_name)
+    _fill_at(name_prop, round(src_x + dx, 4), round(src_y - 1.27, 4))
+    file_prop = new_props["Sheetfile"]
+    file_prop.atoms[2].set_text(new_file_name)
+    _fill_at(file_prop, round(src_x + dx, 4), round(src_y + src_h + 1.27, 4))
 
-    # Copy pins with offset
-    for pin in source.pins:
-        new_pin = HierarchicalPin(
-            name=pin.name,
-            connectionType=pin.connectionType,
-            position=Position(
-                X=round(pin.position.X + dx, 4),
-                Y=pin.position.Y,
-                angle=pin.position.angle if hasattr(pin.position, "angle") else 0,
-            ),
-            uuid=_gen_uuid(),
-        )
-        new_pin.effects = Effects(font=Font(height=1.27, width=1.27))
-        new_sheet.pins.append(new_pin)
+    # Copy pins with offset and fresh uuids
+    inst_anchor = new_sheet.find("instances")
+    for pin in source.find_all("pin"):
+        new_pin = pin.copy()
+        pin_at = new_pin.find("at")
+        pin_at.atoms[1].set_text(_num(round(float(pin_at.atoms[1].text) + dx, 4)))
+        pu = new_pin.find("uuid")
+        if pu is not None:
+            pu.atoms[1].set_text(_gen_uuid())
+        new_sheet.insert_before(inst_anchor, new_pin)
 
-    # Add instances block
-    project_name = (
-        Path(project_path).stem
-        if project_path
-        else (Path(sch.filePath).stem if sch.filePath else "")
-    )
-    new_sheet.instances = [
-        HierarchicalSheetProjectInstance(
-            name=project_name,
-            paths=[
-                HierarchicalSheetProjectPath(
-                    sheetInstancePath=f"/{sch.uuid}/{new_sheet.uuid}",
-                    page=str(len(sch.sheets) + 2),
-                ),
-            ],
-        ),
-    ]
+    # Instances block
+    project_name = Path(project_path).stem if project_path else Path(schematic_path).stem
+    page = str(len(root.find_all("sheet")) + 2)
+    pj = inst_anchor.find("project")
+    pj.atoms[1].set_text(project_name)
+    pp = pj.find("path")
+    pp.atoms[1].set_text(f"/{_node_uuid(root)}/{new_uuid}")
+    pp.find("page").atoms[1].set_text(page)
 
-    sch.sheets.append(new_sheet)
-    _save_sch(sch)
+    _splice_sch_node(root, "sheet", new_sheet)
+    Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
 
 
@@ -1316,126 +1309,119 @@ def flatten_hierarchy(
         schematic_path: Path to root .kicad_sch file
         output_path: Path for flattened output (defaults to *_flat.kicad_sch)
     """
-    import copy
     import uuid as _uuid_mod
 
-    sch = _load_sch(schematic_path)
+    flat_tree, flat_root, *_ = _open_sch_cst(schematic_path)
     sch_dir = Path(schematic_path).parent
 
     if not output_path:
         stem = Path(schematic_path).stem
         output_path = str(sch_dir / f"{stem}_flat.kicad_sch")
 
-    # Create output schematic as a copy of root
-    flat = copy.deepcopy(sch)
-    flat.uuid = str(_uuid_mod.uuid4())
-    flat.filePath = output_path
+    # The output starts as a byte-copy of the root with a fresh uuid
+    root_uuid_node = flat_root.find("uuid")
+    if root_uuid_node is not None:
+        root_uuid_node.atoms[1].set_text(str(_uuid_mod.uuid4()))
+
+    # Remember the child files, then drop hierarchy constructs from the output
+    child_files = [_sheet_file_cst(s) or "" for s in flat_root.find_all("sheet")]
+    for token in ("sheet", "hierarchical_label", "symbol_instances", "sheet_instances"):
+        for node in flat_root.find_all(token):
+            flat_root.remove_child(node)
+
+    def _offset_at(node, ox: float, oy: float) -> None:
+        n_at = node.find("at")
+        if n_at is None:
+            return
+        n_at.atoms[1].set_text(_num(float(n_at.atoms[1].text) + ox))
+        n_at.atoms[2].set_text(_num(float(n_at.atoms[2].text) + oy))
 
     # Find the max Y extent of root content for offset
     max_y = 0.0
-    for sym in flat.schematicSymbols:
-        if sym.position and sym.position.Y > max_y:
-            max_y = sym.position.Y
-    for gi in flat.graphicalItems:
-        if hasattr(gi, "points"):
-            for pt in gi.points:
-                if pt.Y > max_y:
-                    max_y = pt.Y
+    for sym in flat_root.find_all("symbol"):
+        s_at = sym.find("at")
+        if s_at is not None:
+            max_y = max(max_y, float(s_at.atoms[2].text))
+    for token in ("wire", "bus", "polyline"):
+        for gi in flat_root.find_all(token):
+            pts = gi.find("pts")
+            if pts is not None:
+                for xy in pts.find_all("xy"):
+                    max_y = max(max_y, float(xy.atoms[2].text))
 
     y_offset = max_y + 50  # Start child content 50mm below root content
 
+    lib_symbols = flat_root.find("lib_symbols")
+    existing_lib_names = set()
+    if lib_symbols is not None:
+        for ls in lib_symbols.find_all("symbol"):
+            raw = ls.atoms[1].text
+            existing_lib_names.add(raw.split(":")[-1] if ":" in raw else raw)
+
     sheet_index = 0
-    for sheet in sch.sheets:
-        child_path = sch_dir / sheet.fileName.value
+    for child_file in child_files:
+        child_path = sch_dir / child_file
         if not child_path.exists():
             continue
 
-        child_sch = _load_sch(str(child_path))
+        child_root = _cst.parse(child_path.read_bytes()).lists[0]
         x_offset = sheet_index * 200  # Space sheets horizontally
 
-        # Merge lib symbols (avoid duplicates)
-        existing_lib_names = {s.entryName for s in flat.libSymbols}
-        for lib_sym in child_sch.libSymbols:
-            if lib_sym.entryName not in existing_lib_names:
-                flat.libSymbols.append(lib_sym)
-                existing_lib_names.add(lib_sym.entryName)
+        # Merge lib symbols (avoid duplicates, entryName semantics)
+        child_libs = child_root.find("lib_symbols")
+        if child_libs is not None and lib_symbols is not None:
+            for ls in child_libs.find_all("symbol"):
+                raw = ls.atoms[1].text
+                bare = raw.split(":")[-1] if ":" in raw else raw
+                if bare not in existing_lib_names:
+                    entries = lib_symbols.find_all("symbol")
+                    node = ls.copy()
+                    if entries:
+                        lib_symbols.insert_after(entries[-1], node)
+                    else:
+                        lib_symbols.children += [_cst.Node("ws", b"\n\t\t"), node]
+                    existing_lib_names.add(bare)
 
         # Merge components with offset
-        for sym in child_sch.schematicSymbols:
-            new_sym = copy.deepcopy(sym)
-            new_sym.uuid = str(_uuid_mod.uuid4())
-            if new_sym.position:
-                new_sym.position.X += x_offset
-                new_sym.position.Y += y_offset
-            # Offset property positions
-            for prop in new_sym.properties:
-                if prop.position:
-                    prop.position.X += x_offset
-                    prop.position.Y += y_offset
-            flat.schematicSymbols.append(new_sym)
+        for sym in child_root.find_all("symbol"):
+            new_sym = sym.copy()
+            su = new_sym.find("uuid")
+            if su is not None:
+                su.atoms[1].set_text(str(_uuid_mod.uuid4()))
+            _offset_at(new_sym, x_offset, y_offset)
+            for prop in new_sym.find_all("property"):
+                _offset_at(prop, x_offset, y_offset)
+            _splice_sch_node(flat_root, "symbol", new_sym)
 
         # Merge wires/graphical items with offset
-        for gi in child_sch.graphicalItems:
-            new_gi = copy.deepcopy(gi)
-            if hasattr(new_gi, "uuid"):
-                new_gi.uuid = str(_uuid_mod.uuid4())
-            if hasattr(new_gi, "points"):
-                for pt in new_gi.points:
-                    pt.X += x_offset
-                    pt.Y += y_offset
-            flat.graphicalItems.append(new_gi)
+        for token in ("wire", "bus", "polyline", "bus_entry"):
+            for gi in child_root.find_all(token):
+                new_gi = gi.copy()
+                gu = new_gi.find("uuid")
+                if gu is not None:
+                    gu.atoms[1].set_text(str(_uuid_mod.uuid4()))
+                pts = new_gi.find("pts")
+                if pts is not None:
+                    for xy in pts.find_all("xy"):
+                        xy.atoms[1].set_text(_num(float(xy.atoms[1].text) + x_offset))
+                        xy.atoms[2].set_text(_num(float(xy.atoms[2].text) + y_offset))
+                _splice_sch_node(flat_root, token, new_gi)
 
-        # Merge labels with offset
-        for label in child_sch.labels:
-            new_label = copy.deepcopy(label)
-            new_label.uuid = str(_uuid_mod.uuid4())
-            if new_label.position:
-                new_label.position.X += x_offset
-                new_label.position.Y += y_offset
-            flat.labels.append(new_label)
-
-        # Merge global labels with offset
-        for gl in child_sch.globalLabels:
-            new_gl = copy.deepcopy(gl)
-            new_gl.uuid = str(_uuid_mod.uuid4())
-            if new_gl.position:
-                new_gl.position.X += x_offset
-                new_gl.position.Y += y_offset
-            flat.globalLabels.append(new_gl)
-
-        # Merge junctions with offset
-        for j in child_sch.junctions:
-            new_j = copy.deepcopy(j)
-            new_j.uuid = str(_uuid_mod.uuid4())
-            if new_j.position:
-                new_j.position.X += x_offset
-                new_j.position.Y += y_offset
-            flat.junctions.append(new_j)
-
-        # Merge no-connects with offset
-        for nc in child_sch.noConnects:
-            new_nc = copy.deepcopy(nc)
-            new_nc.uuid = str(_uuid_mod.uuid4())
-            if new_nc.position:
-                new_nc.position.X += x_offset
-                new_nc.position.Y += y_offset
-            flat.noConnects.append(new_nc)
+        # Merge labels, junctions, and no-connects with offset
+        for token in ("label", "global_label", "junction", "no_connect"):
+            for item in child_root.find_all(token):
+                new_item = item.copy()
+                iu = new_item.find("uuid")
+                if iu is not None:
+                    iu.atoms[1].set_text(str(_uuid_mod.uuid4()))
+                _offset_at(new_item, x_offset, y_offset)
+                _splice_sch_node(flat_root, token, new_item)
 
         sheet_index += 1
 
-    # Remove sheet blocks from flattened output
-    flat.sheets = []
-    # Remove hierarchical labels (no longer needed without sheets)
-    flat.hierarchicalLabels = []
-    # Clear symbol instances and sheet instances (no longer valid)
-    if hasattr(flat, "symbolInstances"):
-        flat.symbolInstances = []
-    if hasattr(flat, "sheetInstances"):
-        flat.sheetInstances = []
+    Path(output_path).write_bytes(_cst.serialize(flat_tree))
 
-    _save_sch(flat)
-
-    total_components = len(flat.schematicSymbols)
+    total_components = len(flat_root.find_all("symbol"))
     return f"Flattened hierarchy to {Path(output_path).name}: {total_components} components"
 
 
