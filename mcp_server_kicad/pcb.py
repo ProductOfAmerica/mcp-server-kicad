@@ -1380,11 +1380,39 @@ def export_gerbers(
     """
     # Single-layer mode: one file, like the old export_gerber
     if layers and len(layers) == 1:
-        layer = layers[0]
+        layer = layers[0].strip()
+        if not layer:
+            raise ToolError("At least one layer must be specified")
         out_dir = output_dir or str(Path(pcb_path).parent)
         os.makedirs(out_dir, exist_ok=True)
         out_path = str(Path(out_dir) / f"{Path(pcb_path).stem}-{layer.replace('.', '_')}.gbr")
-        _run_cli(["pcb", "export", "gerber", "--layers", layer, "--output", out_path, pcb_path])
+        # KiCad 10 removed `pcb export gerber` (#8), so plot with the plural
+        # into a scratch dir. The plural exits 0 on a bad layer name and always
+        # writes a .gbrjob sidecar, so success is "exactly one .gbr", not
+        # "exit 0"; globbing rather than predicting the name also survives
+        # user-renamed layers. The scratch dir sits inside out_dir so
+        # os.replace never crosses filesystems.
+        with tempfile.TemporaryDirectory(dir=out_dir) as tmp_dir:
+            result = _run_cli(
+                [
+                    "pcb",
+                    "export",
+                    "gerbers",
+                    "--layers",
+                    layer,
+                    "--no-protel-ext",
+                    "--output",
+                    tmp_dir,
+                    pcb_path,
+                ]
+            )
+            produced = list(Path(tmp_dir).glob("*.gbr"))
+            if len(produced) != 1:
+                detail = (result.stdout + result.stderr).strip() or "no output"
+                raise ToolError(
+                    f"Expected one gerber for layer {layer!r}, got {len(produced)}: {detail}"
+                )
+            os.replace(produced[0], out_path)
         meta = _file_meta(out_path)
         return SingleGerberExportResult(
             path=meta["path"], size_bytes=meta["size_bytes"], format="gerber", layer=layer
