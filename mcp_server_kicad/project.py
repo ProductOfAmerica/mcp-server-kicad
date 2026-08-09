@@ -372,13 +372,13 @@ def add_hierarchical_sheet(
                     pp.atoms[1].set_text(parent_sheet_path)
                     pp.find("reference").atoms[1].set_text(ref)
                     if instances is None:
-                        sym.children += [_cst.Node("ws", b"\n\t"), entry]
+                        sym.append_child(entry, b"\n\t")
                     else:
                         projects = instances.find_all("project")
                         if projects:
                             instances.insert_after(projects[-1], pj)
                         else:
-                            instances.children += [_cst.Node("ws", b"\n\t\t"), pj]
+                            instances.append_child(pj, b"\n\t\t")
                 ref = _sym_property_cst(sym, "Reference") or "?"
                 val = _sym_property_cst(sym, "Value") or ""
                 fp = _sym_property_cst(sym, "Footprint") or ""
@@ -704,7 +704,7 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
             ipath = project.find("path")
             ipath.atoms[1].set_text(sheet_path)
             ipath.find("reference").atoms[1].set_text(new_ref)
-            sym.children += [_cst.Node("ws", b"\n\t"), node]
+            sym.append_child(node, b"\n\t")
         assigned.setdefault(prefix, []).append(new_ref)
 
     Path(schematic_path).write_bytes(_cst.serialize(tree))
@@ -1175,9 +1175,11 @@ def reorder_sheet_pages(
         raise ToolError(f"Sheet UUIDs not found: {missing}")
     new_order = [sheet_map[u] for u in page_order]
     new_order += [s for s in sheets if _node_uuid(s) not in page_order]
-    # Swap nodes in place: the whitespace slots between them never move.
+    # Swap nodes in place, keeping each slot's leading whitespace where it was.
     slots = [i for i, c in enumerate(root.children) if c.kind == "list" and c.head == "sheet"]
-    for slot, node in zip(slots, new_order):
+    slot_seps = [root.children[i].sep for i in slots]
+    for slot, sep, node in zip(slots, slot_seps, new_order):
+        node.sep = sep
         root.children[slot] = node
     Path(schematic_path).write_bytes(_cst.serialize(tree))
     return f"Reordered {len(page_order)} sheets"
@@ -1379,7 +1381,7 @@ def flatten_hierarchy(
                     if entries:
                         lib_symbols.insert_after(entries[-1], node)
                     else:
-                        lib_symbols.children += [_cst.Node("ws", b"\n\t\t"), node]
+                        lib_symbols.append_child(node, b"\n\t\t")
                     existing_lib_names.add(bare)
 
         # Merge components with offset

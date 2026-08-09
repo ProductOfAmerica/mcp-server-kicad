@@ -8,10 +8,17 @@ so CRLF vs LF, latin-1 mojibake, invalid UTF-8 and unknown escapes all survive
 untouched. Text is decoded (utf-8) only when a caller asks for an atom's value,
 and re-encoded only for atoms the caller actually edits.
 
-Invariants: every input byte lands in exactly one leaf's ``raw``, so
-``serialize(parse(b)) == b`` holds by construction; malformed input (unbalanced
-parens) raises ``SyntaxError`` instead of being silently repaired the way
-KiCad's own reader does.
+Invariants: every input byte lands in exactly one node's ``sep``/``raw``/
+``close_sep``/``close``, so ``serialize(parse(b)) == b`` holds by construction;
+malformed input (unbalanced parens) raises ``SyntaxError`` instead of being
+silently repaired the way KiCad's own reader does.
+
+Memory model (hardened for board-scale files, slice-12A ADR entry): whitespace
+is not a node. Each node carries its LEADING whitespace in ``sep``; a list
+additionally carries the whitespace before its ``)`` in ``close_sep``. Nodes
+are per-kind classes so atoms pay for exactly two slots, constants live on the
+class, and parse-time interning dedups the highly repetitive separator and
+token bytes of large boards.
 """
 
 import re
@@ -33,15 +40,51 @@ WS, OPEN, CLOSE, STR, BARE = 1, 2, 3, 4, 5
 _UNESC = {b"\\": b"\\", b'"': b'"', b"n": b"\n", b"r": b"\r", b"t": b"\t"}
 _ESC = ((b"\\", b"\\\\"), (b'"', b'\\"'), (b"\n", b"\\n"), (b"\r", b"\\r"))
 
+_EMPTY = b""
+
 
 class Node:
-    __slots__ = ("kind", "raw", "children", "close")
+    """Common base for CST nodes; concrete kinds are Atom, List, and Doc.
 
-    def __init__(self, kind, raw=b"", children=None, close=b""):
-        self.kind = kind  # 'doc' | 'list' | 'atom' | 'ws'
-        self.raw = raw  # leaf bytes, or b'(' for a list
-        self.children = children if children is not None else []
-        self.close = close  # b')' for a list
+    Container accessors live here and are None-safe, so probing an atom with
+    ``find``/``atoms`` behaves like probing an empty list, as it always has.
+    """
+
+    __slots__ = ()
+
+    @property
+    def atoms(self):
+        return [c for c in self.children or () if c.kind == "atom"]
+
+    @property
+    def lists(self):
+        return [c for c in self.children or () if c.kind == "list"]
+
+    @property
+    def head(self):
+        a = self.atoms
+        return a[0].text if a else None
+
+    def find_all(self, name):
+        """Direct child lists named *name*."""
+        return [c for c in self.lists if c.head == name]
+
+    def find(self, name):
+        got = self.find_all(name)
+        return got[0] if got else None
+
+
+class Atom(Node):
+    __slots__ = ("raw", "sep")
+
+    kind = "atom"
+    children = None
+    close = _EMPTY
+    close_sep = _EMPTY
+
+    def __init__(self, raw=b"", sep=b""):
+        self.raw = raw
+        self.sep = sep
 
     @property
     def text(self):
@@ -57,60 +100,8 @@ class Node:
             )
         return r.decode("utf-8", "surrogateescape")
 
-    def __repr__(self):
-        if self.kind == "atom":
-            return f"Atom({self.text!r})"
-        if self.kind == "ws":
-            return f"Ws({self.raw!r})"
-        return f"List({self.head!r}, {len(self.atoms)} atoms, {len(self.lists)} lists)"
-
-    @property
-    def atoms(self):
-        return [c for c in self.children if c.kind == "atom"]
-
-    @property
-    def lists(self):
-        return [c for c in self.children if c.kind == "list"]
-
-    @property
-    def head(self):
-        a = self.atoms
-        return a[0].text if a else None
-
-    def find_all(self, name):
-        """Direct child lists named *name*."""
-        return [c for c in self.lists if c.head == name]
-
-    def find(self, name):
-        got = self.find_all(name)
-        return got[0] if got else None
-
-    def insert_after(self, ref, node, sep=None):
-        """Splice *node* in after child *ref*, reusing ref's own leading whitespace."""
-        i = self.children.index(ref)
-        if sep is None:
-            j = i - 1
-            sep = self.children[j].raw if j >= 0 and self.children[j].kind == "ws" else b"\n"
-        self.children[i + 1 : i + 1] = [Node("ws", sep), node]
-
-    def insert_before(self, ref, node, sep=None):
-        """Splice *node* in before child *ref*, reusing ref's own leading whitespace."""
-        i = self.children.index(ref)
-        if sep is None:
-            j = i - 1
-            sep = self.children[j].raw if j >= 0 and self.children[j].kind == "ws" else b"\n"
-        self.children[i:i] = [node, Node("ws", sep)]
-
-    def remove_child(self, ref):
-        """Delete child *ref* and its leading whitespace: a pure one-span removal."""
-        i = self.children.index(ref)
-        if i > 0 and self.children[i - 1].kind == "ws":
-            del self.children[i - 1 : i + 1]
-        else:
-            del self.children[i : i + 1]
-
     def set_text(self, value):
-        """Retext an atom, quoting only if it was quoted or now needs to be."""
+        """Retext the atom, quoting only if it was quoted or now needs to be."""
         b = value.encode("utf-8")
         if self.raw[:1] == b'"' or re.search(rb'[\s()"\\]', b) or not b:
             for a, z in _ESC:
@@ -119,36 +110,99 @@ class Node:
         self.raw = b
 
     def copy(self):
-        return Node(self.kind, self.raw, [c.copy() for c in self.children], self.close)
+        return Atom(self.raw, self.sep)
+
+    def __repr__(self):
+        return f"Atom({self.text!r})"
 
 
-def parse(data: bytes) -> Node:
+class List(Node):
+    __slots__ = ("sep", "children", "close_sep")
+
+    kind = "list"
+    raw = b"("
+    close = b")"
+
+    def __init__(self, sep=b"", children=None, close_sep=b""):
+        self.sep = sep
+        self.children = children if children is not None else []
+        self.close_sep = close_sep
+
+    def insert_after(self, ref, node, sep=None):
+        """Splice *node* in after child *ref*, reusing ref's own leading whitespace."""
+        i = self.children.index(ref)
+        node.sep = sep if sep is not None else (ref.sep or b"\n")
+        self.children.insert(i + 1, node)
+
+    def insert_before(self, ref, node, sep=None):
+        """Splice *node* in before child *ref*, reusing ref's own leading whitespace."""
+        i = self.children.index(ref)
+        if sep is None:
+            sep = ref.sep or b"\n"
+        node.sep = ref.sep
+        ref.sep = sep
+        self.children.insert(i, node)
+
+    def append_child(self, node, sep=b"\n"):
+        """Append *node* as the last child with *sep* as its leading whitespace."""
+        node.sep = sep
+        self.children.append(node)
+
+    def remove_child(self, ref):
+        """Delete child *ref*; its leading whitespace goes with it (one-span removal)."""
+        self.children.remove(ref)
+
+    def copy(self):
+        return type(self)(self.sep, [c.copy() for c in self.children], self.close_sep)
+
+    def __repr__(self):
+        return f"List({self.head!r}, {len(self.atoms)} atoms, {len(self.lists)} lists)"
+
+
+class Doc(List):
+    __slots__ = ()
+
+    kind = "doc"
+    raw = _EMPTY
+    close = _EMPTY
+
+
+def parse(data: bytes) -> Doc:
     """bytes -> CST. Raises SyntaxError on unbalanced parens; everything else is data."""
     if not isinstance(data, (bytes, bytearray)):
         raise TypeError("parse() takes bytes, not str")
-    root = Node("doc")
-    stack = [root]
+    root = Doc()
+    stack: list[List] = [root]
+    pending = _EMPTY
+    interned: dict[bytes, bytes] = {}
     pos = 0
     for m in TOKEN.finditer(data):
         if m.start() != pos:  # would mean a byte fell through every branch
             raise AssertionError(f"gap at {pos}:{m.start()}")
         pos = m.end()
         g = m.lastindex
+        if g == WS:
+            tok = m.group()
+            pending = interned.setdefault(tok, tok)
+            continue
         top = stack[-1]
         if g == OPEN:
-            n = Node("list", b"(")
+            n = List(sep=pending)
             top.children.append(n)
             stack.append(n)
         elif g == CLOSE:
             if len(stack) == 1:
                 raise SyntaxError(f"unmatched ')' at byte {m.start()}")
-            stack.pop().close = b")"
+            stack.pop().close_sep = pending
         else:
-            top.children.append(Node("ws" if g == WS else "atom", m.group()))
+            tok = m.group()
+            top.children.append(Atom(interned.setdefault(tok, tok), pending))
+        pending = _EMPTY
     if pos != len(data):
         raise AssertionError(f"trailing {len(data) - pos} bytes unconsumed")
     if len(stack) != 1:
         raise SyntaxError(f"{len(stack) - 1} unclosed '(' at end of input")
+    root.close_sep = pending
     return root
 
 
@@ -160,9 +214,11 @@ def serialize(node: Node) -> bytes:
         if isinstance(n, bytes):
             out.append(n)
             continue
+        out.append(n.sep)
         out.append(n.raw)
-        if n.kind == "list" or n.kind == "doc":
+        if n.children is not None:
             stack.append(n.close)
+            stack.append(n.close_sep)
             stack.extend(reversed(n.children))
     return b"".join(out)
 
@@ -189,7 +245,7 @@ def demo():
     assert sch.find("b").atoms[4].text.encode() == b"\xe2\x84\xa6"  # U+2126, bare atom
 
     # The encoder must invert the decoder, and must never emit a raw LF.
-    probe = Node("atom", b"x")
+    probe = Atom(b"x")
     for v in ['a"b\\c', "line1\nline2", "tab\there", "plain", "", "Ω()"]:
         probe.set_text(v)
         assert probe.text == v, (v, probe.raw, probe.text)
@@ -210,7 +266,8 @@ def demo():
     assert o2.count(b'"multi\nline"') == 2 and o2.startswith(hard[:20])
     assert serialize(parse(o2)) == o2
 
-    # insert_before mirrors insert_after; remove_child inverts both.
+    # insert_before mirrors insert_after; remove_child inverts both;
+    # append_child grows a list with an explicit separator.
     t3 = parse(b"(r\n\t(x 1)\n\t(z 3)\n)")
     r = t3.lists[0]
     y = parse(b"(y 2)").lists[0]
@@ -218,6 +275,9 @@ def demo():
     assert serialize(t3) == b"(r\n\t(x 1)\n\t(y 2)\n\t(z 3)\n)", serialize(t3)
     r.remove_child(r.find("y"))
     assert serialize(t3) == b"(r\n\t(x 1)\n\t(z 3)\n)", serialize(t3)
+    w = parse(b"(w 4)").lists[0]
+    r.append_child(w, b"\n\t")
+    assert serialize(t3) == b"(r\n\t(x 1)\n\t(z 3)\n\t(w 4)\n)", serialize(t3)
 
     # Malformed input refuses loudly.
     for bad in (b"(a (b)", b"(a))"):
