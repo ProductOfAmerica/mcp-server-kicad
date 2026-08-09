@@ -19,17 +19,32 @@ from mcp_server_kicad._shared import _resolve_system_lib, _run_cli
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
 
 
-def _pure_insertion(before: bytes, after: bytes) -> bool:
-    """True if *after* is *before* with one contiguous run of bytes inserted."""
-    if len(after) < len(before):
-        return False
+def _diff_spans(before: bytes, after: bytes) -> tuple[int, int]:
+    """Byte counts of the single differing region on each side, after
+    stripping the common prefix and suffix."""
     p = 0
-    while p < len(before) and before[p] == after[p]:
+    lo = min(len(before), len(after))
+    while p < lo and before[p] == after[p]:
         p += 1
     s = 0
-    while s < len(before) - p and before[-1 - s] == after[-1 - s]:
+    while s < lo - p and before[-1 - s] == after[-1 - s]:
         s += 1
-    return p + s >= len(before)
+    return len(before) - p - s, len(after) - p - s
+
+
+def _pure_insertion(before: bytes, after: bytes) -> bool:
+    """*after* is *before* with one contiguous run of bytes inserted."""
+    return len(after) >= len(before) and _diff_spans(before, after)[0] == 0
+
+
+def _span_preserved(before: bytes, after: bytes) -> bool:
+    """One contiguous insertion OR deletion: the shorter side is untouched."""
+    return min(_diff_spans(before, after)) == 0
+
+
+def _confined(before: bytes, after: bytes, limit: int = 200) -> bool:
+    """All differences sit inside one span of <= limit bytes on each side."""
+    return max(_diff_spans(before, after)) <= limit
 
 
 class TestRoundTrip:
@@ -157,19 +172,6 @@ class TestAddFamilyPreservation:
                 schematic_path=str(kicad_native_sch),
             )
         assert kicad_native_sch.read_bytes() == before
-
-
-def _span_preserved(before: bytes, after: bytes) -> bool:
-    """True when all bytes of the shorter side survive as a common prefix+suffix,
-    i.e. the change is one contiguous span (insertion, deletion, or substitution)."""
-    p = 0
-    lo = min(len(before), len(after))
-    while p < lo and before[p] == after[p]:
-        p += 1
-    s = 0
-    while s < lo - p and before[-1 - s] == after[-1 - s]:
-        s += 1
-    return p + s >= lo
 
 
 class TestRemoveFamilyPreservation:
@@ -412,44 +414,9 @@ class TestHybridRoutingPreservation:
 
 def _power_in_sch(tmp_path):
     """Schematic with a placed power_in VCC symbol #PWR01 at (100, 100)."""
-    import uuid as _uuid
+    from conftest import make_power_sch
 
-    from conftest import build_power_symbol, new_schematic
-    from kiutils.items.common import Effects, Font, Position, Property
-    from kiutils.items.schitems import SchematicSymbol
-
-    sch = new_schematic()
-    sch.libSymbols.append(build_power_symbol("VCC", "power_in"))
-    vcc = SchematicSymbol()
-    vcc.libId = "power:VCC"
-    vcc.libName = "VCC"
-    vcc.position = Position(X=100, Y=100, angle=0)
-    vcc.uuid = str(_uuid.uuid4())
-    vcc.unit = 1
-    vcc.inBom = False
-    vcc.onBoard = True
-    vcc.properties = [
-        Property(
-            key="Reference",
-            value="#PWR01",
-            id=0,
-            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-            position=Position(X=100, Y=96.19, angle=0),
-        ),
-        Property(
-            key="Value",
-            value="VCC",
-            id=1,
-            effects=Effects(font=Font(height=1.27, width=1.27)),
-            position=Position(X=100, Y=103.81, angle=0),
-        ),
-    ]
-    vcc.pins = {"1": str(_uuid.uuid4())}
-    sch.schematicSymbols.append(vcc)
-    path = tmp_path / "pwr_cst.kicad_sch"
-    sch.filePath = str(path)
-    sch.to_file()
-    return path
+    return Path(make_power_sch(tmp_path))
 
 
 class TestWirePinsToNetPreservation:
@@ -527,6 +494,84 @@ class TestWirePinsToNetPreservation:
         assert "K10NET" in [n.atoms[1].text for n in root.find_all("label")]
 
 
+class TestSymbolFamilyPreservation:
+    """Slice 9: in-place symbol-family tools on the substrate."""
+
+    def test_add_lib_symbol_pure_insertion(self, kicad_native_sch, scratch_power_lib):
+        p = str(kicad_native_sch)
+        before = kicad_native_sch.read_bytes()
+        result = schematic.add_lib_symbol(str(scratch_power_lib), "VCC", schematic_path=p)
+        assert result == "Added 'VCC' to lib_symbols."
+        after = kicad_native_sch.read_bytes()
+        assert _pure_insertion(before, after)
+        assert any(ls.entryName == "VCC" for ls in reparse(kicad_native_sch).libSymbols)
+        with pytest.raises(ToolError, match="already in lib_symbols"):
+            schematic.add_lib_symbol(str(scratch_power_lib), "VCC", schematic_path=p)
+        assert kicad_native_sch.read_bytes() == after
+        with pytest.raises(ToolError, match="not found in"):
+            schematic.add_lib_symbol(str(scratch_power_lib), "NOPE", schematic_path=p)
+        assert kicad_native_sch.read_bytes() == after
+
+    def test_move_component_substitution(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        before = kicad_native_sch.read_bytes()
+        assert "Moved R1" in schematic.move_component("R1", 63.5, 63.5, schematic_path=p)
+        after = kicad_native_sch.read_bytes()
+        assert _confined(before, after, limit=40)
+        sym = reparse(kicad_native_sch).schematicSymbols[0]
+        assert (sym.position.X, sym.position.Y, sym.position.angle) == (63.5, 63.5, 0)
+        schematic.move_component("R1", 63.5, 63.5, rotation=90, schematic_path=p)
+        assert reparse(kicad_native_sch).schematicSymbols[0].position.angle == 90
+
+    def test_set_component_property_existing_and_new(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        before = kicad_native_sch.read_bytes()
+        assert "Set R1.Value = 22K" in schematic.set_component_property(
+            "R1", "Value", "22K", schematic_path=p
+        )
+        after = kicad_native_sch.read_bytes()
+        assert _confined(before, after, limit=20)
+        sym = reparse(kicad_native_sch).schematicSymbols[0]
+        assert any(pr.key == "Value" and pr.value == "22K" for pr in sym.properties)
+        assert "(new property)" in schematic.set_component_property(
+            "R1", "MPN", "RC0805", schematic_path=p
+        )
+        sym = reparse(kicad_native_sch).schematicSymbols[0]
+        mpn = next(pr for pr in sym.properties if pr.key == "MPN")
+        assert mpn.value == "RC0805"
+        schematic.set_component_property("R1", "Reference", "R9", schematic_path=p)
+        sym = reparse(kicad_native_sch).schematicSymbols[0]
+        assert sym.instances[0].paths[0].reference == "R9"
+
+    def test_remove_component_span(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        before = kicad_native_sch.read_bytes()
+        assert schematic.remove_component("R1", schematic_path=p) == "Removed R1"
+        after = kicad_native_sch.read_bytes()
+        assert _span_preserved(before, after)
+        assert reparse(kicad_native_sch).schematicSymbols == []
+        with pytest.raises(ToolError, match="not found"):
+            schematic.remove_component("R1", schematic_path=p)
+        assert kicad_native_sch.read_bytes() == after
+
+    def test_set_page_size_swap(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        before = kicad_native_sch.read_bytes()
+        assert "A3" in schematic.set_page_size("A3", schematic_path=p)
+        mid = kicad_native_sch.read_bytes()
+        assert _confined(before, mid, limit=40)
+        assert reparse(kicad_native_sch).paper.paperSize == "A3"
+        result = schematic.set_page_size(
+            "User", width=200, height=150, portrait=True, schematic_path=p
+        )
+        assert "portrait" in result
+        assert _confined(mid, kicad_native_sch.read_bytes(), limit=60)
+        paper = reparse(kicad_native_sch).paper
+        assert (paper.paperSize, paper.width, paper.height) == ("User", 200, 150)
+        after = kicad_native_sch.read_bytes()
+        assert b"generator_version" in after and b"(embedded_fonts" in after
+
+
 def _kicad_cli_major() -> int:
     result = _run_cli(["version"], check=False)
     try:
@@ -586,6 +631,22 @@ class TestGuardRelax:
             [{"x1": 20, "y1": 20, "x2": 30, "y2": 20}], schematic_path=p
         )
         assert "Removed 1 wire(s)." in schematic.remove_wire(20, 20, 30, 20, schematic_path=p)
+
+    @pytest.mark.no_kicad_validation
+    def test_future_version_file_symbol_tools_work(self, kicad_native_sch, scratch_power_lib):
+        bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
+        kicad_native_sch.write_bytes(bumped)
+        p = str(kicad_native_sch)
+        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
+            schematic.get_schematic_summary(schematic_path=p)
+        assert "Moved R1" in schematic.move_component("R1", 63.5, 63.5, schematic_path=p)
+        assert "22K" in schematic.set_component_property("R1", "Value", "22K", schematic_path=p)
+        assert "A3" in schematic.set_page_size("A3", schematic_path=p)
+        assert "VCC" in schematic.add_lib_symbol(str(scratch_power_lib), "VCC", schematic_path=p)
+        assert schematic.remove_component("R1", schematic_path=p) == "Removed R1"
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        assert root.find("symbol") is None  # placed R1 gone; lib entries stay nested
+        assert "VCC" in [s.atoms[1].text for s in root.find("lib_symbols").find_all("symbol")]
 
 
 @requires_cli
@@ -705,3 +766,15 @@ class TestKicad10E2E:
         root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
         assert len(root.find_all("wire")) == 2
         assert "K10NET" in [n.atoms[1].text for n in root.find_all("label")]
+
+    def test_symbol_tools_on_real_kicad10(self, kicad_native_sch, scratch_power_lib):
+        self._mint(kicad_native_sch)
+        p = str(kicad_native_sch)
+        assert "Moved R1" in schematic.move_component("R1", 63.5, 63.5, schematic_path=p)
+        assert "22K" in schematic.set_component_property("R1", "Value", "22K", schematic_path=p)
+        assert "A3" in schematic.set_page_size("A3", schematic_path=p)
+        assert "VCC" in schematic.add_lib_symbol(str(scratch_power_lib), "VCC", schematic_path=p)
+        assert schematic.remove_component("R1", schematic_path=p) == "Removed R1"
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        assert root.find("symbol") is None
+        assert root.find("paper").atoms[1].text == "A3"
