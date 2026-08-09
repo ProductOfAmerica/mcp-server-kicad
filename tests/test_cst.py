@@ -13,8 +13,8 @@ from conftest import reparse, requires_cli
 from kiutils.items.schitems import Connection
 from mcp.server.fastmcp.exceptions import ToolError
 
-from mcp_server_kicad import _cst, schematic
-from mcp_server_kicad._shared import _resolve_system_lib, _run_cli
+from mcp_server_kicad import _cst, project, schematic
+from mcp_server_kicad._shared import _node_uuid, _resolve_system_lib, _run_cli
 
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
 
@@ -690,16 +690,12 @@ class TestProjectToolsPreservation:
 
     @staticmethod
     def _hierarchy(tmp_path, kicad_native_sch):
-        from mcp_server_kicad import project
-
         parent = kicad_native_sch
         child = tmp_path / "child.kicad_sch"
         project.create_schematic(str(child))
         return parent, child
 
     def test_create_schematic_native_shape(self, tmp_path):
-        from mcp_server_kicad import project
-
         out = tmp_path / "fresh.kicad_sch"
         project.create_schematic(str(out))
         data = out.read_bytes()
@@ -709,8 +705,6 @@ class TestProjectToolsPreservation:
             project.create_schematic(str(out))
 
     def test_add_hierarchical_sheet_preserves_both_files(self, tmp_path, kicad_native_sch):
-        from mcp_server_kicad import project
-
         parent, child = self._hierarchy(tmp_path, kicad_native_sch)
         p_before = parent.read_bytes()
         project.add_hierarchical_sheet(
@@ -730,8 +724,6 @@ class TestProjectToolsPreservation:
         assert any(lbl.text == "A" for lbl in csch.labels)
 
     def test_sheet_pin_modify_move_reorder(self, tmp_path, kicad_native_sch):
-        from mcp_server_kicad import project
-
         parent, child = self._hierarchy(tmp_path, kicad_native_sch)
         child2 = tmp_path / "child2.kicad_sch"
         project.create_schematic(str(child2))
@@ -770,8 +762,6 @@ class TestProjectToolsPreservation:
             project.reorder_sheet_pages(["nope"], schematic_path=str(parent))
 
     def test_annotate_cst(self, kicad_native_sch, scratch_sym_lib):
-        from mcp_server_kicad import project
-
         p = str(kicad_native_sch)
         schematic.place_component(
             "Test:TestPart",
@@ -797,8 +787,6 @@ class TestProjectToolsPreservation:
         assert kicad_native_sch.read_bytes() == after
 
     def test_duplicate_sheet_uuid_scope(self, tmp_path, kicad_native_sch):
-        from mcp_server_kicad import project
-
         parent, child = self._hierarchy(tmp_path, kicad_native_sch)
         schematic.place_component(
             "Device:R",
@@ -819,8 +807,6 @@ class TestProjectToolsPreservation:
         assert new_file.exists()
         src_root = _cst.parse(child.read_bytes()).lists[0]
         dst_root = _cst.parse(new_file.read_bytes()).lists[0]
-        from mcp_server_kicad._shared import _node_uuid
-
         assert _node_uuid(src_root) != _node_uuid(dst_root)
         src_sym = src_root.find("symbol")
         dst_sym = dst_root.find("symbol")
@@ -831,8 +817,6 @@ class TestProjectToolsPreservation:
         assert src_pin_uuids == dst_pin_uuids
 
     def test_flatten_counts(self, tmp_path, kicad_native_sch):
-        from mcp_server_kicad import project
-
         parent, child = self._hierarchy(tmp_path, kicad_native_sch)
         schematic.place_component("Device:R", "R7", "1K", 60, 60, schematic_path=str(child))
         project.add_hierarchical_sheet(
@@ -925,8 +909,6 @@ class TestGuardRelax:
 
     @pytest.mark.no_kicad_validation
     def test_future_version_file_project_tools_work(self, tmp_path, kicad_native_sch):
-        from mcp_server_kicad import project
-
         child = tmp_path / "child.kicad_sch"
         project.create_schematic(str(child))
         for f in (kicad_native_sch, child):
@@ -936,8 +918,6 @@ class TestGuardRelax:
             schematic.get_schematic_summary(schematic_path=p)
         project.add_hierarchical_sheet(p, "sub", str(child), [{"name": "A", "direction": "input"}])
         s_uuid = _cst.parse(kicad_native_sch.read_bytes()).lists[0].find("sheet")
-        from mcp_server_kicad._shared import _node_uuid
-
         uuid = _node_uuid(s_uuid)
         project.add_sheet_pin(uuid, "B", "output", schematic_path=p)
         assert "renamed" in project.modify_hierarchical_sheet(
@@ -1129,9 +1109,6 @@ class TestKicad10E2E:
         assert "PWR_FLAG" in lib_names
 
     def test_hierarchy_on_real_kicad10(self, tmp_path, kicad_native_sch):
-        from mcp_server_kicad import project
-        from mcp_server_kicad._shared import _node_uuid
-
         self._mint(kicad_native_sch)
         child = tmp_path / "k10child.kicad_sch"
         project.create_schematic(str(child))
@@ -1149,8 +1126,6 @@ class TestKicad10E2E:
         assert "Annotated 1 components" in project.annotate_schematic(schematic_path=p)
 
     def test_duplicate_and_flatten_on_real_kicad10(self, tmp_path, kicad_native_sch):
-        from mcp_server_kicad import project
-
         self._mint(kicad_native_sch)
         child = tmp_path / "k10child.kicad_sch"
         project.create_schematic(str(child))
@@ -1158,8 +1133,6 @@ class TestKicad10E2E:
         p = str(kicad_native_sch)
         project.add_hierarchical_sheet(p, "s1", str(child), [{"name": "A", "direction": "input"}])
         src_uuid = _cst.parse(kicad_native_sch.read_bytes()).lists[0].find("sheet")
-        from mcp_server_kicad._shared import _node_uuid
-
         project.duplicate_sheet(_node_uuid(src_uuid), "copy", schematic_path=p)
         assert len(_cst.parse(kicad_native_sch.read_bytes()).lists[0].find_all("sheet")) == 2
         result = project.flatten_hierarchy(schematic_path=p)

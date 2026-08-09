@@ -58,8 +58,6 @@ from mcp_server_kicad.schematic import (
 )
 
 # KiCad 9 file format constants
-_KICAD_SCH_VERSION = 20250114
-_KICAD_SCH_GENERATOR = "eeschema"
 _KICAD_SYM_VERSION = "20231120"
 
 
