@@ -83,9 +83,10 @@ jobs:
 
       # Issue #5 measurement: the autouse _validate_kicad_output fixture pushes
       # every generated .kicad_sch through this runner's kicad-cli, so here the
-      # whole suite runs against a real KiCad 10 binary. Non-gating until the
-      # KiCad 10 parser strategy is decided; runs before the issue-#2 step
-      # below deletes the brew symlink, so it measures a stock install.
+      # whole suite runs against a real KiCad 10 binary. Non-gating while
+      # KiCad 10 has a known failure (single-layer gerber export, #8); flip
+      # to gating when #8 is fixed. Runs before the issue-#2 step below
+      # deletes the brew symlink, so it measures a stock install.
       - name: Full test suite against installed KiCad (non-gating)
         continue-on-error: true
         run: uv run pytest -v -rA --tb=short
