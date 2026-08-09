@@ -1224,6 +1224,60 @@ def _auto_junctions_cst(root, new_points: list[tuple[float, float]], tol: float 
                 break
 
 
+def _sym_property_cst(node, key: str) -> str | None:
+    for p in node.find_all("property"):
+        if p.atoms[1].text == key:
+            return p.atoms[2].text
+    return None
+
+
+def _find_lib_symbol_cst(root, lib_id: str):
+    """CST twin of _find_lib_symbol: bare and prefixed names both match."""
+    bare = lib_id.split(":")[-1] if ":" in lib_id else lib_id
+    libs = root.find("lib_symbols")
+    for ls in libs.find_all("symbol") if libs is not None else []:
+        raw = ls.atoms[1].text
+        entry = raw.split(":")[-1] if ":" in raw else raw
+        if entry == bare or entry == lib_id or raw == lib_id:
+            return ls
+    return None
+
+
+def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float, float]:
+    """CST twin of _get_pin_pos; same match rules and ValueError strings.
+
+    Placed symbols are the root-level symbol nodes (find_all never descends
+    into lib_symbols). Pin match is name-OR-number per pin in file order, and
+    every unit is scanned regardless of the placed symbol's (unit N).
+    """
+    target = next(
+        (s for s in root.find_all("symbol") if _sym_property_cst(s, "Reference") == reference),
+        None,
+    )
+    if target is None:
+        raise ValueError(f"Component {reference} not found")
+    lib_sym = _find_lib_symbol_cst(root, target.find("lib_id").atoms[1].text)
+    if lib_sym is None:
+        raise ValueError(f"Lib symbol for {reference} not found")
+    at = target.find("at")
+    cx, cy = float(at.atoms[1].text), float(at.atoms[2].text)
+    comp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
+    m = target.find("mirror")
+    mir = m.atoms[1].text if m is not None else None
+    for unit in lib_sym.find_all("symbol"):
+        for pin in unit.find_all("pin"):
+            name = pin.find("name")
+            number = pin.find("number")
+            if (name is not None and name.atoms[1].text == pin_name) or (
+                number is not None and number.atoms[1].text == pin_name
+            ):
+                pat = pin.find("at")
+                px, py = float(pat.atoms[1].text), float(pat.atoms[2].text)
+                pangle = float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0
+                return _transform_pin_pos(px, py, pangle, cx, cy, comp_angle, mir)
+    raise ValueError(f"Pin '{pin_name}' not found on {reference}")
+
+
 @mcp.tool(annotations=_ADDITIVE)
 def add_label(
     text: str, x: float, y: float, rotation: float = 0, schematic_path: str = SCH_PATH
@@ -2096,13 +2150,9 @@ def connect_pins(
         pin2: Second pin name or number
         schematic_path: Path to .kicad_sch file
     """
-    # Hybrid tool: kiutils parse is read-only (pin positions); all writes are
-    # CST splices so unedited bytes reach the disk unchanged.
-    sch = _load_sch(schematic_path)
-    x1, y1, _ = _get_pin_pos(sch, ref1, pin1)
-    x2, y2, _ = _get_pin_pos(sch, ref2, pin2)
-
     tree, root, *_ = _open_sch_cst(schematic_path)
+    x1, y1, _ = _get_pin_pos_cst(root, ref1, pin1)
+    x2, y2, _ = _get_pin_pos_cst(root, ref2, pin2)
     if x1 == x2 or y1 == y2:
         # Axis-aligned: single straight wire
         segments = [(x1, y1, x2, y2)]
@@ -2187,11 +2237,10 @@ def no_connect_pin(
         pin_name: Pin name (e.g. "NC") or number (e.g. "3")
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
-    px, py, _ = _get_pin_pos(sch, reference, pin_name)
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    px, py, _ = _get_pin_pos_cst(root, reference, pin_name)
     px, py = round(px, 4), round(py, 4)
 
-    tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
     for nc in root.find_all("no_connect"):
         nx, ny = _node_xy(nc)
@@ -2223,10 +2272,9 @@ def remove_no_connect(
         pin_name: Pin name (e.g. "NC") or number (e.g. "3")
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
-    px, py, _ = _get_pin_pos(sch, reference, pin_name)
-
     tree, root, *_ = _open_sch_cst(schematic_path)
+    px, py, _ = _get_pin_pos_cst(root, reference, pin_name)
+
     tol = 0.1
     matched = [
         nc
