@@ -410,6 +410,123 @@ class TestHybridRoutingPreservation:
             _get_pin_pos_cst(root, "R1", "NOPE")
 
 
+def _power_in_sch(tmp_path):
+    """Schematic with a placed power_in VCC symbol #PWR01 at (100, 100)."""
+    import uuid as _uuid
+
+    from conftest import build_power_symbol, new_schematic
+    from kiutils.items.common import Effects, Font, Position, Property
+    from kiutils.items.schitems import SchematicSymbol
+
+    sch = new_schematic()
+    sch.libSymbols.append(build_power_symbol("VCC", "power_in"))
+    vcc = SchematicSymbol()
+    vcc.libId = "power:VCC"
+    vcc.libName = "VCC"
+    vcc.position = Position(X=100, Y=100, angle=0)
+    vcc.uuid = str(_uuid.uuid4())
+    vcc.unit = 1
+    vcc.inBom = False
+    vcc.onBoard = True
+    vcc.properties = [
+        Property(
+            key="Reference",
+            value="#PWR01",
+            id=0,
+            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+            position=Position(X=100, Y=96.19, angle=0),
+        ),
+        Property(
+            key="Value",
+            value="VCC",
+            id=1,
+            effects=Effects(font=Font(height=1.27, width=1.27)),
+            position=Position(X=100, Y=103.81, angle=0),
+        ),
+    ]
+    vcc.pins = {"1": str(_uuid.uuid4())}
+    sch.schematicSymbols.append(vcc)
+    path = tmp_path / "pwr_cst.kicad_sch"
+    sch.filePath = str(path)
+    sch.to_file()
+    return path
+
+
+class TestWirePinsToNetPreservation:
+    """Slice 8: wire_pins_to_net on the substrate; PWR_FLAG is the first
+    symbol emission (verbatim system-lib copy + fixed placed template)."""
+
+    def test_stub_and_label_preservation(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        result = schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}],
+            label_text="NETX",
+            direction="up",
+            schematic_path=p,
+        )
+        assert result == "Wired 1 pins to 'NETX'."
+        after = kicad_native_sch.read_bytes()
+        assert b"generator_version" in after and b"(embedded_fonts" in after
+        assert _cst.serialize(_cst.parse(after)) == after
+        sch = reparse(kicad_native_sch)
+        new = _wires_of(sch)[-1]
+        assert (new.points[0].X, new.points[0].Y) == (100.0, 96.19)
+        assert (new.points[1].X, new.points[1].Y) == (100.0, 93.65)
+        lbl = next(lbl for lbl in sch.labels if lbl.text == "NETX")
+        assert (lbl.position.X, lbl.position.Y, lbl.position.angle) == (100.0, 93.65, 90)
+
+    def test_auto_pwr_flag_cst(self, tmp_path):
+        path = _power_in_sch(tmp_path)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "#PWR01", "pin": "1"}],
+            label_text="VCC_NET",
+            schematic_path=str(path),
+        )
+        sch = reparse(path)
+        flags = [
+            s
+            for s in sch.schematicSymbols
+            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in s.properties)
+        ]
+        assert len(flags) == 1
+        flag = flags[0]
+        assert any(p.key == "Reference" and p.value == "#FLG01" for p in flag.properties)
+        assert flag.instances, "instances block must be present for annotation"
+        assert any(ls.entryName == "PWR_FLAG" for ls in sch.libSymbols)
+
+    def test_pwr_flag_lib_copy_verbatim(self, tmp_path):
+        from mcp_server_kicad._shared import _extract_raw_symbol, _resolve_system_lib
+
+        lib_path = _resolve_system_lib("power")
+        if lib_path is None:
+            pytest.skip("no KiCad system symbol library on this host")
+        path = _power_in_sch(tmp_path)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "#PWR01", "pin": "1"}],
+            label_text="VCC_NET",
+            schematic_path=str(path),
+        )
+        want = _extract_raw_symbol(lib_path, "PWR_FLAG")
+        got = _extract_raw_symbol(str(path), "power:PWR_FLAG")
+        assert want is not None and got is not None
+        # Verbatim except the name atom, which gains the lib prefix (the way
+        # KiCad imports symbols; a bare name segfaults kicad-cli 9.0 on load).
+        assert got.replace('"power:PWR_FLAG"', '"PWR_FLAG"', 1) == want
+
+    @pytest.mark.no_kicad_validation
+    def test_future_version_file_wire_pins_to_net_works(self, kicad_native_sch):
+        bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
+        kicad_native_sch.write_bytes(bumped)
+        p = str(kicad_native_sch)
+        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
+            schematic.get_schematic_summary(schematic_path=p)
+        assert "Wired 1 pins" in schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}], label_text="K10NET", schematic_path=p
+        )
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        assert "K10NET" in [n.atoms[1].text for n in root.find_all("label")]
+
+
 def _kicad_cli_major() -> int:
     result = _run_cli(["version"], check=False)
     try:
@@ -577,3 +694,14 @@ class TestKicad10E2E:
         root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
         assert len(root.find_all("wire")) == 2
         assert "Net-(R1-1)" in [n.atoms[1].text for n in root.find_all("label")]
+
+    def test_wire_pins_to_net_on_real_kicad10(self, kicad_native_sch):
+        self._mint(kicad_native_sch)
+        p = str(kicad_native_sch)
+        result = schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}], label_text="K10NET", schematic_path=p
+        )
+        assert result == "Wired 1 pins to 'K10NET'."
+        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
+        assert len(root.find_all("wire")) == 2
+        assert "K10NET" in [n.atoms[1].text for n in root.find_all("label")]
