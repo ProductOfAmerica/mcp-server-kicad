@@ -124,7 +124,9 @@ class TestAddFamilyPreservation:
         assert hl.shape == "output"
         assert hl.position.X == pytest.approx(25.4)
         with pytest.raises(ToolError, match="invalid shape"):
-            schematic.add_hierarchical_label("Z", "sideways", 10, 10, str(kicad_native_sch))
+            schematic.add_hierarchical_label(
+                "Z", "sideways", 10, 10, schematic_path=str(kicad_native_sch)
+            )
 
     def test_text(self, kicad_native_sch):
         before = kicad_native_sch.read_bytes()
@@ -230,7 +232,9 @@ class TestKicad10E2E:
 
     def test_hierarchical_label_on_real_kicad10(self, kicad_native_sch):
         before = self._mint(kicad_native_sch)
-        schematic.add_hierarchical_label("K10_H", "input", 60, 90, str(kicad_native_sch))
+        schematic.add_hierarchical_label(
+            "K10_H", "input", 60, 90, schematic_path=str(kicad_native_sch)
+        )
         after = kicad_native_sch.read_bytes()
         assert _pure_insertion(before, after)
         assert _cst.parse(after).lists[0].find("hierarchical_label") is not None
