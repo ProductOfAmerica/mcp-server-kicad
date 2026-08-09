@@ -136,12 +136,20 @@ def export_footprint_svg(
     """Export footprint to SVG.
 
     Args:
-        footprint_path: Path to .kicad_mod file
+        footprint_path: Path to a .kicad_mod file, or a .pretty library directory
         output_dir: Output directory
     """
-    out = output_dir or str(Path(footprint_path).parent)
+    src = Path(footprint_path)
+    out = output_dir or str(src.parent)
     os.makedirs(out, exist_ok=True)
-    _run_cli(["fp", "export", "svg", "--output", out, footprint_path])
+    # kicad-cli takes the library directory, never the .kicad_mod itself, so a
+    # single file means "point at the parent and name the footprint".
+    args = ["fp", "export", "svg", "--output", out]
+    if src.is_file():
+        args += ["--fp", src.stem, str(src.parent)]
+    else:
+        args.append(str(src))
+    _run_cli(args)
     svgs = sorted(Path(out).glob("*.svg"))
     return MultiFileExportResult(
         path=out,
@@ -155,8 +163,12 @@ def export_footprint_svg(
 def upgrade_footprint_lib(footprint_path: str) -> str:
     """Upgrade a footprint library to current KiCad format.
 
+    Rewrites every footprint in the library, so this takes the library
+    directory.  kicad-cli has no per-footprint option here, and a single
+    .kicad_mod path is rejected.
+
     Args:
-        footprint_path: Path to .kicad_mod file or .pretty directory
+        footprint_path: Path to a .pretty library directory
     """
     _run_cli(["fp", "upgrade", footprint_path])
     return f"Successfully upgraded {footprint_path}"

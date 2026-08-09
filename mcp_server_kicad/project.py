@@ -1467,6 +1467,10 @@ def export_hierarchical_netlist(
             "netlist",
             "--output",
             output_path,
+            # Without this kicad-cli writes an S-expression netlist, which the
+            # ET.parse below can never read.
+            "--format",
+            "kicadxml",
             schematic_path,
         ]
     )

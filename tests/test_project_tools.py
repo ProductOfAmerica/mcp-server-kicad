@@ -1166,14 +1166,11 @@ class TestExportHierarchicalNetlist:
         proj_dir = tmp_path / "proj"
         project.create_project(directory=str(proj_dir), name="proj")
 
-        try:
-            result = project.export_hierarchical_netlist(
-                schematic_path=str(proj_dir / "proj.kicad_sch"),
-                output_dir=str(proj_dir),
-            )
-            assert result.output_path
-        except (ToolError, RuntimeError, FileNotFoundError):
-            pass  # kicad-cli may produce non-XML netlist format
+        result = project.export_hierarchical_netlist(
+            schematic_path=str(proj_dir / "proj.kicad_sch"),
+            output_dir=str(proj_dir),
+        )
+        assert result.output_path
 
 
 class TestParentProjectInstances:
