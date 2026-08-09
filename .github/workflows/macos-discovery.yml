@@ -1,0 +1,118 @@
+name: macOS discovery
+
+# Separate from ci.yml because installing KiCad costs several minutes of wall
+# clock. Standard macOS runners are free on public repositories, but they are
+# not fast, so this does not run on every pull request.
+#
+# It exists because neither environment that runs this project could detect a
+# KiCad discovery bug: a maintainer machine tends to have the KICAD_* overrides
+# set, and ci.yml installs no KiCad at all. Issues #2 and #6 both reached users
+# for exactly that reason.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master, "ci/**"]
+
+jobs:
+  discovery:
+    # arm64, matching the "macOS 15 (arm64)" environment #2 was reported on.
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install KiCad
+        run: brew install --cask kicad
+
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --frozen --all-extras --dev
+
+      # Non-fatal. This is the only place we get to look at a real macOS
+      # bundle, so record the layout even when everything passes.
+      - name: Report the macOS layout
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import shutil, subprocess
+          from pathlib import Path
+          from mcp_server_kicad._shared import _find_kicad_cli, _kicad_root, _resolve_system_lib
+          from mcp_server_kicad._freerouting import find_pcbnew_python
+
+          print("kicad-cli version:")
+          subprocess.run(["kicad-cli", "version"])
+          print("shutil.which      :", shutil.which("kicad-cli"))
+          print("_find_kicad_cli() :", _find_kicad_cli())
+          print("_kicad_root()     :", _kicad_root())
+          print("Device.kicad_sym  :", _resolve_system_lib("Device"))
+          print("find_pcbnew_python:", find_pcbnew_python()[0])
+
+          root = _kicad_root()
+          if root:
+              print("\n--- entries under the bundle root ---")
+              for p in sorted(root.iterdir()):
+                  print("   ", p.name + ("/" if p.is_dir() else ""))
+              print("\n--- any python under the bundle ---")
+              for p in sorted(root.rglob("python3*")):
+                  if p.is_file():
+                      print("   ", p)
+          PY
+
+      - name: Resolve through the Homebrew symlink
+        run: |
+          uv run python - <<'PY'
+          import shutil
+          from mcp_server_kicad._shared import _find_kicad_cli
+
+          # The cask has a `binary` stanza for kicad-cli, so it lands on PATH as
+          # a symlink into the bundle. KiCad reads its stock libraries from
+          # <exe_dir>/../SharedSupport, so following that symlink is required;
+          # PR #3 shipped without it.
+          on_path = shutil.which("kicad-cli")
+          assert on_path, "the cask did not put kicad-cli on PATH; this check needs rewriting"
+          assert "KiCad.app" not in on_path, (
+              f"expected a symlink outside the bundle, got {on_path!r}. "
+              "The check would pass vacuously; rewrite it."
+          )
+
+          resolved = _find_kicad_cli()
+          assert resolved and "KiCad.app" in resolved, (
+              f"did not resolve the symlink into the bundle: {resolved!r}"
+          )
+          print("ok:", on_path, "->", resolved)
+          PY
+
+      - name: Reproduce issue #2, bundle only and nothing on PATH
+        run: |
+          rm -f "$(brew --prefix)/bin/kicad-cli"
+          uv run python - <<'PY'
+          import shutil
+          from mcp_server_kicad import footprint, pcb, project, schematic, symbol
+          from mcp_server_kicad._shared import _find_kicad_cli, _resolve_system_lib
+          from mcp_server_kicad.server import _copy_tools
+          from mcp.server.fastmcp import FastMCP
+
+          assert shutil.which("kicad-cli") is None, "still on PATH; #2's condition not reproduced"
+
+          resolved = _find_kicad_cli()
+          assert resolved and "KiCad.app" in resolved, f"bundle not found: {resolved!r}"
+
+          # The macOS bundle keeps its libraries in Contents/SharedSupport, not
+          # share/kicad. This is the derivation that could not be checked from
+          # Linux or Windows.
+          lib = _resolve_system_lib("Device")
+          assert lib and "SharedSupport" in lib, f"symbol lookup failed: {lib!r}"
+
+          # #2's headline symptom: 89 tools instead of 107.
+          target = FastMCP("probe")
+          for mod in (schematic, pcb, symbol, footprint, project):
+              _copy_tools(mod.mcp, target)
+          count = len(target._tool_manager._tools)
+          assert count == 107, f"expected 107 tools, got {count}"
+
+          print("ok:", resolved)
+          print("ok:", lib)
+          print("ok: 107 tools")
+          PY
+
+      - name: Discovery test suite
+        run: uv run pytest tests/test_cli_resolution.py -v
