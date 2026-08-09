@@ -508,7 +508,9 @@ def build_test_footprint(
 def scratch_pcb(tmp_path: Path) -> Path:
     """Create a scratch PCB with one footprint, one trace, one net, and one edge line."""
     board = Board.create_new()
-    board.version = KICAD_SCH_VERSION  # same version format
+    # Do not set board.version: KICAD_SCH_VERSION is the *schematic* format
+    # version, and stamping it on a board makes kicad-cli refuse to load the
+    # file at all.  kiutils' own default is a version KiCad accepts.
     board.generator = "pcbnew"
 
     # Nets
