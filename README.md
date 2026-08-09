@@ -10,7 +10,7 @@ MCP servers for KiCad schematic, PCB, symbol, footprint, and project automation.
 
 | Server | Tools | Description |
 |--------|-------|-------------|
-| `mcp-server-kicad-schematic` | 40 | Schematic read/write, ERC analysis, hierarchical labels, and exports (PDF, SVG, DXF, netlist, BOM) |
+| `mcp-server-kicad-schematic` | 41 | Schematic read/write, ERC analysis, hierarchical labels, and exports (PDF, SVG, DXF, netlist, BOM) |
 | `mcp-server-kicad-pcb` | 29 | PCB read/write, DRC analysis, autorouting, and exports (Gerber, drill, 3D models, pick-and-place) |
 | `mcp-server-kicad-symbol` | 5 | Symbol library browsing, creation, SVG export, and library upgrade |
 | `mcp-server-kicad-footprint` | 4 | Footprint library browsing, SVG export, and library upgrade |
@@ -146,8 +146,9 @@ The servers resolve file paths in this order:
 | `wire_pins_to_net` | Wire one or more pins to a named net |
 | `auto_place_decoupling_cap` | Automatically place a decoupling capacitor near an IC |
 | `connect_pins` | Wire two component pins together |
-| `no_connect_pin` | Place a no-connect flag on an unused pin |
-| `remove_label` | Remove a net label |
+| `no_connect_pin` | Place a no-connect flag on an unused pin (idempotent) |
+| `remove_no_connect` | Remove no-connect flag(s) from a pin |
+| `remove_label` | Remove a net label or global label |
 | `remove_wire` | Remove a wire segment |
 | `remove_junction` | Remove a junction dot |
 

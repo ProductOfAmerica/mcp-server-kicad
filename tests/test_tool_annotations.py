@@ -92,6 +92,7 @@ def test_schematic_additive(tool_name):
         "remove_label",
         "remove_wire",
         "remove_junction",
+        "remove_no_connect",
         "remove_text",
         "remove_hierarchical_label",
         "modify_hierarchical_label",

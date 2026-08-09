@@ -213,7 +213,7 @@ ahead." Asking a question or requesting changes is NOT approval.
 
 The KiCad MCP server gives you tools to drive KiCad programmatically.
 You do not need the user to click anything in KiCad — the tools do it
-for you. Tool groups (107 tools total):
+for you. Tool groups (108 tools total):
 
 - **Project:** `create_project`, `create_schematic`,
   `create_symbol_library`, `create_sym_lib_table`,
@@ -226,7 +226,8 @@ for you. Tool groups (107 tools total):
   `add_lib_symbol`
 - **Schematic — Wiring:** `connect_pins`, `wire_pins_to_net`,
   `add_wires`, `add_label`, `add_global_label`, `add_junctions`,
-  `no_connect_pin`, `remove_label`, `remove_wire`, `remove_junction`
+  `no_connect_pin`, `remove_no_connect`, `remove_label`,
+  `remove_wire`, `remove_junction`
 - **Schematic — Power:** `add_power_symbol`,
   `auto_place_decoupling_cap`
 - **Schematic — Inspect:** `get_schematic_summary`,
