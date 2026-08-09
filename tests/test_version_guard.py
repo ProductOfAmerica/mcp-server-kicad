@@ -17,7 +17,7 @@ import re
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from mcp_server_kicad import footprint, schematic, symbol
+from mcp_server_kicad import footprint, project, schematic, symbol
 from mcp_server_kicad._shared import _FORMAT_VERSION_LIMITS, _check_format_version
 
 # Real versions each file family gets from a KiCad 10 save (measured in #9).
@@ -141,9 +141,11 @@ class TestToolRefusal:
         return f
 
     def test_read_only_tool_refuses(self, tmp_path):
+        # Schematic reads went CST-native in slice 12B; a project.py read
+        # tool (still on the guarded kiutils parse) carries the flag.
         f = self._future_sch(tmp_path)
         with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.get_schematic_summary(schematic_path=str(f))
+            project.get_symbol_instances(schematic_path=str(f))
 
     def test_rmw_tool_refuses_and_leaves_file_untouched(self, tmp_path):
         # The representative guarded RMW tool tracks the migration: since
