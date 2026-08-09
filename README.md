@@ -2,7 +2,7 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/mcp-server-kicad)](https://pypi.org/project/mcp-server-kicad/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://github.com/ProductOfAmerica/mcp-server-kicad/actions/workflows/test.yml/badge.svg)](https://github.com/ProductOfAmerica/mcp-server-kicad/actions/workflows/test.yml)
+[![Tests](https://github.com/ProductOfAmerica/mcp-server-kicad/actions/workflows/ci.yml/badge.svg)](https://github.com/ProductOfAmerica/mcp-server-kicad/actions/workflows/ci.yml)
 
 MCP servers for KiCad schematic, PCB, symbol, footprint, and project automation.
 
