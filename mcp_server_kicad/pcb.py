@@ -440,12 +440,8 @@ def _courtyard_bbox_cst(fp) -> dict | None:
     if not layer_points:
         return None
 
-    for preferred in ("F.CrtYd", "B.CrtYd"):
-        if preferred in layer_points:
-            chosen_layer = preferred
-            break
-    else:
-        chosen_layer = next(iter(layer_points))
+    preferred = ("F.CrtYd", "B.CrtYd")
+    chosen_layer = next((p for p in preferred if p in layer_points), next(iter(layer_points)))
 
     xs = [p[0] for p in layer_points[chosen_layer]]
     ys = [p[1] for p in layer_points[chosen_layer]]
