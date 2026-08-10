@@ -1181,6 +1181,51 @@ class TestKicad10E2E:
         schematic.set_component_property("C1", "Reference", "C?", schematic_path=p)
         assert "Annotated 1 components" in project.annotate_schematic(schematic_path=p)
 
+    def test_project_reads_on_real_kicad10(self, tmp_path, kicad_native_sch):
+        # Slice 16: the six project.py reads walk the CST, so they see a real
+        # KiCad 10 hierarchy instead of refusing it. Pin B is deliberately
+        # left without a child label so the issue engine has something to find.
+        self._mint(kicad_native_sch)
+        child = tmp_path / "k10child.kicad_sch"
+        project.create_schematic(str(child))
+        _run_cli(["sch", "upgrade", "--force", str(child)])
+        p = str(kicad_native_sch)
+        project.add_hierarchical_sheet(p, "sub", str(child), [{"name": "A", "direction": "input"}])
+        uuid = _node_uuid(_cst.parse(kicad_native_sch.read_bytes()).lists[0].find("sheet"))
+        project.add_sheet_pin(uuid, "B", "output", schematic_path=p)
+
+        hierarchy = project.list_hierarchy(schematic_path=p)
+        assert hierarchy.sheet_count == 1
+        assert hierarchy.sheets[0]["file_name"] == "k10child.kicad_sch"
+        assert hierarchy.sheets[0]["pin_count"] == 2
+        assert hierarchy.sheets[0]["hierarchical_label_count"] == 1
+
+        info = project.get_sheet_info(uuid, schematic_path=p)
+        assert {pin["name"]: pin["matched"] for pin in info.pins} == {"A": True, "B": False}
+
+        trace = project.trace_hierarchical_net("A", schematic_path=p)
+        assert "k10child.kicad_sch" in trace.sheets_touched
+        assert {"sheet_pin", "hierarchical_label"} <= {c["type"] for c in trace.connections}
+
+        nets = project.list_cross_sheet_nets(schematic_path=p)
+        assert {n["name"]: n["label_matched"] for n in nets.hierarchical_nets} == {
+            "A": True,
+            "B": False,
+        }
+        assert isinstance(nets.global_nets, list)
+        # No .kicad_pro beside the fixture, so nothing writes a symbol_instances
+        # section: the empty-section path is what a KiCad 8+ file gives anyway.
+        assert project.get_symbol_instances(schematic_path=p).instances == []
+
+        schematic.set_component_property("R1", "Reference", "R?", schematic_path=p)
+        issues = project.validate_hierarchy(schematic_path=p)
+        assert issues.status == "issues_found"
+        assert {"type": "orphaned_pin", "sheet_name": "sub", "pin": "B"} in issues.issues
+        assert any(i["type"] == "unannotated_ref" and i["reference"] == "R?" for i in issues.issues)
+        assert "Annotated 1 components" in project.annotate_schematic(schematic_path=p)
+        after = project.validate_hierarchy(schematic_path=p)
+        assert not any(i["type"] == "unannotated_ref" for i in after.issues)
+
     def test_duplicate_and_flatten_on_real_kicad10(self, tmp_path, kicad_native_sch):
         self._mint(kicad_native_sch)
         child = tmp_path / "k10child.kicad_sch"
