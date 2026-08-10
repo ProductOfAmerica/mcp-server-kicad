@@ -20,6 +20,8 @@ _KICAD_PYTHON_PATHS = [
 ]
 
 _pcbnew_cache: tuple[str | None, dict | None] | None = None
+# Wrapped in a 1-tuple so an "unknown" answer is still a cached answer.
+_pcbnew_major_cache: tuple[int | None] | None = None
 
 
 def check_java() -> str | None:
@@ -224,6 +226,44 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
 
     _pcbnew_cache = (None, None)
     return _pcbnew_cache
+
+
+def pcbnew_major() -> int | None:
+    """Major version of the pcbnew bindings the autoroute path would use.
+
+    Returns None whenever it cannot be established: no interpreter, a failing
+    subprocess, or output no integer can be read out of. Callers treat None as
+    "unknown" and carry on, so this probe never becomes a failure mode of its
+    own; the existing pcbnew error paths stay the authority.
+    """
+    global _pcbnew_major_cache
+    if _pcbnew_major_cache is not None:
+        return _pcbnew_major_cache[0]
+
+    major = None
+    python, env = find_pcbnew_python()
+    if python:
+        try:
+            result = subprocess.run(
+                [python, "-c", "import pcbnew; print(pcbnew.Version())"],
+                capture_output=True,
+                text=True,
+                timeout=30,
+                env=env,
+            )
+            if result.returncode == 0:
+                # Version() reads "9.0.8" on KiCad 9.0.8, measured locally.
+                # Take the last stdout line so an import banner cannot shadow
+                # it, and the first integer in it so a decorated build string
+                # ("(10.0.1)", "kicad-10.0.1-rc1") still answers.
+                match = re.search(r"\d+", result.stdout.strip().splitlines()[-1])
+                if match:
+                    major = int(match.group())
+        except Exception:
+            major = None
+
+    _pcbnew_major_cache = (major,)
+    return major
 
 
 def export_dsn(pcb_path: str, dsn_path: str) -> str | None:

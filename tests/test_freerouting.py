@@ -22,6 +22,7 @@ from mcp_server_kicad._freerouting import (
     find_jar,
     find_pcbnew_python,
     import_ses,
+    pcbnew_major,
     run_freerouting,
 )
 from mcp_server_kicad._shared import _keepout_dict, _xy
@@ -170,6 +171,46 @@ class TestFindPcbnewPython:
 
 
 _FIND_PY = "mcp_server_kicad._freerouting.find_pcbnew_python"
+
+
+class TestPcbnewMajor:
+    @pytest.fixture(autouse=True)
+    def _reset_major_cache(self):
+        _fr_module._pcbnew_major_cache = None
+        yield
+        _fr_module._pcbnew_major_cache = None
+
+    def _probe(self, **run_kwargs):
+        with (
+            patch(_FIND_PY, return_value=("python3", None)),
+            patch("subprocess.run", **run_kwargs),
+        ):
+            return pcbnew_major()
+
+    def test_parses_version_string(self):
+        """The shape KiCad 9.0.8 actually prints, measured locally."""
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout="9.0.8\n", stderr="")
+        assert self._probe(return_value=done) == 9
+
+    def test_unparseable_output(self):
+        done = subprocess.CompletedProcess(args=[], returncode=0, stdout="no idea\n", stderr="")
+        assert self._probe(return_value=done) is None
+
+    def test_subprocess_raises(self):
+        assert self._probe(side_effect=OSError("boom")) is None
+
+    def test_no_interpreter(self):
+        with patch(_FIND_PY, return_value=(None, None)):
+            assert pcbnew_major() is None
+
+    def test_real_pcbnew(self):
+        """The cross-era proof, unmocked: pcbnew 9 on the Linux runner and
+        pcbnew 10 on the gating macOS one both have to answer."""
+        if find_pcbnew_python()[0] is None:
+            pytest.skip("pcbnew Python bindings not available")
+        major = pcbnew_major()
+        assert isinstance(major, int)
+        assert major >= 9
 
 
 class TestExportDsn:
