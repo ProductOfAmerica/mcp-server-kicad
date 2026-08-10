@@ -68,7 +68,7 @@
     "kicad_cli_path": {
       "type": "file",
       "title": "kicad-cli executable",
-      "description": "Only needed when kicad-cli is not on PATH, which is the case for the default Windows KiCad install (C:\\Program Files\\KiCad\\9.0\\bin\\kicad-cli.exe). Leave blank on macOS and Linux. Without it, the ERC, DRC, and export tools cannot run.",
+      "description": "Leave this blank unless KiCad is installed somewhere unusual. A stock install is found on its own: on PATH, inside /Applications on macOS, or under Program Files or AppData on Windows, newest version first. Set it only if the ERC, DRC, or export tools report that kicad-cli is missing.",
       "required": false,
       "default": ""
     }
