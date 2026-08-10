@@ -472,8 +472,9 @@ class TestRemoveHierarchicalSheet:
         victim.write_text("keep me")
 
         # Point the sheet at the file outside the project directory.
-        before = parent.read_bytes()
-        parent.write_bytes(before.replace(b'"child.kicad_sch"', b'"../victim.kicad_sch"'))
+        parent.write_bytes(
+            parent.read_bytes().replace(b'"child.kicad_sch"', b'"../victim.kicad_sch"')
+        )
         pointed = parent.read_bytes()
 
         with pytest.raises(ToolError, match="resolves outside"):

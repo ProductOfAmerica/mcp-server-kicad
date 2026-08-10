@@ -49,12 +49,8 @@ class RectangleSpec(TypedDict):
 
 
 class SymbolPinSpec(TypedDict):
-    """One pin on a new symbol.
-
-    ``type`` stays a plain string rather than a Literal so add_symbol keeps
-    raising its own error, which names the offending pin index and lists every
-    valid value.
-    """
+    """One pin on a new symbol. ``type`` is str, not Literal, so add_symbol's
+    own error still names the offending pin index and lists the valid values."""
 
     number: str
     name: str

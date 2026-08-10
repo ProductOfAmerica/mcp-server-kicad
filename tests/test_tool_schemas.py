@@ -6,11 +6,6 @@ Nine parameters used to publish `{"items": {"type": "object",
 "additionalProperties": true}}`, which tells a model nothing: add_wires needs
 x1/y1/x2/y2 and indexed them straight out of the dict, so a wrong key came back
 as a bare KeyError after a round trip.
-
-Every helper here resolves through `anyOf`. An optional parameter such as
-`list[X] | None` publishes its array under an `anyOf` wrapper with a null
-branch, so a check that reads the top level passes on it no matter what it
-contains. That blind spot hid add_symbol's `rectangles` from a first draft.
 """
 
 import inspect
@@ -27,14 +22,9 @@ def _all_tools():
         yield from mod.mcp._tool_manager._tools.values()
 
 
-def _branches(schema: dict) -> list[dict]:
-    """A schema plus any anyOf branches, so Optional wrappers are seen through."""
-    return [schema] + list(schema.get("anyOf") or [])
-
-
 def _array_items(schema: dict, defs: dict) -> dict | None:
-    """The item schema of an array parameter, with any $ref resolved."""
-    for branch in _branches(schema):
+    """The item schema of an array parameter, with $ref and Optional resolved."""
+    for branch in [schema, *(schema.get("anyOf") or [])]:
         if branch.get("type") != "array":
             continue
         items = branch.get("items") or {}

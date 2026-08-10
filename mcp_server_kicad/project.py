@@ -456,10 +456,8 @@ def remove_hierarchical_sheet(
         parent_dir = Path(parent_schematic_path).parent.resolve()
         child_path = parent_dir / child_filename
         # child_filename is the Sheetfile property, so it is file content and can
-        # name anything, including ../../../somewhere. This is the only delete in
-        # the package, so it refuses rather than follow a path out of the parent's
-        # directory. Nothing has been written at this point, so the parent
-        # schematic is left intact too.
+        # name ../../../anything. This is the only delete in the package, and it
+        # runs before the parent is written, so refusing leaves both files intact.
         if not child_path.resolve().is_relative_to(parent_dir):
             raise ToolError(
                 f"Sheet file '{child_filename}' resolves outside {parent_dir}, so it was "
