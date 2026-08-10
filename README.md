@@ -6,7 +6,7 @@
 
 # mcp-server-kicad
 
-**Let an AI assistant read, edit, and verify real KiCad projects.**
+**Let an AI assistant edit real KiCad projects without corrupting them.**
 
 109 MCP tools covering schematic capture, PCB layout, symbol and footprint
 libraries, ERC and DRC, and manufacturing exports. No screenshots, no
