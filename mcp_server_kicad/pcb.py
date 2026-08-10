@@ -12,7 +12,6 @@ from kiutils.board import Board
 from kiutils.footprint import Footprint
 from kiutils.items.brditems import Segment, Via
 from kiutils.items.fpitems import FpText
-from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
@@ -60,6 +59,7 @@ from mcp_server_kicad._shared import (
     _resolve_root,
     _run_cli,
     _transform_local_to_board,
+    build_server,
 )
 from mcp_server_kicad.models import (
     AutorouteResult,
@@ -90,7 +90,7 @@ from mcp_server_kicad.models import (
     ZoneResult,
 )
 
-mcp = FastMCP(
+mcp = build_server(
     "kicad-pcb",
     instructions=(
         "KiCad PCB manipulation, DRC analysis, and PCB export tools"

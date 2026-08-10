@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import uuid
 from functools import lru_cache
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
 from pathlib import Path
 
 from kiutils.board import Board
@@ -16,10 +18,36 @@ from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpTex
 from kiutils.items.gritems import GrArc, GrLine
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
 from kiutils.schematic import Schematic
+from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 import mcp_server_kicad._cst as _cst
+
+# ---------------------------------------------------------------------------
+# Server construction
+# ---------------------------------------------------------------------------
+
+try:
+    SERVER_VERSION = _dist_version("mcp-server-kicad")
+except PackageNotFoundError:  # source checkout with no install
+    SERVER_VERSION = "0.0.0+unknown"
+
+
+def build_server(name: str, instructions: str) -> FastMCP:
+    """Build a FastMCP server that reports *this package's* version.
+
+    FastMCP takes no version argument and leaves the low-level server's
+    version as None, in which case the SDK substitutes its own version. That
+    is what clients and directory listings then display as the server
+    version. Setting it through the private attribute is the only route the
+    SDK offers; test_server_reports_package_version pins the behavior so an
+    SDK upgrade that moves it fails loudly instead of silently regressing.
+    """
+    mcp = FastMCP(name, instructions=instructions)
+    mcp._mcp_server.version = SERVER_VERSION
+    return mcp
+
 
 # ---------------------------------------------------------------------------
 # Tool annotation presets

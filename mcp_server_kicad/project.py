@@ -14,7 +14,6 @@ from kiutils.items.schitems import (
 )
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
-from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
@@ -36,6 +35,7 @@ from mcp_server_kicad._shared import (
     _snap_grid,
     _sym_property_cst,
     _upsert_root_symbol_instance,
+    build_server,
 )
 from mcp_server_kicad.models import (
     CrossSheetNetsResult,
@@ -60,7 +60,7 @@ from mcp_server_kicad.schematic import (
 _KICAD_SYM_VERSION = "20231120"
 
 
-mcp = FastMCP(
+mcp = build_server(
     "kicad-project",
     instructions=(
         "KiCad project scaffolding, hierarchical sheet management,"

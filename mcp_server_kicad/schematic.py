@@ -7,7 +7,6 @@ import os
 import re
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
@@ -32,6 +31,7 @@ from mcp_server_kicad._shared import (
     _snap_grid,
     _sym_property_cst,
     _upsert_root_symbol_instance,
+    build_server,
 )
 from mcp_server_kicad.models import (
     BomExportResult,
@@ -52,7 +52,7 @@ from mcp_server_kicad.models import (
     WireItem,
 )
 
-mcp = FastMCP(
+mcp = build_server(
     "kicad-schematic",
     instructions=(
         "KiCad schematic manipulation, ERC analysis, and schematic export tools.\n\n"

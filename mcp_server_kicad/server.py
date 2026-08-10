@@ -3,8 +3,9 @@
 from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad import footprint, pcb, project, schematic, symbol
+from mcp_server_kicad._shared import build_server
 
-mcp = FastMCP(
+mcp = build_server(
     "kicad",
     instructions=(
         "KiCad EDA tools for schematic capture, PCB layout, symbol/footprint"
