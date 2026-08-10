@@ -51,7 +51,7 @@ Fixtures in `conftest.py` build schematics/boards through kiutils builders. Byte
 - `ci.yml`: lint + pyright + pytest matrix (3.10-3.13), no KiCad installed. Triggers on `ci/**` pushes too, so preverify branches get the full matrix.
 - `kicad-suite.yml`: full suite on Linux with KiCad 9. Runs on PRs and `ci/**` pushes.
 - `macos-discovery.yml`: macOS with KiCad 10; the gating KiCad 10 e2e tests live here. Runs only on pushes to `main` and `ci/**`, **not on PR branches**: validate KiCad-10-affecting changes pre-merge by pushing a `ci/**` branch.
-- `release.yml`: manual dispatch. Bumps the version (pyproject, uv.lock, plugin.json, server.json), tags a GitHub release, publishes to PyPI. Its bump commit is pushed with the default GITHUB_TOKEN, so it triggers no CI runs; zero runs on a bump commit is normal.
+- `release.yml`: manual dispatch. Bumps the version (pyproject, uv.lock, plugin.json, server.json), tags a GitHub release, publishes to PyPI. Its bump commit is pushed with the default GITHUB_TOKEN, so it triggers no CI runs; zero runs on a bump commit is normal. The MCP Registry entry is a separate follow-up step (`mcp-publisher`): ownership is proved by the `mcp-name:` token in the README as published on PyPI, and registry metadata is immutable per version, so description fixes need a new release.
 
 New files are stamped with the KiCad 9 formats the templates were harvested at (`KICAD_SCH_VERSION = 20250114` in conftest; `_EMPTY_SCH_TPL` in `project.py`, `_SYM_LIB_TPL` in `symbol.py`). Editing an existing file never changes its version stamp, so a KiCad 10 file stays KiCad 10.
 
