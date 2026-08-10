@@ -39,6 +39,74 @@ def test_macos_bundle_used_when_not_on_path(tmp_path, monkeypatch):
     _find_kicad_cli.cache_clear()
 
 
+def _win_install(root: Path, version: str) -> Path:
+    """Fake a Windows KiCad install tree.  Pure file operations, so it runs on any OS."""
+    exe = root / version / "bin" / "kicad-cli.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_text("")
+    return exe
+
+
+def _only_win_probe(monkeypatch, tmp_path, *roots: Path) -> None:
+    """Nothing in the environment, on PATH, or in the bundle: only the probe is left."""
+    monkeypatch.delenv("KICAD_CLI_PATH", raising=False)
+    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setattr("mcp_server_kicad._shared._KICAD_APP", str(tmp_path / "no-app"))
+    monkeypatch.setattr("mcp_server_kicad._shared._KICAD_WIN_DIRS", tuple(str(r) for r in roots))
+
+
+def test_windows_install_picks_the_newest_version(tmp_path, monkeypatch):
+    """The Windows installers do not touch PATH either, and 10.0 outranks 9.0."""
+    root = tmp_path / "KiCad"
+    _win_install(root, "9.0")
+    newest = _win_install(root, "10.0")
+    _only_win_probe(monkeypatch, tmp_path, root)
+    _find_kicad_cli.cache_clear()
+    assert _find_kicad_cli() == str(newest.resolve())
+    _find_kicad_cli.cache_clear()
+
+
+def test_non_numeric_version_directory_is_skipped(tmp_path, monkeypatch):
+    """A nightly sitting next to the release must not be mistaken for a version."""
+    root = tmp_path / "KiCad"
+    _win_install(root, "nightly")
+    release = _win_install(root, "9.0")
+    _only_win_probe(monkeypatch, tmp_path, root)
+    _find_kicad_cli.cache_clear()
+    assert _find_kicad_cli() == str(release.resolve())
+    _find_kicad_cli.cache_clear()
+
+
+def test_absent_windows_root_is_tolerated(tmp_path, monkeypatch):
+    """Most machines have only one of the two roots, and plenty have neither."""
+    root = tmp_path / "KiCad"
+    exe = _win_install(root, "9.0")
+    _only_win_probe(monkeypatch, tmp_path, tmp_path / "never-installed", root)
+    _find_kicad_cli.cache_clear()
+    assert _find_kicad_cli() == str(exe.resolve())
+    _find_kicad_cli.cache_clear()
+
+
+def test_env_var_and_path_win_over_the_windows_probe(tmp_path, monkeypatch):
+    """The probe is the last resort: an explicit install still takes priority."""
+    root = tmp_path / "KiCad"
+    _win_install(root, "10.0")
+    chosen = tmp_path / "elsewhere" / "kicad-cli"
+    chosen.parent.mkdir()
+    chosen.write_text("")
+    _only_win_probe(monkeypatch, tmp_path, root)
+
+    monkeypatch.setenv("KICAD_CLI_PATH", str(chosen))
+    _find_kicad_cli.cache_clear()
+    assert _find_kicad_cli() == str(chosen.resolve())
+
+    monkeypatch.delenv("KICAD_CLI_PATH")
+    monkeypatch.setattr(shutil, "which", lambda _: str(chosen))
+    _find_kicad_cli.cache_clear()
+    assert _find_kicad_cli() == str(chosen.resolve())
+    _find_kicad_cli.cache_clear()
+
+
 def test_missing_cli_raises_actionable_error(monkeypatch):
     """Registering CLI tools unconditionally is only safe if the failure names the fix."""
     monkeypatch.setattr("mcp_server_kicad._shared._find_kicad_cli", lambda: None)

@@ -40,7 +40,7 @@ Rules the ADR encodes that will bite if ignored:
 
 ### Path and tool resolution (`_shared.py`)
 
-Config priority: explicit tool parameter > `KICAD_SCH_PATH`/`KICAD_PCB_PATH`/`KICAD_SYM_LIB`/`KICAD_FP_LIB`/`KICAD_OUTPUT_DIR` env vars > auto-detect from a single `*.kicad_pro` in cwd (resolved at import time into module constants). `kicad-cli` resolves via `KICAD_CLI_PATH`, then PATH, then the macOS app bundle; everything else in the install (stock symbol libs, the pcbnew Python used by `fill_zones`/`autoroute_pcb`) derives from the resolved binary's location (`_kicad_root`). CLI-backed tools are always registered and fail with an actionable message when `kicad-cli` is missing.
+Config priority: explicit tool parameter > `KICAD_SCH_PATH`/`KICAD_PCB_PATH`/`KICAD_SYM_LIB`/`KICAD_FP_LIB`/`KICAD_OUTPUT_DIR` env vars > auto-detect from a single `*.kicad_pro` in cwd (resolved at import time into module constants). `kicad-cli` resolves via `KICAD_CLI_PATH`, then PATH, then the macOS app bundle, then the default Windows install roots (`_KICAD_WIN_DIRS`: Program Files and per-user LOCALAPPDATA, highest version number first); everything else in the install (stock symbol libs, the pcbnew Python used by `fill_zones`/`autoroute_pcb`) derives from the resolved binary's location (`_kicad_root`). CLI-backed tools are always registered and fail with an actionable message when `kicad-cli` is missing.
 
 ### Tests
 

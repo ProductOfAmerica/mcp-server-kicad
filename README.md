@@ -211,11 +211,12 @@ plus a KiCad-free matrix across Python 3.10 through 3.13.
 ### Finding your KiCad install
 
 `kicad-cli` is looked up on `PATH`, then inside `/Applications/KiCad/KiCad.app`
-on macOS, where the installer does not add it to `PATH`. Everything else in the
-KiCad tree is located relative to it, the same way KiCad itself does it, so a
-stock install on any platform needs no configuration: the stock symbol
-libraries and the bundled Python that provides `pcbnew` are both found
-automatically.
+on macOS, then in the standard Windows install folders, machine-wide under
+`Program Files` and per-user under `AppData`, newest version first. Neither
+installer adds it to `PATH`. Everything else in the KiCad tree is located
+relative to it, the same way KiCad itself does it, so a stock install on any
+platform needs no configuration: the stock symbol libraries and the bundled
+Python that provides `pcbnew` are both found automatically.
 
 Override any of it if your install is unusual:
 
