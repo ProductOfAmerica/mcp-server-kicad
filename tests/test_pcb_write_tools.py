@@ -3,7 +3,7 @@
 import shutil
 import uuid
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from conftest import _default_effects
@@ -132,6 +132,7 @@ class TestAutoroutePcb:
             patch("mcp_server_kicad.pcb._export_dsn", mock_export_dsn),
             patch("mcp_server_kicad.pcb._run_freerouting", mock_run_freerouting),
             patch("mcp_server_kicad.pcb._import_ses", mock_import_ses),
+            patch("mcp_server_kicad.pcb._pcbnew_major", return_value=9),
         ):
             result = pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
             assert result.routed_path
@@ -139,7 +140,10 @@ class TestAutoroutePcb:
             assert result.vias_added == 2
 
     def test_no_java(self, scratch_pcb):
-        with patch("mcp_server_kicad.pcb._check_java", return_value="Java not found"):
+        with (
+            patch("mcp_server_kicad.pcb._check_java", return_value="Java not found"),
+            patch("mcp_server_kicad.pcb._pcbnew_major", return_value=9),
+        ):
             with pytest.raises(ToolError, match="Java"):
                 pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
 
@@ -188,6 +192,7 @@ class TestAutoroutePcb:
             patch("mcp_server_kicad.pcb._export_dsn", mock_export_dsn),
             patch("mcp_server_kicad.pcb._run_freerouting", mock_run_freerouting),
             patch("mcp_server_kicad.pcb._import_ses", mock_import_ses),
+            patch("mcp_server_kicad.pcb._pcbnew_major", return_value=9),
         ):
             result = pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
             assert result.routed_path
@@ -254,12 +259,89 @@ class TestAutoroutePcb:
             patch("mcp_server_kicad.pcb._export_dsn", mock_export_dsn),
             patch("mcp_server_kicad.pcb._run_freerouting", mock_run_freerouting),
             patch("mcp_server_kicad.pcb._import_ses", mock_import_ses),
+            patch("mcp_server_kicad.pcb._pcbnew_major", return_value=10),
         ):
             result = pcb.autoroute_pcb(pcb_path=pcb_path)
 
         assert (result.traces_added, result.vias_added) == (4, 2)
         assert result.keepouts_promoted == 1
         assert Path(result.routed_path).exists()
+
+
+def _autoroute_seams(major, export_dsn=None):
+    """Every subprocess seam of autoroute_pcb plus the pcbnew era probe.
+
+    The SES import just copies the board over, so nothing is routed; these
+    tests are about what the preflight does before and around the pipeline.
+    """
+
+    def touch_dsn(dsn_source, dsn_path):
+        Path(dsn_path).touch()
+        return None
+
+    def touch_ses(**kwargs):
+        Path(kwargs["ses_path"]).touch()
+        return None
+
+    def copy_board(source, ses_path, output_path):
+        shutil.copy(source, output_path)
+        return None
+
+    return patch.multiple(
+        pcb,
+        _check_java=lambda: None,
+        _ensure_jar=lambda: ("/fake/freerouting.jar", None),
+        _export_dsn=export_dsn or touch_dsn,
+        _run_freerouting=touch_ses,
+        _import_ses=copy_board,
+        _pcbnew_major=lambda: major,
+    )
+
+
+class TestAutoroutePreflight:
+    """pcbnew 9 cannot load a KiCad 10 board at all, and pcbnew 10 saves the
+    routed copy in the KiCad 10 format whatever the input board was."""
+
+    def _k10(self, scratch_pcb):
+        from test_cst_pcb import _bump_version
+
+        return _bump_version(scratch_pcb)
+
+    def test_k10_board_on_pcbnew9_refused(self, scratch_pcb):
+        export_dsn = MagicMock(return_value=None)
+        with _autoroute_seams(9, export_dsn=export_dsn):
+            with pytest.raises(ToolError) as exc:
+                pcb.autoroute_pcb(pcb_path=self._k10(scratch_pcb))
+        assert "20260206" in str(exc.value)
+        assert "pcbnew 9" in str(exc.value)
+        assert "KICAD_PYTHON" in str(exc.value)
+        # Refused up front, so no board ever reached pcbnew.
+        export_dsn.assert_not_called()
+
+    def test_k10_board_on_pcbnew10_routes(self, scratch_pcb):
+        with _autoroute_seams(10):
+            result = pcb.autoroute_pcb(pcb_path=self._k10(scratch_pcb))
+        assert Path(result.routed_path).exists()
+        assert result.warnings == []
+
+    def test_k9_board_on_pcbnew10_warns(self, scratch_pcb):
+        with _autoroute_seams(10):
+            result = pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
+        assert len(result.warnings) == 1
+        assert "KiCad 10" in result.warnings[0]
+
+    def test_k9_board_on_pcbnew9_quiet(self, scratch_pcb):
+        with _autoroute_seams(9):
+            result = pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
+        assert result.warnings == []
+
+    def test_unknown_major_proceeds(self, scratch_pcb):
+        """No answer from the probe means no opinion: the existing pcbnew
+        error paths stay the authority."""
+        with _autoroute_seams(None):
+            result = pcb.autoroute_pcb(pcb_path=self._k10(scratch_pcb))
+        assert Path(result.routed_path).exists()
+        assert result.warnings == []
 
 
 _PROPERTY_TEXT_BOARD = """(kicad_pcb (version 20241108) (generator "pcbnew")

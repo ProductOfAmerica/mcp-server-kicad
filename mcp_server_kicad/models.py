@@ -7,7 +7,7 @@ structured data should use one of these models as its return type.
 
 from __future__ import annotations
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 # ---------------------------------------------------------------------------
 # Schematic list-item models (replacing list_schematic_items)
@@ -312,6 +312,7 @@ class AutorouteResult(BaseModel):
     drc_violations: int | None = None
     drc_unconnected: int | None = None
     keepouts_promoted: int = 0
+    warnings: list[str] = Field(default_factory=list)
 
 
 class UpdatePcbResult(BaseModel):
