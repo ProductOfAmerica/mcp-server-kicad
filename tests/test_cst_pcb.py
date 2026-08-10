@@ -545,6 +545,28 @@ class TestZoneWritersCst:
         assert kz.keepout["footprints"] == "not_allowed"
 
 
+class TestDanglingCst:
+    def test_k10_removes_dangling(self, tmp_path):
+        """The fixture's lone segment touches no pad world position, so it
+        is dangling; removal is a clean span deletion on a K10 board."""
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        result = pcb.remove_dangling_tracks(pcb_path=p)
+        assert result.tracks_removed == 1
+        assert result.iterations == 1
+        after = Path(p).read_bytes()
+        assert _span_preserved(before, after)
+        assert b"(segment" not in after
+
+    def test_noop_is_byte_identical(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        pcb.remove_dangling_tracks(pcb_path=p)
+        before = Path(p).read_bytes()
+        result = pcb.remove_dangling_tracks(pcb_path=p)
+        assert result.tracks_removed == 0
+        assert Path(p).read_bytes() == before
+
+
 class TestThermalViasCst:
     def test_k9_grid_pure_insertion(self, scratch_pcb):
         p = str(scratch_pcb)

@@ -1597,48 +1597,67 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
     Args:
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
     tolerance = 0.001  # mm
     total_removed = 0
     iterations = 0
+
+    def _seg_ends(seg) -> tuple[tuple[float, float], tuple[float, float]]:
+        start, end = seg.find("start"), seg.find("end")
+        return (
+            (round(float(start.atoms[1].text), 3), round(float(start.atoms[2].text), 3)),
+            (round(float(end.atoms[1].text), 3), round(float(end.atoms[2].text), 3)),
+        )
 
     while True:
         # Build connection points: pad positions + via centers + trace endpoints
         connection_points: list[tuple[float, float]] = []
 
         # Pad positions in board coordinates
-        for fp in board.footprints:
-            fp_x = fp.position.X
-            fp_y = fp.position.Y
-            for pad in fp.pads:
+        for fp in root.find_all("footprint"):
+            at = fp.find("at")
+            if at is None:
+                continue
+            fp_x, fp_y = float(at.atoms[1].text), float(at.atoms[2].text)
+            fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
+            fl = fp.find("layer")
+            mirrored = fl is not None and fl.atoms[1].text == "B.Cu"
+            for pad in fp.find_all("pad"):
+                pad_at = pad.find("at")
                 px, py = _transform_local_to_board(
                     fp_x,
                     fp_y,
-                    fp.position.angle or 0,
-                    pad.position.X,
-                    pad.position.Y,
-                    mirrored=fp.layer == "B.Cu",
+                    fp_angle,
+                    float(pad_at.atoms[1].text),
+                    float(pad_at.atoms[2].text),
+                    mirrored=mirrored,
                 )
                 connection_points.append((round(px, 3), round(py, 3)))
 
         # Via positions
-        for item in board.traceItems:
-            if isinstance(item, Via):
-                connection_points.append((round(item.position.X, 3), round(item.position.Y, 3)))
+        for item in root.lists:
+            if item.head == "via":
+                at = item.find("at")
+                connection_points.append(
+                    (round(float(at.atoms[1].text), 3), round(float(at.atoms[2].text), 3))
+                )
 
         # Trace endpoints (each segment contributes both start and end)
-        segments = [t for t in board.traceItems if isinstance(t, Segment)]
+        segments = [c for c in root.lists if c.head == "segment"]
         for seg in segments:
-            connection_points.append((round(seg.start.X, 3), round(seg.start.Y, 3)))
-            connection_points.append((round(seg.end.X, 3), round(seg.end.Y, 3)))
+            s, e = _seg_ends(seg)
+            connection_points.append(s)
+            connection_points.append(e)
 
-        # Check each segment for dangling endpoints
+        # ponytail: O(segments x points) scan per iteration, no spatial index;
+        # fine at hand-routed scale, index it if boards with thousands of
+        # segments ever route through here.
         dangling = []
         for seg in segments:
-            start = (round(seg.start.X, 3), round(seg.start.Y, 3))
-            end = (round(seg.end.X, 3), round(seg.end.Y, 3))
+            start, end = _seg_ends(seg)
 
-            # Count connections at start point (subtract this segment's own contribution)
+            # Count connections at each endpoint (minus the segment's own).
             start_connections = (
                 sum(
                     1
@@ -1647,8 +1666,6 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
                 )
                 - 1
             )
-
-            # Count connections at end point (subtract this segment's own contribution)
             end_connections = (
                 sum(
                     1
@@ -1665,12 +1682,12 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
             break
 
         for seg in dangling:
-            board.traceItems.remove(seg)
+            root.remove_child(seg)
         total_removed += len(dangling)
         iterations += 1
 
     if total_removed > 0:
-        board.to_file()
+        Path(key).write_bytes(_cst.serialize(tree))
 
     return DanglingTracksResult(tracks_removed=total_removed, iterations=iterations)
 
