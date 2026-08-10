@@ -15,7 +15,7 @@ uv run pyright                        # type check (basic mode)
 uv run python mcp_server_kicad/_cst.py  # CST self-check (demo() asserts)
 ```
 
-Tests that shell out to `kicad-cli` (ERC, DRC, exports) auto-skip when it is not installed; so does the autouse fixture in `tests/conftest.py` that validates every generated `.kicad_sch` is parseable by `kicad-cli`. Confirm `kicad-cli` resolves locally (PATH, `KICAD_CLI_PATH`, or the macOS app bundle) or a green run proves less than it looks. Tests that intentionally write invalid files use `@pytest.mark.no_kicad_validation`.
+Tests that shell out to `kicad-cli` (ERC, DRC, exports) auto-skip when it is not installed; so does the autouse fixture in `tests/conftest.py` that validates every generated `.kicad_sch` is parseable by `kicad-cli`. Confirm `kicad-cli` resolves locally (`KICAD_CLI_PATH`, PATH, the macOS app bundle, or the versioned Windows install roots) or a green run proves less than it looks. Tests that intentionally write invalid files use `@pytest.mark.no_kicad_validation`.
 
 That validation fixture is what makes the suite slow: it spawns a `kicad-cli` process per generated schematic, ~380 ms each. It is memoised on the file's UUID-normalised digest, so each distinct schematic body is validated once per process rather than once per test (376 spawns -> 186, measured 2026-08-10); `test_validation_memo.py` guards the key against collapsing anything but a UUID. With `-n auto` on top, a full local run went 213 s -> 40 s on 16 cores.
 

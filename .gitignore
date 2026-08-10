@@ -13,3 +13,5 @@ build/
 .worktrees/
 bash.exe.stackdump
 .claude/worktrees
+mcpb/uv.lock
+bundle/
