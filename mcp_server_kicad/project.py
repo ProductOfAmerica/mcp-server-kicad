@@ -453,15 +453,26 @@ def remove_hierarchical_sheet(
 
     # Handle child file deletion
     if delete_child_file:
-        parent_dir = Path(parent_schematic_path).parent
+        parent_dir = Path(parent_schematic_path).parent.resolve()
         child_path = parent_dir / child_filename
+        # child_filename is the Sheetfile property, so it is file content and can
+        # name anything, including ../../../somewhere. This is the only delete in
+        # the package, so it refuses rather than follow a path out of the parent's
+        # directory. Nothing has been written at this point, so the parent
+        # schematic is left intact too.
+        if not child_path.resolve().is_relative_to(parent_dir):
+            raise ToolError(
+                f"Sheet file '{child_filename}' resolves outside {parent_dir}, so it was "
+                "not deleted and the sheet block was not removed. Re-run with "
+                "delete_child_file=False to remove the block on its own."
+            )
         # Check if any OTHER sheet still references this child file
         other_refs = any(
             _sheet_file_cst(s) == child_filename for j, s in enumerate(sheets) if j != matches[0]
         )
         if other_refs:
             msg += f" Kept child file '{child_filename}' — still referenced by another sheet block."
-        elif child_path.exists():
+        elif child_path.is_file():
             child_path.unlink()
             msg += f" Deleted child file '{child_filename}'."
 
