@@ -19,7 +19,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
-from mcp_server_kicad._cst import _numish
+from mcp_server_kicad._cst import _num, _numish
 from mcp_server_kicad._freerouting import (
     check_java as _check_java,
 )
@@ -42,6 +42,7 @@ from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
     _EXPORT,
+    _FORMAT_VERSION_LIMITS,
     _READ_ONLY,
     FP_LIB_PATH,
     OUTPUT_DIR,
@@ -269,6 +270,58 @@ _GRAPHIC_CLASS = {
     "gr_text_box": "GrTextBox",
     "image": "Image",
 }
+
+# Native-shape trace templates for the CST write path; values filled per call
+# via set_text. Always (uuid ...): KiCad 9 aliases tstamp/uuid on read, and
+# kiutils' next save is healed by _fix_empty_tstamps.
+_SEGMENT_TPL = _cst.parse(
+    b"(segment\n\t\t(start 0 0)\n\t\t(end 0 0)\n\t\t(width 0.25)"
+    b'\n\t\t(layer "F.Cu")\n\t\t(net 0)\n\t\t(uuid "x")\n\t)'
+).lists[0]
+
+_VIA_TPL = _cst.parse(
+    b"(via\n\t\t(at 0 0)\n\t\t(size 0.6)\n\t\t(drill 0.3)"
+    b'\n\t\t(layers "F.Cu" "B.Cu")\n\t\t(net 0)\n\t\t(uuid "x")\n\t)'
+).lists[0]
+
+
+def _board_version(root) -> int:
+    v = root.find("version")
+    return int(v.atoms[1].text) if v is not None else 0
+
+
+def _splice_pcb_node(root, node) -> None:
+    """Insert *node* after the last trace item, else before the board tail."""
+    anchors = [c for c in root.lists if c.head in ("segment", "arc", "via")]
+    if anchors:
+        root.insert_after(anchors[-1], node)
+        return
+    tail = root.find("zone") or root.find("group") or root.find("embedded_fonts")
+    if tail is not None:
+        root.insert_before(tail, node)
+    else:
+        root.append_child(node, b"\n\t")
+
+
+def _set_item_net(node, root, net: int) -> None:
+    """Fill the (net ...) child per ADR-2 guardrail 5: numeric for KiCad 9
+    format boards, name-based (quoted) for newer, never the wrong dialect."""
+    net_node = node.find("net")
+    if _board_version(root) <= _FORMAT_VERSION_LIMITS["kicad_pcb"]:
+        net_node.atoms[1].set_text(str(net))
+        return
+    for num, name in _net_table(root):
+        if num == net:
+            named = _cst.parse(b'(net "x")').lists[0]
+            named.atoms[1].set_text(name)
+            named.sep = net_node.sep
+            node.children[node.children.index(net_node)] = named
+            return
+    raise ToolError(
+        f"Net {net} not found in this KiCad 10 format board. Numeric net "
+        "references are silently rebound by load order there, so the tool "
+        "refuses rather than emit one (ADR-2 guardrail 5)."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -684,16 +737,20 @@ def add_trace(
         net: Net number
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    seg = Segment()
-    seg.start = Position(X=x1, Y=y1)
-    seg.end = Position(X=x2, Y=y2)
-    seg.width = width
-    seg.layer = layer
-    seg.net = net
-    seg.tstamp = _gen_uuid()
-    board.traceItems.append(seg)
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    node = _SEGMENT_TPL.copy()
+    start, end = node.find("start"), node.find("end")
+    start.atoms[1].set_text(_num(x1))
+    start.atoms[2].set_text(_num(y1))
+    end.atoms[1].set_text(_num(x2))
+    end.atoms[2].set_text(_num(y2))
+    node.find("width").atoms[1].set_text(_num(width))
+    node.find("layer").atoms[1].set_text(layer)
+    _set_item_net(node, root, net)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_pcb_node(root, node)
+    Path(key).write_bytes(_cst.serialize(tree))
     return f"Trace: ({x1}, {y1}) -> ({x2}, {y2}) w={width} {layer}"
 
 
@@ -718,16 +775,26 @@ def add_via(
         layers: Via layers (default: ["F.Cu", "B.Cu"])
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    via = Via()
-    via.position = Position(X=x, Y=y)
-    via.size = size
-    via.drill = drill
-    via.net = net
-    via.layers = layers or ["F.Cu", "B.Cu"]
-    via.tstamp = _gen_uuid()
-    board.traceItems.append(via)
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    node = _VIA_TPL.copy()
+    at = node.find("at")
+    at.atoms[1].set_text(_num(x))
+    at.atoms[2].set_text(_num(y))
+    node.find("size").atoms[1].set_text(_num(size))
+    node.find("drill").atoms[1].set_text(_num(drill))
+    layers_node = node.find("layers")
+    tpl_atom = layers_node.atoms[1]
+    del layers_node.children[1:]
+    for name in layers or ["F.Cu", "B.Cu"]:
+        a = tpl_atom.copy()
+        a.sep = b" "
+        a.set_text(name)
+        layers_node.children.append(a)
+    _set_item_net(node, root, net)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_pcb_node(root, node)
+    Path(key).write_bytes(_cst.serialize(tree))
     return f"Via at ({x}, {y}) size={size} drill={drill}"
 
 

@@ -11,6 +11,9 @@ import os
 from pathlib import Path
 
 import pytest
+from conftest import _pure_insertion, requires_cli
+from kiutils.board import Board
+from kiutils.items.brditems import Segment, Via
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import _cst, pcb
@@ -141,3 +144,61 @@ class TestBoardCache:
         pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=p)
         traces = pcb.list_pcb_traces(p)
         assert traces[0].width == 0.5
+
+
+class TestAddTraceViaCst:
+    def test_scratch_pure_insertion_and_readback(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        pcb.add_trace(10, 20, 30, 20, net=1, pcb_path=p)
+        mid = Path(p).read_bytes()
+        assert _pure_insertion(before, mid)
+        pcb.add_via(20, 20, net=1, pcb_path=p)
+        after = Path(p).read_bytes()
+        assert _pure_insertion(mid, after)
+        board = Board.from_file(p)
+        assert sum(1 for t in board.traceItems if isinstance(t, Segment)) == 2
+        assert sum(1 for t in board.traceItems if isinstance(t, Via)) == 1
+        assert ("via", 1) in [(t.type, t.net) for t in pcb.list_pcb_traces(p)]
+
+    def test_k9_native_numeric_net(self, tmp_path):
+        p = _write_board(tmp_path, _K9_BOARD)
+        before = Path(p).read_bytes()
+        pcb.add_trace(50, 50, 60, 50, net=1, pcb_path=p)
+        after = Path(p).read_bytes()
+        assert _pure_insertion(before, after)
+        i = after.index(b"(start 50 50)")
+        span = after[i - 100 : i + 250]
+        assert b"(net 1)" in span
+        assert b'(net "Net1")' not in span
+
+    def test_k10_named_net(self, tmp_path):
+        p = _write_board(tmp_path, _K9_BOARD.replace("(version 20241108)", "(version 20260206)"))
+        before = Path(p).read_bytes()
+        pcb.add_trace(50, 50, 60, 50, net=1, pcb_path=p)
+        after = Path(p).read_bytes()
+        assert _pure_insertion(before, after)
+        i = after.index(b"(start 50 50)")
+        span = after[i - 100 : i + 250]
+        assert b'(net "Net1")' in span
+        pcb.add_via(55, 50, net=2, pcb_path=p)
+        assert b'(net "Net2")' in Path(p).read_bytes()
+
+    def test_k10_unknown_net_refuses_untouched(self, tmp_path):
+        p = _write_board(tmp_path, _K9_BOARD.replace("(version 20241108)", "(version 20260206)"))
+        pcb._open_pcb_cst(p)
+        before = Path(p).read_bytes()
+        with pytest.raises(ToolError, match="Net 9 not found"):
+            pcb.add_trace(0, 0, 1, 1, net=9, pcb_path=p)
+        assert Path(p).read_bytes() == before
+        assert str(Path(p).resolve()) not in pcb._BOARD_CACHE
+
+    @requires_cli
+    def test_drc_accepts_spliced_board(self, scratch_pcb):
+        """KiCad 9 accepts (uuid ...) items inside a tstamp-era board: the
+        live oracle for the always-uuid template choice."""
+        p = str(scratch_pcb)
+        pcb.add_trace(10, 20, 30, 20, net=1, pcb_path=p)
+        pcb.add_via(20, 20, net=1, pcb_path=p)
+        result = pcb.run_drc(pcb_path=p)
+        assert result.violation_count >= 0
