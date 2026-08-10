@@ -18,6 +18,8 @@ from kiutils.items.zones import FillSettings, Hatch, KeepoutSettings, Zone, Zone
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
+import mcp_server_kicad._cst as _cst
+from mcp_server_kicad._cst import _numish
 from mcp_server_kicad._freerouting import (
     check_java as _check_java,
 )
@@ -51,7 +53,6 @@ from mcp_server_kicad._shared import (
     _default_effects,
     _file_meta,
     _fp_ref,
-    _fp_val,
     _gen_uuid,
     _keepout_restrictions,
     _kicad_root,
@@ -168,7 +169,92 @@ def _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max):
 
 
 # ---------------------------------------------------------------------------
-# PCB read tools (8)
+# CST substrate (guard-free board paths; see docs/adr-cst-substrate.md)
+# ---------------------------------------------------------------------------
+
+
+def _open_pcb_cst(pcb_path: str):
+    """Parse a board into a CST for the guard-free tools.
+
+    No kiutils parse, so no version guard: these paths work on any format
+    KiCad writes. Every kiutils board tool keeps the guard.
+    """
+    if not pcb_path:
+        raise ValueError("No PCB path provided. Pass pcb_path parameter.")
+    key = str(Path(pcb_path).resolve())
+    tree = _cst.parse(Path(key).read_bytes())
+    root = tree.lists[0] if tree.lists else None
+    if root is None or root.head != "kicad_pcb":
+        raise ToolError(f"{Path(pcb_path).name} is not a KiCad PCB.")
+    return tree, root, key
+
+
+def _fp_ref_cst(fp) -> str:
+    """Reference of a CST footprint node: property first, fp_text fallback."""
+    for prop in fp.find_all("property"):
+        if prop.atoms[1].text == "Reference":
+            return prop.atoms[2].text
+    for t in fp.find_all("fp_text"):
+        if t.atoms[1].text == "reference":
+            return t.atoms[2].text
+    return "?"
+
+
+def _fp_val_cst(fp) -> str:
+    for prop in fp.find_all("property"):
+        if prop.atoms[1].text == "Value":
+            return prop.atoms[2].text
+    for t in fp.find_all("fp_text"):
+        if t.atoms[1].text == "value":
+            return t.atoms[2].text
+    return "?"
+
+
+def _net_table(root) -> list[tuple[int, str]]:
+    """(number, name) rows from the board's net declarations.
+
+    Tolerates both dialects: KiCad 9 numbered rows and a hypothetical
+    name-only row (number synthesized by position) so the K10 e2e can
+    pin the real shape.
+    """
+    table: list[tuple[int, str]] = []
+    for i, net in enumerate(root.find_all("net")):
+        atoms = net.atoms[1:]
+        if atoms and atoms[0].text.lstrip("-").isdigit():
+            num = int(atoms[0].text)
+            name = atoms[1].text if len(atoms) > 1 else ""
+        else:
+            num = i
+            name = atoms[0].text if atoms else ""
+        table.append((num, name))
+    return table
+
+
+def _item_net_number(net_node, name_to_num: dict[str, int]) -> int:
+    """Net number from a segment/via (net ...) child, either dialect."""
+    if net_node is None or len(net_node.atoms) < 2:
+        return 0
+    t = net_node.atoms[1].text
+    if t.lstrip("-").isdigit():
+        return int(t)
+    return name_to_num.get(t, 0)
+
+
+# Token head to kiutils class name, so list_pcb_graphic_items output matches
+# the kiutils-era `type(item).__name__` fallback byte for byte.
+_GRAPHIC_CLASS = {
+    "gr_rect": "GrRect",
+    "gr_circle": "GrCircle",
+    "gr_arc": "GrArc",
+    "gr_poly": "GrPoly",
+    "gr_curve": "GrCurve",
+    "gr_text_box": "GrTextBox",
+    "image": "Image",
+}
+
+
+# ---------------------------------------------------------------------------
+# PCB read tools
 # ---------------------------------------------------------------------------
 
 
@@ -179,21 +265,20 @@ def list_pcb_footprints(pcb_path: str = PCB_PATH) -> list[PcbFootprintItem]:
     Args:
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
+    _, root, _ = _open_pcb_cst(pcb_path)
     items: list[PcbFootprintItem] = []
-    for fp in board.footprints:
-        ref = _fp_ref(fp)
-        val = _fp_val(fp)
-        pos = fp.position
+    for fp in root.find_all("footprint"):
+        at = fp.find("at")
+        layer = fp.find("layer")
         items.append(
             PcbFootprintItem(
-                reference=ref,
-                value=val,
-                lib_id=fp.libId,
-                x=pos.X,
-                y=pos.Y,
-                rotation=pos.angle or 0,
-                layer=fp.layer,
+                reference=_fp_ref_cst(fp),
+                value=_fp_val_cst(fp),
+                lib_id=fp.atoms[1].text,
+                x=float(at.atoms[1].text),
+                y=float(at.atoms[2].text),
+                rotation=float(at.atoms[3].text) if len(at.atoms) > 3 else 0,
+                layer=layer.atoms[1].text if layer is not None else "F.Cu",
             )
         )
     return items
@@ -206,32 +291,35 @@ def list_pcb_traces(pcb_path: str = PCB_PATH) -> list[TraceSegmentItem]:
     Args:
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
+    _, root, _ = _open_pcb_cst(pcb_path)
+    name_to_num = {name: num for num, name in _net_table(root)}
     items: list[TraceSegmentItem] = []
-    for item in board.traceItems:
-        if isinstance(item, Segment):
+    for item in root.lists:
+        if item.head == "segment":
+            start, end = item.find("start"), item.find("end")
             items.append(
                 TraceSegmentItem(
                     type="segment",
-                    start_x=item.start.X,
-                    start_y=item.start.Y,
-                    end_x=item.end.X,
-                    end_y=item.end.Y,
-                    width=item.width,
-                    layer=item.layer,
-                    net=item.net,
+                    start_x=float(start.atoms[1].text),
+                    start_y=float(start.atoms[2].text),
+                    end_x=float(end.atoms[1].text),
+                    end_y=float(end.atoms[2].text),
+                    width=float(item.find("width").atoms[1].text),
+                    layer=item.find("layer").atoms[1].text,
+                    net=_item_net_number(item.find("net"), name_to_num),
                 )
             )
-        elif isinstance(item, Via):
+        elif item.head == "via":
+            at = item.find("at")
             items.append(
                 TraceSegmentItem(
                     type="via",
-                    x=item.position.X,
-                    y=item.position.Y,
-                    size=item.size,
-                    drill=item.drill,
-                    layers=item.layers,
-                    net=item.net,
+                    x=float(at.atoms[1].text),
+                    y=float(at.atoms[2].text),
+                    size=float(item.find("size").atoms[1].text),
+                    drill=float(item.find("drill").atoms[1].text),
+                    layers=[a.text for a in item.find("layers").atoms[1:]],
+                    net=_item_net_number(item.find("net"), name_to_num),
                 )
             )
     return items
@@ -244,12 +332,8 @@ def list_pcb_nets(pcb_path: str = PCB_PATH) -> list[NetItem]:
     Args:
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    items: list[NetItem] = []
-    for net in board.nets:
-        if net.name:  # skip unnamed net 0
-            items.append(NetItem(number=net.number, name=net.name))
-    return items
+    _, root, _ = _open_pcb_cst(pcb_path)
+    return [NetItem(number=num, name=name) for num, name in _net_table(root) if name]
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -259,21 +343,40 @@ def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
     Args:
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
+    _, root, _ = _open_pcb_cst(pcb_path)
     items: list[ZoneItem] = []
-    for z in board.zones:
+    for z in root.find_all("zone"):
+        ko = z.find("keepout")
         keepout = None
-        if z.keepoutSettings is not None:
-            keepout = _keepout_restrictions(z.keepoutSettings)
+        if ko is not None:
+            # kiutils KeepoutSettings defaults when a child is absent.
+            keepout = {
+                "tracks": "allowed",
+                "vias": "allowed",
+                "pads": "allowed",
+                "copperpour": "not-allowed",
+                "footprints": "not-allowed",
+            }
+            for k in keepout:
+                child = ko.find(k)
+                if child is not None:
+                    keepout[k] = child.atoms[1].text
         polygon = None
-        if z.polygons:
-            polygon = [{"x": pt.X, "y": pt.Y} for pt in z.polygons[0].coordinates]
+        poly = z.find("polygon")
+        if poly is not None:
+            polygon = [
+                {"x": _numish(p.atoms[1].text), "y": _numish(p.atoms[2].text)}
+                for p in poly.find("pts").find_all("xy")
+            ]
+        net_name = z.find("net_name")
+        layers_node = z.find("layers") or z.find("layer")
+        priority = z.find("priority")
         items.append(
             ZoneItem(
-                net_name=z.netName,
-                layers=z.layers,
-                priority=z.priority or 0,
-                is_keepout=z.keepoutSettings is not None,
+                net_name=net_name.atoms[1].text if net_name is not None else "",
+                layers=[a.text for a in layers_node.atoms[1:]] if layers_node is not None else [],
+                priority=int(priority.atoms[1].text) if priority is not None else 0,
+                is_keepout=ko is not None,
                 keepout=keepout,
                 polygon=polygon,
             )
@@ -288,10 +391,12 @@ def list_pcb_layers(pcb_path: str = PCB_PATH) -> list[LayerItem]:
     Args:
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
+    _, root, _ = _open_pcb_cst(pcb_path)
+    layers = root.find("layers")
     items: list[LayerItem] = []
-    for layer in board.layers:
-        items.append(LayerItem(ordinal=layer.ordinal, name=layer.name, type=layer.type))
+    for layer in layers.lists if layers is not None else ():
+        a = layer.atoms
+        items.append(LayerItem(ordinal=int(a[0].text), name=a[1].text, type=a[2].text))
     return items
 
 
@@ -302,53 +407,58 @@ def list_pcb_graphic_items(pcb_path: str = PCB_PATH) -> list[GraphicItem]:
     Args:
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
+    _, root, _ = _open_pcb_cst(pcb_path)
     items: list[GraphicItem] = []
-    for item in board.graphicItems:
-        if isinstance(item, GrLine):
+    for item in root.lists:
+        head = item.head
+        layer_node = item.find("layer")
+        layer = layer_node.atoms[1].text if layer_node is not None else "unknown"
+        if head == "gr_line":
+            start, end = item.find("start"), item.find("end")
             items.append(
                 GraphicItem(
                     type="line",
-                    start_x=item.start.X,
-                    start_y=item.start.Y,
-                    end_x=item.end.X,
-                    end_y=item.end.Y,
-                    layer=item.layer or "unknown",
+                    start_x=float(start.atoms[1].text),
+                    start_y=float(start.atoms[2].text),
+                    end_x=float(end.atoms[1].text),
+                    end_y=float(end.atoms[2].text),
+                    layer=layer,
                 )
             )
-        elif isinstance(item, GrText):
+        elif head == "gr_text":
+            at = item.find("at")
             items.append(
                 GraphicItem(
                     type="text",
-                    text=item.text,
-                    x=item.position.X,
-                    y=item.position.Y,
-                    layer=item.layer or "unknown",
+                    text=item.atoms[1].text,
+                    x=float(at.atoms[1].text),
+                    y=float(at.atoms[2].text),
+                    layer=layer,
                 )
             )
-        else:
-            items.append(
-                GraphicItem(
-                    type=type(item).__name__,
-                    layer=getattr(item, "layer", "unknown"),
-                )
-            )
+        elif head in _GRAPHIC_CLASS:
+            items.append(GraphicItem(type=_GRAPHIC_CLASS[head], layer=layer))
     return items
 
 
 @mcp.tool(annotations=_READ_ONLY)
 def get_board_info(pcb_path: str = PCB_PATH) -> str:
     """Get board summary: footprint count, trace count, net count, thickness."""
-    board = _load_board(pcb_path)
-    seg_count = sum(1 for t in board.traceItems if isinstance(t, Segment))
-    via_count = sum(1 for t in board.traceItems if isinstance(t, Via))
+    _, root, _ = _open_pcb_cst(pcb_path)
+    counts = {"segment": 0, "via": 0, "net": 0, "footprint": 0, "zone": 0}
+    for item in root.lists:
+        if item.head in counts:
+            counts[item.head] += 1
+    general = root.find("general")
+    thickness = general.find("thickness") if general is not None else None
+    tval = _numish(thickness.atoms[1].text) if thickness is not None else 1.6
     return (
-        f"Footprints: {len(board.footprints)}\n"
-        f"Traces: {seg_count}\n"
-        f"Vias: {via_count}\n"
-        f"Nets: {len(board.nets)}\n"
-        f"Zones: {len(board.zones)}\n"
-        f"Thickness: {board.general.thickness}mm"
+        f"Footprints: {counts['footprint']}\n"
+        f"Traces: {counts['segment']}\n"
+        f"Vias: {counts['via']}\n"
+        f"Nets: {counts['net']}\n"
+        f"Zones: {counts['zone']}\n"
+        f"Thickness: {tval}mm"
     )
 
 
@@ -360,21 +470,34 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
         reference: Footprint reference (e.g. "R1", "U1")
         pcb_path: Path to .kicad_pcb file
     """
-    fp = _find_fp(_load_board(pcb_path), reference)
+    _, root, _ = _open_pcb_cst(pcb_path)
+    fp = next((f for f in root.find_all("footprint") if _fp_ref_cst(f) == reference), None)
+    if fp is None:
+        raise ToolError(f"Footprint {reference!r} not found.")
     lines = [f"{reference} pads:"]
-    for pad in fp.pads:
-        net_name = pad.net.name if pad.net else "none"
+    for pad in fp.find_all("pad"):
+        net = pad.find("net")
+        if net is None or len(net.atoms) < 2:
+            net_name = "none"
+        elif len(net.atoms) > 2:
+            net_name = net.atoms[2].text
+        else:
+            t = net.atoms[1].text
+            net_name = t if not t.lstrip("-").isdigit() else "none"
+        at, size = pad.find("at"), pad.find("size")
+        layers = pad.find("layers")
         lines.append(
-            f"  Pad {pad.number}: {pad.type} {pad.shape} "
-            f"@ ({pad.position.X}, {pad.position.Y}) "
-            f"size=({pad.size.X}, {pad.size.Y}) "
-            f"layers={pad.layers} net={net_name}"
+            f"  Pad {pad.atoms[1].text}: {pad.atoms[2].text} {pad.atoms[3].text} "
+            f"@ ({_numish(at.atoms[1].text)}, {_numish(at.atoms[2].text)}) "
+            f"size=({_numish(size.atoms[1].text)}, {_numish(size.atoms[2].text)}) "
+            f"layers={[a.text for a in layers.atoms[1:]] if layers is not None else []} "
+            f"net={net_name}"
         )
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# PCB write tools (14)
+# PCB write tools
 # ---------------------------------------------------------------------------
 
 
