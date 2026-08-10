@@ -1089,11 +1089,10 @@ def _page_size_cst(root) -> tuple[float, float, str]:
 
 
 def _open_sch_cst(schematic_path: str):
-    """Parse a schematic into a CST for the guard-free splice tools.
+    """Parse a schematic into a CST for the splice tools.
 
-    No kiutils parse, so no version guard: these paths work on any format
-    KiCad writes (portability measured per token by the KiCad 10 e2e tests;
-    see docs/adr-cst-substrate.md). Every kiutils tool keeps the guard.
+    Works on any format KiCad writes (portability measured per token by the
+    KiCad 10 e2e tests; see docs/adr-cst-substrate.md).
     """
     tree = _cst.parse(Path(schematic_path).read_bytes())
     root = tree.lists[0] if tree.lists else None

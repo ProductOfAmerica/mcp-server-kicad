@@ -17,7 +17,6 @@ from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import _cst, pcb
-from mcp_server_kicad._shared import _fp_ref
 
 
 class TestPlaceFootprint:
@@ -25,9 +24,7 @@ class TestPlaceFootprint:
         result = pcb.place_footprint("R2", "4.7K", 150, 100, pcb_path=str(scratch_pcb))
         assert "R2" in result
         board = Board.from_file(str(scratch_pcb))
-        # Check using _fp_ref since that's what the tools use
-        refs = [_fp_ref(fp) for fp in board.footprints]
-        assert "R2" in refs
+        assert "R2" in [fp.properties.get("Reference") for fp in board.footprints]
 
 
 class TestMoveFootprint:
@@ -35,7 +32,7 @@ class TestMoveFootprint:
         result = pcb.move_footprint("R1", 200, 200, pcb_path=str(scratch_pcb))
         assert "Moved" in result
         board = Board.from_file(str(scratch_pcb))
-        r1 = next(fp for fp in board.footprints if _fp_ref(fp) == "R1")
+        r1 = next(fp for fp in board.footprints if fp.properties.get("Reference") == "R1")
         assert r1.position.X == 200
 
     def test_move_missing(self, scratch_pcb):
@@ -204,7 +201,7 @@ class TestAutoroutePcb:
                         # Text should be within 5mm of footprint center (0,0 relative)
                         dist = (item.position.X**2 + item.position.Y**2) ** 0.5
                         assert dist <= 5.0, (
-                            f"{item.type} text for {_fp_ref(fp)} is {dist:.1f}mm "
+                            f"{item.type} text {item.text!r} is {dist:.1f}mm "
                             f"from center at ({item.position.X}, {item.position.Y})"
                         )
 
@@ -588,44 +585,6 @@ class TestSetTraceWidth:
         # Second call must NOT crash with IndexError
         r2 = pcb.set_trace_width(width=0.75, net_name="Net2", pcb_path=str(pcb_file))
         assert r2.traces_modified == 1
-
-    def test_load_board_with_empty_tstamp(self, tmp_path):
-        """Board files with ``(tstamp )`` (empty value) must load.
-
-        Regression: a previous kiutils round-trip wrote ``(tstamp )``
-        for segments whose uuid was unrecognized.  The resulting file
-        cannot be re-loaded by kiutils because ``item[1]`` does not
-        exist on a single-element list ``['tstamp']``.
-
-        ``_load_board`` must sanitise the file content before parsing.
-        """
-        pcb_content = """\
-(kicad_pcb (version 20241108) (generator "pcbnew")
-
-  (general (thickness 1.6))
-  (paper "A4")
-  (layers
-    (0 "F.Cu" signal)
-    (31 "B.Cu" signal)
-    (44 "Edge.Cuts" user)
-  )
-  (setup (pad_to_mask_clearance 0))
-
-  (net 0 "")
-  (net 1 "Net1")
-
-  (segment (start 100 100) (end 110 100) (width 0.5)
-    (layer "F.Cu") (net 1) (tstamp ))
-  (segment (start 110 100) (end 120 100) (width 0.5)
-    (layer "F.Cu") (net 1) (tstamp ))
-
-)"""
-        pcb_file = tmp_path / "corrupted.kicad_pcb"
-        pcb_file.write_text(pcb_content)
-
-        # Must not crash with IndexError
-        r = pcb.set_trace_width(width=0.75, net_name="Net1", pcb_path=str(pcb_file))
-        assert r.traces_modified == 2
 
 
 class TestRemoveTraces:

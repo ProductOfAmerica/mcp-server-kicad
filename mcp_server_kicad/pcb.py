@@ -35,7 +35,6 @@ from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
     _EXPORT,
-    _FORMAT_VERSION_LIMITS,
     _READ_ONLY,
     FP_LIB_PATH,
     OUTPUT_DIR,
@@ -114,26 +113,25 @@ mcp = build_server(
 
 
 # ---------------------------------------------------------------------------
-# CST substrate (guard-free board paths; see docs/adr-cst-substrate.md)
+# CST substrate (every board path; see docs/adr-cst-substrate.md)
 # ---------------------------------------------------------------------------
 
 
 # ponytail: unbounded dict, one parsed Doc per board path (roughly 11x file
 # size retained); add eviction if a session ever touches many large boards.
 # mtime_ns + size misses a same-size rewrite inside one timestamp tick; our
-# CST writers pop their entry before mutating, kiutils rewrites move mtime.
+# writers pop their entry before mutating, and pcbnew rewrites move mtime.
 _BOARD_CACHE: dict[str, tuple[int, int, _cst.Doc]] = {}
 
 
 def _open_pcb_cst(pcb_path: str):
-    """Parse a board into a CST for the guard-free tools.
+    """Parse a board into a CST for the board tools.
 
-    No kiutils parse, so no version guard: these paths work on any format
-    KiCad writes. Every kiutils board tool keeps the guard. Parsed trees
-    are cached per resolved path while mtime and size hold (board parses
-    are seconds at demo-board scale); every writer must pop its entry
-    BEFORE mutating and never reinsert, so an exception between mutation
-    and write can never leave a poisoned tree cached.
+    Works on any format KiCad writes. Parsed trees are cached per resolved
+    path while mtime and size hold (board parses are seconds at demo-board
+    scale); every writer must pop its entry BEFORE mutating and never
+    reinsert, so an exception between mutation and write can never leave a
+    poisoned tree cached.
     """
     if not pcb_path:
         raise ValueError("No PCB path provided. Pass pcb_path parameter.")
@@ -239,6 +237,13 @@ _VIA_TPL = _cst.parse(
 ).lists[0]
 
 
+# Highest board format that carries a net table, so the highest one whose net
+# references may be numeric. Above it KiCad derives nets from usage and rebinds
+# a number by load order, silently landing it on the wrong net (ADR-2
+# guardrail 5, measured in the slice-13 probe).
+_NUMERIC_NET_VERSION_MAX = 20241229
+
+
 def _board_version(root) -> int:
     v = root.find("version")
     return int(v.atoms[1].text) if v is not None else 0
@@ -253,7 +258,7 @@ def _set_item_net(node, root, net: int) -> None:
     """Fill the (net ...) child per ADR-2 guardrail 5: numeric for KiCad 9
     format boards, name-based (quoted) for newer, never the wrong dialect."""
     net_node = node.find("net")
-    if _board_version(root) <= _FORMAT_VERSION_LIMITS["kicad_pcb"]:
+    if _board_version(root) <= _NUMERIC_NET_VERSION_MAX:
         net_node.atoms[1].set_text(str(net))
         return
     for num, name in _net_table(root):
@@ -1079,7 +1084,7 @@ def add_copper_zone(
     fill.find("thermal_gap").atoms[1].set_text(_num(thermal_gap))
     fill.find("thermal_bridge_width").atoms[1].set_text(_num(thermal_bridge_width))
     _fill_zone_polygon(node, corners)
-    if _board_version(root) <= _FORMAT_VERSION_LIMITS["kicad_pcb"]:
+    if _board_version(root) <= _NUMERIC_NET_VERSION_MAX:
         node.find("net").atoms[1].set_text(str(net_num))
         node.find("net_name").atoms[1].set_text(net_name)
     else:
@@ -1140,7 +1145,7 @@ def add_keepout_zone(
     for k, v in restrictions.items():
         ko.find(k).atoms[1].set_text(v)
     _fill_zone_polygon(node, corners)
-    if _board_version(root) > _FORMAT_VERSION_LIMITS["kicad_pcb"]:
+    if _board_version(root) > _NUMERIC_NET_VERSION_MAX:
         # Measured K10 rule areas carry no net tokens at all.
         node.remove_child(node.find("net"))
         node.remove_child(node.find("net_name"))
@@ -2014,7 +2019,7 @@ def _set_promoted_zone_net(zone, root) -> None:
         stale = zone.find(head)
         if stale is not None:
             zone.remove_child(stale)
-    if _board_version(root) > _FORMAT_VERSION_LIMITS["kicad_pcb"]:
+    if _board_version(root) > _NUMERIC_NET_VERSION_MAX:
         return
     anchor = zone.atoms[0]
     for tpl in _ZONE_NET_TPLS:
