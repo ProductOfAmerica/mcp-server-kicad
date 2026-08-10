@@ -3,7 +3,7 @@
 import pytest
 from conftest import _pure_insertion, requires_cli
 from kiutils.symbol import SymbolLib
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import symbol
 from mcp_server_kicad._shared import _run_cli

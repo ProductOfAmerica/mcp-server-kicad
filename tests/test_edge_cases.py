@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 from conftest import reparse
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 from mcp_server_kicad.schematic import _get_page_size

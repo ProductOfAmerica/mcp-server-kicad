@@ -2,7 +2,7 @@
 
 import pytest
 from conftest import reparse
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 

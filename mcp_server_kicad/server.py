@@ -1,6 +1,6 @@
 """Unified MCP server registering all KiCad tools."""
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 from mcp_server_kicad import footprint, pcb, project, schematic, symbol
 from mcp_server_kicad._shared import build_server
@@ -22,10 +22,10 @@ mcp = build_server(
 )
 
 
-def _copy_tools(source_mcp: FastMCP, target_mcp: FastMCP) -> None:
-    """Copy tools from a source FastMCP instance into the target server.
+def _copy_tools(source_mcp: MCPServer, target_mcp: MCPServer) -> None:
+    """Copy tools from a source MCPServer instance into the target server.
 
-    Uses _tool_manager._tools (private API) because FastMCP has no public
+    Uses _tool_manager._tools (private API) because MCPServer has no public
     tool-copy API.  The project's test suite (test_tool_annotations.py) already
     depends on this internal structure.
     """

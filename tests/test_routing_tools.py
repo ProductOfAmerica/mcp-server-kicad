@@ -20,7 +20,7 @@ from conftest import (
 )
 from kiutils.items.common import Effects, Font, Position, Property, Stroke
 from kiutils.items.schitems import Connection, SchematicSymbol
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 

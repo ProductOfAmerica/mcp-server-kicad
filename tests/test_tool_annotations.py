@@ -233,10 +233,10 @@ def test_autoroute_pcb_carries_its_own_hints():
     """
     annotations = pcb.mcp._tool_manager._tools["autoroute_pcb"].annotations
     assert annotations is not None
-    assert annotations.openWorldHint is True
-    assert annotations.readOnlyHint is False
-    assert annotations.destructiveHint is None
-    assert annotations.idempotentHint is None
+    assert annotations.open_world_hint is True
+    assert annotations.read_only_hint is False
+    assert annotations.destructive_hint is None
+    assert annotations.idempotent_hint is None
     assert annotations != _EXPORT
 
 
@@ -252,6 +252,6 @@ def test_read_only_tools_do_not_write_output_files():
         name
         for mod in _MODULES.values()
         for name, tool in mod.mcp._tool_manager._tools.items()
-        if tool.annotations.readOnlyHint and "--output" in inspect.getsource(tool.fn)
+        if tool.annotations.read_only_hint and "--output" in inspect.getsource(tool.fn)
     ]
     assert writers == [], f"readOnlyHint tools that write an output file: {writers}"

@@ -17,7 +17,7 @@ from kiutils.items.brditems import Segment, Via
 from kiutils.items.common import Net, Position
 from kiutils.items.gritems import GrArc, GrLine
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import _cst, pcb
 from mcp_server_kicad._shared import _gen_uuid

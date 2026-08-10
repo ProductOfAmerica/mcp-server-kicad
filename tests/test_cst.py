@@ -18,7 +18,7 @@ from conftest import (
     requires_cli,
 )
 from kiutils.items.schitems import Connection
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import _cst, footprint, project, schematic, symbol
 from mcp_server_kicad._shared import _node_uuid, _resolve_system_lib, _run_cli

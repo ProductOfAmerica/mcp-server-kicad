@@ -10,7 +10,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _dist_version
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 from mcp.types import ToolAnnotations
 
 import mcp_server_kicad._cst as _cst
@@ -25,19 +25,14 @@ except PackageNotFoundError:  # source checkout with no install
     SERVER_VERSION = "0.0.0+unknown"
 
 
-def build_server(name: str, instructions: str) -> FastMCP:
-    """Build a FastMCP server that reports *this package's* version.
+def build_server(name: str, instructions: str) -> MCPServer:
+    """Build an MCPServer that reports *this package's* version.
 
-    FastMCP takes no version argument and leaves the low-level server's
-    version as None, in which case the SDK substitutes its own version. That
-    is what clients and directory listings then display as the server
-    version. Setting it through the private attribute is the only route the
-    SDK offers; test_server_reports_package_version pins the behavior so an
-    SDK upgrade that moves it fails loudly instead of silently regressing.
+    Left as a helper rather than inlined because every entry point must report
+    the same version; test_server_reports_package_version pins that an
+    SDK upgrade cannot silently substitute its own version again.
     """
-    mcp = FastMCP(name, instructions=instructions)
-    mcp._mcp_server.version = SERVER_VERSION
-    return mcp
+    return MCPServer(name, instructions=instructions, version=SERVER_VERSION)
 
 
 # ---------------------------------------------------------------------------
@@ -45,32 +40,32 @@ def build_server(name: str, instructions: str) -> FastMCP:
 # ---------------------------------------------------------------------------
 
 _READ_ONLY = ToolAnnotations(
-    readOnlyHint=True,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=False,
+    read_only_hint=True,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
 )
 
 _ADDITIVE = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=False,
-    openWorldHint=False,
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=False,
+    open_world_hint=False,
 )
 
 _DESTRUCTIVE = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=True,
-    idempotentHint=False,
-    openWorldHint=False,
+    read_only_hint=False,
+    destructive_hint=True,
+    idempotent_hint=False,
+    open_world_hint=False,
 )
 
 # Every tool carrying _EXPORT writes an output file, so it is not read-only.
 _EXPORT = ToolAnnotations(
-    readOnlyHint=False,
-    destructiveHint=False,
-    idempotentHint=True,
-    openWorldHint=False,
+    read_only_hint=False,
+    destructive_hint=False,
+    idempotent_hint=True,
+    open_world_hint=False,
 )
 
 
