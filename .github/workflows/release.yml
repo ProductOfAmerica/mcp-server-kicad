@@ -43,6 +43,10 @@ jobs:
         run: |
           V=$(uv version --bump "${{ inputs.bump }}" --short)
           node -e 'const fs=require("fs"),p=".claude-plugin/plugin.json",d=JSON.parse(fs.readFileSync(p,"utf8"));d.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n")' "$V"
+          # server.json carries the version twice: the server's own version and
+          # the PyPI package it points at. The MCP Registry rejects a package
+          # version that is not live on PyPI, so both track the release.
+          node -e 'const fs=require("fs"),p="server.json",d=JSON.parse(fs.readFileSync(p,"utf8"));d.version=process.argv[1];d.packages[0].version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n")' "$V"
           echo "version=$V" >> "$GITHUB_OUTPUT"
 
       # Commit and push
@@ -50,7 +54,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml uv.lock .claude-plugin/plugin.json
+          git add pyproject.toml uv.lock .claude-plugin/plugin.json server.json
           git commit -m "chore: bump version to v${{ steps.bump.outputs.version }}"
           git push
 

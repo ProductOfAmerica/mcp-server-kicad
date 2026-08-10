@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.ProductOfAmerica/mcp-server-kicad -->
+
 <div align="center">
 
 <img src="https://raw.githubusercontent.com/ProductOfAmerica/mcp-server-kicad/main/.github/assets/logo.png" alt="mcp-server-kicad" width="128">

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.ProductOfAmerica/mcp-server-kicad",
+  "title": "KiCad",
+  "description": "KiCad schematic capture, PCB layout, ERC, DRC, and manufacturing exports",
+  "version": "0.10.0",
+  "websiteUrl": "https://github.com/ProductOfAmerica/mcp-server-kicad",
+  "repository": {
+    "url": "https://github.com/ProductOfAmerica/mcp-server-kicad",
+    "source": "github",
+    "id": "1176937233"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "mcp-server-kicad",
+      "version": "0.10.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
