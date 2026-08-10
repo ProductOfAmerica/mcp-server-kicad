@@ -18,6 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
+from mcp_server_kicad._cst import _fill_at, _num
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -50,8 +51,6 @@ from mcp_server_kicad.models import (
 from mcp_server_kicad.schematic import (
     _HLABEL_TPL,
     _LABEL_TPL,
-    _fill_at,
-    _num,
     _open_sch_cst,
     _splice_sch_node,
     _splice_wire,

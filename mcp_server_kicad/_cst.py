@@ -221,6 +221,33 @@ def serialize(node: Node) -> bytes:
     return b"".join(out)
 
 
+def _num(v: float) -> str:
+    return str(int(v)) if v == int(v) else str(v)
+
+
+def _numish(s: str) -> float | int:
+    """Numeric text as int when whole, else float: mirrors kiutils' repr in prints."""
+    v = float(s)
+    return int(v) if v == int(v) else v
+
+
+def _node_text(node) -> str:
+    return node.atoms[1].text
+
+
+def _node_xy(node) -> tuple[float, float]:
+    at = node.find("at")
+    return float(at.atoms[1].text), float(at.atoms[2].text)
+
+
+def _fill_at(node, x: float, y: float, rotation: float | None = None) -> None:
+    at = node.find("at")
+    at.atoms[1].set_text(_num(x))
+    at.atoms[2].set_text(_num(y))
+    if rotation is not None:
+        at.atoms[3].set_text(_num(rotation))
+
+
 def demo():
     """Self-check: byte round-trip, KiCad-faithful escape codec, surgical edits."""
     # The raw LF inside quotes is deliberate: KiCad refuses to LOAD such a file,

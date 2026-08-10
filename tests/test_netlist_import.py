@@ -7,7 +7,6 @@ kicad-cli and KiCad's Python with pcbnew.
 
 from __future__ import annotations
 
-import re
 import subprocess
 from xml.etree.ElementTree import ParseError
 
@@ -16,7 +15,7 @@ from conftest import HAS_KICAD_CLI
 
 from mcp_server_kicad import _netlist_import as ni
 from mcp_server_kicad._freerouting import find_pcbnew_python
-from mcp_server_kicad._shared import _find_kicad_cli, _kicad_root, _resolve_system_lib
+from mcp_server_kicad._shared import _kicad_root, _resolve_system_lib
 from mcp_server_kicad.models import UpdatePcbResult
 
 NETLIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -144,33 +143,6 @@ requires_e2e = pytest.mark.skipif(
 )
 
 
-def _kicad_major() -> int:
-    """Major version of the installed kicad-cli, or 0 when unknown."""
-    cli = _find_kicad_cli()
-    if cli is None:
-        return 0
-    try:
-        out = subprocess.run([cli, "version"], capture_output=True, text=True, timeout=30).stdout
-        match = re.match(r"(\d+)", out.strip())
-        return int(match.group(1)) if match else 0
-    except Exception:
-        return 0
-
-
-KICAD_MAJOR = _kicad_major() if HAS_E2E_ENV else 0
-
-# The importer itself works under pcbnew 10 (status ok, pads bound); the
-# read-back through the kiutils tools is what fails, because kiutils cannot
-# parse the KiCad 10-format boards pcbnew 10's SaveBoard writes. strict=True
-# turns these into hard failures the moment a KiCad 10-capable parser lands.
-xfail_kicad10_read_gap = pytest.mark.xfail(
-    KICAD_MAJOR >= 10,
-    reason="#11: kiutils cannot read KiCad 10-format boards; "
-    "remove this marker in the #9 fork-adoption PR",
-    strict=True,
-)
-
-
 def _make_project(tmp_path):
     """Two stock resistors wired into /SIG and /GND, footprints assigned."""
     from mcp_server_kicad.project import create_project
@@ -199,8 +171,33 @@ def _make_project(tmp_path):
     return sch, str(tmp_path / "e2e.kicad_pcb")
 
 
+def _pcbnew_move(pcb_path: str, reference: str, x_mm: float, y_mm: float) -> None:
+    """Move a footprint with KiCad's own pcbnew.
+
+    The MCP move_footprint stays a guarded kiutils writer, which cannot
+    touch the KiCad 10-format boards pcbnew 10 writes on the K10 runners;
+    this test-only stand-in works on both.
+    """
+    python, env = find_pcbnew_python()
+    assert python is not None
+    script = (
+        "import sys, pcbnew; "
+        "b = pcbnew.LoadBoard(sys.argv[1]); "
+        "fp = b.FindFootprintByReference(sys.argv[2]); "
+        "fp.SetPosition(pcbnew.VECTOR2I_MM(float(sys.argv[3]), float(sys.argv[4]))); "
+        "pcbnew.SaveBoard(sys.argv[1], b)"
+    )
+    subprocess.run(
+        [python, "-c", script, pcb_path, reference, str(x_mm), str(y_mm)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+        check=True,
+    )
+
+
 @requires_e2e
-@xfail_kicad10_read_gap
 class TestUpdatePcbE2E:
     def test_initial_import(self, tmp_path):
         from mcp_server_kicad.pcb import (
@@ -241,14 +238,13 @@ class TestUpdatePcbE2E:
     def test_value_update_preserves_position(self, tmp_path):
         from mcp_server_kicad.pcb import (
             list_pcb_footprints,
-            move_footprint,
             update_pcb_from_schematic,
         )
         from mcp_server_kicad.schematic import set_component_property
 
         sch, pcb_path = _make_project(tmp_path)
         update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
-        move_footprint("R1", 42, 24, pcb_path=pcb_path)
+        _pcbnew_move(pcb_path, "R1", 42, 24)
         set_component_property("R1", "Value", "22K", schematic_path=sch)
         result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
         assert result.value_updated == ["R1"]
@@ -289,21 +285,69 @@ class TestUpdatePcbE2E:
         assert seg.net == 0
 
     def test_delete_stale(self, tmp_path):
+        """A footprint whose component left the schematic goes stale.
+
+        The stale footprint is created schematic-side (place R3, import,
+        remove R3, re-import) because place_footprint stays a guarded
+        kiutils writer that cannot touch KiCad 10-format boards.
+        """
+        from mcp_server_kicad.pcb import list_pcb_footprints, update_pcb_from_schematic
+        from mcp_server_kicad.schematic import (
+            place_component,
+            remove_component,
+            set_component_property,
+        )
+
+        sch, pcb_path = _make_project(tmp_path)
+        place_component("Device:R", "R3", "1K", 160, 80, schematic_path=sch)
+        set_component_property(
+            "R3", "Footprint", "Resistor_SMD:R_0603_1608Metric", schematic_path=sch
+        )
+        update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
+        assert any(f.reference == "R3" for f in list_pcb_footprints(pcb_path=pcb_path))
+        remove_component("R3", schematic_path=sch)
+
+        result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
+        assert result.stale_footprints == ["R3"]
+        assert result.stale_removed == []
+        assert any(f.reference == "R3" for f in list_pcb_footprints(pcb_path=pcb_path))
+
+        result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path, delete_stale=True)
+        assert result.stale_removed == ["R3"]
+        assert not any(f.reference == "R3" for f in list_pcb_footprints(pcb_path=pcb_path))
+
+    def test_add_trace_net_binding_survives_reimport(self, tmp_path):
+        """Live trap-#1 gate: on the KiCad 10 runner the imported board is
+        K10-format, so add_trace/add_via must emit the name-based net
+        dialect there; a load-order rebind or a rejected file fails here.
+        On KiCad 9 the same test pins the numeric dialect.
+        """
         from mcp_server_kicad.pcb import (
-            list_pcb_footprints,
-            place_footprint,
+            add_trace,
+            add_via,
+            list_pcb_nets,
+            list_pcb_traces,
+            run_drc,
             update_pcb_from_schematic,
         )
 
         sch, pcb_path = _make_project(tmp_path)
         update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
-        place_footprint("R99", "ghost", 55, 55, pcb_path=pcb_path)
+        sig = next(n for n in list_pcb_nets(pcb_path=pcb_path) if n.name == "/SIG")
+        add_trace(100, 80, 130, 80, net=sig.number, pcb_path=pcb_path)
+        add_via(115, 80, net=sig.number, pcb_path=pcb_path)
 
         result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
-        assert result.stale_footprints == ["R99"]
-        assert result.stale_removed == []
-        assert any(f.reference == "R99" for f in list_pcb_footprints(pcb_path=pcb_path))
-
-        result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path, delete_stale=True)
-        assert result.stale_removed == ["R99"]
-        assert not any(f.reference == "R99" for f in list_pcb_footprints(pcb_path=pcb_path))
+        assert result.status == "ok"
+        assert result.orphaned_tracks == 0
+        sig2 = next(n for n in list_pcb_nets(pcb_path=pcb_path) if n.name == "/SIG")
+        seg = next(
+            t
+            for t in list_pcb_traces(pcb_path=pcb_path)
+            if t.type == "segment" and t.start_x == 100 and t.start_y == 80
+        )
+        assert seg.net == sig2.number
+        via = next(t for t in list_pcb_traces(pcb_path=pcb_path) if t.type == "via")
+        assert via.net == sig2.number
+        drc = run_drc(pcb_path=pcb_path)
+        assert drc.violation_count >= 0

@@ -9,7 +9,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import reparse, requires_cli
+from conftest import _confined, _pure_insertion, _span_preserved, reparse, requires_cli
 from kiutils.items.schitems import Connection
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -17,34 +17,6 @@ from mcp_server_kicad import _cst, project, schematic
 from mcp_server_kicad._shared import _node_uuid, _resolve_system_lib, _run_cli
 
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
-
-
-def _diff_spans(before: bytes, after: bytes) -> tuple[int, int]:
-    """Byte counts of the single differing region on each side, after
-    stripping the common prefix and suffix."""
-    p = 0
-    lo = min(len(before), len(after))
-    while p < lo and before[p] == after[p]:
-        p += 1
-    s = 0
-    while s < lo - p and before[-1 - s] == after[-1 - s]:
-        s += 1
-    return len(before) - p - s, len(after) - p - s
-
-
-def _pure_insertion(before: bytes, after: bytes) -> bool:
-    """*after* is *before* with one contiguous run of bytes inserted."""
-    return len(after) >= len(before) and _diff_spans(before, after)[0] == 0
-
-
-def _span_preserved(before: bytes, after: bytes) -> bool:
-    """One contiguous insertion OR deletion: the shorter side is untouched."""
-    return min(_diff_spans(before, after)) == 0
-
-
-def _confined(before: bytes, after: bytes, limit: int = 200) -> bool:
-    """All differences sit inside one span of <= limit bytes on each side."""
-    return max(_diff_spans(before, after)) <= limit
 
 
 class TestRoundTrip:
