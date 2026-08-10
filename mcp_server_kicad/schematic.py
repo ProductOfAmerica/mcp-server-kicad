@@ -2246,7 +2246,7 @@ def _parse_unconnected_pins(erc_report: dict, sheet_filter: str | None = None) -
     return results
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_EXPORT)
 def list_unconnected_pins(
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,

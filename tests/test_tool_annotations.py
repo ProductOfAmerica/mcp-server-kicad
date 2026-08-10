@@ -10,6 +10,8 @@ false says it performs only additive updates, and a client is entitled to skip
 confirmation on that basis.
 """
 
+import inspect
+
 import pytest
 
 from mcp_server_kicad import footprint, pcb, project, schematic, symbol
@@ -59,7 +61,6 @@ _EXPECTED: dict[str, dict[str, list[str]]] = {
             "get_symbol_pins",
             "get_pin_positions",
             "get_net_connections",
-            "list_unconnected_pins",
         ],
         "additive": [
             "place_component",
@@ -89,7 +90,13 @@ _EXPECTED: dict[str, dict[str, list[str]]] = {
             "remove_text",
             "remove_no_connect",
         ],
-        "export": ["run_erc", "export_schematic", "export_netlist", "export_bom"],
+        "export": [
+            "run_erc",
+            "list_unconnected_pins",
+            "export_schematic",
+            "export_netlist",
+            "export_bom",
+        ],
     },
     "pcb": {
         "read_only": [
@@ -217,3 +224,20 @@ def test_table_covers_the_whole_surface():
     listed = sum(len(names) for groups in _EXPECTED.values() for names in groups.values())
     registered = sum(len(_registered(mod)) for mod in _MODULES)
     assert listed == registered
+
+
+def test_read_only_tools_do_not_write_output_files():
+    """readOnlyHint says the tool does not modify its environment.
+
+    A tool that hands kicad-cli --output creates and clobbers a file, so it is
+    not read-only however much its name reads like a query. This is the check
+    that caught list_unconnected_pins, which ran the same kicad-cli invocation
+    as run_erc while claiming to be read-only.
+    """
+    writers = [
+        name
+        for mod in _MODULES.values()
+        for name, tool in mod.mcp._tool_manager._tools.items()
+        if tool.annotations.readOnlyHint and "--output" in inspect.getsource(tool.fn)
+    ]
+    assert writers == [], f"readOnlyHint tools that write an output file: {writers}"
