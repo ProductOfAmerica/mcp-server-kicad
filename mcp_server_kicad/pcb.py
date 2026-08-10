@@ -230,23 +230,47 @@ def _fp_val_cst(fp) -> str:
 
 
 def _net_table(root) -> list[tuple[int, str]]:
-    """(number, name) rows from the board's net declarations.
+    """(number, name) rows for the board's nets, both dialects.
 
-    Tolerates both dialects: KiCad 9 numbered rows and a hypothetical
-    name-only row (number synthesized by position) so the K10 e2e can
-    pin the real shape.
+    KiCad 9 format boards declare (net N "NAME") rows at the root. KiCad 10
+    dropped the table and the numbers entirely: nets exist only as name
+    references on pads, segments, vias and zones (measured on the K10
+    runner, slice 13 probe), so numbers are synthesized from document order
+    for the tool surface. The same derivation feeds reads and writers, so
+    a number handed out by list_pcb_nets resolves back to its name.
     """
-    table: list[tuple[int, str]] = []
-    for i, net in enumerate(root.find_all("net")):
-        atoms = net.atoms[1:]
-        if atoms and atoms[0].text.lstrip("-").isdigit():
-            num = int(atoms[0].text)
-            name = atoms[1].text if len(atoms) > 1 else ""
-        else:
-            num = i
-            name = atoms[0].text if atoms else ""
-        table.append((num, name))
-    return table
+    rows = [c for c in root.find_all("net") if len(c.atoms) > 1]
+    if rows:
+        table: list[tuple[int, str]] = []
+        for net in rows:
+            atoms = net.atoms[1:]
+            if atoms[0].text.lstrip("-").isdigit():
+                num = int(atoms[0].text)
+                name = atoms[1].text if len(atoms) > 1 else ""
+            else:
+                num = len(table) + 1
+                name = atoms[0].text
+            table.append((num, name))
+        return table
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def _add(name: str) -> None:
+        if name and not name.lstrip("-").isdigit() and name not in seen:
+            seen.add(name)
+            names.append(name)
+
+    for item in root.lists:
+        if item.head == "footprint":
+            for pad in item.find_all("pad"):
+                net = pad.find("net")
+                if net is not None and len(net.atoms) > 1:
+                    _add(net.atoms[1].text)
+        elif item.head in ("segment", "arc", "via", "zone"):
+            net = item.find("net_name") or item.find("net")
+            if net is not None and len(net.atoms) > 1:
+                _add(net.atoms[1].text)
+    return [(i + 1, n) for i, n in enumerate(names)]
 
 
 def _item_net_number(net_node, name_to_num: dict[str, int]) -> int:
@@ -516,7 +540,7 @@ def list_pcb_graphic_items(pcb_path: str = PCB_PATH) -> list[GraphicItem]:
 def get_board_info(pcb_path: str = PCB_PATH) -> str:
     """Get board summary: footprint count, trace count, net count, thickness."""
     _, root, _ = _open_pcb_cst(pcb_path)
-    counts = {"segment": 0, "via": 0, "net": 0, "footprint": 0, "zone": 0}
+    counts = {"segment": 0, "via": 0, "footprint": 0, "zone": 0}
     for item in root.lists:
         if item.head in counts:
             counts[item.head] += 1
@@ -527,7 +551,7 @@ def get_board_info(pcb_path: str = PCB_PATH) -> str:
         f"Footprints: {counts['footprint']}\n"
         f"Traces: {counts['segment']}\n"
         f"Vias: {counts['via']}\n"
-        f"Nets: {counts['net']}\n"
+        f"Nets: {len(_net_table(root))}\n"
         f"Zones: {counts['zone']}\n"
         f"Thickness: {tval}mm"
     )

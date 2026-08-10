@@ -64,6 +64,66 @@ _K9_BOARD = """(kicad_pcb (version 20241108) (generator "pcbnew")
 )"""
 
 
+# KiCad-10-native-format board, shape measured via the slice-13 probe on the
+# K10 runner: no net table, no net numbers anywhere, items reference nets by
+# name only, B.Cu ordinal is 2.
+_K10_BOARD = """(kicad_pcb
+\t(version 20260206)
+\t(generator "pcbnew")
+\t(generator_version "10.0")
+\t(general
+\t\t(thickness 1.6)
+\t)
+\t(paper "A4")
+\t(layers
+\t\t(0 "F.Cu" signal)
+\t\t(2 "B.Cu" signal)
+\t\t(44 "Edge.Cuts" user)
+\t)
+\t(footprint "Resistor_SMD:R_0603"
+\t\t(layer "F.Cu")
+\t\t(uuid "fp-0001")
+\t\t(at 100 100)
+\t\t(property "Reference" "R1"
+\t\t\t(at 0 0 0)
+\t\t\t(effects
+\t\t\t\t(font
+\t\t\t\t\t(size 1.27 1.27)
+\t\t\t\t)
+\t\t\t)
+\t\t)
+\t\t(property "Value" "10K"
+\t\t\t(at 0 2 0)
+\t\t\t(effects
+\t\t\t\t(font
+\t\t\t\t\t(size 1.27 1.27)
+\t\t\t\t)
+\t\t\t)
+\t\t)
+\t\t(pad "1" smd rect
+\t\t\t(at -0.75 0)
+\t\t\t(size 0.7 0.8)
+\t\t\t(layers "F.Cu" "F.Paste" "F.Mask")
+\t\t\t(net "/SIG")
+\t\t)
+\t\t(pad "2" smd rect
+\t\t\t(at 0.75 0)
+\t\t\t(size 0.7 0.8)
+\t\t\t(layers "F.Cu" "F.Paste" "F.Mask")
+\t\t\t(net "/GND")
+\t\t)
+\t)
+\t(segment
+\t\t(start 100 100)
+\t\t(end 110 100)
+\t\t(width 0.25)
+\t\t(layer "F.Cu")
+\t\t(net "/SIG")
+\t\t(uuid "seg-0001")
+\t)
+)"""
+
+
 def _write_board(tmp_path, content: str) -> str:
     p = tmp_path / "board.kicad_pcb"
     p.write_text(content)
@@ -192,6 +252,33 @@ class TestAddTraceViaCst:
             pcb.add_trace(0, 0, 1, 1, net=9, pcb_path=p)
         assert Path(p).read_bytes() == before
         assert str(Path(p).resolve()) not in pcb._BOARD_CACHE
+
+    def test_k10_tableless_derived_nets_and_emission(self, tmp_path):
+        """The measured K10 shape: no net table, name-only references.
+
+        Numbers are synthesized from document order, and add_trace resolves
+        them back to names for emission.
+        """
+        p = _write_board(tmp_path, _K10_BOARD)
+        assert _cst.serialize(_cst.parse(Path(p).read_bytes())) == Path(p).read_bytes()
+        nets = pcb.list_pcb_nets(p)
+        assert [(n.number, n.name) for n in nets] == [(1, "/SIG"), (2, "/GND")]
+        traces = pcb.list_pcb_traces(p)
+        assert [(t.type, t.net) for t in traces] == [("segment", 1)]
+        pads = pcb.get_footprint_pads("R1", p)
+        assert "net=/SIG" in pads and "net=/GND" in pads
+        assert "Nets: 2" in pcb.get_board_info(p)
+
+        before = Path(p).read_bytes()
+        pcb.add_trace(50, 50, 60, 50, net=2, pcb_path=p)
+        after = Path(p).read_bytes()
+        assert _pure_insertion(before, after)
+        i = after.index(b"(start 50 50)")
+        assert b'(net "/GND")' in after[i - 100 : i + 250]
+        assert [(t.type, t.net) for t in pcb.list_pcb_traces(p)] == [
+            ("segment", 1),
+            ("segment", 2),
+        ]
 
     @requires_cli
     def test_drc_accepts_spliced_board(self, scratch_pcb):
