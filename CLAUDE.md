@@ -21,7 +21,7 @@ Run a server by hand: `uv run mcp-server-kicad` (stdio), or via the MCP Inspecto
 
 ## Architecture
 
-Five `MCPServer` servers (the mcp 2.x class that was `FastMCP` in 1.x), one module each: `schematic.py`, `pcb.py`, `project.py`, `symbol.py`, `footprint.py`. Each defines its own `mcp` instance and `main()` console script; `server.py` merges all tools into the unified `kicad` server through `_copy_tools`, which reaches into the private `_tool_manager._tools` (no public copy API; `test_tool_annotations.py` depends on the same internals). Every tool passes one of the annotation presets from `_shared.py` (`_READ_ONLY`, `_ADDITIVE`, `_DESTRUCTIVE`, `_EXPORT`) and returns a Pydantic model from `models.py` when it has structured output.
+Five `MCPServer` servers, one module each: `schematic.py`, `pcb.py`, `project.py`, `symbol.py`, `footprint.py`. Each defines its own `mcp` instance and `main()` console script; `server.py` merges all tools into the unified `kicad` server through `_copy_tools`, which reaches into the private `_tool_manager._tools` (no public copy API; `test_tool_annotations.py` depends on the same internals). Every tool passes one of the annotation presets from `_shared.py` (`_READ_ONLY`, `_ADDITIVE`, `_DESTRUCTIVE`, `_EXPORT`) and returns a Pydantic model from `models.py` when it has structured output.
 
 ### One parse/write stack: the CST substrate (`_cst.py`)
 

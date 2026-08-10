@@ -159,14 +159,10 @@ class TestAddSymbol:
             symbol.add_symbol(name="X", pins=_two_pin_passive(), symbol_lib_path="")
 
     def test_missing_pin_key(self, tmp_path):
-        # The tool's own key validation is what is under test, so the pin has
-        # to reach it with "type" missing; cast is the only way past the
-        # checker now that the decorator preserves the declared signature.
-        bad_pin = cast(list[SymbolPinSpec], [{"number": "1", "name": "A"}])
         with pytest.raises(ToolError, match="type"):
             symbol.add_symbol(
                 name="Bad",
-                pins=bad_pin,
+                pins=cast(list[SymbolPinSpec], [{"number": "1", "name": "A"}]),  # missing "type"
                 symbol_lib_path=str(tmp_path / "lib.kicad_sym"),
             )
 

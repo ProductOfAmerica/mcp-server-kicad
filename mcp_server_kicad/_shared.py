@@ -26,11 +26,9 @@ except PackageNotFoundError:  # source checkout with no install
 
 
 def build_server(name: str, instructions: str) -> MCPServer:
-    """Build an MCPServer that reports *this package's* version.
+    """Build an MCPServer reporting *this package's* version, not the SDK's.
 
-    Left as a helper rather than inlined because every entry point must report
-    the same version; test_server_reports_package_version pins that an
-    SDK upgrade cannot silently substitute its own version again.
+    Pinned by test_server_reports_package_version.
     """
     return MCPServer(name, instructions=instructions, version=SERVER_VERSION)
 
