@@ -23,19 +23,18 @@ Run a server by hand: `uv run mcp-server-kicad` (stdio), or via the MCP Inspecto
 
 Five FastMCP servers, one module each: `schematic.py`, `pcb.py`, `project.py`, `symbol.py`, `footprint.py`. Each defines its own `mcp` instance and `main()` console script; `server.py` merges all tools into the unified `kicad` server through `_copy_tools`, which reaches into FastMCP's private `_tool_manager._tools` (no public copy API; `test_tool_annotations.py` depends on the same internals). Every tool passes one of the annotation presets from `_shared.py` (`_READ_ONLY`, `_ADDITIVE`, `_DESTRUCTIVE`, `_EXPORT`) and returns a Pydantic model from `models.py` when it has structured output.
 
-### Two parse/write stacks — know which one a tool is on
+### One parse/write stack: the CST substrate (`_cst.py`)
 
-1. **CST substrate (`_cst.py`)**: stdlib-only, byte-preserving concrete syntax tree for s-expressions. Bytes in, bytes out; `serialize(parse(b)) == b` by construction; malformed input raises instead of being repaired. Every tool runs on it as of slice 17: all `.kicad_sch` reads and writes, all board reads and writes, and the symbol/footprint library tools. These paths are **guard-free**: they work on KiCad 9 and KiCad 10 files.
-2. **kiutils (legacy)**: only `_load_board`, which the `autoroute_pcb` internals still parse through. It is the one production caller of `_check_format_version`, which **refuses KiCad 10 files** (read-max limits in `_FORMAT_VERSION_LIMITS`, `_shared.py`) because kiutils crashes on K10 boards. Stock libraries under a KiCad install are exempt from the guard. `pcb.py` reads the same limits dict to version-gate net emission, which is a separate use.
+Stdlib-only, byte-preserving concrete syntax tree for s-expressions. Bytes in, bytes out; `serialize(parse(b)) == b` by construction; malformed input raises instead of being repaired. As of slice 18 every tool runs on it: all `.kicad_sch` reads and writes, all board reads and writes including the `autoroute_pcb` internals, and the symbol/footprint library tools. There is no version guard left, so KiCad 9 and KiCad 10 files both work everywhere. kiutils is a **test-only** dependency (the `dev` extra): it builds fixtures and reads written files back as an independent oracle, and nothing under `mcp_server_kicad` imports it (`test_runtime_imports_no_kiutils` scans for that).
 
 Two helper modules back the subprocess tools: `_freerouting.py` (`autoroute_pcb`; needs Java, resolves freerouting.jar via `FREEROUTING_JAR` or a cached auto-download, and hosts `find_pcbnew_python`) and `_netlist_import.py` (run under pcbnew's Python by `update_pcb_from_schematic` to load footprints and bind nets).
 
-The governing invariant (non-negotiable): bytes the user did not ask to change reach the disk unchanged, and an edit that cannot be done correctly is refused with the file intact. `docs/adr-cst-substrate.md` is the decision record — read it before touching any write path. Its status log is the authoritative list of which tools sit on which stack; update it when a tool migrates. Migration is one mutation-kind per PR (strangler fig), each slice validated by a byte-preservation test, the ERC oracle, and the KiCad 10 CI gate.
+The governing invariant (non-negotiable): bytes the user did not ask to change reach the disk unchanged, and an edit that cannot be done correctly is refused with the file intact. `docs/adr-cst-substrate.md` is the decision record; read it before touching any write path. Its status log records how each surface reached the substrate, slice by slice, and ends with the migration complete; append to it when a write path changes shape. The bar every slice cleared, and any new write path still has to clear, is a byte-preservation test, the ERC oracle, and the KiCad 10 CI gate.
 
 Rules the ADR encodes that will bite if ignored:
 
 - **CST I/O is bytes-only.** Never read a KiCad file in text mode on a write path; that rewrites CRLFs. Atom text decodes on demand; `set_text` re-encodes through the KiCad-measured escape codec (the only lossy surface).
-- **Board net references are version-gated with zero dialect overlap**: emit numeric `(net N)` for board format ≤ 20241229, quoted `(net "NAME")` above it, and never copy a numeric net reference across versions — KiCad 10 silently rebinds numbers to the wrong net. KiCad 10 boards have no net table; nets are derived from usage.
+- **Board net references are version-gated with zero dialect overlap**: emit numeric `(net N)` at or below `_NUMERIC_NET_VERSION_MAX` (20241229, defined in `pcb.py`), quoted `(net "NAME")` above it, and never copy a numeric net reference across versions. KiCad 10 silently rebinds numbers to the wrong net; its boards have no net table, so nets are derived from usage.
 - **Board CST cache** (`_open_pcb_cst`): parsed trees cached per resolved path keyed on mtime+size. Writers must pop their cache entry *before* mutating and never reinsert, so an exception mid-edit cannot leave a poisoned tree cached.
 - New constructs the server emits come from templates harvested from KiCad's own output (or verbatim copies of system-library nodes), not hand-written s-expressions.
 
@@ -54,7 +53,7 @@ Fixtures in `conftest.py` build schematics/boards through kiutils builders. Byte
 - `macos-discovery.yml`: macOS with KiCad 10 — the gating KiCad 10 e2e tests live here. Runs only on pushes to `main` and `ci/**`, **not on PR branches**: validate KiCad-10-affecting changes pre-merge by pushing a `ci/**` branch.
 - `release.yml`: manual dispatch. Bumps the version (pyproject, uv.lock, plugin.json), tags a GitHub release, publishes to PyPI.
 
-New files are stamped with the KiCad 9 formats the templates were harvested at (`KICAD_SCH_VERSION = 20250114` in conftest; `_EMPTY_SCH_TPL` in `project.py`, `_SYM_LIB_TPL` in `symbol.py`), which are distinct from the read-max guard limits. Editing an existing file never changes its version stamp, so a KiCad 10 file stays KiCad 10.
+New files are stamped with the KiCad 9 formats the templates were harvested at (`KICAD_SCH_VERSION = 20250114` in conftest; `_EMPTY_SCH_TPL` in `project.py`, `_SYM_LIB_TPL` in `symbol.py`). Editing an existing file never changes its version stamp, so a KiCad 10 file stays KiCad 10.
 
 ### This repo is also a Claude Code plugin
 
