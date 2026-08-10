@@ -9,10 +9,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kiutils.items.schitems import (
-    HierarchicalSheet,
-)
-from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -27,7 +23,6 @@ from mcp_server_kicad._shared import (
     SCH_PATH,
     _find_root_schematic,
     _gen_uuid,
-    _load_sch,
     _node_uuid,
     _resolve_hierarchy_path,
     _resolve_root,
@@ -94,16 +89,8 @@ mcp = FastMCP(
 )
 
 
-def _find_sheet(sch: Schematic, sheet_uuid: str) -> HierarchicalSheet:
-    """Return the hierarchical sheet with the given UUID, or raise ToolError."""
-    sheet = next((s for s in sch.sheets if s.uuid == sheet_uuid), None)
-    if sheet is None:
-        raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
-    return sheet
-
-
 def _find_sheet_cst(root, sheet_uuid: str):
-    """CST twin of _find_sheet: same lookup, same error string."""
+    """Return the hierarchical sheet with the given UUID, or raise ToolError."""
     for sheet in root.find_all("sheet"):
         if _node_uuid(sheet) == sheet_uuid:
             return sheet
@@ -595,16 +582,6 @@ def remove_sheet_pin(
     return f"Removed pin '{pin_name}' from sheet"
 
 
-def _collect_refs(sch) -> set[str]:
-    """Collect all non-'?' reference designators from a schematic."""
-    refs: set[str] = set()
-    for sym in sch.schematicSymbols:
-        ref_prop = next((p for p in sym.properties if p.key == "Reference"), None)
-        if ref_prop and "?" not in ref_prop.value:
-            refs.add(ref_prop.value)
-    return refs
-
-
 @mcp.tool(annotations=_ADDITIVE)
 def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -> str:
     """Auto-assign reference designators to unannotated components.
@@ -741,41 +718,45 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     Args:
         schematic_path: Path to root .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     sch_dir = Path(schematic_path).parent
     issues: list[dict] = []
     all_refs: dict[str, list[str]] = {}  # ref -> [sheet_names]
 
-    # Check root schematic refs
-    for sym in sch.schematicSymbols:
-        ref_prop = next((p for p in sym.properties if p.key == "Reference"), None)
-        if ref_prop:
-            if "?" in ref_prop.value:
-                issues.append(
-                    {
-                        "type": "unannotated_ref",
-                        "sheet": Path(schematic_path).name,
-                        "reference": ref_prop.value,
-                    }
-                )
+    def _scan_refs(node_root, sheet_label: str) -> None:
+        for sym in node_root.find_all("symbol"):
+            ref = _sym_property_cst(sym, "Reference")
+            if ref is None:
+                continue
+            if "?" in ref:
+                issues.append({"type": "unannotated_ref", "sheet": sheet_label, "reference": ref})
             else:
-                all_refs.setdefault(ref_prop.value, []).append(Path(schematic_path).name)
+                all_refs.setdefault(ref, []).append(sheet_label)
 
-    for sheet in sch.sheets:
-        child_path = sch_dir / sheet.fileName.value
+    # Check root schematic refs
+    _scan_refs(root, Path(schematic_path).name)
+
+    for sheet in root.find_all("sheet"):
+        sheet_name = _sheet_name_cst(sheet) or ""
+        file_name = _sheet_file_cst(sheet) or ""
+        child_path = sch_dir / file_name
         if not child_path.exists():
             issues.append(
                 {
                     "type": "missing_file",
-                    "sheet_name": sheet.sheetName.value,
-                    "file_name": sheet.fileName.value,
+                    "sheet_name": sheet_name,
+                    "file_name": file_name,
                 }
             )
             continue
 
-        child_sch = _load_sch(str(child_path))
-        pin_names = {p.name: p.connectionType for p in sheet.pins}
-        label_names = {hl.text: hl.shape for hl in child_sch.hierarchicalLabels}
+        child_root = _cst.parse(child_path.read_bytes()).lists[0]
+        pin_names = {p.atoms[1].text: p.atoms[2].text for p in sheet.find_all("pin")}
+        label_names: dict[str, str] = {}
+        for hl in child_root.find_all("hierarchical_label"):
+            shape = hl.find("shape")
+            # kiutils defaulted a shapeless label to "input"; KiCad always writes one.
+            label_names[_node_text(hl)] = shape.atoms[1].text if shape is not None else "input"
 
         # Orphaned labels (in child, no matching pin)
         for label_name, label_shape in label_names.items():
@@ -783,7 +764,7 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
                 issues.append(
                     {
                         "type": "orphaned_label",
-                        "sheet_name": sheet.sheetName.value,
+                        "sheet_name": sheet_name,
                         "label": label_name,
                     }
                 )
@@ -791,7 +772,7 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
                 issues.append(
                     {
                         "type": "direction_mismatch",
-                        "sheet_name": sheet.sheetName.value,
+                        "sheet_name": sheet_name,
                         "pin": label_name,
                         "pin_direction": pin_names[label_name],
                         "label_direction": label_shape,
@@ -804,25 +785,13 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
                 issues.append(
                     {
                         "type": "orphaned_pin",
-                        "sheet_name": sheet.sheetName.value,
+                        "sheet_name": sheet_name,
                         "pin": pin_name,
                     }
                 )
 
         # Check child refs
-        for sym in child_sch.schematicSymbols:
-            ref_prop = next((p for p in sym.properties if p.key == "Reference"), None)
-            if ref_prop:
-                if "?" in ref_prop.value:
-                    issues.append(
-                        {
-                            "type": "unannotated_ref",
-                            "sheet": sheet.fileName.value,
-                            "reference": ref_prop.value,
-                        }
-                    )
-                else:
-                    all_refs.setdefault(ref_prop.value, []).append(sheet.fileName.value)
+        _scan_refs(child_root, file_name)
 
     # Check for duplicate refs across sheets
     for ref, sheets_list in all_refs.items():
@@ -971,72 +940,76 @@ def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> Net
         net_name: Net/label name to trace
         schematic_path: Path to root .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     sch_dir = Path(schematic_path).parent
     root_name = Path(schematic_path).name
 
     sheets_touched: list[str] = []
     connections: list[dict] = []
 
+    def _count(node_root, token: str) -> int:
+        return sum(1 for n in node_root.find_all(token) if _node_text(n) == net_name)
+
     # Check root schematic for labels matching net_name
-    root_labels = [lbl for lbl in sch.labels if lbl.text == net_name]
-    root_glabels = [g for g in sch.globalLabels if g.text == net_name]
-    if root_labels or root_glabels:
+    if _count(root, "label") or _count(root, "global_label"):
         sheets_touched.append(root_name)
 
     # Check sheet pins for matching name
-    for sheet in sch.sheets:
-        pin_match = any(p.name == net_name for p in sheet.pins)
+    for sheet in root.find_all("sheet"):
+        pin_match = any(p.atoms[1].text == net_name for p in sheet.find_all("pin"))
         if pin_match:
+            sheet_name = _sheet_name_cst(sheet) or ""
+            file_name = _sheet_file_cst(sheet) or ""
             if root_name not in sheets_touched:
                 sheets_touched.append(root_name)
             connections.append(
                 {
                     "type": "sheet_pin",
-                    "sheet_name": sheet.sheetName.value,
-                    "file_name": sheet.fileName.value,
+                    "sheet_name": sheet_name,
+                    "file_name": file_name,
                 }
             )
             # Look inside child
-            child_path = sch_dir / sheet.fileName.value
+            child_path = sch_dir / file_name
             if child_path.exists():
-                child_sch = _load_sch(str(child_path))
-                child_hlabels = [hl for hl in child_sch.hierarchicalLabels if hl.text == net_name]
-                if child_hlabels:
-                    sheets_touched.append(sheet.fileName.value)
+                child_root = _cst.parse(child_path.read_bytes()).lists[0]
+                hlabel_count = _count(child_root, "hierarchical_label")
+                if hlabel_count:
+                    sheets_touched.append(file_name)
                     connections.append(
                         {
                             "type": "hierarchical_label",
-                            "sheet_name": sheet.sheetName.value,
-                            "file_name": sheet.fileName.value,
-                            "label_count": len(child_hlabels),
+                            "sheet_name": sheet_name,
+                            "file_name": file_name,
+                            "label_count": hlabel_count,
                         }
                     )
                 # Check for component connections in child
-                child_labels = [lbl for lbl in child_sch.labels if lbl.text == net_name]
-                if child_labels:
+                label_count = _count(child_root, "label")
+                if label_count:
                     connections.append(
                         {
                             "type": "local_label",
-                            "file_name": sheet.fileName.value,
-                            "count": len(child_labels),
+                            "file_name": file_name,
+                            "count": label_count,
                         }
                     )
 
     # Also check global labels in all sheets
-    for sheet in sch.sheets:
-        child_path = sch_dir / sheet.fileName.value
+    for sheet in root.find_all("sheet"):
+        file_name = _sheet_file_cst(sheet) or ""
+        child_path = sch_dir / file_name
         if child_path.exists():
-            child_sch = _load_sch(str(child_path))
-            child_glabels = [g for g in child_sch.globalLabels if g.text == net_name]
-            if child_glabels:
-                if sheet.fileName.value not in sheets_touched:
-                    sheets_touched.append(sheet.fileName.value)
+            child_root = _cst.parse(child_path.read_bytes()).lists[0]
+            glabel_count = _count(child_root, "global_label")
+            if glabel_count:
+                if file_name not in sheets_touched:
+                    sheets_touched.append(file_name)
                 connections.append(
                     {
                         "type": "global_label",
-                        "file_name": sheet.fileName.value,
-                        "count": len(child_glabels),
+                        "file_name": file_name,
+                        "count": glabel_count,
                     }
                 )
 
@@ -1055,39 +1028,42 @@ def list_cross_sheet_nets(schematic_path: str = SCH_PATH) -> CrossSheetNetsResul
     Args:
         schematic_path: Path to root .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     sch_dir = Path(schematic_path).parent
 
     hierarchical_nets: list[dict] = []
     global_nets: dict[str, list[str]] = {}  # name -> [sheet files]
 
-    for sheet in sch.sheets:
-        for pin in sheet.pins:
-            child_path = sch_dir / sheet.fileName.value
-            has_label = False
-            if child_path.exists():
-                child_sch = _load_sch(str(child_path))
-                has_label = any(hl.text == pin.name for hl in child_sch.hierarchicalLabels)
+    for sheet in root.find_all("sheet"):
+        sheet_name = _sheet_name_cst(sheet) or ""
+        file_name = _sheet_file_cst(sheet) or ""
+        child_path = sch_dir / file_name
+        child_root = _cst.parse(child_path.read_bytes()).lists[0] if child_path.exists() else None
+        hlabels = (
+            {_node_text(hl) for hl in child_root.find_all("hierarchical_label")}
+            if child_root is not None
+            else set()
+        )
+
+        for pin in sheet.find_all("pin"):
             hierarchical_nets.append(
                 {
-                    "name": pin.name,
-                    "direction": pin.connectionType,
-                    "sheet_name": sheet.sheetName.value,
-                    "file_name": sheet.fileName.value,
-                    "label_matched": has_label,
+                    "name": pin.atoms[1].text,
+                    "direction": pin.atoms[2].text,
+                    "sheet_name": sheet_name,
+                    "file_name": file_name,
+                    "label_matched": pin.atoms[1].text in hlabels,
                 }
             )
 
         # Collect global labels
-        child_path = sch_dir / sheet.fileName.value
-        if child_path.exists():
-            child_sch = _load_sch(str(child_path))
-            for gl in child_sch.globalLabels:
-                global_nets.setdefault(gl.text, []).append(sheet.fileName.value)
+        if child_root is not None:
+            for gl in child_root.find_all("global_label"):
+                global_nets.setdefault(_node_text(gl), []).append(file_name)
 
     # Also check root for global labels
-    for gl in sch.globalLabels:
-        global_nets.setdefault(gl.text, []).append(Path(schematic_path).name)
+    for gl in root.find_all("global_label"):
+        global_nets.setdefault(_node_text(gl), []).append(Path(schematic_path).name)
 
     global_net_list = [
         {"name": name, "sheets": sheets} for name, sheets in sorted(global_nets.items())

@@ -15,7 +15,6 @@ from kiutils.items.common import Effects, Font, Position, Stroke
 from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpText
 from kiutils.items.gritems import GrArc, GrLine
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
-from kiutils.schematic import Schematic
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
@@ -207,14 +206,6 @@ def _check_format_version(path: str, head: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-
-def _load_sch(path: str = SCH_PATH) -> Schematic:
-    """Load a KiCad schematic from *path* (kiutils, read paths only)."""
-    if not path:
-        raise ValueError("No schematic path provided. Pass sch_path parameter.")
-    _check_format_version(path)
-    return Schematic.from_file(path)
 
 
 def _gen_uuid() -> str:
