@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from conftest import requires_cli
 from kiutils.board import Board
 from kiutils.footprint import Footprint
 from kiutils.items.common import Net, Position, Property
@@ -24,7 +25,7 @@ from mcp_server_kicad._freerouting import (
     run_freerouting,
 )
 from mcp_server_kicad._shared import _keepout_dict, _xy
-from mcp_server_kicad.pcb import _promote_footprint_keepouts
+from mcp_server_kicad.pcb import _promote_footprint_keepouts, run_drc
 
 
 class TestCheckJava:
@@ -561,6 +562,20 @@ class TestPromoteFootprintKeepouts:
 
         with pytest.raises(ToolError, match="Failed to prepare PCB for autorouting"):
             _promote_footprint_keepouts(pcb_path, out_path)
+
+    @requires_cli
+    def test_kicad_accepts_the_promoted_board(self, tmp_path):
+        """The live oracle for the promoted zone: KiCad itself loads the file
+        and runs DRC on it, on whichever major the runner has installed. The
+        promoted board's only real consumer is pcbnew, so our own parser
+        reading it back proves nothing."""
+        pcb_path = _make_board_with_fp_keepout(tmp_path, fp_angle=45, fp_x=100, fp_y=100)
+        out_path = str(tmp_path / "out.kicad_pcb")
+
+        assert _promote_footprint_keepouts(pcb_path, out_path) == 1
+
+        result = run_drc(pcb_path=out_path, output_dir=str(tmp_path))
+        assert result.violation_count >= 0
 
     def test_net_tokens_k9_numeric(self, tmp_path):
         """A KiCad 9 format board gets the numeric (net 0) plus empty net_name."""
