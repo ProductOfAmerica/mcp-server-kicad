@@ -44,7 +44,7 @@ mcp-server-kicad-project = "mcp_server_kicad.project:main"
 # kiutils builds board and schematic fixtures in the test suite and reads
 # written files back as an independent oracle. No runtime path parses
 # through it, so it is not a runtime dependency.
-dev = ["pytest>=9.0", "ruff", "pyright", "kiutils>=1.4"]
+dev = ["pytest>=9.0", "pytest-xdist>=3.6", "ruff", "pyright", "kiutils>=1.4"]
 
 [build-system]
 requires = ["hatchling"]

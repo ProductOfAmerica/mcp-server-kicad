@@ -87,4 +87,4 @@ jobs:
       # Only one Python version. kicad-cli is a subprocess and does not behave
       # differently across 3.10-3.13, so spreading this over ci.yml's four matrix
       # legs would quadruple a multi-minute install for nothing.
-      - run: uv run pytest -v
+      - run: uv run pytest -v -n auto

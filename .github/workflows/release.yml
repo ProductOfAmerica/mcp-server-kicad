@@ -35,7 +35,7 @@ jobs:
       - run: uv run pyright
 
       # Test
-      - run: uv run pytest -v
+      - run: uv run pytest -v -n auto
 
       # Bump version (uv version re-locks, so no separate uv lock step)
       - name: Bump version
