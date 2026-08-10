@@ -73,3 +73,25 @@ jobs:
 
       # Publish to PyPI
       - uses: pypa/gh-action-pypi-publish@release/v1
+
+      # Publish to the MCP Registry. Last on purpose: it validates that the PyPI
+      # package version is already live, and a failure here leaves the PyPI and
+      # GitHub releases intact, needing only a manual `mcp-publisher publish`.
+      #
+      # github-oidc is what removes the human: the interactive `login github`
+      # device flow mints a Registry JWT that expires five minutes later
+      # (measured 2026-08-10), so a hand-run publish is a race against the clock
+      # every single release. OIDC uses the id-token permission declared above.
+      - name: Publish to the MCP Registry
+        run: |
+          curl -sSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
+            | tar -xzf - mcp-publisher
+          ./mcp-publisher login github-oidc
+          # PyPI serves a new version through a CDN, so the registry can still be
+          # unable to see it for a few seconds after the publish step returns.
+          for attempt in 1 2 3 4 5; do
+            ./mcp-publisher publish && exit 0
+            echo "attempt $attempt failed; waiting for PyPI to serve ${{ steps.bump.outputs.version }}"
+            sleep 30
+          done
+          exit 1
