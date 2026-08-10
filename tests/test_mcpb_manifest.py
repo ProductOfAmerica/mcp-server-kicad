@@ -39,6 +39,23 @@ def test_env_var_names_are_read_by_the_server():
         assert f'"{name}"' in sources, f"{name} is set by the manifest but read nowhere"
 
 
+def test_optional_config_has_an_empty_default():
+    """Without a default, MCPB passes the placeholder through verbatim.
+
+    Measured 2026-08-10 against getMcpConfigForManifest from @anthropic-ai/mcpb
+    2.1.2: an unset field with no default yields the literal string
+    ``${user_config.kicad_cli_path}`` as the env value, not an empty string.
+    That is truthy, so _resolve_config would take it as a real path and
+    _find_kicad_cli would return it instead of falling through to PATH and the
+    macOS bundle, breaking every CLI-backed tool for the macOS and Linux users
+    the field's own description tells to leave it blank. Adding ``default: ""``
+    makes the same call yield "", which is falsy and resolves correctly.
+    """
+    for key, spec in MANIFEST["user_config"].items():
+        assert not spec.get("required"), f"{key} is required; this test assumes optional"
+        assert spec.get("default") == "", f"{key} needs an empty default"
+
+
 def test_entry_point_exists():
     assert (MCPB_DIR / MANIFEST["server"]["entry_point"]).is_file()
 

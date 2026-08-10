@@ -48,25 +48,29 @@
       "type": "file",
       "title": "Default schematic",
       "description": "Your .kicad_sch file. Sets the default for tools that take a schematic path, so you do not have to repeat it every request. Individual requests can still name a different file.",
-      "required": false
+      "required": false,
+      "default": ""
     },
     "board_path": {
       "type": "file",
       "title": "Default board",
       "description": "Your .kicad_pcb file. Same idea as the schematic above.",
-      "required": false
+      "required": false,
+      "default": ""
     },
     "output_dir": {
       "type": "directory",
       "title": "Export directory",
       "description": "Where Gerbers, PDFs, BOMs, and other exports are written. Usually your project folder.",
-      "required": false
+      "required": false,
+      "default": ""
     },
     "kicad_cli_path": {
       "type": "file",
       "title": "kicad-cli executable",
       "description": "Only needed when kicad-cli is not on PATH, which is the case for the default Windows KiCad install (C:\\Program Files\\KiCad\\9.0\\bin\\kicad-cli.exe). Leave blank on macOS and Linux. Without it, the ERC, DRC, and export tools cannot run.",
-      "required": false
+      "required": false,
+      "default": ""
     }
   },
   "compatibility": {
