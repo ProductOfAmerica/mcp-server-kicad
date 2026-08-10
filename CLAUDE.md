@@ -27,7 +27,7 @@ Five FastMCP servers, one module each: `schematic.py`, `pcb.py`, `project.py`, `
 
 Stdlib-only, byte-preserving concrete syntax tree for s-expressions. Bytes in, bytes out; `serialize(parse(b)) == b` by construction; malformed input raises instead of being repaired. As of slice 18 every tool runs on it: all `.kicad_sch` reads and writes, all board reads and writes including the `autoroute_pcb` internals, and the symbol/footprint library tools. There is no version guard left, so KiCad 9 and KiCad 10 files both work everywhere. kiutils is a **test-only** dependency (the `dev` extra): it builds fixtures and reads written files back as an independent oracle, and nothing under `mcp_server_kicad` imports it (`test_runtime_imports_no_kiutils` scans for that).
 
-Two helper modules back the subprocess tools: `_freerouting.py` (`autoroute_pcb`; needs Java, resolves freerouting.jar via `FREEROUTING_JAR` or a cached auto-download, and hosts `find_pcbnew_python`) and `_netlist_import.py` (run under pcbnew's Python by `update_pcb_from_schematic` to load footprints and bind nets).
+Two helper modules back the subprocess tools: `_freerouting.py` (`autoroute_pcb`; needs Java, resolves freerouting.jar via `FREEROUTING_JAR` or a cached auto-download, hosts `find_pcbnew_python`, and era-preflights pcbnew: a KiCad 10 board on a pcbnew 9 refuses up front, a KiCad 9 board through pcbnew 10 gets a result warning that the routed copy is KiCad 10 format) and `_netlist_import.py` (run under pcbnew's Python by `update_pcb_from_schematic` to load footprints and bind nets).
 
 The governing invariant (non-negotiable): bytes the user did not ask to change reach the disk unchanged, and an edit that cannot be done correctly is refused with the file intact. `docs/adr-cst-substrate.md` is the decision record; read it before touching any write path. Its status log records how each surface reached the substrate, slice by slice, and ends with the migration complete; append to it when a write path changes shape. The bar every slice cleared, and any new write path still has to clear, is a byte-preservation test, the ERC oracle, and the KiCad 10 CI gate.
 
@@ -44,17 +44,17 @@ Config priority: explicit tool parameter > `KICAD_SCH_PATH`/`KICAD_PCB_PATH`/`KI
 
 ### Tests
 
-Fixtures in `conftest.py` build schematics/boards through kiutils builders. Byte-diff helpers (`_pure_insertion`, `_span_preserved`, `_confined`) assert CST edits touch only one contiguous span — use them in any new write-path test. `kicad_native_sch` mirrors KiCad's own output format where kiutils' differs; prefer it when testing format fidelity.
+Fixtures in `conftest.py` build schematics/boards through kiutils builders. Byte-diff helpers (`_pure_insertion`, `_span_preserved`, `_confined`) assert CST edits touch only one contiguous span; use them in any new write-path test. `kicad_native_sch` mirrors KiCad's own output format where kiutils' differs; prefer it when testing format fidelity.
 
 ### CI
 
-- `ci.yml`: lint + pyright + pytest matrix (3.10–3.13), no KiCad installed.
-- `kicad-suite.yml`: full suite on Linux with KiCad 9. Runs on PRs.
-- `macos-discovery.yml`: macOS with KiCad 10 — the gating KiCad 10 e2e tests live here. Runs only on pushes to `main` and `ci/**`, **not on PR branches**: validate KiCad-10-affecting changes pre-merge by pushing a `ci/**` branch.
-- `release.yml`: manual dispatch. Bumps the version (pyproject, uv.lock, plugin.json), tags a GitHub release, publishes to PyPI.
+- `ci.yml`: lint + pyright + pytest matrix (3.10-3.13), no KiCad installed. Triggers on `ci/**` pushes too, so preverify branches get the full matrix.
+- `kicad-suite.yml`: full suite on Linux with KiCad 9. Runs on PRs and `ci/**` pushes.
+- `macos-discovery.yml`: macOS with KiCad 10; the gating KiCad 10 e2e tests live here. Runs only on pushes to `main` and `ci/**`, **not on PR branches**: validate KiCad-10-affecting changes pre-merge by pushing a `ci/**` branch.
+- `release.yml`: manual dispatch. Bumps the version (pyproject, uv.lock, plugin.json, server.json), tags a GitHub release, publishes to PyPI. Its bump commit is pushed with the default GITHUB_TOKEN, so it triggers no CI runs; zero runs on a bump commit is normal.
 
 New files are stamped with the KiCad 9 formats the templates were harvested at (`KICAD_SCH_VERSION = 20250114` in conftest; `_EMPTY_SCH_TPL` in `project.py`, `_SYM_LIB_TPL` in `symbol.py`). Editing an existing file never changes its version stamp, so a KiCad 10 file stays KiCad 10.
 
 ### This repo is also a Claude Code plugin
 
-`.claude-plugin/`, `skills/` (six design skills), `agents/` (reviewer subagents), and `hooks/` ship to plugin users. `hooks/hooks.json` blocks Read/Write/Edit on KiCad file extensions at the harness level — file manipulation must go through the MCP tools. Changes under `skills/` and `agents/` are user-facing product, not internal docs; `test_skills.py` and `test_skill_tool_coverage.py` check them against the real tool surface.
+`.claude-plugin/`, `skills/` (six design skills), `agents/` (reviewer subagents), and `hooks/` ship to plugin users. `hooks/hooks.json` blocks Read/Write/Edit on KiCad file extensions at the harness level: file manipulation must go through the MCP tools. Changes under `skills/` and `agents/` are user-facing product, not internal docs; `test_skills.py` and `test_skill_tool_coverage.py` check them against the real tool surface.
