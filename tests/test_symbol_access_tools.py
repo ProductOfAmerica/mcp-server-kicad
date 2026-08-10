@@ -95,3 +95,42 @@ class TestKicad10Header:
         assert "Added (1 pins)" in listing
         # The 20251024 stamp is untouched: we never downgrade a file.
         assert "(version 20251024)" in k10_lib.read_text()
+
+
+class TestUnitSuffixNames:
+    """A symbol whose own name ends in _N_M keeps it.
+
+    Measured on the stock Connector library: kiutils reads "Raspberry_Pi_2_3"
+    as entryName "Raspberry_Pi" with unitId 2 and styleId 3, so the listing
+    showed a name that get_symbol_info could not then find. The CST reads the
+    name atom, so both agree with KiCad.
+    """
+
+    LIB = """(kicad_symbol_lib
+  (version 20241209)
+  (generator "kicad_symbol_editor")
+  (symbol "Part_2_3"
+    (property "Reference" "J" (at 0 0 0) (effects (font (size 1.27 1.27))))
+    (symbol "Part_2_3_0_1")
+    (symbol "Part_2_3_1_1"
+      (pin passive line (at 0 0 0) (length 2.54)
+        (name "~" (effects (font (size 1.27 1.27))))
+        (number "1" (effects (font (size 1.27 1.27))))
+      )
+    )
+  )
+)
+"""
+
+    @pytest.fixture()
+    def lib(self, tmp_path):
+        path = tmp_path / "suffix.kicad_sym"
+        path.write_text(self.LIB)
+        return str(path)
+
+    def test_listed_under_its_full_name(self, lib):
+        assert symbol.list_lib_symbols(lib) == "Part_2_3 (1 pins)"
+
+    def test_found_under_its_full_name(self, lib):
+        assert symbol.get_symbol_info("Part_2_3", lib).startswith("Symbol: Part_2_3")
+        assert "not found" in symbol.get_symbol_info("Part", lib)

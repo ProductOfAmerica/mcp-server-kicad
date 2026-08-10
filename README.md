@@ -219,14 +219,13 @@ message naming `KICAD_CLI_PATH`, rather than vanishing from the tool list.
 
 | File | What works today |
 |------|------------------|
-| `.kicad_sch` | The entire schematic server, read and write, plus every sheet and hierarchy writer in the project server |
-| `.kicad_pcb` | All eight board read tools, plus `add_trace` and `add_via` |
-| `.kicad_sym`, `.kicad_mod` | The stock libraries shipped with a KiCad install |
+| `.kicad_sch` | Everything, read and write: the whole schematic server and the whole project server |
+| `.kicad_pcb` | Everything except `autoroute_pcb` |
+| `.kicad_sym`, `.kicad_mod` | Everything: your own libraries as well as the stock ones |
 
-Everything still on the old parser refuses a KiCad 10 file instead of silently
-downgrading it: the file is left untouched and the error names the format limit
-it hit. That covers the remaining board writers, the project server's hierarchy
-read tools, and your own symbol and footprint libraries. Migration progress is
+`autoroute_pcb` is the one tool left on the old parser, and it refuses a KiCad
+10 board instead of silently downgrading it: the file is left untouched and the
+error names the format limit it hit. Migration progress is
 tracked in [#9](https://github.com/ProductOfAmerica/mcp-server-kicad/issues/9);
 the design behind it is written up in
 [docs/adr-cst-substrate.md](docs/adr-cst-substrate.md).
