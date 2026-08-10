@@ -205,7 +205,7 @@ def list_lib_symbols(symbol_lib_path: str = SYM_LIB_PATH) -> str:
     return "\n".join(lines) if lines else "No symbols found."
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Symbol details from a library file")
 def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> str:
     """Get detailed pin and property info for a symbol in a library.
 

@@ -1,4 +1,6 @@
-"""The published inputSchema must describe the keys a tool actually requires.
+"""What each tool publishes to the client: inputSchema, outputSchema, title.
+
+The published inputSchema must describe the keys a tool actually requires.
 
 Nine parameters used to publish `{"items": {"type": "object",
 "additionalProperties": true}}`, which tells a model nothing: add_wires needs
@@ -99,3 +101,30 @@ def test_no_tool_returns_a_union():
         if get_origin(_return_annotation(tool)) in (Union, UnionType)
     ]
     assert unions == [], f"tools returning a union, whose output gets wrapped: {unions}"
+
+
+# Tools with a near neighbour on the surface: the same verb on a different
+# subject, or the same subject read at a different stage. A client shows `name`
+# when there is no title, so these are the ones where the raw function name
+# leaves a model picking from description prose alone.
+_NEEDS_A_TITLE = {
+    "get_symbol_info",
+    "get_symbol_pins",
+    "get_footprint_info",
+    "get_footprint_pads",
+    "get_footprint_bounds",
+    "export_netlist",
+    "export_hierarchical_netlist",
+    "validate_board",
+    "check_placement",
+}
+
+
+def test_ambiguous_tools_carry_distinct_titles():
+    titled = {tool.name: tool.title for tool in _all_tools() if tool.name in _NEEDS_A_TITLE}
+    assert set(titled) == _NEEDS_A_TITLE, (
+        f"renamed or removed since the titles were chosen: {_NEEDS_A_TITLE ^ set(titled)}"
+    )
+    untitled = sorted(name for name, title in titled.items() if not title)
+    assert untitled == [], f"ambiguous tools with no title: {untitled}"
+    assert len(set(titled.values())) == len(titled), f"titles are not distinct: {titled}"

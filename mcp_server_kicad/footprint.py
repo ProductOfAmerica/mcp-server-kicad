@@ -84,7 +84,7 @@ def list_lib_footprints(pretty_dir: str = FP_LIB_PATH) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Footprint details from a .kicad_mod file")
 def get_footprint_info(footprint_path: str) -> str:
     """Get pad and outline details for a footprint .kicad_mod file.
 

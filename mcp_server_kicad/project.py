@@ -1417,7 +1417,7 @@ def flatten_hierarchy(
     return f"Flattened hierarchy to {Path(output_path).name}: {total_components} components"
 
 
-@mcp.tool(annotations=_EXPORT)
+@mcp.tool(annotations=_EXPORT, title="Export a netlist with sheet paths for the whole hierarchy")
 def export_hierarchical_netlist(
     schematic_path: str = SCH_PATH,
     output_dir: str = "",

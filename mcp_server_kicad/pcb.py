@@ -733,7 +733,7 @@ def get_board_info(pcb_path: str = PCB_PATH) -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Pads of a footprint placed on the board")
 def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
     """Get pad info for a placed footprint on the PCB.
 
@@ -840,7 +840,7 @@ def move_footprint(
     return msg
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Check one proposed footprint position")
 def check_placement(
     reference: str,
     x: float,
@@ -2297,7 +2297,7 @@ def autoroute_pcb(
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Outline bounds of a footprint placed on the board")
 def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintBoundsResult:
     """Get the board-coordinate bounding box of a placed footprint.
 
@@ -2350,7 +2350,7 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintB
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Check every footprint already on the board")
 def validate_board(pcb_path: str = PCB_PATH) -> BoardValidationResult:
     """Validate all footprint placements against keep-out zones and board edge.
 

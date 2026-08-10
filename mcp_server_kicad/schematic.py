@@ -483,7 +483,7 @@ def list_schematic_bus_entries(schematic_path: str = SCH_PATH) -> list[BusEntryI
     return items
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Symbol pins from the schematic's embedded library")
 def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
     """Get pin info for a symbol in the schematic's lib_symbols.
 
@@ -2399,7 +2399,7 @@ def export_schematic(
     )
 
 
-@mcp.tool(annotations=_EXPORT)
+@mcp.tool(annotations=_EXPORT, title="Export a netlist for one schematic")
 def export_netlist(
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
