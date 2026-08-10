@@ -42,4 +42,4 @@ Thank you for your interest in contributing to mcp-server-kicad!
 
 ## Notes on Export Tests
 
-Tests for the export server require `kicad-cli`. It is found on your `PATH`, or inside `/Applications/KiCad/KiCad.app` on macOS; set `KICAD_CLI_PATH` if yours is elsewhere. If `kicad-cli` is not found, those tests are automatically skipped, and so is the autouse fixture that checks every generated `.kicad_sch` is parseable, so it is worth confirming it resolves. The schematic and PCB server tests do not require KiCad.
+Tests for the export server require `kicad-cli`. It is found on your `PATH`, inside `/Applications/KiCad/KiCad.app` on macOS, or in the versioned Windows install folders under `Program Files` and `AppData`; set `KICAD_CLI_PATH` if yours is elsewhere. If `kicad-cli` is not found, those tests are automatically skipped, and so is the autouse fixture that checks every generated `.kicad_sch` is parseable, so it is worth confirming it resolves. The schematic and PCB server tests do not require KiCad.

@@ -15,7 +15,7 @@ uv run pyright                        # type check (basic mode)
 uv run python mcp_server_kicad/_cst.py  # CST self-check (demo() asserts)
 ```
 
-Tests that shell out to `kicad-cli` (ERC, DRC, exports) auto-skip when it is not installed; so does the autouse fixture in `tests/conftest.py` that validates every generated `.kicad_sch` is parseable by `kicad-cli`. Confirm `kicad-cli` resolves locally (PATH, `KICAD_CLI_PATH`, or the macOS app bundle) or a green run proves less than it looks. Tests that intentionally write invalid files use `@pytest.mark.no_kicad_validation`.
+Tests that shell out to `kicad-cli` (ERC, DRC, exports) auto-skip when it is not installed; so does the autouse fixture in `tests/conftest.py` that validates every generated `.kicad_sch` is parseable by `kicad-cli`. Confirm `kicad-cli` resolves locally (`KICAD_CLI_PATH`, PATH, the macOS app bundle, or the versioned Windows install roots) or a green run proves less than it looks. Tests that intentionally write invalid files use `@pytest.mark.no_kicad_validation`.
 
 Run a server by hand: `uv run mcp-server-kicad` (stdio), or via the MCP Inspector command in README.md.
 
