@@ -831,6 +831,60 @@ class TestProjectToolsPreservation:
         assert len(froot.find_all("symbol")) == 2
 
 
+class TestMemoryGate:
+    """ADR-1 board gate: the hardened repr against real KiCad demo boards.
+
+    Baseline before slice 12A: 37.4x on the 6MB Video board. Hardened repr
+    measured 2026-08-09: 11.35x retained on Video, 8.85x on the 71MB
+    vme-wren. ~11x is the floor of a one-object-per-token design in
+    CPython (~32B/object + 33B/bytes overhead), so the gate was revised
+    to 12x with the user's sign-off (ADR): 68MB for the benchmark board
+    is acceptable for a server process. The flat-token-array design
+    stays on record as the next step if real memory pain appears.
+    """
+
+    @staticmethod
+    def _demo_boards():
+        from mcp_server_kicad._shared import _kicad_root
+
+        roots = []
+        root = _kicad_root()
+        if root is not None:
+            roots += [root / "share" / "kicad" / "demos", root / "SharedSupport" / "demos"]
+        boards = []
+        for r in roots:
+            if r.is_dir():
+                boards += [
+                    b for b in r.rglob("*.kicad_pcb") if 2_000_000 <= b.stat().st_size <= 20_000_000
+                ]
+        return sorted(boards, key=lambda b: b.stat().st_size)
+
+    def test_largest_demo_board_under_gate(self):
+        import gc
+        import tracemalloc
+
+        boards = self._demo_boards()
+        if not boards:
+            pytest.skip("no 2-20MB KiCad demo board on this host")
+        board = boards[-1]
+        data = board.read_bytes()
+        tracemalloc.start()
+        tree = _cst.parse(data)
+        gc.collect()
+        retained, _peak = tracemalloc.get_traced_memory()
+        tracemalloc.stop()
+        assert _cst.serialize(tree) == data
+        multiple = retained / len(data)
+        assert multiple <= 12, f"{board.name}: {multiple:.2f}x retained (gate <=12x)"
+
+    def test_demo_board_roundtrips(self):
+        boards = self._demo_boards()
+        if not boards:
+            pytest.skip("no >=2MB KiCad demo board on this host")
+        data = boards[0].read_bytes()
+        assert _cst.serialize(_cst.parse(data)) == data
+
+
 def _kicad_cli_major() -> int:
     result = _run_cli(["version"], check=False)
     try:

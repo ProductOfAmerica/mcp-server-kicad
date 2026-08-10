@@ -1108,7 +1108,7 @@ def _splice_sch_node(root, token: str, node) -> None:
     elif tail is not None:
         root.insert_before(tail, node)
     else:
-        root.children += [_cst.Node("ws", b"\n"), node]
+        root.append_child(node, b"\n")
 
 
 def _fill_at(node, x: float, y: float, rotation: float | None = None) -> None:
@@ -1244,7 +1244,7 @@ def _splice_lib_symbol_cst(root, node) -> None:
     if syms:
         libs.insert_after(syms[-1], node)
     else:
-        libs.children += [_cst.Node("ws", b"\n\t\t"), node]
+        libs.append_child(node, b"\n\t\t")
 
 
 def _copy_lib_symbol_from_file_cst(root, lib_path: str, symbol_name: str, new_name: str) -> bool:
@@ -1410,7 +1410,7 @@ def set_component_property(
         if props:
             sym.insert_after(props[-1], node)
         else:
-            sym.children += [_cst.Node("ws", b"\n\t"), node]
+            sym.append_child(node, b"\n\t")
         created = " (new property)"
     if key == "Reference":
         instances = sym.find("instances")
@@ -1473,6 +1473,7 @@ def set_page_size(
     new_paper = _cst.parse((parts + ")").encode()).lists[0]
     paper = root.find("paper")
     if paper is not None:
+        new_paper.sep = paper.sep
         root.children[root.children.index(paper)] = new_paper
     else:
         _splice_sch_node(root, "paper", new_paper)

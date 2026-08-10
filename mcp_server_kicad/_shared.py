@@ -619,7 +619,7 @@ def _upsert_root_symbol_instance(
         if tail is not None:
             root.insert_before(tail, si)
         else:
-            root.children += [_cst.Node("ws", b"\n"), si]
+            root.append_child(si, b"\n")
 
     entry = next((e for e in si.find_all("path") if e.atoms[1].text == sym_path), None)
     if entry is None:
@@ -629,7 +629,7 @@ def _upsert_root_symbol_instance(
         if entries:
             si.insert_after(entries[-1], entry)
         else:
-            si.children += [_cst.Node("ws", b"\n\t\t"), entry]
+            si.append_child(entry, b"\n\t\t")
     entry.find("reference").atoms[1].set_text(reference)
     entry.find("unit").atoms[1].set_text(str(unit))
     entry.find("value").atoms[1].set_text(value)
