@@ -15,6 +15,13 @@ from mcp_server_kicad import project
 from mcp_server_kicad.models import LibTableEntry, SheetPinSpec
 
 
+def _first_sheet_uuid(schematic_path: str) -> str:
+    """UUID of the first hierarchical sheet. kiutils types it optional; it is not."""
+    uuid = Schematic.from_file(schematic_path).sheets[0].uuid
+    assert uuid is not None
+    return uuid
+
+
 class TestCreateProject:
     def test_creates_pro_and_prl(self, tmp_path: Path):
         result = project.create_project(directory=str(tmp_path / "myproj"), name="myproj")
@@ -517,9 +524,7 @@ class TestModifyHierarchicalSheet:
             sheet_file=child,
             pins=[{"name": "VIN", "direction": "input"}],
         )
-        sch = Schematic.from_file(parent)
-        sheet_uuid = sch.sheets[0].uuid
-        assert sheet_uuid is not None
+        sheet_uuid = _first_sheet_uuid(parent)
 
         result = project.modify_hierarchical_sheet(
             sheet_uuid=sheet_uuid,
@@ -544,9 +549,7 @@ class TestAddSheetPin:
             sheet_file=child,
             pins=[{"name": "A", "direction": "input"}],
         )
-        sch = Schematic.from_file(parent)
-        sheet_uuid = sch.sheets[0].uuid
-        assert sheet_uuid is not None
+        sheet_uuid = _first_sheet_uuid(parent)
 
         result = project.add_sheet_pin(
             sheet_uuid=sheet_uuid,
@@ -577,9 +580,7 @@ class TestRemoveSheetPin:
                 {"name": "B", "direction": "output"},
             ],
         )
-        sch = Schematic.from_file(parent)
-        sheet_uuid = sch.sheets[0].uuid
-        assert sheet_uuid is not None
+        sheet_uuid = _first_sheet_uuid(parent)
 
         result = project.remove_sheet_pin(
             sheet_uuid=sheet_uuid,
@@ -1022,9 +1023,7 @@ class TestGetSheetInfo:
                 {"name": "GND", "direction": "bidirectional"},
             ],
         )
-        sch = Schematic.from_file(parent)
-        sheet_uuid = sch.sheets[0].uuid
-        assert sheet_uuid is not None
+        sheet_uuid = _first_sheet_uuid(parent)
 
         result = project.get_sheet_info(
             sheet_uuid=sheet_uuid,
@@ -1112,9 +1111,7 @@ class TestMoveHierarchicalSheet:
             sheet_file=child,
             pins=[{"name": "A", "direction": "input"}],
         )
-        sch = Schematic.from_file(parent)
-        sheet_uuid = sch.sheets[0].uuid
-        assert sheet_uuid is not None
+        sheet_uuid = _first_sheet_uuid(parent)
 
         result = project.move_hierarchical_sheet(
             sheet_uuid=sheet_uuid,
@@ -1180,9 +1177,7 @@ class TestDuplicateSheet:
             pins=[{"name": "VIN", "direction": "input"}],
             project_path=pro,
         )
-        sch = Schematic.from_file(root)
-        sheet_uuid = sch.sheets[0].uuid
-        assert sheet_uuid is not None
+        sheet_uuid = _first_sheet_uuid(root)
 
         result = project.duplicate_sheet(
             sheet_uuid=sheet_uuid,
