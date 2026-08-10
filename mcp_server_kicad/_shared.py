@@ -17,7 +17,6 @@ from kiutils.items.common import Effects, Font, Position, Stroke
 from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpText
 from kiutils.items.gritems import GrArc, GrLine
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
-from kiutils.schematic import Schematic
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -237,14 +236,6 @@ def _check_format_version(path: str, head: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _load_sch(path: str = SCH_PATH) -> Schematic:
-    """Load a KiCad schematic from *path* (kiutils, read paths only)."""
-    if not path:
-        raise ValueError("No schematic path provided. Pass sch_path parameter.")
-    _check_format_version(path)
-    return Schematic.from_file(path)
-
-
 def _gen_uuid() -> str:
     return str(uuid.uuid4())
 
@@ -282,6 +273,15 @@ def _node_uuid(node) -> str:
 def _sheet_file_cst(sheet) -> str | None:
     """Sheet file name; KiCad 9 writes "Sheetfile", kiutils "Sheet file"."""
     for key in ("Sheetfile", "Sheet file"):
+        v = _sym_property_cst(sheet, key)
+        if v is not None:
+            return v
+    return None
+
+
+def _sheet_name_cst(sheet) -> str | None:
+    """Sheet display name; KiCad 9 writes "Sheetname", kiutils "Sheet name"."""
+    for key in ("Sheetname", "Sheet name"):
         v = _sym_property_cst(sheet, key)
         if v is not None:
             return v
