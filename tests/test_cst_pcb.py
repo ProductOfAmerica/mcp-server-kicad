@@ -466,3 +466,26 @@ class TestTraceFiltersCst:
     def test_no_filters_message_parity(self, scratch_pcb):
         with pytest.raises(ToolError, match="at least one filter is required"):
             pcb.remove_traces(pcb_path=str(scratch_pcb))
+
+
+class TestThermalViasCst:
+    def test_k9_grid_pure_insertion(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.add_thermal_vias("R1", pad_number="1", rows=2, cols=2, pcb_path=p)
+        assert result.vias_added == 4
+        assert result.net == "Net1"
+        assert _pure_insertion(before, Path(p).read_bytes())
+        board = Board.from_file(p)
+        assert sum(1 for t in board.traceItems if isinstance(t, Via)) == 4
+
+    def test_k10_pad_net_resolution(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        result = pcb.add_thermal_vias("R1", pad_number="1", rows=1, cols=1, pcb_path=p)
+        assert result.vias_added == 1
+        assert result.net == "/SIG"
+        after = Path(p).read_bytes()
+        i = after.index(b"(via")
+        assert b'(net "/SIG")' in after[i : i + 250]
+        vias = [t for t in pcb.list_pcb_traces(p) if t.type == "via"]
+        assert len(vias) == 1

@@ -1356,24 +1356,24 @@ def add_thermal_vias(
         net_name: Net to assign to vias. If None, auto-detect from pad.
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    fp = _find_fp(board, reference)
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    fp = _find_fp_cst(root, reference)
+    pads = fp.find_all("pad")
 
     # Find pad
     pad = None
     if pad_number:
-        for p in fp.pads:
-            if p.number == pad_number:
-                pad = p
-                break
+        pad = next((p for p in pads if p.atoms[1].text == pad_number), None)
         if pad is None:
             raise ToolError(f"Pad {pad_number!r} not found on {reference}.")
     else:
         # Auto-detect: largest SMD pad by area
         best_area = 0
-        for p in fp.pads:
-            if p.type == "smd":
-                area = (p.size.X or 0) * (p.size.Y or 0)
+        for p in pads:
+            size = p.find("size")
+            if p.atoms[2].text == "smd" and size is not None:
+                area = float(size.atoms[1].text) * float(size.atoms[2].text)
                 if area > best_area:
                     best_area = area
                     pad = p
@@ -1381,26 +1381,27 @@ def add_thermal_vias(
             raise ToolError(f"No SMD pad found on {reference}. Specify pad_number explicitly.")
 
     # Compute pad center in board coordinates with rotation
-    fp_x = fp.position.X
-    fp_y = fp.position.Y
+    at = fp.find("at")
+    fp_x, fp_y = float(at.atoms[1].text), float(at.atoms[2].text)
+    fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
+    fl = fp.find("layer")
+    pad_at = pad.find("at")
     pad_x, pad_y = _transform_local_to_board(
         fp_x,
         fp_y,
-        fp.position.angle or 0,
-        pad.position.X,
-        pad.position.Y,
-        mirrored=fp.layer == "B.Cu",
+        fp_angle,
+        float(pad_at.atoms[1].text),
+        float(pad_at.atoms[2].text),
+        mirrored=fl is not None and fl.atoms[1].text == "B.Cu",
     )
 
-    # Determine net
-    via_net = 0
+    # Determine net. A netless pad on a KiCad 10 format board resolves to
+    # net 0, which _set_item_net refuses (guardrail 5, same as add_via).
+    name_to_num = {name: num for num, name in _net_table(root)}
     if net_name:
-        try:
-            via_net, _ = _find_net(board, net_name)
-        except ValueError as e:
-            raise ToolError(str(e)) from e
-    elif pad.net is not None:
-        via_net = pad.net.number
+        via_net = _resolve_net_cst(root, net_name)
+    else:
+        via_net = _item_net_number(pad.find("net"), name_to_num)
 
     # Generate grid centered on pad
     vias_added = 0
@@ -1408,22 +1409,32 @@ def add_thermal_vias(
         for c in range(cols):
             vx = pad_x + (c - (cols - 1) / 2) * spacing
             vy = pad_y + (r - (rows - 1) / 2) * spacing
-            via = Via()
-            via.position = Position(X=round(vx, 4), Y=round(vy, 4))
-            via.size = via_size
-            via.drill = via_drill
-            via.net = via_net
-            via.layers = ["F.Cu", "B.Cu"]
-            via.tstamp = _gen_uuid()
-            board.traceItems.append(via)
+            node = _VIA_TPL.copy()
+            via_at = node.find("at")
+            via_at.atoms[1].set_text(_num(round(vx, 4)))
+            via_at.atoms[2].set_text(_num(round(vy, 4)))
+            node.find("size").atoms[1].set_text(_num(via_size))
+            node.find("drill").atoms[1].set_text(_num(via_drill))
+            _set_item_net(node, root, via_net)
+            node.find("uuid").atoms[1].set_text(_gen_uuid())
+            _splice_pcb_node(root, node)
             vias_added += 1
 
-    board.to_file()
+    Path(key).write_bytes(_cst.serialize(tree))
+    pad_net = pad.find("net")
+    if net_name:
+        result_net = net_name
+    elif pad_net is not None and len(pad_net.atoms) > 2:
+        result_net = pad_net.atoms[2].text
+    elif pad_net is not None and not pad_net.atoms[1].text.lstrip("-").isdigit():
+        result_net = pad_net.atoms[1].text
+    else:
+        result_net = ""
     return ThermalViasResult(
         vias_added=vias_added,
         reference=reference,
-        pad=pad.number,
-        net=net_name or (pad.net.name if pad.net else ""),
+        pad=pad.atoms[1].text,
+        net=result_net,
         center={"x": round(pad_x, 4), "y": round(pad_y, 4)},
     )
 
