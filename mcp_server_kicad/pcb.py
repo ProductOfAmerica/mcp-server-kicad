@@ -208,23 +208,13 @@ def _open_pcb_cst(pcb_path: str):
     return tree, root, key
 
 
-def _fp_ref_cst(fp) -> str:
-    """Reference of a CST footprint node: property first, fp_text fallback."""
+def _fp_prop_cst(fp, key: str) -> str:
+    """ "Reference"/"Value" of a CST footprint node: property first, fp_text fallback."""
     for prop in fp.find_all("property"):
-        if prop.atoms[1].text == "Reference":
+        if prop.atoms[1].text == key:
             return prop.atoms[2].text
     for t in fp.find_all("fp_text"):
-        if t.atoms[1].text == "reference":
-            return t.atoms[2].text
-    return "?"
-
-
-def _fp_val_cst(fp) -> str:
-    for prop in fp.find_all("property"):
-        if prop.atoms[1].text == "Value":
-            return prop.atoms[2].text
-    for t in fp.find_all("fp_text"):
-        if t.atoms[1].text == "value":
+        if t.atoms[1].text == key.lower():
             return t.atoms[2].text
     return "?"
 
@@ -241,17 +231,7 @@ def _net_table(root) -> list[tuple[int, str]]:
     """
     rows = [c for c in root.find_all("net") if len(c.atoms) > 1]
     if rows:
-        table: list[tuple[int, str]] = []
-        for net in rows:
-            atoms = net.atoms[1:]
-            if atoms[0].text.lstrip("-").isdigit():
-                num = int(atoms[0].text)
-                name = atoms[1].text if len(atoms) > 1 else ""
-            else:
-                num = len(table) + 1
-                name = atoms[0].text
-            table.append((num, name))
-        return table
+        return [(int(n.atoms[1].text), n.atoms[2].text if len(n.atoms) > 2 else "") for n in rows]
     names: list[str] = []
     seen: set[str] = set()
 
@@ -367,8 +347,8 @@ def list_pcb_footprints(pcb_path: str = PCB_PATH) -> list[PcbFootprintItem]:
         layer = fp.find("layer")
         items.append(
             PcbFootprintItem(
-                reference=_fp_ref_cst(fp),
-                value=_fp_val_cst(fp),
+                reference=_fp_prop_cst(fp, "Reference"),
+                value=_fp_prop_cst(fp, "Value"),
                 lib_id=fp.atoms[1].text,
                 x=float(at.atoms[1].text),
                 y=float(at.atoms[2].text),
@@ -566,7 +546,9 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
         pcb_path: Path to .kicad_pcb file
     """
     _, root, _ = _open_pcb_cst(pcb_path)
-    fp = next((f for f in root.find_all("footprint") if _fp_ref_cst(f) == reference), None)
+    fp = next(
+        (f for f in root.find_all("footprint") if _fp_prop_cst(f, "Reference") == reference), None
+    )
     if fp is None:
         raise ToolError(f"Footprint {reference!r} not found.")
     lines = [f"{reference} pads:"]
