@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import tempfile
 from pathlib import Path
 
 from kiutils.board import Board
-from kiutils.footprint import Footprint
 from kiutils.items.brditems import Segment, Via
 from kiutils.items.fpitems import FpText
 from mcp.server.fastmcp.exceptions import ToolError
@@ -44,12 +44,8 @@ from mcp_server_kicad._shared import (
     OUTPUT_DIR,
     PCB_PATH,
     SCH_PATH,
-    _board_edge_polygon,
     _chain_edge_polygon,
-    _check_footprint_keepout_violations,
-    _courtyard_bbox,
     _file_meta,
-    _fp_ref,
     _gen_uuid,
     _kicad_root,
     _linearize_arc,
@@ -119,14 +115,6 @@ mcp = build_server(
 # ---------------------------------------------------------------------------
 
 
-def _find_fp(board: Board, reference: str) -> Footprint:
-    """Return the footprint with *reference*, or raise ToolError."""
-    for fp in board.footprints:
-        if _fp_ref(fp) == reference:
-            return fp
-    raise ToolError(f"Footprint {reference!r} not found.")
-
-
 # ---------------------------------------------------------------------------
 # CST substrate (guard-free board paths; see docs/adr-cst-substrate.md)
 # ---------------------------------------------------------------------------
@@ -175,6 +163,12 @@ def _fp_prop_cst(fp, key: str) -> str:
         if t.atoms[1].text == key.lower():
             return t.atoms[2].text
     return "?"
+
+
+def _fp_layer(fp) -> str:
+    """A footprint node's layer, defaulting to the front copper layer."""
+    layer = fp.find("layer")
+    return layer.atoms[1].text if layer is not None else "F.Cu"
 
 
 def _net_table(root) -> list[tuple[int, str]]:
@@ -327,6 +321,11 @@ def _edge_polygon_cst(root) -> list[tuple[float, float]] | None:
     return _chain_edge_polygon(segments)
 
 
+def _xy(node) -> tuple[float, float]:
+    """The two coordinates of a node like (start x y), (center x y) or (xy x y)."""
+    return float(node.atoms[1].text), float(node.atoms[2].text)
+
+
 def _zone_forbids_footprints(zone, x: float, y: float, layer: str, pts) -> bool:
     ko = zone.find("keepout")
     if ko is None:
@@ -344,33 +343,119 @@ def _zone_pts(zone):
     poly = zone.find("polygon")
     if poly is None:
         return []
-    return [
-        (round(float(p.atoms[1].text), 3), round(float(p.atoms[2].text), 3))
-        for p in poly.find("pts").find_all("xy")
-    ]
+    return [(round(x, 3), round(y, 3)) for x, y in map(_xy, poly.find("pts").find_all("xy"))]
 
 
-def _keepout_hit_cst(root, x: float, y: float, layer: str) -> bool:
-    """CST twin of _check_footprint_keepout_violations, boolean form."""
-    for zone in root.find_all("zone"):
-        if _zone_forbids_footprints(zone, x, y, layer, _zone_pts(zone)):
-            return True
+# kiutils KeepoutSettings defaults, used when a (keepout) child is absent.
+_KEEPOUT_DEFAULTS = {
+    "tracks": "allowed",
+    "vias": "allowed",
+    "pads": "allowed",
+    "copperpour": "not-allowed",
+    "footprints": "not-allowed",
+}
+
+
+def _keepout_dict(ko) -> dict[str, str]:
+    """Restriction values of a (keepout ...) node, defaults filling the gaps."""
+    out = dict(_KEEPOUT_DEFAULTS)
+    for k in out:
+        child = ko.find(k)
+        if child is not None:
+            out[k] = child.atoms[1].text
+    return out
+
+
+def _keepout_violations_cst(root, x: float, y: float, layer: str) -> list[dict]:
+    """CST twin of _check_footprint_keepout_violations.
+
+    Board-level zones first, then footprint-embedded ones with their
+    polygons transformed into board coordinates.
+    """
+    candidates = [("board", z, _zone_pts(z)) for z in root.find_all("zone")]
     for fp in root.find_all("footprint"):
         at = fp.find("at")
         if at is None:
             continue
-        fx, fy = float(at.atoms[1].text), float(at.atoms[2].text)
+        fx, fy = _xy(at)
         angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
-        fl = fp.find("layer")
-        mirrored = fl is not None and fl.atoms[1].text == "B.Cu"
+        mirrored = _fp_layer(fp) == "B.Cu"
+        source = f"footprint:{_fp_prop_cst(fp, 'Reference')}"
         for zone in fp.find_all("zone"):
             pts = []
             for px, py in _zone_pts(zone):
                 bx, by = _transform_local_to_board(fx, fy, angle, px, py, mirrored=mirrored)
                 pts.append((round(bx, 3), round(by, 3)))
-            if _zone_forbids_footprints(zone, x, y, layer, pts):
-                return True
-    return False
+            candidates.append((source, zone, pts))
+
+    violations: list[dict] = []
+    for source, zone, pts in candidates:
+        if not _zone_forbids_footprints(zone, x, y, layer, pts):
+            continue
+        layers_node = zone.find("layers") or zone.find("layer")
+        violations.append(
+            {
+                "source": source,
+                "layers": [a.text for a in layers_node.atoms[1:]],
+                "restrictions": _keepout_dict(zone.find("keepout")),
+            }
+        )
+    return violations
+
+
+def _courtyard_bbox_cst(fp) -> dict | None:
+    """CST twin of _shared._courtyard_bbox: courtyard bbox in footprint-local mm.
+
+    Points are grouped by layer and the bbox comes from F.CrtYd, else
+    B.CrtYd, else the first courtyard layer seen. Unrounded, like the
+    kiutils original.
+    """
+    layer_points: dict[str, list[tuple[float, float]]] = {}
+
+    for item in fp.lists:
+        pts: list[tuple[float, float]] = []
+        if item.head in ("fp_line", "fp_rect"):
+            # A rect contributes its 2 stored corners, kiutils parity.
+            pts = [_xy(item.find("start")), _xy(item.find("end"))]
+        elif item.head == "fp_circle":
+            cx, cy = _xy(item.find("center"))
+            ex, ey = _xy(item.find("end"))
+            radius = math.hypot(ex - cx, ey - cy)
+            pts = [(cx - radius, cy - radius), (cx + radius, cy + radius)]
+        elif item.head == "fp_arc":
+            pts = _linearize_arc(
+                *_xy(item.find("start")), *_xy(item.find("mid")), *_xy(item.find("end"))
+            )
+        elif item.head == "fp_poly":
+            poly_pts = item.find("pts")
+            pts = [_xy(p) for p in poly_pts.find_all("xy")] if poly_pts is not None else []
+        else:
+            continue
+
+        layer = item.find("layer")
+        if layer is None or not layer.atoms[1].text.endswith(".CrtYd") or not pts:
+            continue
+        layer_points.setdefault(layer.atoms[1].text, []).extend(pts)
+
+    if not layer_points:
+        return None
+
+    preferred = ("F.CrtYd", "B.CrtYd")
+    chosen_layer = next((p for p in preferred if p in layer_points), next(iter(layer_points)))
+
+    xs = [p[0] for p in layer_points[chosen_layer]]
+    ys = [p[1] for p in layer_points[chosen_layer]]
+    min_x, max_x = min(xs), max(xs)
+    min_y, max_y = min(ys), max(ys)
+    return {
+        "layer": chosen_layer,
+        "min_x": min_x,
+        "min_y": min_y,
+        "max_x": max_x,
+        "max_y": max_y,
+        "width": max_x - min_x,
+        "height": max_y - min_y,
+    }
 
 
 _FOOTPRINT_TPL = _cst.parse(
@@ -535,7 +620,6 @@ def list_pcb_footprints(pcb_path: str = PCB_PATH) -> list[PcbFootprintItem]:
     items: list[PcbFootprintItem] = []
     for fp in root.find_all("footprint"):
         at = fp.find("at")
-        layer = fp.find("layer")
         items.append(
             PcbFootprintItem(
                 reference=_fp_prop_cst(fp, "Reference"),
@@ -544,7 +628,7 @@ def list_pcb_footprints(pcb_path: str = PCB_PATH) -> list[PcbFootprintItem]:
                 x=float(at.atoms[1].text),
                 y=float(at.atoms[2].text),
                 rotation=float(at.atoms[3].text) if len(at.atoms) > 3 else 0,
-                layer=layer.atoms[1].text if layer is not None else "F.Cu",
+                layer=_fp_layer(fp),
             )
         )
     return items
@@ -613,20 +697,7 @@ def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
     items: list[ZoneItem] = []
     for z in root.find_all("zone"):
         ko = z.find("keepout")
-        keepout = None
-        if ko is not None:
-            # kiutils KeepoutSettings defaults when a child is absent.
-            keepout = {
-                "tracks": "allowed",
-                "vias": "allowed",
-                "pads": "allowed",
-                "copperpour": "not-allowed",
-                "footprints": "not-allowed",
-            }
-            for k in keepout:
-                child = ko.find(k)
-                if child is not None:
-                    keepout[k] = child.atoms[1].text
+        keepout = _keepout_dict(ko) if ko is not None else None
         polygon = None
         poly = z.find("polygon")
         if poly is not None:
@@ -827,11 +898,9 @@ def move_footprint(
         fp.find("layer").atoms[1].set_text(layer)
     Path(key).write_bytes(_cst.serialize(tree))
     # Validation (never blocks the move)
-    fp_layer_node = fp.find("layer")
-    fp_layer = fp_layer_node.atoms[1].text if fp_layer_node is not None else "F.Cu"
     warnings: list[str] = []
     try:
-        if _keepout_hit_cst(root, x, y, fp_layer):
+        if _keepout_violations_cst(root, x, y, _fp_layer(fp)):
             warnings.append("WARNING: position is inside a keep-out zone (footprints not allowed)")
         edge_poly = _edge_polygon_cst(root)
         if edge_poly is not None and not _point_in_polygon(x, y, edge_poly):
@@ -861,20 +930,17 @@ def check_placement(
         rotation: Proposed rotation in degrees
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    fp = _find_fp(board, reference)
+    _, root, _ = _open_pcb_cst(pcb_path)
+    fp = _find_fp_cst(root, reference)
 
-    keepout_violations = _check_footprint_keepout_violations(board, x, y, fp.layer)
-    edge_poly = _board_edge_polygon(board)
-    board_edge_checked = edge_poly is not None
-    outside_board_edge = False
-    if edge_poly is not None:
-        outside_board_edge = not _point_in_polygon(x, y, edge_poly)
+    keepout_violations = _keepout_violations_cst(root, x, y, _fp_layer(fp))
+    edge_poly = _edge_polygon_cst(root)
+    outside_board_edge = edge_poly is not None and not _point_in_polygon(x, y, edge_poly)
 
     has_violations = bool(keepout_violations) or outside_board_edge
     return PlacementCheckResult(
         status="violations_found" if has_violations else "ok",
-        board_edge_checked=board_edge_checked,
+        board_edge_checked=edge_poly is not None,
         keepout_violations=keepout_violations,
         outside_board_edge=outside_board_edge,
     )
@@ -1420,7 +1486,6 @@ def add_thermal_vias(
     at = fp.find("at")
     fp_x, fp_y = float(at.atoms[1].text), float(at.atoms[2].text)
     fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
-    fl = fp.find("layer")
     pad_at = pad.find("at")
     pad_x, pad_y = _transform_local_to_board(
         fp_x,
@@ -1428,7 +1493,7 @@ def add_thermal_vias(
         fp_angle,
         float(pad_at.atoms[1].text),
         float(pad_at.atoms[2].text),
-        mirrored=fl is not None and fl.atoms[1].text == "B.Cu",
+        mirrored=_fp_layer(fp) == "B.Cu",
     )
 
     # Determine net. A netless pad on a KiCad 10 format board resolves to
@@ -1590,8 +1655,7 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
                 continue
             fp_x, fp_y = float(at.atoms[1].text), float(at.atoms[2].text)
             fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
-            fl = fp.find("layer")
-            mirrored = fl is not None and fl.atoms[1].text == "B.Cu"
+            mirrored = _fp_layer(fp) == "B.Cu"
             for pad in fp.find_all("pad"):
                 pad_at = pad.find("at")
                 px, py = _transform_local_to_board(
@@ -2154,15 +2218,18 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintB
         reference: Footprint reference designator
         pcb_path: Path to .kicad_pcb file
     """
-    fp = _find_fp(_load_board(pcb_path), reference)
+    _, root, _ = _open_pcb_cst(pcb_path)
+    fp = _find_fp_cst(root, reference)
+    at = fp.find("at")
+    fp_x, fp_y = _xy(at)
+    # A K10 footprint writes (at x y) with no angle atom.
+    angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
+    layer = _fp_layer(fp)
 
-    bbox = _courtyard_bbox(fp)
+    bbox = _courtyard_bbox_cst(fp)
     courtyard = None
     if bbox is not None:
         # Transform all 4 local corners to board coordinates
-        fp_x = fp.position.X
-        fp_y = fp.position.Y
-        angle = fp.position.angle or 0
         local_corners = [
             (bbox["min_x"], bbox["min_y"]),
             (bbox["max_x"], bbox["min_y"]),
@@ -2170,7 +2237,7 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintB
             (bbox["min_x"], bbox["max_y"]),
         ]
         board_corners = [
-            _transform_local_to_board(fp_x, fp_y, angle, lx, ly, mirrored=fp.layer == "B.Cu")
+            _transform_local_to_board(fp_x, fp_y, angle, lx, ly, mirrored=layer == "B.Cu")
             for lx, ly in local_corners
         ]
         # Recompute axis-aligned bounding box from transformed corners
@@ -2189,10 +2256,10 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintB
 
     return FootprintBoundsResult(
         reference=reference,
-        position={"x": fp.position.X, "y": fp.position.Y},
-        rotation=fp.position.angle or 0,
+        position={"x": fp_x, "y": fp_y},
+        rotation=angle,
         courtyard=courtyard,
-        layer=fp.layer,
+        layer=layer,
     )
 
 
@@ -2203,43 +2270,39 @@ def validate_board(pcb_path: str = PCB_PATH) -> BoardValidationResult:
     Args:
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    edge_poly = _board_edge_polygon(board)
-    board_edge_checked = edge_poly is not None
+    _, root, _ = _open_pcb_cst(pcb_path)
+    edge_poly = _edge_polygon_cst(root)
     violations: list[dict] = []
+    footprints = root.find_all("footprint")
 
-    for fp in board.footprints:
-        ref = _fp_ref(fp)
-        fp_x = fp.position.X
-        fp_y = fp.position.Y
-        fp_layer = fp.layer
+    # ponytail: the keepout scan is rebuilt per footprint (O(footprints x zones),
+    # as the kiutils version was); hoist the candidate list if a board with
+    # hundreds of embedded keepouts ever makes this the slow part.
+    for fp in footprints:
+        fp_x, fp_y = _xy(fp.find("at"))
+        fp_layer = _fp_layer(fp)
 
         fp_violations: list[str] = []
-
-        keepout_hits = _check_footprint_keepout_violations(board, fp_x, fp_y, fp_layer)
-        if keepout_hits:
+        if _keepout_violations_cst(root, fp_x, fp_y, fp_layer):
             fp_violations.append("keepout_zone")
-
         if edge_poly is not None and not _point_in_polygon(fp_x, fp_y, edge_poly):
             fp_violations.append("outside_board_edge")
 
         if fp_violations:
             violations.append(
                 {
-                    "reference": ref,
+                    "reference": _fp_prop_cst(fp, "Reference"),
                     "position": {"x": fp_x, "y": fp_y},
                     "layer": fp_layer,
                     "issues": fp_violations,
                 }
             )
 
-    total = len(board.footprints)
-    status = f"{len(violations)} violations found" if violations else "ok"
     return BoardValidationResult(
-        total_footprints=total,
+        total_footprints=len(footprints),
         violations=violations,
-        board_edge_checked=board_edge_checked,
-        status=status,
+        board_edge_checked=edge_poly is not None,
+        status=f"{len(violations)} violations found" if violations else "ok",
     )
 
 

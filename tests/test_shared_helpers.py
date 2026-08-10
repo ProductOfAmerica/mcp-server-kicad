@@ -6,18 +6,12 @@ from pathlib import Path
 
 import pytest
 from conftest import new_schematic
-from kiutils.board import Board
 from kiutils.footprint import Footprint
-from kiutils.items.common import Net, Position
+from kiutils.items.common import Position
 from kiutils.items.fpitems import FpCircle, FpLine, FpRect
-from kiutils.items.gritems import GrArc, GrLine
-from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
 
 from mcp_server_kicad._shared import (
-    _board_edge_polygon,
-    _check_footprint_keepout_violations,
     _courtyard_bbox,
-    _gen_uuid,
     _point_in_polygon,
     _resolve_hierarchy_path,
     _transform_local_to_board,
@@ -196,115 +190,6 @@ class TestTransformLocalToBoard:
 
 
 # ---------------------------------------------------------------------------
-# _board_edge_polygon
-# ---------------------------------------------------------------------------
-
-
-def _make_board_with_edges(tmp_path, lines):
-    """Create a Board with GrLine items on Edge.Cuts from (sx,sy,ex,ey) tuples."""
-    board = Board.create_new()
-    board.nets = [Net(number=0, name="")]
-    for sx, sy, ex, ey in lines:
-        gl = GrLine()
-        gl.start = Position(X=sx, Y=sy)
-        gl.end = Position(X=ex, Y=ey)
-        gl.layer = "Edge.Cuts"
-        gl.width = 0.05
-        gl.tstamp = _gen_uuid()
-        board.graphicItems.append(gl)
-    board.filePath = str(tmp_path / "edge_test.kicad_pcb")
-    board.to_file()
-    return board
-
-
-class TestBoardEdgePolygon:
-    def test_closed_rectangle(self, tmp_path):
-        lines = [
-            (0, 0, 50, 0),
-            (50, 0, 50, 50),
-            (50, 50, 0, 50),
-            (0, 50, 0, 0),
-        ]
-        board = _make_board_with_edges(tmp_path, lines)
-        poly = _board_edge_polygon(board)
-        assert poly is not None
-        assert len(poly) == 4
-
-    def test_no_edges(self, tmp_path):
-        board = Board.create_new()
-        board.nets = [Net(number=0, name="")]
-        board.filePath = str(tmp_path / "no_edges.kicad_pcb")
-        board.to_file()
-        poly = _board_edge_polygon(board)
-        assert poly is None
-
-    def test_with_arcs(self, tmp_path):
-        """Board with GrArc on Edge.Cuts produces a polygon (arcs linearized)."""
-        board = Board.create_new()
-        board.nets = [Net(number=0, name="")]
-
-        # 3 lines + 1 arc forming a closed shape
-        for sx, sy, ex, ey in [
-            (0, 0, 50, 0),
-            (50, 0, 50, 50),
-            (0, 50, 0, 0),
-        ]:
-            gl = GrLine()
-            gl.start = Position(X=sx, Y=sy)
-            gl.end = Position(X=ex, Y=ey)
-            gl.layer = "Edge.Cuts"
-            gl.width = 0.05
-            gl.tstamp = _gen_uuid()
-            board.graphicItems.append(gl)
-
-        arc = GrArc()
-        arc.start = Position(X=50, Y=50)
-        arc.mid = Position(X=25, Y=60)
-        arc.end = Position(X=0, Y=50)
-        arc.layer = "Edge.Cuts"
-        arc.width = 0.05
-        arc.tstamp = _gen_uuid()
-        board.graphicItems.append(arc)
-
-        board.filePath = str(tmp_path / "arcs.kicad_pcb")
-        board.to_file()
-
-        poly = _board_edge_polygon(board)
-        assert poly is not None
-        assert len(poly) >= 4
-
-    def test_t_junction_no_crash(self, tmp_path):
-        """A T-junction on Edge.Cuts does not crash."""
-        lines = [
-            (0, 0, 50, 0),
-            (50, 0, 50, 50),
-            (50, 50, 0, 50),
-            (0, 50, 0, 0),
-            (25, 0, 25, -20),  # T-branch
-        ]
-        board = _make_board_with_edges(tmp_path, lines)
-        # Should not crash
-        _board_edge_polygon(board)
-
-    def test_multiple_outlines_no_crash(self, tmp_path):
-        """Two separate rectangles on Edge.Cuts: returns one polygon, no crash."""
-        lines = [
-            (0, 0, 20, 0),
-            (20, 0, 20, 20),
-            (20, 20, 0, 20),
-            (0, 20, 0, 0),
-            (100, 100, 120, 100),
-            (120, 100, 120, 120),
-            (120, 120, 100, 120),
-            (100, 120, 100, 100),
-        ]
-        board = _make_board_with_edges(tmp_path, lines)
-        poly = _board_edge_polygon(board)
-        assert poly is not None
-        assert len(poly) == 4
-
-
-# ---------------------------------------------------------------------------
 # _courtyard_bbox
 # ---------------------------------------------------------------------------
 
@@ -393,43 +278,3 @@ class TestCourtyardBbox:
         assert bbox["max_x"] == pytest.approx(5)
         assert bbox["min_y"] == pytest.approx(-5)
         assert bbox["max_y"] == pytest.approx(5)
-
-
-# ---------------------------------------------------------------------------
-# _check_footprint_keepout_violations — layer mismatch
-# ---------------------------------------------------------------------------
-
-
-class TestCheckKeepoutViolationsLayerMismatch:
-    def test_layer_mismatch_no_violation(self, tmp_path):
-        """Keepout zone on F.Cu only; checking B.Cu should not violate."""
-        board = Board.create_new()
-        board.nets = [Net(number=0, name="")]
-
-        zone = Zone()
-        zone.net = 0
-        zone.netName = ""
-        zone.layers = ["F.Cu"]
-        zone.tstamp = _gen_uuid()
-        zone.hatch = Hatch(style="edge", pitch=0.5)
-        zone.keepoutSettings = KeepoutSettings(
-            tracks="not_allowed",
-            vias="not_allowed",
-            pads="not_allowed",
-            copperpour="not_allowed",
-            footprints="not_allowed",
-        )
-        poly = ZonePolygon()
-        poly.coordinates = [
-            Position(X=0, Y=0),
-            Position(X=100, Y=0),
-            Position(X=100, Y=100),
-            Position(X=0, Y=100),
-        ]
-        zone.polygons = [poly]
-        board.zones.append(zone)
-        board.filePath = str(tmp_path / "layer_test.kicad_pcb")
-        board.to_file()
-
-        violations = _check_footprint_keepout_violations(board, 50, 50, "B.Cu")
-        assert len(violations) == 0

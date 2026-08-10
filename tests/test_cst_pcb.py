@@ -14,9 +14,13 @@ import pytest
 from conftest import _confined, _pure_insertion, _span_preserved, requires_cli
 from kiutils.board import Board
 from kiutils.items.brditems import Segment, Via
+from kiutils.items.common import Net, Position
+from kiutils.items.gritems import GrArc, GrLine
+from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import _cst, pcb
+from mcp_server_kicad._shared import _gen_uuid
 
 # KiCad-9-native-format board (quoted generator, uuid tokens), the dialect
 # kicad-cli 9 writes; shape shared with test_pcb_write_tools.py, plus one
@@ -297,13 +301,20 @@ class TestAddTraceViaCst:
         assert result.violation_count >= 0
 
 
+def _bump_version(path) -> str:
+    """Text-swap a kiutils-written board's version token to the KiCad 10 format."""
+    p = Path(path)
+    text = p.read_text()
+    assert "(version 20211014)" in text, "kiutils create-new version moved, fix the swap"
+    p.write_text(text.replace("(version 20211014)", "(version 20260206)"))
+    return str(p)
+
+
 def _make_keepout_board_bumped(tmp_path):
     """The shared kiutils keepout board with its version text-swapped to KiCad 10."""
     from test_pcb_write_tools import _make_keepout_pcb
 
-    path = Path(_make_keepout_pcb(tmp_path))
-    path.write_text(path.read_text().replace("(version 20211014)", "(version 20260206)"))
-    return str(path)
+    return _bump_version(_make_keepout_pcb(tmp_path))
 
 
 class TestFootprintWritersCst:
@@ -587,3 +598,187 @@ class TestThermalViasCst:
         assert b'(net "/SIG")' in after[i : i + 250]
         vias = [t for t in pcb.list_pcb_traces(p) if t.type == "via"]
         assert len(vias) == 1
+
+
+def _root_of(path):
+    """The CST root of a board file written by a kiutils fixture."""
+    return _cst.parse(Path(path).read_bytes()).lists[0]
+
+
+def _make_board_with_edges(tmp_path, lines, arcs=()):
+    """Board with Edge.Cuts lines (sx,sy,ex,ey) and arcs (sx,sy,mx,my,ex,ey)."""
+    board = Board.create_new()
+    board.nets = [Net(number=0, name="")]
+    for sx, sy, ex, ey in lines:
+        gl = GrLine()
+        gl.start = Position(X=sx, Y=sy)
+        gl.end = Position(X=ex, Y=ey)
+        gl.layer = "Edge.Cuts"
+        gl.width = 0.05
+        gl.tstamp = _gen_uuid()
+        board.graphicItems.append(gl)
+    for sx, sy, mx, my, ex, ey in arcs:
+        arc = GrArc()
+        arc.start = Position(X=sx, Y=sy)
+        arc.mid = Position(X=mx, Y=my)
+        arc.end = Position(X=ex, Y=ey)
+        arc.layer = "Edge.Cuts"
+        arc.width = 0.05
+        arc.tstamp = _gen_uuid()
+        board.graphicItems.append(arc)
+    board.filePath = str(tmp_path / "edge_test.kicad_pcb")
+    board.to_file()
+    return _root_of(board.filePath)
+
+
+class TestEdgePolygonCst:
+    """Ported from the retired kiutils _board_edge_polygon tests."""
+
+    _RECT = [(0, 0, 50, 0), (50, 0, 50, 50), (50, 50, 0, 50), (0, 50, 0, 0)]
+
+    def test_closed_rectangle(self, tmp_path):
+        poly = pcb._edge_polygon_cst(_make_board_with_edges(tmp_path, self._RECT))
+        assert poly is not None
+        assert len(poly) == 4
+
+    def test_no_edges(self, tmp_path):
+        assert pcb._edge_polygon_cst(_make_board_with_edges(tmp_path, [])) is None
+
+    def test_with_arcs(self, tmp_path):
+        """Three lines closed by an arc: the arc is linearized, not dropped."""
+        root = _make_board_with_edges(
+            tmp_path,
+            [(0, 0, 50, 0), (50, 0, 50, 50), (0, 50, 0, 0)],
+            arcs=[(50, 50, 25, 60, 0, 50)],
+        )
+        poly = pcb._edge_polygon_cst(root)
+        assert poly is not None
+        assert len(poly) >= 4
+
+    def test_t_junction_no_crash(self, tmp_path):
+        pcb._edge_polygon_cst(_make_board_with_edges(tmp_path, [*self._RECT, (25, 0, 25, -20)]))
+
+    def test_multiple_outlines_no_crash(self, tmp_path):
+        """Two separate rectangles on Edge.Cuts: one polygon comes back, no crash."""
+        second = [(100, 100, 120, 100), (120, 100, 120, 120), (120, 120, 100, 120)]
+        root = _make_board_with_edges(tmp_path, [*self._RECT, *second, (100, 120, 100, 100)])
+        poly = pcb._edge_polygon_cst(root)
+        assert poly is not None
+        assert len(poly) == 4
+
+
+class TestKeepoutViolationsCst:
+    """Ported from the retired kiutils _check_footprint_keepout_violations test."""
+
+    def test_layer_mismatch_no_violation(self, tmp_path):
+        """Keepout zone on F.Cu only: a B.Cu query is not a violation."""
+        board = Board.create_new()
+        board.nets = [Net(number=0, name="")]
+        zone = Zone()
+        zone.net = 0
+        zone.netName = ""
+        zone.layers = ["F.Cu"]
+        zone.tstamp = _gen_uuid()
+        zone.hatch = Hatch(style="edge", pitch=0.5)
+        zone.keepoutSettings = KeepoutSettings(
+            tracks="not_allowed",
+            vias="not_allowed",
+            pads="not_allowed",
+            copperpour="not_allowed",
+            footprints="not_allowed",
+        )
+        poly = ZonePolygon()
+        poly.coordinates = [
+            Position(X=0, Y=0),
+            Position(X=100, Y=0),
+            Position(X=100, Y=100),
+            Position(X=0, Y=100),
+        ]
+        zone.polygons = [poly]
+        board.zones.append(zone)
+        board.filePath = str(tmp_path / "layer_test.kicad_pcb")
+        board.to_file()
+
+        root = _root_of(board.filePath)
+        assert pcb._keepout_violations_cst(root, 50, 50, "B.Cu") == []
+        assert pcb._keepout_violations_cst(root, 50, 50, "F.Cu") == [
+            {
+                "source": "board",
+                "layers": ["F.Cu"],
+                "restrictions": dict.fromkeys(
+                    ("tracks", "vias", "pads", "copperpour", "footprints"), "not_allowed"
+                ),
+            }
+        ]
+
+
+def _k9_k10_pair(tmp_path, make):
+    """The same kiutils fixture built twice, the second bumped to a K10 version."""
+    k9, k10 = tmp_path / "k9", tmp_path / "k10"
+    k9.mkdir()
+    k10.mkdir()
+    return str(make(k9)), _bump_version(make(k10))
+
+
+class TestGeometryTrioCst:
+    """The geometry trio on KiCad-10-header boards, which kiutils refused outright.
+
+    Same geometry either side of the version token, so the K10 result is
+    pinned to the K9 one rather than to a hand-copied expectation.
+    """
+
+    def test_check_placement(self, tmp_path):
+        from test_pcb_write_tools import _make_keepout_pcb
+
+        k9, k10 = _k9_k10_pair(tmp_path, _make_keepout_pcb)
+        for x, y in ((100, 100), (25, 25), (500, 500)):
+            assert pcb.check_placement("R1", x, y, pcb_path=k10) == pcb.check_placement(
+                "R1", x, y, pcb_path=k9
+            )
+        hit = pcb.check_placement("R1", 25, 25, pcb_path=k10)
+        assert hit.status == "violations_found"
+        assert [v["source"] for v in hit.keepout_violations] == ["board"]
+        assert hit.keepout_violations[0]["layers"] == ["F.Cu"]
+        assert hit.keepout_violations[0]["restrictions"]["footprints"] == "not_allowed"
+        assert pcb.check_placement("R1", 500, 500, pcb_path=k10).outside_board_edge is True
+
+    def test_get_footprint_bounds(self, tmp_path):
+        from test_pcb_read_tools import _make_board_with_courtyard_fp
+
+        k9, k10 = _k9_k10_pair(tmp_path, _make_board_with_courtyard_fp)
+        result = pcb.get_footprint_bounds("U1", pcb_path=k10)
+        assert result == pcb.get_footprint_bounds("U1", pcb_path=k9)
+        assert result.position == {"x": 100, "y": 100}
+        assert result.rotation == 0
+        assert result.layer == "F.Cu"
+        # Local courtyard -5..5 around a footprint at (100, 100).
+        assert result.courtyard == {
+            "min_x": 95,
+            "min_y": 95,
+            "max_x": 105,
+            "max_y": 105,
+            "width": 10,
+            "height": 10,
+        }
+
+    def test_validate_board(self, tmp_path):
+        from test_pcb_write_tools import _make_keepout_pcb
+
+        k9, k10 = _k9_k10_pair(tmp_path, _make_keepout_pcb)
+        clean = pcb.validate_board(pcb_path=k10)
+        assert clean == pcb.validate_board(pcb_path=k9)
+        assert (clean.total_footprints, clean.board_edge_checked, clean.status) == (1, True, "ok")
+
+        for path in (k9, k10):
+            pcb.move_footprint("R1", 25, 25, pcb_path=path)
+        bad = pcb.validate_board(pcb_path=k10)
+        assert bad == pcb.validate_board(pcb_path=k9)
+        assert bad.status == "1 violations found"
+        assert bad.violations == [
+            {
+                "reference": "R1",
+                "position": {"x": 25, "y": 25},
+                "layer": "F.Cu",
+                "issues": ["keepout_zone"],
+            }
+        ]
