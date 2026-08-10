@@ -710,3 +710,75 @@ class TestKeepoutViolationsCst:
                 ),
             }
         ]
+
+
+def _k9_k10_pair(tmp_path, make):
+    """The same kiutils fixture built twice, the second bumped to a K10 version."""
+    k9, k10 = tmp_path / "k9", tmp_path / "k10"
+    k9.mkdir()
+    k10.mkdir()
+    return str(make(k9)), _bump_version(make(k10))
+
+
+class TestGeometryTrioCst:
+    """The geometry trio on KiCad-10-header boards, which kiutils refused outright.
+
+    Same geometry either side of the version token, so the K10 result is
+    pinned to the K9 one rather than to a hand-copied expectation.
+    """
+
+    def test_check_placement(self, tmp_path):
+        from test_pcb_write_tools import _make_keepout_pcb
+
+        k9, k10 = _k9_k10_pair(tmp_path, _make_keepout_pcb)
+        for x, y in ((100, 100), (25, 25), (500, 500)):
+            assert pcb.check_placement("R1", x, y, pcb_path=k10) == pcb.check_placement(
+                "R1", x, y, pcb_path=k9
+            )
+        hit = pcb.check_placement("R1", 25, 25, pcb_path=k10)
+        assert hit.status == "violations_found"
+        assert [v["source"] for v in hit.keepout_violations] == ["board"]
+        assert hit.keepout_violations[0]["layers"] == ["F.Cu"]
+        assert hit.keepout_violations[0]["restrictions"]["footprints"] == "not_allowed"
+        assert pcb.check_placement("R1", 500, 500, pcb_path=k10).outside_board_edge is True
+
+    def test_get_footprint_bounds(self, tmp_path):
+        from test_pcb_read_tools import _make_board_with_courtyard_fp
+
+        k9, k10 = _k9_k10_pair(tmp_path, _make_board_with_courtyard_fp)
+        result = pcb.get_footprint_bounds("U1", pcb_path=k10)
+        assert result == pcb.get_footprint_bounds("U1", pcb_path=k9)
+        assert result.position == {"x": 100, "y": 100}
+        assert result.rotation == 0
+        assert result.layer == "F.Cu"
+        # Local courtyard -5..5 around a footprint at (100, 100).
+        assert result.courtyard == {
+            "min_x": 95,
+            "min_y": 95,
+            "max_x": 105,
+            "max_y": 105,
+            "width": 10,
+            "height": 10,
+        }
+
+    def test_validate_board(self, tmp_path):
+        from test_pcb_write_tools import _make_keepout_pcb
+
+        k9, k10 = _k9_k10_pair(tmp_path, _make_keepout_pcb)
+        clean = pcb.validate_board(pcb_path=k10)
+        assert clean == pcb.validate_board(pcb_path=k9)
+        assert (clean.total_footprints, clean.board_edge_checked, clean.status) == (1, True, "ok")
+
+        for path in (k9, k10):
+            pcb.move_footprint("R1", 25, 25, pcb_path=path)
+        bad = pcb.validate_board(pcb_path=k10)
+        assert bad == pcb.validate_board(pcb_path=k9)
+        assert bad.status == "1 violations found"
+        assert bad.violations == [
+            {
+                "reference": "R1",
+                "position": {"x": 25, "y": 25},
+                "layer": "F.Cu",
+                "issues": ["keepout_zone"],
+            }
+        ]

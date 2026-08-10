@@ -13,8 +13,7 @@ from kiutils.board import Board
 from kiutils.footprint import Footprint
 from kiutils.items.common import Effects, Font, Position, Stroke
 from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpText
-from kiutils.items.gritems import GrArc, GrLine
-from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
+from kiutils.items.zones import Hatch, Zone, ZonePolygon
 from kiutils.schematic import Schematic
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -813,46 +812,6 @@ def _transform_local_to_board(
     return board_x, board_y
 
 
-def _board_edge_polygon(board: Board) -> list[tuple[float, float]] | None:
-    """Extract the board outline from Edge.Cuts graphic items.
-
-    Collects ``GrLine`` and ``GrArc`` segments on the ``Edge.Cuts`` layer,
-    chains them into a closed polygon by endpoint matching (coordinates are
-    rounded to 1 µm before matching),
-    and returns the vertex list.  GrArc segments are linearized into ~16
-    straight segments.
-
-    Returns ``None`` if no Edge.Cuts lines exist or a closed polygon
-    cannot be formed.
-    """
-    # Collect oriented segments as (start, end) tuples
-    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
-
-    for item in board.graphicItems:
-        if isinstance(item, GrLine) and item.layer == "Edge.Cuts":
-            s = (round(item.start.X, 3), round(item.start.Y, 3))
-            e = (round(item.end.X, 3), round(item.end.Y, 3))
-            if s != e:
-                segments.append((s, e))
-        elif isinstance(item, GrArc) and item.layer == "Edge.Cuts":
-            # Linearize arc into ~16 line segments
-            arc_pts = _linearize_arc(
-                item.start.X,
-                item.start.Y,
-                item.mid.X,
-                item.mid.Y,
-                item.end.X,
-                item.end.Y,
-            )
-            for k in range(len(arc_pts) - 1):
-                s = (round(arc_pts[k][0], 3), round(arc_pts[k][1], 3))
-                e = (round(arc_pts[k + 1][0], 3), round(arc_pts[k + 1][1], 3))
-                if s != e:
-                    segments.append((s, e))
-
-    return _chain_edge_polygon(segments)
-
-
 def _chain_edge_polygon(
     segments: list[tuple[tuple[float, float], tuple[float, float]]],
 ) -> list[tuple[float, float]] | None:
@@ -957,91 +916,6 @@ def _linearize_arc(
         points.append((px, py))
 
     return points
-
-
-def _keepout_restrictions(ks: KeepoutSettings) -> dict[str, str]:
-    """Return a dict of keepout restriction values from *ks*."""
-    return {
-        "tracks": ks.tracks,
-        "vias": ks.vias,
-        "pads": ks.pads,
-        "copperpour": ks.copperpour,
-        "footprints": ks.footprints,
-    }
-
-
-def _check_footprint_keepout_violations(board: Board, x: float, y: float, layer: str) -> list[dict]:
-    """Check if position (x, y) violates any keepout zones on *layer*.
-
-    Checks both board-level zones and footprint-embedded zones.
-
-    Returns a list of violation dicts, each with keys:
-    ``source`` (``"board"`` or ``"footprint:{ref}"``),
-    ``layers``, and ``restrictions``.
-    """
-    violations: list[dict] = []
-
-    # 1. Board-level keepout zones
-    for zone in board.zones:
-        ks = zone.keepoutSettings
-        if ks is None:
-            continue
-        if ks.footprints != "not_allowed":
-            continue
-        # Check layer overlap
-        if layer not in zone.layers:
-            continue
-        # Get polygon
-        if not zone.polygons:
-            continue
-        poly_coords = [(round(c.X, 3), round(c.Y, 3)) for c in zone.polygons[0].coordinates]
-        if _point_in_polygon(x, y, poly_coords):
-            violations.append(
-                {
-                    "source": "board",
-                    "layers": list(zone.layers),
-                    "restrictions": _keepout_restrictions(ks),
-                }
-            )
-
-    # 2. Footprint-embedded keepout zones
-    for fp in board.footprints:
-        fp_zones = getattr(fp, "zones", None)
-        if not fp_zones:
-            continue
-        ref = _fp_ref(fp)
-        if fp.position is None:
-            continue
-        fp_x = fp.position.X
-        fp_y = fp.position.Y
-        fp_angle = fp.position.angle or 0
-        for zone in fp_zones:
-            ks = zone.keepoutSettings
-            if ks is None:
-                continue
-            if ks.footprints != "not_allowed":
-                continue
-            if layer not in zone.layers:
-                continue
-            if not zone.polygons:
-                continue
-            # Transform polygon from footprint-local to board coordinates
-            poly_coords: list[tuple[float, float]] = []
-            for c in zone.polygons[0].coordinates:
-                bx, by = _transform_local_to_board(
-                    fp_x, fp_y, fp_angle, c.X, c.Y, mirrored=fp.layer == "B.Cu"
-                )
-                poly_coords.append((round(bx, 3), round(by, 3)))
-            if _point_in_polygon(x, y, poly_coords):
-                violations.append(
-                    {
-                        "source": f"footprint:{ref}",
-                        "layers": list(zone.layers),
-                        "restrictions": _keepout_restrictions(ks),
-                    }
-                )
-
-    return violations
 
 
 def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
