@@ -7,6 +7,7 @@ byte preservation, KiCad 10 readability, cache behavior.
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -121,3 +122,22 @@ class TestBoardReadsCst:
         assert "Footprints: 1" in info and "Vias: 1" in info
         pads = pcb.get_footprint_pads("R1", p)
         assert "net=Net1" in pads
+
+
+class TestBoardCache:
+    def test_hit_then_mtime_invalidates(self, scratch_pcb):
+        p = str(scratch_pcb)
+        t1, _, key = pcb._open_pcb_cst(p)
+        t2, _, _ = pcb._open_pcb_cst(p)
+        assert t2 is t1
+        st = os.stat(key)
+        os.utime(key, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
+        t3, _, _ = pcb._open_pcb_cst(p)
+        assert t3 is not t1
+
+    def test_kiutils_write_invalidates(self, scratch_pcb):
+        p = str(scratch_pcb)
+        pcb._open_pcb_cst(p)
+        pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=p)
+        traces = pcb.list_pcb_traces(p)
+        assert traces[0].width == 0.5

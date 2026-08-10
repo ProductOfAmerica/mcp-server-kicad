@@ -173,18 +173,36 @@ def _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max):
 # ---------------------------------------------------------------------------
 
 
+# ponytail: unbounded dict, one parsed Doc per board path (roughly 11x file
+# size retained); add eviction if a session ever touches many large boards.
+# mtime_ns + size misses a same-size rewrite inside one timestamp tick; our
+# CST writers pop their entry before mutating, kiutils rewrites move mtime.
+_BOARD_CACHE: dict[str, tuple[int, int, _cst.Doc]] = {}
+
+
 def _open_pcb_cst(pcb_path: str):
     """Parse a board into a CST for the guard-free tools.
 
     No kiutils parse, so no version guard: these paths work on any format
-    KiCad writes. Every kiutils board tool keeps the guard.
+    KiCad writes. Every kiutils board tool keeps the guard. Parsed trees
+    are cached per resolved path while mtime and size hold (board parses
+    are seconds at demo-board scale); every writer must pop its entry
+    BEFORE mutating and never reinsert, so an exception between mutation
+    and write can never leave a poisoned tree cached.
     """
     if not pcb_path:
         raise ValueError("No PCB path provided. Pass pcb_path parameter.")
     key = str(Path(pcb_path).resolve())
-    tree = _cst.parse(Path(key).read_bytes())
+    st = os.stat(key)
+    hit = _BOARD_CACHE.get(key)
+    if hit is not None and (hit[0], hit[1]) == (st.st_mtime_ns, st.st_size):
+        tree = hit[2]
+    else:
+        tree = _cst.parse(Path(key).read_bytes())
+        _BOARD_CACHE[key] = (st.st_mtime_ns, st.st_size, tree)
     root = tree.lists[0] if tree.lists else None
     if root is None or root.head != "kicad_pcb":
+        _BOARD_CACHE.pop(key, None)
         raise ToolError(f"{Path(pcb_path).name} is not a KiCad PCB.")
     return tree, root, key
 
