@@ -18,7 +18,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
-from mcp_server_kicad._cst import _fill_at, _num
+from mcp_server_kicad._cst import _fill_at, _node_text, _num, _numish
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -33,6 +33,7 @@ from mcp_server_kicad._shared import (
     _resolve_root,
     _run_cli,
     _sheet_file_cst,
+    _sheet_name_cst,
     _snap_grid,
     _sym_property_cst,
     _upsert_root_symbol_instance,
@@ -865,44 +866,45 @@ def list_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyResult:
     Args:
         schematic_path: Path to root .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     sch_dir = Path(schematic_path).parent
     root_name = Path(schematic_path).name
 
     sheets = []
-    for sheet in sch.sheets:
-        child_path = sch_dir / sheet.fileName.value
+    for sheet in root.find_all("sheet"):
+        file_name = _sheet_file_cst(sheet) or ""
+        child_path = sch_dir / file_name
+        at = sheet.find("at")
         child_info: dict = {
-            "sheet_name": sheet.sheetName.value,
-            "file_name": sheet.fileName.value,
-            "uuid": sheet.uuid,
-            "pin_count": len(sheet.pins),
-            "x": sheet.position.X,
-            "y": sheet.position.Y,
+            "sheet_name": _sheet_name_cst(sheet) or "",
+            "file_name": file_name,
+            "uuid": _node_uuid(sheet),
+            "pin_count": len(sheet.find_all("pin")),
+            "x": _numish(at.atoms[1].text),
+            "y": _numish(at.atoms[2].text),
         }
         if child_path.exists():
-            child_sch = _load_sch(str(child_path))
-            child_info["component_count"] = len(child_sch.schematicSymbols)
-            child_info["label_count"] = len(child_sch.labels)
-            child_info["hierarchical_label_count"] = len(child_sch.hierarchicalLabels)
+            child_root = _cst.parse(child_path.read_bytes()).lists[0]
+            child_info["component_count"] = len(child_root.find_all("symbol"))
+            child_info["label_count"] = len(child_root.find_all("label"))
+            child_info["hierarchical_label_count"] = len(child_root.find_all("hierarchical_label"))
             # Recurse for nested sheets
-            child_info["sub_sheets"] = []
-            for sub_sheet in child_sch.sheets:
-                child_info["sub_sheets"].append(
-                    {
-                        "sheet_name": sub_sheet.sheetName.value,
-                        "file_name": sub_sheet.fileName.value,
-                        "uuid": sub_sheet.uuid,
-                    }
-                )
+            child_info["sub_sheets"] = [
+                {
+                    "sheet_name": _sheet_name_cst(sub) or "",
+                    "file_name": _sheet_file_cst(sub) or "",
+                    "uuid": _node_uuid(sub),
+                }
+                for sub in child_root.find_all("sheet")
+            ]
         else:
             child_info["error"] = f"File not found: {child_path}"
         sheets.append(child_info)
 
     return HierarchyResult(
         root=root_name,
-        component_count=len(sch.schematicSymbols),
-        sheet_count=len(sch.sheets),
+        component_count=len(root.find_all("symbol")),
+        sheet_count=len(sheets),
         sheets=sheets,
     )
 
@@ -915,44 +917,47 @@ def get_sheet_info(sheet_uuid: str, schematic_path: str = SCH_PATH) -> SheetInfo
         sheet_uuid: UUID of the sheet
         schematic_path: Path to parent .kicad_sch
     """
-    sch = _load_sch(schematic_path)
-    target = _find_sheet(sch, sheet_uuid)
+    _, root, *_ = _open_sch_cst(schematic_path)
+    target = _find_sheet_cst(root, sheet_uuid)
 
-    sch_dir = Path(schematic_path).parent
-    child_path = sch_dir / target.fileName.value
+    file_name = _sheet_file_cst(target) or ""
+    child_path = Path(schematic_path).parent / file_name
 
     # Load child to check label matching
     child_labels: set[str] = set()
     child_info: dict = {}
     if child_path.exists():
-        child_sch = _load_sch(str(child_path))
-        child_labels = {hl.text for hl in child_sch.hierarchicalLabels}
+        child_root = _cst.parse(child_path.read_bytes()).lists[0]
+        child_labels = {_node_text(hl) for hl in child_root.find_all("hierarchical_label")}
         child_info = {
-            "component_count": len(child_sch.schematicSymbols),
-            "label_count": len(child_sch.labels),
-            "hierarchical_label_count": len(child_sch.hierarchicalLabels),
+            "component_count": len(child_root.find_all("symbol")),
+            "label_count": len(child_root.find_all("label")),
+            "hierarchical_label_count": len(child_root.find_all("hierarchical_label")),
         }
 
     pins = []
-    for pin in target.pins:
+    for pin in target.find_all("pin"):
+        pin_at = pin.find("at")
         pins.append(
             {
-                "name": pin.name,
-                "connection_type": pin.connectionType,
-                "x": pin.position.X,
-                "y": pin.position.Y,
-                "matched": pin.name in child_labels,
+                "name": pin.atoms[1].text,
+                "connection_type": pin.atoms[2].text,
+                "x": _numish(pin_at.atoms[1].text),
+                "y": _numish(pin_at.atoms[2].text),
+                "matched": pin.atoms[1].text in child_labels,
             }
         )
 
+    at = target.find("at")
+    size = target.find("size")
     return SheetInfoResult(
-        sheet_name=target.sheetName.value,
-        file_name=target.fileName.value,
-        uuid=target.uuid or "",
-        x=target.position.X,
-        y=target.position.Y,
-        width=target.width,
-        height=target.height,
+        sheet_name=_sheet_name_cst(target) or "",
+        file_name=file_name,
+        uuid=_node_uuid(target),
+        x=float(at.atoms[1].text),
+        y=float(at.atoms[2].text),
+        width=float(size.atoms[1].text),
+        height=float(size.atoms[2].text),
         pins=pins,
         **child_info,
     )
@@ -1101,16 +1106,20 @@ def get_symbol_instances(schematic_path: str = SCH_PATH) -> SymbolInstancesResul
     Args:
         schematic_path: Path to root .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     instances = []
-    for si in getattr(sch, "symbolInstances", []):
+    # KiCad 8+ carries instances per placed symbol instead, so the whole
+    # section is often absent: that is an empty list, not an error.
+    si = root.find("symbol_instances")
+    for entry in si.find_all("path") if si is not None else []:
+        fields = {c.head: c.atoms[1].text for c in entry.lists if len(c.atoms) > 1}
         instances.append(
             {
-                "path": si.path if hasattr(si, "path") else "",
-                "reference": si.reference if hasattr(si, "reference") else "",
-                "unit": si.unit if hasattr(si, "unit") else 1,
-                "value": si.value if hasattr(si, "value") else "",
-                "footprint": si.footprint if hasattr(si, "footprint") else "",
+                "path": entry.atoms[1].text,
+                "reference": fields.get("reference", ""),
+                "unit": int(fields.get("unit", 1)),
+                "value": fields.get("value", ""),
+                "footprint": fields.get("footprint", ""),
             }
         )
     return SymbolInstancesResult(instances=instances, count=len(instances))

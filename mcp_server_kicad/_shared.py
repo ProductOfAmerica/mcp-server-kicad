@@ -260,6 +260,15 @@ def _sheet_file_cst(sheet) -> str | None:
     return None
 
 
+def _sheet_name_cst(sheet) -> str | None:
+    """Sheet display name; KiCad 9 writes "Sheetname", kiutils "Sheet name"."""
+    for key in ("Sheetname", "Sheet name"):
+        v = _sym_property_cst(sheet, key)
+        if v is not None:
+            return v
+    return None
+
+
 def _resolve_hierarchy_path(
     project_path: str, schematic_path: str, sch_uuid: str
 ) -> tuple[str, str]:
