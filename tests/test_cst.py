@@ -836,9 +836,11 @@ class TestMemoryGate:
 
     Baseline before slice 12A: 37.4x on the 6MB Video board. Hardened repr
     measured 2026-08-09: 11.35x retained on Video, 8.85x on the 71MB
-    vme-wren. The <=10x target misses by 13% on Video, so the gate test is
-    an xfail documenting the number; board-tool conversion stays blocked
-    until the gate passes or the target is consciously revised (ADR).
+    vme-wren. ~11x is the floor of a one-object-per-token design in
+    CPython (~32B/object + 33B/bytes overhead), so the gate was revised
+    to 12x with the user's sign-off (ADR): 68MB for the benchmark board
+    is acceptable for a server process. The flat-token-array design
+    stays on record as the next step if real memory pain appears.
     """
 
     @staticmethod
@@ -862,8 +864,7 @@ class TestMemoryGate:
                 ]
         return sorted(boards, key=lambda b: b.stat().st_size)
 
-    @pytest.mark.xfail(reason="11.35x measured vs <=10x target on the Video board", strict=False)
-    def test_largest_demo_board_under_10x(self):
+    def test_largest_demo_board_under_gate(self):
         import gc
         import tracemalloc
 
@@ -879,7 +880,7 @@ class TestMemoryGate:
         tracemalloc.stop()
         assert _cst.serialize(tree) == data
         multiple = retained / len(data)
-        assert multiple <= 10, f"{board.name}: {multiple:.2f}x retained (target <=10x)"
+        assert multiple <= 12, f"{board.name}: {multiple:.2f}x retained (gate <=12x)"
 
     def test_demo_board_roundtrips(self):
         boards = self._demo_boards()
