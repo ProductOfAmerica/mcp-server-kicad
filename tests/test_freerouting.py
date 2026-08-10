@@ -11,7 +11,7 @@ from kiutils.board import Board
 from kiutils.footprint import Footprint
 from kiutils.items.common import Net, Position, Property
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 import mcp_server_kicad._freerouting as _fr_module
 from mcp_server_kicad import _cst

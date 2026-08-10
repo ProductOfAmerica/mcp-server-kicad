@@ -9,7 +9,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 import mcp_server_kicad._cst as _cst
@@ -2158,7 +2158,7 @@ def _fix_displaced_fp_text(pcb_path: str) -> int:
 # _routed-drc.json beside it, and Freerouting is a heuristic router steered by
 # max_passes and num_threads, so two runs with the same arguments need not
 # agree. An unset hint beats a wrongly asserted one.
-_AUTOROUTE = ToolAnnotations(readOnlyHint=False, openWorldHint=True)
+_AUTOROUTE = ToolAnnotations(read_only_hint=False, open_world_hint=True)
 
 
 @mcp.tool(annotations=_AUTOROUTE)

@@ -1,6 +1,6 @@
 """Schemas for the MCP tool surface, both directions.
 
-Response models are Pydantic and drive FastMCP's ``outputSchema`` generation
+Response models are Pydantic and drive MCPServer's ``outputSchema`` generation
 and ``structuredContent`` population.  Every tool returning structured data
 should use one of them as its return type.
 
@@ -278,7 +278,7 @@ class MultiFileExportResult(BaseModel):
 
 
 # The three below have two output modes each, but return one concrete model,
-# not a union: FastMCP wraps a union in {"result": ...} and a plain model not.
+# not a union: the SDK wraps a union in {"result": ...} and a plain model not.
 
 
 class SchematicExportResult(BaseModel):

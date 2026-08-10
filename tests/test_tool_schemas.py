@@ -78,7 +78,7 @@ def _return_annotation(tool):
 
 
 def test_no_tool_returns_a_union():
-    """FastMCP wraps a union return in {"result": ...} and a bare model not.
+    """The SDK wraps a union return in {"result": ...} and a bare model not.
 
     Three export tools returned unions, so reaching `path` meant branching on
     which export tool you had called. Keyed on the annotation rather than on

@@ -14,9 +14,10 @@ from kiutils.items.common import Net, Position
 from kiutils.items.fpitems import FpText
 from kiutils.items.gritems import GrLine
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import _cst, pcb
+from mcp_server_kicad.models import PointSpec
 
 
 class TestPlaceFootprint:
@@ -964,7 +965,7 @@ class TestCheckPlacement:
 
 class TestAddKeepoutZone:
     def test_basic_keepout(self, scratch_pcb):
-        corners = [
+        corners: list[PointSpec] = [
             {"x": 0, "y": 0},
             {"x": 50, "y": 0},
             {"x": 50, "y": 50},
@@ -982,13 +983,13 @@ class TestAddKeepoutZone:
         assert len(keepout_zones[0].polygons[0].coordinates) == 4
 
     def test_too_few_corners(self, scratch_pcb):
-        corners = [{"x": 0, "y": 0}, {"x": 10, "y": 0}]
+        corners: list[PointSpec] = [{"x": 0, "y": 0}, {"x": 10, "y": 0}]
         with pytest.raises(ToolError):
             pcb.add_keepout_zone(corners=corners, pcb_path=str(scratch_pcb))
 
     def test_custom_restrictions(self, scratch_pcb):
         """no_tracks=False should produce tracks='allowed' in created zone."""
-        corners = [
+        corners: list[PointSpec] = [
             {"x": 0, "y": 0},
             {"x": 50, "y": 0},
             {"x": 50, "y": 50},

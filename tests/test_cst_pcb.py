@@ -17,10 +17,11 @@ from kiutils.items.brditems import Segment, Via
 from kiutils.items.common import Net, Position
 from kiutils.items.gritems import GrArc, GrLine
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import _cst, pcb
 from mcp_server_kicad._shared import _gen_uuid
+from mcp_server_kicad.models import PointSpec
 
 # KiCad-9-native-format board (quoted generator, uuid tokens), the dialect
 # kicad-cli 9 writes; shape shared with test_pcb_write_tools.py, plus one
@@ -450,7 +451,12 @@ class TestTraceFiltersCst:
 
 
 class TestZoneWritersCst:
-    _CORNERS = [{"x": 10, "y": 10}, {"x": 40, "y": 10}, {"x": 40, "y": 40}, {"x": 10, "y": 40}]
+    _CORNERS: list[PointSpec] = [
+        {"x": 10, "y": 10},
+        {"x": 40, "y": 10},
+        {"x": 40, "y": 40},
+        {"x": 10, "y": 40},
+    ]
 
     def test_copper_k9_bytes(self, scratch_pcb):
         p = str(scratch_pcb)
@@ -468,7 +474,8 @@ class TestZoneWritersCst:
         assert [(z.net_name, z.layers, z.priority, z.is_keepout) for z in zones] == [
             ("Net1", ["F.Cu"], 1, False)
         ]
-        assert len(zones[0].polygon) == 4
+        polygon = zones[0].polygon
+        assert polygon is not None and len(polygon) == 4
 
     def test_copper_solid_connect(self, scratch_pcb):
         p = str(scratch_pcb)
@@ -512,6 +519,7 @@ class TestZoneWritersCst:
         span = after[i : i + 250]
         assert b"(tracks allowed)" in span and b"(vias not_allowed)" in span
         kz = next(z for z in pcb.list_pcb_zones(p) if z.is_keepout)
+        assert kz.keepout is not None
         assert kz.keepout["tracks"] == "allowed"
 
     def test_keepout_k10_drops_net_tokens(self, tmp_path):
@@ -523,6 +531,7 @@ class TestZoneWritersCst:
         assert b"(net " not in span
         assert b"net_name" not in span
         kz = next(z for z in pcb.list_pcb_zones(p) if z.is_keepout)
+        assert kz.keepout is not None
         assert kz.keepout["footprints"] == "not_allowed"
 
 
