@@ -19,7 +19,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
-from mcp_server_kicad._cst import _num, _numish
+from mcp_server_kicad._cst import _fill_at, _num, _numish
 from mcp_server_kicad._freerouting import (
     check_java as _check_java,
 )
@@ -49,6 +49,7 @@ from mcp_server_kicad._shared import (
     PCB_PATH,
     SCH_PATH,
     _board_edge_polygon,
+    _chain_edge_polygon,
     _check_footprint_keepout_violations,
     _courtyard_bbox,
     _default_effects,
@@ -57,6 +58,7 @@ from mcp_server_kicad._shared import (
     _gen_uuid,
     _keepout_restrictions,
     _kicad_root,
+    _linearize_arc,
     _load_board,
     _point_in_polygon,
     _promote_footprint_keepouts,
@@ -328,6 +330,131 @@ def _set_item_net(node, root, net: int) -> None:
     )
 
 
+def _find_fp_cst(root, reference):
+    """The footprint node with *reference*, or raise ToolError."""
+    for fp in root.find_all("footprint"):
+        if _fp_prop_cst(fp, "Reference") == reference:
+            return fp
+    raise ToolError(f"Footprint {reference!r} not found.")
+
+
+def _edge_polygon_cst(root) -> list[tuple[float, float]] | None:
+    """CST twin of _board_edge_polygon: Edge.Cuts lines/arcs chained closed."""
+    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for item in root.lists:
+        layer = item.find("layer")
+        if layer is None or layer.atoms[1].text != "Edge.Cuts":
+            continue
+        if item.head == "gr_line":
+            start, end = item.find("start"), item.find("end")
+            s = (round(float(start.atoms[1].text), 3), round(float(start.atoms[2].text), 3))
+            e = (round(float(end.atoms[1].text), 3), round(float(end.atoms[2].text), 3))
+            if s != e:
+                segments.append((s, e))
+        elif item.head == "gr_arc":
+            start, mid, end = item.find("start"), item.find("mid"), item.find("end")
+            arc_pts = _linearize_arc(
+                float(start.atoms[1].text),
+                float(start.atoms[2].text),
+                float(mid.atoms[1].text),
+                float(mid.atoms[2].text),
+                float(end.atoms[1].text),
+                float(end.atoms[2].text),
+            )
+            for k in range(len(arc_pts) - 1):
+                s = (round(arc_pts[k][0], 3), round(arc_pts[k][1], 3))
+                e = (round(arc_pts[k + 1][0], 3), round(arc_pts[k + 1][1], 3))
+                if s != e:
+                    segments.append((s, e))
+    return _chain_edge_polygon(segments)
+
+
+def _zone_forbids_footprints(zone, x: float, y: float, layer: str, pts) -> bool:
+    ko = zone.find("keepout")
+    if ko is None:
+        return False
+    rule = ko.find("footprints")
+    if rule is None or rule.atoms[1].text != "not_allowed":
+        return False
+    layers_node = zone.find("layers") or zone.find("layer")
+    if layers_node is None or layer not in [a.text for a in layers_node.atoms[1:]]:
+        return False
+    return bool(pts) and _point_in_polygon(x, y, pts)
+
+
+def _zone_pts(zone):
+    poly = zone.find("polygon")
+    if poly is None:
+        return []
+    return [
+        (round(float(p.atoms[1].text), 3), round(float(p.atoms[2].text), 3))
+        for p in poly.find("pts").find_all("xy")
+    ]
+
+
+def _keepout_hit_cst(root, x: float, y: float, layer: str) -> bool:
+    """CST twin of _check_footprint_keepout_violations, boolean form."""
+    for zone in root.find_all("zone"):
+        if _zone_forbids_footprints(zone, x, y, layer, _zone_pts(zone)):
+            return True
+    for fp in root.find_all("footprint"):
+        at = fp.find("at")
+        if at is None:
+            continue
+        fx, fy = float(at.atoms[1].text), float(at.atoms[2].text)
+        angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
+        fl = fp.find("layer")
+        mirrored = fl is not None and fl.atoms[1].text == "B.Cu"
+        for zone in fp.find_all("zone"):
+            pts = []
+            for px, py in _zone_pts(zone):
+                bx, by = _transform_local_to_board(fx, fy, angle, px, py, mirrored=mirrored)
+                pts.append((round(bx, 3), round(by, 3)))
+            if _zone_forbids_footprints(zone, x, y, layer, pts):
+                return True
+    return False
+
+
+_FOOTPRINT_TPL = _cst.parse(
+    b'(footprint ""\n\t\t(layer "F.Cu")\n\t\t(uuid "x")\n\t\t(at 0 0 0)'
+    b'\n\t\t(property "Reference" "R"\n\t\t\t(at 0 -2 0)\n\t\t\t(layer "F.SilkS")\n\t\t\t(uuid "x")'
+    b"\n\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 1.27 1.27)\n\t\t\t\t)\n\t\t\t)\n\t\t)"
+    b'\n\t\t(property "Value" "V"\n\t\t\t(at 0 2 0)\n\t\t\t(layer "F.Fab")\n\t\t\t(uuid "x")'
+    b"\n\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 1.27 1.27)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)"
+).lists[0]
+
+# Board children that sort after footprints in native files.
+_PCB_TAIL_HEADS = (
+    "gr_line",
+    "gr_text",
+    "gr_rect",
+    "gr_circle",
+    "gr_arc",
+    "gr_poly",
+    "gr_curve",
+    "gr_text_box",
+    "image",
+    "segment",
+    "arc",
+    "via",
+    "zone",
+    "group",
+    "embedded_fonts",
+)
+
+
+def _splice_pcb_footprint(root, node) -> None:
+    anchors = [c for c in root.lists if c.head == "footprint"]
+    if anchors:
+        root.insert_after(anchors[-1], node)
+        return
+    tail = next((c for c in root.lists if c.head in _PCB_TAIL_HEADS), None)
+    if tail is not None:
+        root.insert_before(tail, node)
+    else:
+        root.append_child(node, b"\n\t")
+
+
 # ---------------------------------------------------------------------------
 # PCB read tools
 # ---------------------------------------------------------------------------
@@ -546,11 +673,7 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
         pcb_path: Path to .kicad_pcb file
     """
     _, root, _ = _open_pcb_cst(pcb_path)
-    fp = next(
-        (f for f in root.find_all("footprint") if _fp_prop_cst(f, "Reference") == reference), None
-    )
-    if fp is None:
-        raise ToolError(f"Footprint {reference!r} not found.")
+    fp = _find_fp_cst(root, reference)
     lines = [f"{reference} pads:"]
     for pad in fp.find_all("pad"):
         net = pad.find("net")
@@ -599,29 +722,17 @@ def place_footprint(
         layer: Layer (F.Cu or B.Cu)
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    fp = Footprint()
-    fp.layer = layer
-    fp.position = Position(X=x, Y=y, angle=rotation)
-    fp.properties = {"Reference": reference, "Value": value}
-    fp.graphicItems = [
-        FpText(
-            type="reference",
-            text=reference,
-            layer="F.SilkS",
-            effects=_default_effects(),
-            position=Position(X=0, Y=-2),
-        ),
-        FpText(
-            type="value",
-            text=value,
-            layer="F.Fab",
-            effects=_default_effects(),
-            position=Position(X=0, Y=2),
-        ),
-    ]
-    board.footprints.append(fp)
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    node = _FOOTPRINT_TPL.copy()
+    node.find("layer").atoms[1].set_text(layer)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _fill_at(node, x, y, rotation)
+    for prop in node.find_all("property"):
+        prop.atoms[2].set_text(reference if prop.atoms[1].text == "Reference" else value)
+        prop.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_pcb_footprint(root, node)
+    Path(key).write_bytes(_cst.serialize(tree))
     return f"Placed {reference} ({value}) at ({x}, {y}) on {layer}"
 
 
@@ -644,22 +755,21 @@ def move_footprint(
         layer: New layer (empty = keep current)
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    fp = _find_fp(board, reference)
-    fp.position.X = x
-    fp.position.Y = y
-    if rotation is not None:
-        fp.position.angle = rotation
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    fp = _find_fp_cst(root, reference)
+    _fill_at(fp, x, y, rotation)
     if layer:
-        fp.layer = layer
-    board.to_file()
+        fp.find("layer").atoms[1].set_text(layer)
+    Path(key).write_bytes(_cst.serialize(tree))
     # Validation (never blocks the move)
+    fp_layer_node = fp.find("layer")
+    fp_layer = fp_layer_node.atoms[1].text if fp_layer_node is not None else "F.Cu"
     warnings: list[str] = []
     try:
-        violations = _check_footprint_keepout_violations(board, x, y, fp.layer)
-        if violations:
+        if _keepout_hit_cst(root, x, y, fp_layer):
             warnings.append("WARNING: position is inside a keep-out zone (footprints not allowed)")
-        edge_poly = _board_edge_polygon(board)
+        edge_poly = _edge_polygon_cst(root)
         if edge_poly is not None and not _point_in_polygon(x, y, edge_poly):
             warnings.append("WARNING: position is outside the board edge")
     except Exception:
@@ -714,9 +824,10 @@ def remove_footprint(reference: str, pcb_path: str = PCB_PATH) -> str:
         reference: Reference designator (e.g. "R1")
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    board.footprints.remove(_find_fp(board, reference))
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    root.remove_child(_find_fp_cst(root, reference))
+    Path(key).write_bytes(_cst.serialize(tree))
     return f"Removed {reference}"
 
 

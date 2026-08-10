@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 import pytest
-from conftest import _pure_insertion, requires_cli
+from conftest import _confined, _pure_insertion, _span_preserved, build_test_footprint, requires_cli
 from kiutils.board import Board
 from kiutils.items.brditems import Segment, Via
 from mcp.server.fastmcp.exceptions import ToolError
@@ -289,3 +289,115 @@ class TestAddTraceViaCst:
         pcb.add_via(20, 20, net=1, pcb_path=p)
         result = pcb.run_drc(pcb_path=p)
         assert result.violation_count >= 0
+
+
+def _make_keepout_board_bumped(tmp_path):
+    """Kiutils-built keepout board with its version text-swapped to KiCad 10."""
+    import uuid as _uuid
+
+    from kiutils.items.common import Net, Position
+    from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
+
+    board = Board.create_new()
+    board.nets = [Net(number=0, name="")]
+    kz = Zone()
+    kz.net = 0
+    kz.netName = ""
+    kz.layers = ["F.Cu"]
+    kz.tstamp = str(_uuid.uuid4())
+    kz.hatch = Hatch(style="edge", pitch=0.5)
+    kz.keepoutSettings = KeepoutSettings(
+        tracks="not_allowed",
+        vias="not_allowed",
+        pads="not_allowed",
+        copperpour="not_allowed",
+        footprints="not_allowed",
+    )
+    poly = ZonePolygon()
+    poly.coordinates = [
+        Position(X=10, Y=10),
+        Position(X=40, Y=10),
+        Position(X=40, Y=40),
+        Position(X=10, Y=40),
+    ]
+    kz.polygons = [poly]
+    board.zones.append(kz)
+    board.footprints.append(build_test_footprint())
+    path = tmp_path / "keep.kicad_pcb"
+    board.filePath = str(path)
+    board.to_file()
+    path.write_text(path.read_text().replace("(version 20211014)", "(version 20260206)"))
+    return str(path)
+
+
+class TestFootprintWritersCst:
+    def test_place_scratch(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.place_footprint("R2", "4.7K", 50, 60, rotation=90, layer="B.Cu", pcb_path=p)
+        assert result == "Placed R2 (4.7K) at (50, 60) on B.Cu"
+        assert _pure_insertion(before, Path(p).read_bytes())
+        board = Board.from_file(p)
+        assert "R2" in [fp.properties.get("Reference") for fp in board.footprints]
+        r2 = next(f for f in pcb.list_pcb_footprints(p) if f.reference == "R2")
+        assert (r2.x, r2.y, r2.rotation, r2.layer, r2.value) == (50.0, 60.0, 90.0, "B.Cu", "4.7K")
+
+    def test_place_k10(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        pcb.place_footprint("R2", "1K", 50, 60, pcb_path=p)
+        assert _pure_insertion(before, Path(p).read_bytes())
+        assert any(f.reference == "R2" for f in pcb.list_pcb_footprints(p))
+
+    def test_move_k9(self, scratch_pcb):
+        p = str(scratch_pcb)
+        assert pcb.move_footprint("R1", 42, 24, pcb_path=p) == "Moved R1 to (42, 24)"
+        r1 = next(f for f in pcb.list_pcb_footprints(p) if f.reference == "R1")
+        assert (r1.x, r1.y) == (42.0, 24.0)
+        assert Board.from_file(p).footprints[0].position.X == 42
+
+    def test_move_k10_layer_confined(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
+        after = Path(p).read_bytes()
+        assert _confined(before, after)
+        r1 = next(f for f in pcb.list_pcb_footprints(p) if f.reference == "R1")
+        assert (r1.x, r1.y, r1.layer) == (50.0, 50.0, "B.Cu")
+
+    def test_move_k10_rotation_appends_atom(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        pcb.move_footprint("R1", 50, 50, rotation=90, pcb_path=p)
+        after = Path(p).read_bytes()
+        assert b"(at 50 50 90)" in after
+        assert b"(at -0.75 0)" in after  # pad offsets stay untouched, kiutils parity
+
+    def test_move_missing_refuses_untouched(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        with pytest.raises(ToolError, match="not found"):
+            pcb.move_footprint("R99", 10, 10, pcb_path=p)
+        assert Path(p).read_bytes() == before
+
+    def test_move_warnings_survive_k10_header(self, tmp_path):
+        """The kiutils warning path silently skipped K10 boards; the CST
+        twins warn on any version."""
+        p = _make_keepout_board_bumped(tmp_path)
+        result = pcb.move_footprint("R1", 25, 25, pcb_path=p)
+        assert "WARNING: position is inside a keep-out zone" in result
+        result = pcb.move_footprint("R1", 100, 100, pcb_path=p)
+        assert "WARNING" not in result
+
+    def test_remove_k9(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        assert pcb.remove_footprint("R1", pcb_path=p) == "Removed R1"
+        assert _span_preserved(before, Path(p).read_bytes())
+        assert pcb.list_pcb_footprints(p) == []
+
+    def test_remove_k10(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        pcb.remove_footprint("R1", pcb_path=p)
+        assert _span_preserved(before, Path(p).read_bytes())
+        assert pcb.list_pcb_footprints(p) == []

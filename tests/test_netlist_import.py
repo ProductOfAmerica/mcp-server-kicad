@@ -7,7 +7,6 @@ kicad-cli and KiCad's Python with pcbnew.
 
 from __future__ import annotations
 
-import subprocess
 from xml.etree.ElementTree import ParseError
 
 import pytest
@@ -171,32 +170,6 @@ def _make_project(tmp_path):
     return sch, str(tmp_path / "e2e.kicad_pcb")
 
 
-def _pcbnew_move(pcb_path: str, reference: str, x_mm: float, y_mm: float) -> None:
-    """Move a footprint with KiCad's own pcbnew.
-
-    The MCP move_footprint stays a guarded kiutils writer, which cannot
-    touch the KiCad 10-format boards pcbnew 10 writes on the K10 runners;
-    this test-only stand-in works on both.
-    """
-    python, env = find_pcbnew_python()
-    assert python is not None
-    script = (
-        "import sys, pcbnew; "
-        "b = pcbnew.LoadBoard(sys.argv[1]); "
-        "fp = b.FindFootprintByReference(sys.argv[2]); "
-        "fp.SetPosition(pcbnew.VECTOR2I_MM(float(sys.argv[3]), float(sys.argv[4]))); "
-        "pcbnew.SaveBoard(sys.argv[1], b)"
-    )
-    subprocess.run(
-        [python, "-c", script, pcb_path, reference, str(x_mm), str(y_mm)],
-        capture_output=True,
-        text=True,
-        timeout=120,
-        env=env,
-        check=True,
-    )
-
-
 @requires_e2e
 class TestUpdatePcbE2E:
     def test_initial_import(self, tmp_path):
@@ -238,13 +211,14 @@ class TestUpdatePcbE2E:
     def test_value_update_preserves_position(self, tmp_path):
         from mcp_server_kicad.pcb import (
             list_pcb_footprints,
+            move_footprint,
             update_pcb_from_schematic,
         )
         from mcp_server_kicad.schematic import set_component_property
 
         sch, pcb_path = _make_project(tmp_path)
         update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
-        _pcbnew_move(pcb_path, "R1", 42, 24)
+        move_footprint("R1", 42, 24, pcb_path=pcb_path)
         set_component_property("R1", "Value", "22K", schematic_path=sch)
         result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
         assert result.value_updated == ["R1"]
@@ -285,36 +259,24 @@ class TestUpdatePcbE2E:
         assert seg.net == 0
 
     def test_delete_stale(self, tmp_path):
-        """A footprint whose component left the schematic goes stale.
-
-        The stale footprint is created schematic-side (place R3, import,
-        remove R3, re-import) because place_footprint stays a guarded
-        kiutils writer that cannot touch KiCad 10-format boards.
-        """
-        from mcp_server_kicad.pcb import list_pcb_footprints, update_pcb_from_schematic
-        from mcp_server_kicad.schematic import (
-            place_component,
-            remove_component,
-            set_component_property,
+        from mcp_server_kicad.pcb import (
+            list_pcb_footprints,
+            place_footprint,
+            update_pcb_from_schematic,
         )
 
         sch, pcb_path = _make_project(tmp_path)
-        place_component("Device:R", "R3", "1K", 160, 80, schematic_path=sch)
-        set_component_property(
-            "R3", "Footprint", "Resistor_SMD:R_0603_1608Metric", schematic_path=sch
-        )
         update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
-        assert any(f.reference == "R3" for f in list_pcb_footprints(pcb_path=pcb_path))
-        remove_component("R3", schematic_path=sch)
+        place_footprint("R99", "ghost", 55, 55, pcb_path=pcb_path)
 
         result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
-        assert result.stale_footprints == ["R3"]
+        assert result.stale_footprints == ["R99"]
         assert result.stale_removed == []
-        assert any(f.reference == "R3" for f in list_pcb_footprints(pcb_path=pcb_path))
+        assert any(f.reference == "R99" for f in list_pcb_footprints(pcb_path=pcb_path))
 
         result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path, delete_stale=True)
-        assert result.stale_removed == ["R3"]
-        assert not any(f.reference == "R3" for f in list_pcb_footprints(pcb_path=pcb_path))
+        assert result.stale_removed == ["R99"]
+        assert not any(f.reference == "R99" for f in list_pcb_footprints(pcb_path=pcb_path))
 
     def test_add_trace_net_binding_survives_reimport(self, tmp_path):
         """Live trap-#1 gate: on the KiCad 10 runner the imported board is

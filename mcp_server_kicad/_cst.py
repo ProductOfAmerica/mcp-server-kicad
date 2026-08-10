@@ -245,7 +245,13 @@ def _fill_at(node, x: float, y: float, rotation: float | None = None) -> None:
     at.atoms[1].set_text(_num(x))
     at.atoms[2].set_text(_num(y))
     if rotation is not None:
-        at.atoms[3].set_text(_num(rotation))
+        if len(at.atoms) > 3:
+            at.atoms[3].set_text(_num(rotation))
+        else:
+            rot = at.atoms[2].copy()
+            rot.sep = b" "
+            rot.set_text(_num(rotation))
+            at.children.append(rot)
 
 
 def demo():
@@ -290,6 +296,11 @@ def demo():
     o2 = serialize(t2)
     assert o2.count(b'"multi\nline"') == 2 and o2.startswith(hard[:20])
     assert serialize(parse(o2)) == o2
+
+    # _fill_at appends the rotation atom when (at ...) lacks it.
+    t_at = parse(b"(x\n\t(at 1 2)\n)")
+    _fill_at(t_at.lists[0], 3, 4, 90)
+    assert serialize(t_at) == b"(x\n\t(at 3 4 90)\n)", serialize(t_at)
 
     # insert_before mirrors insert_after; remove_child inverts both;
     # append_child grows a list with an explicit separator.
