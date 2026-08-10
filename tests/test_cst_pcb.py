@@ -401,3 +401,34 @@ class TestFootprintWritersCst:
         pcb.remove_footprint("R1", pcb_path=p)
         assert _span_preserved(before, Path(p).read_bytes())
         assert pcb.list_pcb_footprints(p) == []
+
+
+class TestGraphicWritersCst:
+    def test_text_scratch(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.add_pcb_text("BOARD V1", 100, 110, layer="F.SilkS", pcb_path=p)
+        assert result == "Text 'BOARD V1' at (100, 110) on F.SilkS"
+        assert _pure_insertion(before, Path(p).read_bytes())
+        texts = [g for g in pcb.list_pcb_graphic_items(p) if g.type == "text"]
+        assert [(t.text, t.x, t.y, t.layer) for t in texts] == [
+            ("BOARD V1", 100.0, 110.0, "F.SilkS")
+        ]
+
+    def test_line_scratch(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.add_pcb_line(80, 80, 120, 80, layer="Edge.Cuts", pcb_path=p)
+        assert result == "Line: (80, 80) -> (120, 80) on Edge.Cuts"
+        assert _pure_insertion(before, Path(p).read_bytes())
+        lines = [g for g in pcb.list_pcb_graphic_items(p) if g.type == "line"]
+        assert (lines[-1].start_x, lines[-1].end_x) == (80.0, 120.0)
+
+    def test_text_and_line_k10(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        pcb.add_pcb_text("note", 10, 10, pcb_path=p)
+        pcb.add_pcb_line(0, 0, 50, 0, pcb_path=p)
+        assert _confined(before, Path(p).read_bytes(), limit=500)
+        kinds = [g.type for g in pcb.list_pcb_graphic_items(p)]
+        assert "text" in kinds and "line" in kinds

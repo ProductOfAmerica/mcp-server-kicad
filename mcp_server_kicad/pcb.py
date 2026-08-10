@@ -13,7 +13,6 @@ from kiutils.footprint import Footprint
 from kiutils.items.brditems import Segment, Via
 from kiutils.items.common import Position
 from kiutils.items.fpitems import FpText
-from kiutils.items.gritems import GrLine, GrText
 from kiutils.items.zones import FillSettings, Hatch, KeepoutSettings, Zone, ZonePolygon
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -52,7 +51,6 @@ from mcp_server_kicad._shared import (
     _chain_edge_polygon,
     _check_footprint_keepout_violations,
     _courtyard_bbox,
-    _default_effects,
     _file_meta,
     _fp_ref,
     _gen_uuid,
@@ -453,6 +451,40 @@ def _splice_pcb_footprint(root, node) -> None:
         root.insert_before(tail, node)
     else:
         root.append_child(node, b"\n\t")
+
+
+_GRAPHIC_HEADS = ("gr_line", "gr_text") + tuple(_GRAPHIC_CLASS)
+
+
+def _splice_pcb_graphic(root, node) -> None:
+    anchors = [c for c in root.lists if c.head in _GRAPHIC_HEADS]
+    if anchors:
+        root.insert_after(anchors[-1], node)
+        return
+    tail = next(
+        (
+            c
+            for c in root.lists
+            if c.head in ("segment", "arc", "via", "zone", "group", "embedded_fonts")
+        ),
+        None,
+    )
+    if tail is not None:
+        root.insert_before(tail, node)
+    else:
+        root.append_child(node, b"\n\t")
+
+
+_GR_TEXT_TPL = _cst.parse(
+    b'(gr_text "x"\n\t\t(at 0 0 0)\n\t\t(layer "F.SilkS")\n\t\t(uuid "x")'
+    b"\n\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t)\n\t)"
+).lists[0]
+
+_GR_LINE_TPL = _cst.parse(
+    b"(gr_line\n\t\t(start 0 0)\n\t\t(end 0 0)"
+    b"\n\t\t(stroke\n\t\t\t(width 0.05)\n\t\t\t(type default)\n\t\t)"
+    b'\n\t\t(layer "Edge.Cuts")\n\t\t(uuid "x")\n\t)'
+).lists[0]
 
 
 # ---------------------------------------------------------------------------
@@ -934,15 +966,15 @@ def add_pcb_text(
         rotation: Rotation in degrees
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    gt = GrText()
-    gt.text = text
-    gt.position = Position(X=x, Y=y, angle=rotation)
-    gt.layer = layer
-    gt.effects = _default_effects()
-    gt.tstamp = _gen_uuid()
-    board.graphicItems.append(gt)
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    node = _GR_TEXT_TPL.copy()
+    node.atoms[1].set_text(text)
+    _fill_at(node, x, y, rotation)
+    node.find("layer").atoms[1].set_text(layer)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_pcb_graphic(root, node)
+    Path(key).write_bytes(_cst.serialize(tree))
     return f"Text '{text}' at ({x}, {y}) on {layer}"
 
 
@@ -967,15 +999,19 @@ def add_pcb_line(
         width: Line width in mm
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    line = GrLine()
-    line.start = Position(X=x1, Y=y1)
-    line.end = Position(X=x2, Y=y2)
-    line.layer = layer
-    line.width = width
-    line.tstamp = _gen_uuid()
-    board.graphicItems.append(line)
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    node = _GR_LINE_TPL.copy()
+    start, end = node.find("start"), node.find("end")
+    start.atoms[1].set_text(_num(x1))
+    start.atoms[2].set_text(_num(y1))
+    end.atoms[1].set_text(_num(x2))
+    end.atoms[2].set_text(_num(y2))
+    node.find("stroke").find("width").atoms[1].set_text(_num(width))
+    node.find("layer").atoms[1].set_text(layer)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_pcb_graphic(root, node)
+    Path(key).write_bytes(_cst.serialize(tree))
     return f"Line: ({x1}, {y1}) -> ({x2}, {y2}) on {layer}"
 
 
