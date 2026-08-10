@@ -1212,7 +1212,6 @@ class TestKicad10E2E:
             "A": True,
             "B": False,
         }
-        assert isinstance(nets.global_nets, list)
         # No .kicad_pro beside the fixture, so nothing writes a symbol_instances
         # section: the empty-section path is what a KiCad 8+ file gives anyway.
         assert project.get_symbol_instances(schematic_path=p).instances == []

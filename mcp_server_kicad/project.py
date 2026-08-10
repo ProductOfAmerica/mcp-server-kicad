@@ -857,7 +857,6 @@ def list_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyResult:
             child_info["component_count"] = len(child_root.find_all("symbol"))
             child_info["label_count"] = len(child_root.find_all("label"))
             child_info["hierarchical_label_count"] = len(child_root.find_all("hierarchical_label"))
-            # Recurse for nested sheets
             child_info["sub_sheets"] = [
                 {
                     "sheet_name": _sheet_name_cst(sub) or "",
