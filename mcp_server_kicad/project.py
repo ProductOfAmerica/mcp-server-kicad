@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
 from mcp_server_kicad._cst import _fill_at, _node_text, _num, _numish

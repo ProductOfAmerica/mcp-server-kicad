@@ -1,9 +1,11 @@
 """Tests for symbol authoring tools on the symbol server."""
 
+from typing import cast
+
 import pytest
 from conftest import _pure_insertion, requires_cli
 from kiutils.symbol import SymbolLib
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import symbol
 from mcp_server_kicad._shared import _run_cli
@@ -160,7 +162,7 @@ class TestAddSymbol:
         with pytest.raises(ToolError, match="type"):
             symbol.add_symbol(
                 name="Bad",
-                pins=[{"number": "1", "name": "A"}],  # missing "type"
+                pins=cast(list[SymbolPinSpec], [{"number": "1", "name": "A"}]),  # missing "type"
                 symbol_lib_path=str(tmp_path / "lib.kicad_sym"),
             )
 

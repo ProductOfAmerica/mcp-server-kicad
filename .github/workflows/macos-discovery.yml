@@ -88,7 +88,7 @@ jobs:
       # the issue-#2 step below deletes the brew symlink, so it measures a
       # stock install.
       - name: Full test suite against installed KiCad
-        run: uv run pytest -v -rA --tb=short
+        run: uv run pytest -v -rA --tb=short -n auto
 
       - name: Reproduce issue #2, bundle only and nothing on PATH
         run: |
@@ -98,7 +98,7 @@ jobs:
           from mcp_server_kicad import footprint, pcb, project, schematic, symbol
           from mcp_server_kicad._shared import _find_kicad_cli, _resolve_system_lib
           from mcp_server_kicad.server import _copy_tools
-          from mcp.server.fastmcp import FastMCP
+          from mcp.server import MCPServer
 
           assert shutil.which("kicad-cli") is None, "still on PATH; #2's condition not reproduced"
 
@@ -112,7 +112,7 @@ jobs:
           assert lib and "SharedSupport" in lib, f"symbol lookup failed: {lib!r}"
 
           # #2's headline symptom: 89 tools instead of the full count.
-          target = FastMCP("probe")
+          target = MCPServer("probe")
           for mod in (schematic, pcb, symbol, footprint, project):
               _copy_tools(mod.mcp, target)
           count = len(target._tool_manager._tools)

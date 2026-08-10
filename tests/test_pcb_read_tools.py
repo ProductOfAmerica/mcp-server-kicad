@@ -10,7 +10,7 @@ from kiutils.items.common import Net, Position
 from kiutils.items.fpitems import FpRect, FpText
 from kiutils.items.gritems import GrLine
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import pcb
 from mcp_server_kicad.models import (

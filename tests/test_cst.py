@@ -18,7 +18,7 @@ from conftest import (
     requires_cli,
 )
 from kiutils.items.schitems import Connection
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import _cst, footprint, project, schematic, symbol
 from mcp_server_kicad._shared import _node_uuid, _resolve_system_lib, _run_cli
@@ -201,6 +201,7 @@ class TestRemoveFamilyPreservation:
         schematic.add_hierarchical_label("DUP", "input", 60, 90, schematic_path=p)
         schematic.add_hierarchical_label("DUP", "output", 60, 92, schematic_path=p)
         second_uuid = reparse(kicad_native_sch).hierarchicalLabels[1].uuid
+        assert second_uuid is not None
         result = schematic.remove_hierarchical_label("DUP", schematic_path=p, uuid=second_uuid)
         assert "Removed hierarchical label 'DUP'" in result
         remaining = reparse(kicad_native_sch).hierarchicalLabels
@@ -708,7 +709,8 @@ class TestProjectToolsPreservation:
         project.create_schematic(str(child2))
         project.add_hierarchical_sheet(str(parent), "s1", str(child), [])
         project.add_hierarchical_sheet(str(parent), "s2", str(child2), [], x=76.2, y=25.4)
-        uuids = [s.uuid for s in reparse(parent).sheets]
+        uuids = [s.uuid for s in reparse(parent).sheets if s.uuid is not None]
+        assert len(uuids) == 2
 
         before = parent.read_bytes()
         project.add_sheet_pin(uuids[0], "P1", "input", schematic_path=str(parent))
@@ -779,6 +781,7 @@ class TestProjectToolsPreservation:
             str(parent), "s1", str(child), [{"name": "A", "direction": "input"}]
         )
         src_uuid = reparse(parent).sheets[0].uuid
+        assert src_uuid is not None
         project.duplicate_sheet(src_uuid, "copy", schematic_path=str(parent))
         psch = reparse(parent)
         assert len(psch.sheets) == 2

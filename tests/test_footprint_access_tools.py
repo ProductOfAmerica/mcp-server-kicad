@@ -6,7 +6,7 @@ from kiutils.footprint import Footprint, Pad
 from kiutils.items.common import Position
 from kiutils.items.fpitems import FpCircle, FpLine, FpRect
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import footprint
 
