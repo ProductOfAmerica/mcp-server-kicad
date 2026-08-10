@@ -274,10 +274,6 @@ class PcbExportResult(ExportResult):
     layers: list[str]
 
 
-class SingleGerberExportResult(ExportResult):
-    layer: str
-
-
 class MultiFileExportResult(BaseModel):
     path: str
     format: str
@@ -285,15 +281,45 @@ class MultiFileExportResult(BaseModel):
     count: int
 
 
-class GerberExportResult(MultiFileExportResult):
+# The three below have two output modes each, but return one concrete model,
+# not a union: FastMCP wraps a union in {"result": ...} and a plain model not.
+
+
+class SchematicExportResult(BaseModel):
+    """pdf and dxf name one file and fill size_bytes; svg names a directory."""
+
+    path: str
+    format: str
+    files: list[str]
+    count: int
+    size_bytes: int | None = None
+
+
+class GerberExportResult(BaseModel):
+    """Single-layer mode names one file and fills size_bytes and layer.
+
+    Multi-layer mode names the output directory and fills the drill fields.
+    """
+
+    path: str
+    format: str
+    files: list[str]
+    count: int
+    size_bytes: int | None = None
+    layer: str | None = None
     drill_files: list[str] = []
     drill_count: int = 0
 
 
-class RenderExportResult(ExportResult):
-    width: int
-    height: int
-    side: str
+class Model3dExportResult(BaseModel):
+    """`render` fills width, height and side; step, stl and glb do not."""
+
+    path: str
+    format: str
+    size_bytes: int
+    width: int | None = None
+    height: int | None = None
+    side: str | None = None
 
 
 class BomExportResult(ExportResult):

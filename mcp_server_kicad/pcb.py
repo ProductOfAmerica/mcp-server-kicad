@@ -70,6 +70,7 @@ from mcp_server_kicad.models import (
     GraphicItem,
     KeepoutZoneResult,
     LayerItem,
+    Model3dExportResult,
     NetClassResult,
     NetItem,
     PcbExportResult,
@@ -78,8 +79,6 @@ from mcp_server_kicad.models import (
     PointSpec,
     PositionExportResult,
     RemoveTracesResult,
-    RenderExportResult,
-    SingleGerberExportResult,
     ThermalViasResult,
     TraceSegmentItem,
     TraceWidthResult,
@@ -1781,11 +1780,13 @@ def export_gerbers(
     output_dir: str = OUTPUT_DIR,
     include_drill: bool = True,
     layers: list[str] | None = None,
-) -> SingleGerberExportResult | GerberExportResult:
+) -> GerberExportResult:
     """Export Gerber files for manufacturing.
 
-    When layers contains exactly one layer, exports a single Gerber file.
-    Otherwise exports all layers (or the specified subset) plus optional drill files.
+    When layers contains exactly one layer, exports a single Gerber file: path
+    names it, and size_bytes and layer are filled. Otherwise exports all layers
+    (or the specified subset) plus optional drill files, and path names the
+    output directory. files and count are filled either way.
 
     Args:
         pcb_path: Path to .kicad_pcb file
@@ -1829,8 +1830,13 @@ def export_gerbers(
                 )
             os.replace(produced[0], out_path)
         meta = _file_meta(out_path)
-        return SingleGerberExportResult(
-            path=meta["path"], size_bytes=meta["size_bytes"], format="gerber", layer=layer
+        return GerberExportResult(
+            path=meta["path"],
+            format="gerber",
+            files=[Path(meta["path"]).name],
+            count=1,
+            size_bytes=meta["size_bytes"],
+            layer=layer,
         )
 
     # Multi-layer mode: directory of files
@@ -1866,8 +1872,10 @@ def export_3d(
     height: int = 900,
     side: str = "top",
     quality: str = "basic",
-) -> RenderExportResult | ExportResult:
+) -> Model3dExportResult:
     """Export PCB 3D model or render 3D view to image.
+
+    `render` fills width, height and side; the mesh formats leave them unset.
 
     Args:
         format: Output format - "step", "stl", "glb", or "render" (PNG image)
@@ -1903,7 +1911,7 @@ def export_3d(
             ]
         )
         meta = _file_meta(out_path)
-        return RenderExportResult(
+        return Model3dExportResult(
             path=meta["path"],
             size_bytes=meta["size_bytes"],
             format="png",
@@ -1917,7 +1925,7 @@ def export_3d(
     out_path = str(Path(out_dir) / (Path(pcb_path).stem + f".{fmt}"))
     _run_cli(["pcb", "export", fmt, "--output", out_path, pcb_path])
     meta = _file_meta(out_path)
-    return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format=fmt)
+    return Model3dExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format=fmt)
 
 
 @mcp.tool(annotations=_EXPORT)

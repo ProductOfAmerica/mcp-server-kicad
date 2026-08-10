@@ -43,11 +43,11 @@ from mcp_server_kicad.models import (
     HierarchicalLabelItem,
     JunctionItem,
     LabelItem,
-    MultiFileExportResult,
     NetConnectionsResult,
     NoConnectItem,
     PinRefSpec,
     PointSpec,
+    SchematicExportResult,
     SchematicSummary,
     SheetItem,
     UnconnectedPinsResult,
@@ -2357,8 +2357,12 @@ def export_schematic(
     format: str = "pdf",
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
-) -> ExportResult | MultiFileExportResult:
+) -> SchematicExportResult:
     """Export schematic to PDF, SVG, or DXF format.
+
+    pdf and dxf produce one file, so path names it and size_bytes is filled.
+    svg produces one file per sheet, so path names the directory. files and
+    count are filled either way.
 
     Args:
         format: Output format - "pdf", "svg", or "dxf"
@@ -2372,26 +2376,27 @@ def export_schematic(
     out_dir = output_dir or str(Path(schematic_path).parent)
     stem = Path(schematic_path).stem
 
-    if fmt == "pdf":
-        out_path = str(Path(out_dir) / f"{stem}.pdf")
-        _run_cli(["sch", "export", "pdf", "--output", out_path, schematic_path])
-        meta = _file_meta(out_path)
-        return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format="pdf")
-    elif fmt == "svg":
+    if fmt == "svg":
         os.makedirs(out_dir, exist_ok=True)
         _run_cli(["sch", "export", "svg", "--output", out_dir, schematic_path])
         svgs = sorted(Path(out_dir).glob("*.svg"))
-        return MultiFileExportResult(
+        return SchematicExportResult(
             path=out_dir,
             format="svg",
             files=[f.name for f in svgs],
             count=len(svgs),
         )
-    else:  # dxf
-        out_path = str(Path(out_dir) / f"{stem}.dxf")
-        _run_cli(["sch", "export", "dxf", "--output", out_path, schematic_path])
-        meta = _file_meta(out_path)
-        return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format="dxf")
+
+    out_path = str(Path(out_dir) / f"{stem}.{fmt}")
+    _run_cli(["sch", "export", fmt, "--output", out_path, schematic_path])
+    meta = _file_meta(out_path)
+    return SchematicExportResult(
+        path=meta["path"],
+        format=fmt,
+        files=[Path(meta["path"]).name],
+        count=1,
+        size_bytes=meta["size_bytes"],
+    )
 
 
 @mcp.tool(annotations=_EXPORT)

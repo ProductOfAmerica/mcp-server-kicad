@@ -8,38 +8,20 @@ as a bare KeyError after a round trip.
 Every helper here resolves through `anyOf`. An optional parameter such as
 `list[X] | None` publishes its array under an `anyOf` wrapper with a null
 branch, so a check that reads the top level passes on it no matter what it
-contains. That blind spot hid add_symbol's `rectangles` from a first draft of
-this file.
+contains. That blind spot hid add_symbol's `rectangles` from a first draft.
 """
 
-import pytest
+import inspect
+from types import UnionType
+from typing import Union, get_origin
 
 from mcp_server_kicad import footprint, pcb, project, schematic, symbol
 
-_MODULES = {
-    "footprint": footprint,
-    "pcb": pcb,
-    "project": project,
-    "schematic": schematic,
-    "symbol": symbol,
-}
-
-# (tool, parameter) pairs that take a list of structured entries.
-_LIST_PARAMS = [
-    ("pcb", "add_copper_zone", "corners"),
-    ("pcb", "add_keepout_zone", "corners"),
-    ("project", "create_sym_lib_table", "entries"),
-    ("project", "add_hierarchical_sheet", "pins"),
-    ("schematic", "add_wires", "wires"),
-    ("schematic", "add_junctions", "points"),
-    ("schematic", "wire_pins_to_net", "pins"),
-    ("symbol", "add_symbol", "pins"),
-    ("symbol", "add_symbol", "rectangles"),
-]
+_MODULES = [footprint, pcb, project, schematic, symbol]
 
 
 def _all_tools():
-    for mod in _MODULES.values():
+    for mod in _MODULES:
         yield from mod.mcp._tool_manager._tools.values()
 
 
@@ -61,37 +43,59 @@ def _array_items(schema: dict, defs: dict) -> dict | None:
     return None
 
 
-@pytest.mark.parametrize("mod,tool,param", _LIST_PARAMS)
-def test_list_parameter_declares_its_required_keys(mod, tool, param):
-    schema = _MODULES[mod].mcp._tool_manager._tools[tool].parameters
-    items = _array_items(schema["properties"][param], schema.get("$defs", {}))
-    assert items is not None, f"{tool}.{param} is not an array parameter"
-    assert items.get("properties"), f"{tool}.{param} items declare no properties"
-    assert items.get("required"), f"{tool}.{param} items declare no required keys"
-
-
-def test_no_parameter_accepts_an_unconstrained_object_list():
-    """Surface-wide sweep, so a new list[dict] cannot be added unnoticed."""
-    loose = []
+def _object_list_params() -> list[tuple[str, str, dict]]:
+    """(tool, parameter, item schema) for every parameter taking a list of objects."""
+    found = []
     for tool in _all_tools():
+        defs = tool.parameters.get("$defs", {})
         for name, prop in tool.parameters.get("properties", {}).items():
-            for branch in _branches(prop):
-                if branch.get("type") == "array" and (branch.get("items") or {}).get(
-                    "additionalProperties"
-                ):
-                    loose.append(f"{tool.name}.{name}")
+            items = _array_items(prop, defs)
+            if items and items.get("type") == "object":
+                found.append((tool.name, name, items))
+    return found
+
+
+def test_object_list_parameters_declare_their_required_keys():
+    """Swept rather than listed, so a tenth such parameter is covered too."""
+    loose = [
+        f"{tool}.{param}"
+        for tool, param, items in _object_list_params()
+        if not items.get("properties") or not items.get("required")
+    ]
     assert loose == [], f"list parameters with no key contract: {loose}"
 
 
-def test_the_sweep_sees_through_anyOf():
-    """Guards the guard: the wrapper that hid `rectangles` must not hide again."""
-    wrapped = {
-        "anyOf": [
-            {"type": "array", "items": {"type": "object", "additionalProperties": True}},
-            {"type": "null"},
-        ]
-    }
-    assert _array_items(wrapped, {}) == {"type": "object", "additionalProperties": True}
-    assert any(b.get("type") == "array" for b in _branches(wrapped)), (
-        "a flat read of this schema sees no array at all"
-    )
+def test_the_sweep_sees_the_anyOf_wrapped_parameter():
+    """Guards the guard: an empty sweep must not read as a clean surface.
+
+    add_symbol's `rectangles` is `list[RectangleSpec] | None`, so its array sits
+    inside an anyOf wrapper. A helper that reads only the top level finds no
+    array there and reports nothing, which is indistinguishable from a pass.
+    """
+    assert ("add_symbol", "rectangles") in [(t, p) for t, p, _ in _object_list_params()]
+
+
+def _return_annotation(tool):
+    """The tool's real return type.
+
+    eval_str is required: pcb.py and project.py use postponed annotations, so
+    without it the annotation comes back as a string and the check below
+    silently degrades to substring matching.
+    """
+    return inspect.signature(tool.fn, eval_str=True).return_annotation
+
+
+def test_no_tool_returns_a_union():
+    """FastMCP wraps a union return in {"result": ...} and a bare model not.
+
+    Three export tools returned unions, so reaching `path` meant branching on
+    which export tool you had called. Keyed on the annotation rather than on
+    the wrapper shape: 75 of the tools are legitimately wrapped because they
+    return a str or a list, so a shape-only assertion is unusable here.
+    """
+    unions = [
+        tool.name
+        for tool in _all_tools()
+        if get_origin(_return_annotation(tool)) in (Union, UnionType)
+    ]
+    assert unions == [], f"tools returning a union, whose output gets wrapped: {unions}"
