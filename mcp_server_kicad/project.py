@@ -199,7 +199,7 @@ def create_symbol_library(symbol_lib_path: str) -> str:
     return f"Created symbol library at {p}"
 
 
-@mcp.tool(annotations=_ADDITIVE)
+@mcp.tool(annotations=_DESTRUCTIVE)
 def create_sym_lib_table(directory: str, entries: list[dict]) -> str:
     """Create a sym-lib-table file in the given directory.
 
@@ -1162,7 +1162,7 @@ def reorder_sheet_pages(
     return f"Reordered {len(page_order)} sheets"
 
 
-@mcp.tool(annotations=_ADDITIVE)
+@mcp.tool(annotations=_DESTRUCTIVE)
 def duplicate_sheet(
     sheet_uuid: str,
     new_sheet_name: str,
@@ -1274,7 +1274,7 @@ def duplicate_sheet(
     return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
 
 
-@mcp.tool(annotations=_ADDITIVE)
+@mcp.tool(annotations=_DESTRUCTIVE)
 def flatten_hierarchy(
     schematic_path: str = SCH_PATH,
     output_path: str = "",

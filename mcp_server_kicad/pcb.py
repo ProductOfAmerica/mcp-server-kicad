@@ -1943,7 +1943,7 @@ def export_positions(
     )
 
 
-@mcp.tool(annotations=_EXPORT)
+@mcp.tool(annotations=_DESTRUCTIVE)
 def export_ipc2581(
     pcb_path: str = PCB_PATH,
     output: str = "",

@@ -127,14 +127,19 @@ _EXPECTED: dict[str, dict[str, list[str]]] = {
             "add_thermal_vias",
             "set_net_class",
         ],
-        "destructive": ["remove_footprint", "remove_traces", "remove_dangling_tracks"],
+        "destructive": [
+            "remove_footprint",
+            "remove_traces",
+            "remove_dangling_tracks",
+            # `output` is a full file path the caller supplies, unguarded.
+            "export_ipc2581",
+        ],
         "export": [
             "run_drc",
             "export_pcb",
             "export_gerbers",
             "export_3d",
             "export_positions",
-            "export_ipc2581",
         ],
     },
     "project": {
@@ -152,12 +157,9 @@ _EXPECTED: dict[str, dict[str, list[str]]] = {
             "create_project",
             "create_schematic",
             "create_symbol_library",
-            "create_sym_lib_table",
             "add_hierarchical_sheet",
             "add_sheet_pin",
             "annotate_schematic",
-            "duplicate_sheet",
-            "flatten_hierarchy",
         ],
         "destructive": [
             "remove_hierarchical_sheet",
@@ -165,6 +167,10 @@ _EXPECTED: dict[str, dict[str, list[str]]] = {
             "remove_sheet_pin",
             "move_hierarchical_sheet",
             "reorder_sheet_pages",
+            # Write to a destination the caller names, with no guard on it.
+            "create_sym_lib_table",
+            "duplicate_sheet",
+            "flatten_hierarchy",
         ],
         "export": ["export_hierarchical_netlist", "run_jobset"],
     },
