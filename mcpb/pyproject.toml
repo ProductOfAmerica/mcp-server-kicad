@@ -1,0 +1,13 @@
+# Launcher project for the MCPB bundle. Not published, not part of the
+# mcp-server-kicad distribution; uv reads it to build the bundle's environment
+# on the user's machine.
+#
+# The pin below and the version in manifest.json are both placeholders. The
+# release workflow stamps both from the version being released, so neither is
+# authoritative in git and neither needs bumping by hand.
+[project]
+name = "kicad-mcpb-bundle"
+version = "0.0.0"
+description = "MCPB launcher for mcp-server-kicad"
+requires-python = ">=3.10"
+dependencies = ["mcp-server-kicad==0.0.0"]

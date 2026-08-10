@@ -1,0 +1,82 @@
+{
+  "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
+  "manifest_version": "0.4",
+  "name": "kicad",
+  "display_name": "KiCad",
+  "version": "0.0.0",
+  "description": "Byte-preserving KiCad automation: schematics, PCB layout, ERC, DRC, exports",
+  "long_description": "109 tools for KiCad schematic capture, PCB layout, symbol and footprint libraries, and project management. Every edit runs on a byte-preserving concrete syntax tree, so bytes you did not ask to change reach the disk unchanged, and an edit that cannot be done correctly is refused with the file intact. KiCad 9 and KiCad 10 files both work.\n\nRequires a local KiCad install for the ERC, DRC, and export tools.",
+  "author": {
+    "name": "ProductOfAmerica"
+  },
+  "homepage": "https://github.com/ProductOfAmerica/mcp-server-kicad",
+  "documentation": "https://github.com/ProductOfAmerica/mcp-server-kicad#readme",
+  "support": "https://github.com/ProductOfAmerica/mcp-server-kicad/issues",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ProductOfAmerica/mcp-server-kicad"
+  },
+  "license": "MIT",
+  "keywords": [
+    "kicad",
+    "eda",
+    "schematic",
+    "pcb",
+    "electronics"
+  ],
+  "server": {
+    "type": "uv",
+    "entry_point": "server/main.py",
+    "mcp_config": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "${__dirname}",
+        "server/main.py"
+      ],
+      "env": {
+        "KICAD_SCH_PATH": "${user_config.schematic_path}",
+        "KICAD_PCB_PATH": "${user_config.board_path}",
+        "KICAD_OUTPUT_DIR": "${user_config.output_dir}",
+        "KICAD_CLI_PATH": "${user_config.kicad_cli_path}"
+      }
+    }
+  },
+  "user_config": {
+    "schematic_path": {
+      "type": "file",
+      "title": "Default schematic",
+      "description": "Your .kicad_sch file. Sets the default for tools that take a schematic path, so you do not have to repeat it every request. Individual requests can still name a different file.",
+      "required": false
+    },
+    "board_path": {
+      "type": "file",
+      "title": "Default board",
+      "description": "Your .kicad_pcb file. Same idea as the schematic above.",
+      "required": false
+    },
+    "output_dir": {
+      "type": "directory",
+      "title": "Export directory",
+      "description": "Where Gerbers, PDFs, BOMs, and other exports are written. Usually your project folder.",
+      "required": false
+    },
+    "kicad_cli_path": {
+      "type": "file",
+      "title": "kicad-cli executable",
+      "description": "Only needed when kicad-cli is not on PATH, which is the case for the default Windows KiCad install (C:\\Program Files\\KiCad\\9.0\\bin\\kicad-cli.exe). Leave blank on macOS and Linux. Without it, the ERC, DRC, and export tools cannot run.",
+      "required": false
+    }
+  },
+  "compatibility": {
+    "platforms": [
+      "darwin",
+      "win32",
+      "linux"
+    ],
+    "runtimes": {
+      "python": ">=3.10"
+    }
+  }
+}

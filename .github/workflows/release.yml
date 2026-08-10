@@ -61,13 +61,36 @@ jobs:
       # Build
       - run: uv build
 
+      # Pack the MCPB bundle. Both versions in mcpb/ are placeholders stamped
+      # here rather than committed, so the bundle is not a fifth place to bump.
+      # This runs after the commit above on purpose: the stamped values are
+      # build output, not repo state.
+      #
+      # The bundle lands in bundle/, never dist/, because the PyPI publish step
+      # uploads everything in dist/ and would choke on a non-package file.
+      #
+      # No uv.lock ships with it: the manifest pins the version being released,
+      # which is not on PyPI until the last step of this job, so a lock cannot
+      # be resolved yet. Users resolve on first launch instead, fenced by the
+      # mcp>=1.10.0,<2.0.0 bound in the package itself.
+      - name: Pack MCPB bundle
+        run: |
+          V="${{ steps.bump.outputs.version }}"
+          mkdir -p bundle
+          node -e 'const fs=require("fs"),p="mcpb/manifest.json",d=JSON.parse(fs.readFileSync(p,"utf8"));d.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n")' "$V"
+          sed -i "s|mcp-server-kicad==[^\"]*|mcp-server-kicad==$V|" mcpb/pyproject.toml
+          # A reformatted pyproject would slip past sed and ship a bundle
+          # pinned to the wrong release, so confirm the stamp landed.
+          grep -q "\"mcp-server-kicad==$V\"" mcpb/pyproject.toml
+          npx --yes @anthropic-ai/mcpb pack mcpb "bundle/kicad-$V.mcpb"
+
       # Create GitHub release
       - name: Create release
         run: |
           gh release create "v${{ steps.bump.outputs.version }}" \
             --title "v${{ steps.bump.outputs.version }}" \
             --generate-notes \
-            dist/*
+            dist/* bundle/*.mcpb
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

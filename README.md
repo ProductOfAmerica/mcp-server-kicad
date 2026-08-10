@@ -61,6 +61,19 @@ claude plugin marketplace add ProductOfAmerica/mcp-server-kicad
 claude plugin install kicad
 ```
 
+### Claude Desktop
+
+Download `kicad-<version>.mcpb` from the [latest release][latest] and install it
+from Settings, then Extensions. Claude Desktop fetches Python and the package
+itself, so KiCad is the only thing you need installed first.
+
+Fill in the paths it asks for. Unlike the Claude Code plugin, Desktop does not
+run from your project directory, so nothing is auto-detected. On Windows, point
+it at `kicad-cli.exe` as well; the KiCad installer leaves it off PATH, and the
+ERC, DRC, and export tools need it. The design skills are Claude Code only.
+
+[latest]: https://github.com/ProductOfAmerica/mcp-server-kicad/releases/latest
+
 ### Everything else
 
 ```bash
