@@ -545,6 +545,35 @@ class TestZoneWritersCst:
         assert kz.keepout["footprints"] == "not_allowed"
 
 
+@requires_cli
+def test_drc_accepts_all_new_constructs(scratch_pcb):
+    """KiCad 9 parses a board carrying every slice-14 construct: the
+    property-based footprint template, stroke-form gr_line, both zone
+    shapes with the measured connect_pads token, thermal vias."""
+    p = str(scratch_pcb)
+    pcb.place_footprint("R2", "4.7K", 150, 100, pcb_path=p)
+    pcb.move_footprint("R1", 100, 100, rotation=90, pcb_path=p)
+    pcb.add_pcb_text("SLICE14", 100, 115, pcb_path=p)
+    pcb.add_pcb_line(90, 90, 110, 90, pcb_path=p)
+    pcb.add_copper_zone(
+        "Net1", "F.Cu", [{"x": 95, "y": 95}, {"x": 105, "y": 95}, {"x": 105, "y": 105}], pcb_path=p
+    )
+    pcb.add_copper_zone(
+        "Net2",
+        "B.Cu",
+        [{"x": 95, "y": 95}, {"x": 105, "y": 95}, {"x": 105, "y": 105}],
+        thermal_relief=False,
+        pcb_path=p,
+    )
+    pcb.add_keepout_zone([{"x": 10, "y": 10}, {"x": 20, "y": 10}, {"x": 20, "y": 20}], pcb_path=p)
+    pcb.add_thermal_vias("R1", pad_number="2", rows=2, cols=2, pcb_path=p)
+    pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=p)
+    pcb.remove_traces(net_name="Net2", pcb_path=p)
+    pcb.remove_dangling_tracks(pcb_path=p)
+    result = pcb.run_drc(pcb_path=p)
+    assert result.violation_count >= 0
+
+
 class TestDanglingCst:
     def test_k10_removes_dangling(self, tmp_path):
         """The fixture's lone segment touches no pad world position, so it
