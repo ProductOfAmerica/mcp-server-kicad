@@ -13,8 +13,10 @@ Provides:
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
 import shutil
 import uuid as _uuid
 from pathlib import Path
@@ -55,6 +57,11 @@ requires_cli = pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found
 KICAD_SCH_VERSION = 20250114
 KICAD_SCH_GENERATOR = "eeschema"
 KICAD_SYM_VERSION = "20231120"
+
+# Schematic bodies already validated this session, keyed on their UUID-normalised
+# digest.  See ``_validate_kicad_output``.
+_UUID_RE = re.compile(rb"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+_VALIDATED: set[bytes] = set()
 
 
 # ---------------------------------------------------------------------------
@@ -415,14 +422,20 @@ def _validate_kicad_output(request, tmp_path: Path):
     if not HAS_KICAD_CLI:
         return
     for sch_file in tmp_path.rglob("*.kicad_sch"):
-        # Skip dummy/empty files (e.g. config tests that create placeholder paths)
-        if sch_file.stat().st_size == 0:
+        data = sch_file.read_bytes()
+        # Skip dummy/empty files and anything that isn't a real KiCad schematic
+        # (e.g. config tests that create placeholder paths).
+        if not data.startswith(b"(kicad_sch"):
             continue
-        # Skip files that aren't real KiCad schematics
-        header = sch_file.read_text(errors="ignore")[:20]
-        if not header.startswith("(kicad_sch"):
+        # Fixtures differ only in freshly generated UUIDs, so the same schematic
+        # is otherwise re-validated hundreds of times per run.  A UUID cannot turn
+        # a parseable file unparseable, so normalise them out and validate each
+        # distinct schematic once.  Measured 2026-08-10: 376 spawns -> 186.
+        seen = hashlib.sha256(_UUID_RE.sub(b"U", data)).digest()
+        if seen in _VALIDATED:
             continue
         assert_kicad_parseable(sch_file)
+        _VALIDATED.add(seen)
 
 
 @pytest.fixture()

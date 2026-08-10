@@ -88,7 +88,7 @@ jobs:
       # the issue-#2 step below deletes the brew symlink, so it measures a
       # stock install.
       - name: Full test suite against installed KiCad
-        run: uv run pytest -v -rA --tb=short
+        run: uv run pytest -v -rA --tb=short -n auto
 
       - name: Reproduce issue #2, bundle only and nothing on PATH
         run: |
