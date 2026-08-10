@@ -850,6 +850,13 @@ def _board_edge_polygon(board: Board) -> list[tuple[float, float]] | None:
                 if s != e:
                     segments.append((s, e))
 
+    return _chain_edge_polygon(segments)
+
+
+def _chain_edge_polygon(
+    segments: list[tuple[tuple[float, float], tuple[float, float]]],
+) -> list[tuple[float, float]] | None:
+    """Chain (start, end) segments into a closed polygon by endpoint matching."""
     if not segments:
         return None
 
