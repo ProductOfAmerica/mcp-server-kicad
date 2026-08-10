@@ -845,17 +845,12 @@ class TestMemoryGate:
 
     @staticmethod
     def _demo_boards():
-        import os
-
         from mcp_server_kicad._shared import _kicad_root
 
         roots = []
         root = _kicad_root()
         if root is not None:
             roots += [root / "share" / "kicad" / "demos", root / "SharedSupport" / "demos"]
-        env = os.environ.get("KICAD_DEMOS_DIR")
-        if env:
-            roots.append(Path(env))
         boards = []
         for r in roots:
             if r.is_dir():

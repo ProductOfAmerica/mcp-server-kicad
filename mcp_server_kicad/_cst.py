@@ -79,8 +79,6 @@ class Atom(Node):
 
     kind = "atom"
     children = None
-    close = _EMPTY
-    close_sep = _EMPTY
 
     def __init__(self, raw=b"", sep=b""):
         self.raw = raw
