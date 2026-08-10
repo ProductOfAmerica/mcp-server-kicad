@@ -75,6 +75,7 @@ from mcp_server_kicad.models import (
     PcbExportResult,
     PcbFootprintItem,
     PlacementCheckResult,
+    PointSpec,
     PositionExportResult,
     RemoveTracesResult,
     RenderExportResult,
@@ -496,7 +497,7 @@ _KEEPOUT_ZONE_TPL = _cst.parse(
 ).lists[0]
 
 
-def _fill_zone_polygon(node, corners: list[dict]) -> None:
+def _fill_zone_polygon(node, corners: list[PointSpec]) -> None:
     """Fill the template's single (xy) with corner 0 and clone the rest inline."""
     pts = node.find("polygon").find("pts")
     first = pts.find("xy")
@@ -1044,7 +1045,7 @@ def add_pcb_line(
 def add_copper_zone(
     net_name: str,
     layer: str,
-    corners: list[dict],
+    corners: list[PointSpec],
     clearance: float = 0.5,
     min_thickness: float = 0.25,
     thermal_relief: bool = True,
@@ -1102,7 +1103,7 @@ def add_copper_zone(
 
 @mcp.tool(annotations=_ADDITIVE)
 def add_keepout_zone(
-    corners: list[dict],
+    corners: list[PointSpec],
     layers: list[str] | None = None,
     no_tracks: bool = True,
     no_vias: bool = True,

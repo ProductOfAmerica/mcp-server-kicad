@@ -46,10 +46,13 @@ from mcp_server_kicad.models import (
     MultiFileExportResult,
     NetConnectionsResult,
     NoConnectItem,
+    PinRefSpec,
+    PointSpec,
     SchematicSummary,
     SheetItem,
     UnconnectedPinsResult,
     WireItem,
+    WireSpec,
 )
 
 mcp = build_server(
@@ -963,7 +966,7 @@ def remove_junction(
 
 
 @mcp.tool(annotations=_ADDITIVE)
-def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
+def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
     """Add multiple wires at once. Each wire dict has keys: x1, y1, x2, y2.
 
     Args:
@@ -1301,7 +1304,7 @@ def add_label(
 
 
 @mcp.tool(annotations=_ADDITIVE)
-def add_junctions(points: list[dict], schematic_path: str = SCH_PATH) -> str:
+def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> str:
     """Add multiple junctions. Each point dict has keys: x, y.
 
     Args:
@@ -1861,7 +1864,7 @@ _ANGLE_TO_DIR = {0: "right", 90: "down", 180: "left", 270: "up"}
 
 @mcp.tool(annotations=_ADDITIVE)
 def wire_pins_to_net(
-    pins: list[dict],
+    pins: list[PinRefSpec],
     label_text: str,
     direction: str = "auto",
     stub_length: float = 2.54,

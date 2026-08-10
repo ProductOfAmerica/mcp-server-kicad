@@ -7,12 +7,13 @@ from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import symbol
 from mcp_server_kicad._shared import _run_cli
+from mcp_server_kicad.models import SymbolPinSpec
 from mcp_server_kicad.symbol import _auto_body_rect
 
 # ── Helper pin dicts ─────────────────────────────────────────────
 
 
-def _two_pin_passive():
+def _two_pin_passive() -> list[SymbolPinSpec]:
     """Return a minimal 2-pin passive pin list."""
     return [
         {"number": "1", "name": "IN", "type": "passive", "x": -5.08, "y": 0, "rotation": 0},
@@ -20,7 +21,7 @@ def _two_pin_passive():
     ]
 
 
-def _ic_pins():
+def _ic_pins() -> list[SymbolPinSpec]:
     """Return an 8-pin IC-style pin list (buck converter example)."""
     return [
         {"number": "1", "name": "VIN", "type": "power_in", "x": -7.62, "y": 5.08, "rotation": 0},
@@ -50,7 +51,7 @@ class TestAutoBodyRect:
         assert y2 - y1 >= 2.54
 
     def test_vertical_pins(self):
-        pins = [
+        pins: list[SymbolPinSpec] = [
             {"number": "1", "name": "~", "type": "passive", "x": 0, "y": 3.81, "rotation": 270},
             {"number": "2", "name": "~", "type": "passive", "x": 0, "y": -3.81, "rotation": 90},
         ]
@@ -73,7 +74,9 @@ class TestAutoBodyRect:
         assert (x1, y1, x2, y2) == (-2.54, -2.54, 2.54, 2.54)
 
     def test_single_pin(self):
-        pins = [{"number": "1", "name": "A", "type": "input", "x": 0, "y": 0, "rotation": 0}]
+        pins: list[SymbolPinSpec] = [
+            {"number": "1", "name": "A", "type": "input", "x": 0, "y": 0, "rotation": 0}
+        ]
         x1, y1, x2, y2 = _auto_body_rect(pins)
         # Should have minimum dimensions around the single body point
         assert x2 - x1 >= 2.54

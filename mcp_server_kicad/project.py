@@ -37,9 +37,11 @@ from mcp_server_kicad.models import (
     HierarchicalNetlistResult,
     HierarchyResult,
     HierarchyValidationResult,
+    LibTableEntry,
     NetTraceResult,
     RootSchematicResult,
     SheetInfoResult,
+    SheetPinSpec,
     SymbolInstancesResult,
     VersionResult,
 )
@@ -200,7 +202,7 @@ def create_symbol_library(symbol_lib_path: str) -> str:
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)
-def create_sym_lib_table(directory: str, entries: list[dict]) -> str:
+def create_sym_lib_table(directory: str, entries: list[LibTableEntry]) -> str:
     """Create a sym-lib-table file in the given directory.
 
     Each entry dict needs 'name' and 'uri' keys.
@@ -230,7 +232,7 @@ def add_hierarchical_sheet(
     parent_schematic_path: str,
     sheet_name: str,
     sheet_file: str,
-    pins: list[dict],
+    pins: list[SheetPinSpec],
     x: float = 25.4,
     y: float = 25.4,
     project_path: str = "",

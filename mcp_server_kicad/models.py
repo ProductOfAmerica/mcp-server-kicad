@@ -1,13 +1,90 @@
-"""Pydantic response models for MCP tool structured output.
+"""Schemas for the MCP tool surface, both directions.
 
-These models enable FastMCP's automatic ``outputSchema`` generation
-and ``structuredContent`` population.  Every tool that returns
-structured data should use one of these models as its return type.
+Response models are Pydantic and drive FastMCP's ``outputSchema`` generation
+and ``structuredContent`` population.  Every tool returning structured data
+should use one of them as its return type.
+
+Parameter shapes are ``TypedDict``, not ``BaseModel``, so that a list of them
+publishes real ``properties`` and ``required`` in ``inputSchema`` while the
+values still arrive in the tool body as plain dicts.  That keeps every caller,
+and every existing test, passing dict literals.  They must come from
+``typing_extensions``: on Python 3.10 and 3.11, which this package supports,
+pydantic rejects ``typing.TypedDict`` outright.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
+from typing_extensions import NotRequired, TypedDict
+
+# ---------------------------------------------------------------------------
+# Tool parameter shapes
+# ---------------------------------------------------------------------------
+
+
+class PointSpec(TypedDict):
+    """A bare coordinate: junction positions and zone polygon corners."""
+
+    x: float
+    y: float
+
+
+class WireSpec(TypedDict):
+    """One wire segment's two endpoints."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class RectangleSpec(TypedDict):
+    """A symbol body rectangle. ``fill`` defaults to "background"."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    fill: NotRequired[str]
+
+
+class SymbolPinSpec(TypedDict):
+    """One pin on a new symbol.
+
+    ``type`` stays a plain string rather than a Literal so add_symbol keeps
+    raising its own error, which names the offending pin index and lists every
+    valid value.
+    """
+
+    number: str
+    name: str
+    type: str
+    x: NotRequired[float]
+    y: NotRequired[float]
+    rotation: NotRequired[float]
+    length: NotRequired[float]
+
+
+class PinRefSpec(TypedDict):
+    """A reference to a pin on a placed component."""
+
+    reference: str
+    pin: str
+
+
+class SheetPinSpec(TypedDict):
+    """A hierarchical sheet pin and its direction."""
+
+    name: str
+    direction: str
+
+
+class LibTableEntry(TypedDict):
+    """One library row in a sym-lib-table."""
+
+    name: str
+    uri: str
+
 
 # ---------------------------------------------------------------------------
 # Schematic list-item models (replacing list_schematic_items)

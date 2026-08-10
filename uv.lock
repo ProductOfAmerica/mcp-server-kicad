@@ -349,6 +349,7 @@ version = "0.10.1"
 source = { editable = "." }
 dependencies = [
     { name = "mcp" },
+    { name = "typing-extensions" },
 ]
 
 [package.optional-dependencies]
@@ -366,6 +367,7 @@ requires-dist = [
     { name = "pyright", marker = "extra == 'dev'" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=9.0" },
     { name = "ruff", marker = "extra == 'dev'" },
+    { name = "typing-extensions", specifier = ">=4.6" },
 ]
 provides-extras = ["dev"]
 

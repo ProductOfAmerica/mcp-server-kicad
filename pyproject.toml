@@ -26,6 +26,11 @@ dependencies = [
     #     from mcp.types import Tool, ToolAnnotations;
     #     print('outputSchema' in Tool.model_fields)"
     "mcp>=1.10.0,<2.0.0",
+    # models.py imports TypedDict and NotRequired from here, not from typing:
+    # pydantic refuses typing.TypedDict on Python 3.10 and 3.11, both of which
+    # this package supports. Already present transitively via pydantic; declared
+    # because we import it directly. NotRequired has been available since 4.0.
+    "typing-extensions>=4.6",
 ]
 
 [project.urls]
