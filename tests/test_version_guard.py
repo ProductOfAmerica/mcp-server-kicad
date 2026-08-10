@@ -149,15 +149,17 @@ class TestToolRefusal:
 
     def test_rmw_tool_refuses_and_leaves_file_untouched(self, tmp_path):
         # The representative guarded RMW tool tracks the migration: since
-        # slice 11 every .kicad_sch writer is CST-native, so a board writer
-        # (kiutils stays on boards) carries the flag.
-        from mcp_server_kicad import pcb
-
-        f = tmp_path / "future.kicad_pcb"
-        f.write_text(_stub("kicad_pcb", 20260206))
+        # slice 14 every board writer is CST-native, so a symbol-library
+        # writer (kiutils stays on .kicad_sym) carries the flag.
+        f = tmp_path / "future.kicad_sym"
+        f.write_text(_stub("kicad_symbol_lib", 20251024))
         before = f.read_bytes()
         with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            pcb.move_footprint(reference="R1", x=10, y=10, pcb_path=str(f))
+            symbol.add_symbol(
+                name="X",
+                pins=[{"number": "1", "name": "~", "type": "passive"}],
+                symbol_lib_path=str(f),
+            )
         assert f.read_bytes() == before
 
     def test_symbol_lib_tool_refuses(self, tmp_path):

@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 import pytest
-from conftest import _pure_insertion, requires_cli
+from conftest import _confined, _pure_insertion, _span_preserved, requires_cli
 from kiutils.board import Board
 from kiutils.items.brditems import Segment, Via
 from mcp.server.fastmcp.exceptions import ToolError
@@ -198,10 +198,16 @@ class TestBoardCache:
         t3, _, _ = pcb._open_pcb_cst(p)
         assert t3 is not t1
 
-    def test_kiutils_write_invalidates(self, scratch_pcb):
+    def test_external_rewrite_invalidates(self, scratch_pcb):
+        """A non-CST rewrite (kiutils here, standing in for any external
+        editor) moves mtime, so the next read re-parses."""
         p = str(scratch_pcb)
         pcb._open_pcb_cst(p)
-        pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=p)
+        board = Board.from_file(p)
+        for t in board.traceItems:
+            if isinstance(t, Segment):
+                t.width = 0.5
+        board.to_file()
         traces = pcb.list_pcb_traces(p)
         assert traces[0].width == 0.5
 
@@ -289,3 +295,295 @@ class TestAddTraceViaCst:
         pcb.add_via(20, 20, net=1, pcb_path=p)
         result = pcb.run_drc(pcb_path=p)
         assert result.violation_count >= 0
+
+
+def _make_keepout_board_bumped(tmp_path):
+    """The shared kiutils keepout board with its version text-swapped to KiCad 10."""
+    from test_pcb_write_tools import _make_keepout_pcb
+
+    path = Path(_make_keepout_pcb(tmp_path))
+    path.write_text(path.read_text().replace("(version 20211014)", "(version 20260206)"))
+    return str(path)
+
+
+class TestFootprintWritersCst:
+    def test_place_scratch(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.place_footprint("R2", "4.7K", 50, 60, rotation=90, layer="B.Cu", pcb_path=p)
+        assert result == "Placed R2 (4.7K) at (50, 60) on B.Cu"
+        assert _pure_insertion(before, Path(p).read_bytes())
+        board = Board.from_file(p)
+        assert "R2" in [fp.properties.get("Reference") for fp in board.footprints]
+        r2 = next(f for f in pcb.list_pcb_footprints(p) if f.reference == "R2")
+        assert (r2.x, r2.y, r2.rotation, r2.layer, r2.value) == (50.0, 60.0, 90.0, "B.Cu", "4.7K")
+
+    def test_place_k10(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        pcb.place_footprint("R2", "1K", 50, 60, pcb_path=p)
+        assert _pure_insertion(before, Path(p).read_bytes())
+        assert any(f.reference == "R2" for f in pcb.list_pcb_footprints(p))
+
+    def test_move_k9(self, scratch_pcb):
+        p = str(scratch_pcb)
+        assert pcb.move_footprint("R1", 42, 24, pcb_path=p) == "Moved R1 to (42, 24)"
+        r1 = next(f for f in pcb.list_pcb_footprints(p) if f.reference == "R1")
+        assert (r1.x, r1.y) == (42.0, 24.0)
+        assert Board.from_file(p).footprints[0].position.X == 42
+
+    def test_move_k10_layer_confined(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
+        after = Path(p).read_bytes()
+        assert _confined(before, after)
+        r1 = next(f for f in pcb.list_pcb_footprints(p) if f.reference == "R1")
+        assert (r1.x, r1.y, r1.layer) == (50.0, 50.0, "B.Cu")
+
+    def test_move_k10_rotation_appends_atom(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        pcb.move_footprint("R1", 50, 50, rotation=90, pcb_path=p)
+        after = Path(p).read_bytes()
+        assert b"(at 50 50 90)" in after
+        assert b"(at -0.75 0)" in after  # pad offsets stay untouched, kiutils parity
+
+    def test_move_missing_refuses_untouched(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        with pytest.raises(ToolError, match="not found"):
+            pcb.move_footprint("R99", 10, 10, pcb_path=p)
+        assert Path(p).read_bytes() == before
+
+    def test_move_warnings_survive_k10_header(self, tmp_path):
+        """The kiutils warning path silently skipped K10 boards; the CST
+        twins warn on any version."""
+        p = _make_keepout_board_bumped(tmp_path)
+        result = pcb.move_footprint("R1", 25, 25, pcb_path=p)
+        assert "WARNING: position is inside a keep-out zone" in result
+        result = pcb.move_footprint("R1", 100, 100, pcb_path=p)
+        assert "WARNING" not in result
+
+    def test_remove_k9(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        assert pcb.remove_footprint("R1", pcb_path=p) == "Removed R1"
+        assert _span_preserved(before, Path(p).read_bytes())
+        assert pcb.list_pcb_footprints(p) == []
+
+    def test_remove_k10(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        pcb.remove_footprint("R1", pcb_path=p)
+        assert _span_preserved(before, Path(p).read_bytes())
+        assert pcb.list_pcb_footprints(p) == []
+
+
+class TestGraphicWritersCst:
+    def test_text_scratch(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.add_pcb_text("BOARD V1", 100, 110, layer="F.SilkS", pcb_path=p)
+        assert result == "Text 'BOARD V1' at (100, 110) on F.SilkS"
+        assert _pure_insertion(before, Path(p).read_bytes())
+        texts = [g for g in pcb.list_pcb_graphic_items(p) if g.type == "text"]
+        assert [(t.text, t.x, t.y, t.layer) for t in texts] == [
+            ("BOARD V1", 100.0, 110.0, "F.SilkS")
+        ]
+
+    def test_line_scratch(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.add_pcb_line(80, 80, 120, 80, layer="Edge.Cuts", pcb_path=p)
+        assert result == "Line: (80, 80) -> (120, 80) on Edge.Cuts"
+        assert _pure_insertion(before, Path(p).read_bytes())
+        lines = [g for g in pcb.list_pcb_graphic_items(p) if g.type == "line"]
+        assert (lines[-1].start_x, lines[-1].end_x) == (80.0, 120.0)
+
+    def test_text_and_line_k10(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        pcb.add_pcb_text("note", 10, 10, pcb_path=p)
+        pcb.add_pcb_line(0, 0, 50, 0, pcb_path=p)
+        assert _confined(before, Path(p).read_bytes(), limit=500)
+        kinds = [g.type for g in pcb.list_pcb_graphic_items(p)]
+        assert "text" in kinds and "line" in kinds
+
+
+class TestTraceFiltersCst:
+    def test_width_by_net_name_k10(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        result = pcb.set_trace_width(width=0.5, net_name="/SIG", pcb_path=p)
+        assert result.traces_modified == 1
+        after = Path(p).read_bytes()
+        assert _confined(before, after)
+        assert b"(width 0.5)" in after
+
+    def test_remove_by_net_k10(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        result = pcb.remove_traces(net_name="/SIG", pcb_path=p)
+        assert result.traces_removed == 1
+        after = Path(p).read_bytes()
+        assert _span_preserved(before, after)
+        assert pcb.list_pcb_traces(p) == []
+
+    def test_unknown_net_message_parity(self, scratch_pcb):
+        with pytest.raises(ToolError, match=r"Net 'Nope' not found\. Available nets:"):
+            pcb.set_trace_width(width=0.5, net_name="Nope", pcb_path=str(scratch_pcb))
+
+    def test_no_filters_message_parity(self, scratch_pcb):
+        with pytest.raises(ToolError, match="at least one filter is required"):
+            pcb.remove_traces(pcb_path=str(scratch_pcb))
+
+
+class TestZoneWritersCst:
+    _CORNERS = [{"x": 10, "y": 10}, {"x": 40, "y": 10}, {"x": 40, "y": 40}, {"x": 10, "y": 40}]
+
+    def test_copper_k9_bytes(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.add_copper_zone("Net1", "F.Cu", self._CORNERS, priority=1, pcb_path=p)
+        assert (result.net, result.layer, result.corners) == ("Net1", "F.Cu", 4)
+        after = Path(p).read_bytes()
+        assert _pure_insertion(before, after)
+        i = after.index(b"(zone")
+        span = after[i : i + 700]
+        assert b"(net 1)" in span
+        assert b'(net_name "Net1")' in span
+        assert b"(priority 1)" in span
+        zones = pcb.list_pcb_zones(p)
+        assert [(z.net_name, z.layers, z.priority, z.is_keepout) for z in zones] == [
+            ("Net1", ["F.Cu"], 1, False)
+        ]
+        assert len(zones[0].polygon) == 4
+
+    def test_copper_solid_connect(self, scratch_pcb):
+        p = str(scratch_pcb)
+        pcb.add_copper_zone("Net1", "F.Cu", self._CORNERS, thermal_relief=False, pcb_path=p)
+        after = Path(p).read_bytes()
+        assert b"(connect_pads yes" in after
+        zone = next(z for z in Board.from_file(p).zones)
+        assert zone.connectPads == "yes"
+
+    def test_copper_k10_named(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        pcb.add_copper_zone("/GND", "F.Cu", self._CORNERS, pcb_path=p)
+        after = Path(p).read_bytes()
+        assert _pure_insertion(before, after)
+        i = after.index(b"(zone")
+        span = after[i : i + 700]
+        assert b'(net "/GND")' in span
+        assert b"net_name" not in span
+        assert b"filled_areas_thickness" not in span
+        zones = pcb.list_pcb_zones(p)
+        assert [(z.net_name, z.is_keepout) for z in zones] == [("/GND", False)]
+
+    def test_copper_k10_unknown_net_refuses_untouched(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        with pytest.raises(ToolError, match="Net 'Nope' not found"):
+            pcb.add_copper_zone("Nope", "F.Cu", self._CORNERS, pcb_path=p)
+        assert Path(p).read_bytes() == before
+
+    def test_keepout_k9_bytes(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.add_keepout_zone(self._CORNERS[:3], no_tracks=False, no_vias=True, pcb_path=p)
+        assert result.corners == 3
+        assert result.restrictions["tracks"] == "allowed"
+        assert result.restrictions["vias"] == "not_allowed"
+        after = Path(p).read_bytes()
+        assert _pure_insertion(before, after)
+        i = after.index(b"(keepout")
+        span = after[i : i + 250]
+        assert b"(tracks allowed)" in span and b"(vias not_allowed)" in span
+        kz = next(z for z in pcb.list_pcb_zones(p) if z.is_keepout)
+        assert kz.keepout["tracks"] == "allowed"
+
+    def test_keepout_k10_drops_net_tokens(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        pcb.add_keepout_zone(self._CORNERS, pcb_path=p)
+        after = Path(p).read_bytes()
+        i = after.index(b"(zone")
+        span = after[i : i + 700]
+        assert b"(net " not in span
+        assert b"net_name" not in span
+        kz = next(z for z in pcb.list_pcb_zones(p) if z.is_keepout)
+        assert kz.keepout["footprints"] == "not_allowed"
+
+
+@requires_cli
+def test_drc_accepts_all_new_constructs(scratch_pcb):
+    """KiCad 9 parses a board carrying every slice-14 construct: the
+    property-based footprint template, stroke-form gr_line, both zone
+    shapes with the measured connect_pads token, thermal vias."""
+    p = str(scratch_pcb)
+    pcb.place_footprint("R2", "4.7K", 150, 100, pcb_path=p)
+    pcb.move_footprint("R1", 100, 100, rotation=90, pcb_path=p)
+    pcb.add_pcb_text("SLICE14", 100, 115, pcb_path=p)
+    pcb.add_pcb_line(90, 90, 110, 90, pcb_path=p)
+    pcb.add_copper_zone(
+        "Net1", "F.Cu", [{"x": 95, "y": 95}, {"x": 105, "y": 95}, {"x": 105, "y": 105}], pcb_path=p
+    )
+    pcb.add_copper_zone(
+        "Net2",
+        "B.Cu",
+        [{"x": 95, "y": 95}, {"x": 105, "y": 95}, {"x": 105, "y": 105}],
+        thermal_relief=False,
+        pcb_path=p,
+    )
+    pcb.add_keepout_zone([{"x": 10, "y": 10}, {"x": 20, "y": 10}, {"x": 20, "y": 20}], pcb_path=p)
+    pcb.add_thermal_vias("R1", pad_number="2", rows=2, cols=2, pcb_path=p)
+    pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=p)
+    pcb.remove_traces(net_name="Net2", pcb_path=p)
+    pcb.remove_dangling_tracks(pcb_path=p)
+    result = pcb.run_drc(pcb_path=p)
+    assert result.violation_count >= 0
+
+
+class TestDanglingCst:
+    def test_k10_removes_dangling(self, tmp_path):
+        """The fixture's lone segment touches no pad world position, so it
+        is dangling; removal is a clean span deletion on a K10 board."""
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        result = pcb.remove_dangling_tracks(pcb_path=p)
+        assert result.tracks_removed == 1
+        assert result.iterations == 1
+        after = Path(p).read_bytes()
+        assert _span_preserved(before, after)
+        assert b"(segment" not in after
+
+    def test_noop_is_byte_identical(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        pcb.remove_dangling_tracks(pcb_path=p)
+        before = Path(p).read_bytes()
+        result = pcb.remove_dangling_tracks(pcb_path=p)
+        assert result.tracks_removed == 0
+        assert Path(p).read_bytes() == before
+
+
+class TestThermalViasCst:
+    def test_k9_grid_pure_insertion(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.add_thermal_vias("R1", pad_number="1", rows=2, cols=2, pcb_path=p)
+        assert result.vias_added == 4
+        assert result.net == "Net1"
+        assert _pure_insertion(before, Path(p).read_bytes())
+        board = Board.from_file(p)
+        assert sum(1 for t in board.traceItems if isinstance(t, Via)) == 4
+
+    def test_k10_pad_net_resolution(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        result = pcb.add_thermal_vias("R1", pad_number="1", rows=1, cols=1, pcb_path=p)
+        assert result.vias_added == 1
+        assert result.net == "/SIG"
+        after = Path(p).read_bytes()
+        i = after.index(b"(via")
+        assert b'(net "/SIG")' in after[i : i + 250]
+        vias = [t for t in pcb.list_pcb_traces(p) if t.type == "via"]
+        assert len(vias) == 1

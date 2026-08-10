@@ -11,15 +11,12 @@ from pathlib import Path
 from kiutils.board import Board
 from kiutils.footprint import Footprint
 from kiutils.items.brditems import Segment, Via
-from kiutils.items.common import Position
 from kiutils.items.fpitems import FpText
-from kiutils.items.gritems import GrLine, GrText
-from kiutils.items.zones import FillSettings, Hatch, KeepoutSettings, Zone, ZonePolygon
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
-from mcp_server_kicad._cst import _num, _numish
+from mcp_server_kicad._cst import _fill_at, _num, _numish
 from mcp_server_kicad._freerouting import (
     check_java as _check_java,
 )
@@ -49,14 +46,14 @@ from mcp_server_kicad._shared import (
     PCB_PATH,
     SCH_PATH,
     _board_edge_polygon,
+    _chain_edge_polygon,
     _check_footprint_keepout_violations,
     _courtyard_bbox,
-    _default_effects,
     _file_meta,
     _fp_ref,
     _gen_uuid,
-    _keepout_restrictions,
     _kicad_root,
+    _linearize_arc,
     _load_board,
     _point_in_polygon,
     _promote_footprint_keepouts,
@@ -122,51 +119,12 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 
 
-def _find_net(board, net_name: str) -> tuple[int, str]:
-    """Return (net_number, net_name) for a named net, or raise ValueError."""
-    for n in board.nets:
-        if n.name == net_name:
-            return n.number, n.name
-    available = [n.name for n in board.nets if n.name]
-    raise ValueError(f"Net {net_name!r} not found. Available nets: {available}")
-
-
 def _find_fp(board: Board, reference: str) -> Footprint:
     """Return the footprint with *reference*, or raise ToolError."""
     for fp in board.footprints:
         if _fp_ref(fp) == reference:
             return fp
     raise ToolError(f"Footprint {reference!r} not found.")
-
-
-def _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max):
-    """Filter board trace segments by net name, layer, and/or bounding box."""
-    if all(v is None for v in (net_name, layer, x_min, y_min, x_max, y_max)):
-        raise ValueError("at least one filter is required")
-    net_num = None
-    if net_name is not None:
-        net_num, _ = _find_net(board, net_name)
-    result = []
-    for item in board.traceItems:
-        if not isinstance(item, Segment):
-            continue
-        if net_num is not None and item.net != net_num:
-            continue
-        if layer is not None and item.layer != layer:
-            continue
-        if x_min is not None or y_min is not None or x_max is not None or y_max is not None:
-            sx, sy = item.start.X, item.start.Y
-            ex, ey = item.end.X, item.end.Y
-            if x_min is not None and (sx < x_min or ex < x_min):
-                continue
-            if y_min is not None and (sy < y_min or ey < y_min):
-                continue
-            if x_max is not None and (sx > x_max or ex > x_max):
-                continue
-            if y_max is not None and (sy > y_max or ey > y_max):
-                continue
-        result.append(item)
-    return result
 
 
 # ---------------------------------------------------------------------------
@@ -296,15 +254,7 @@ def _board_version(root) -> int:
 
 def _splice_pcb_node(root, node) -> None:
     """Insert *node* after the last trace item, else before the board tail."""
-    anchors = [c for c in root.lists if c.head in ("segment", "arc", "via")]
-    if anchors:
-        root.insert_after(anchors[-1], node)
-        return
-    tail = root.find("zone") or root.find("group") or root.find("embedded_fonts")
-    if tail is not None:
-        root.insert_before(tail, node)
-    else:
-        root.append_child(node, b"\n\t")
+    _splice_after(root, node, ("segment", "arc", "via"), ("zone", "group", "embedded_fonts"))
 
 
 def _set_item_net(node, root, net: int) -> None:
@@ -326,6 +276,247 @@ def _set_item_net(node, root, net: int) -> None:
         "references are silently rebound by load order there, so the tool "
         "refuses rather than emit one (ADR-2 guardrail 5)."
     )
+
+
+def _find_fp_cst(root, reference):
+    """The footprint node with *reference*, or raise ToolError."""
+    for fp in root.find_all("footprint"):
+        if _fp_prop_cst(fp, "Reference") == reference:
+            return fp
+    raise ToolError(f"Footprint {reference!r} not found.")
+
+
+def _pad_net_name(net_node, default: str) -> str:
+    """Display name from a pad's (net ...) child, either dialect."""
+    if net_node is None or len(net_node.atoms) < 2:
+        return default
+    if len(net_node.atoms) > 2:
+        return net_node.atoms[2].text
+    t = net_node.atoms[1].text
+    return t if not t.lstrip("-").isdigit() else default
+
+
+def _edge_polygon_cst(root) -> list[tuple[float, float]] | None:
+    """CST twin of _board_edge_polygon: Edge.Cuts lines/arcs chained closed."""
+    segments: list[tuple[tuple[float, float], tuple[float, float]]] = []
+    for item in root.lists:
+        layer = item.find("layer")
+        if layer is None or layer.atoms[1].text != "Edge.Cuts":
+            continue
+        if item.head == "gr_line":
+            start, end = item.find("start"), item.find("end")
+            s = (round(float(start.atoms[1].text), 3), round(float(start.atoms[2].text), 3))
+            e = (round(float(end.atoms[1].text), 3), round(float(end.atoms[2].text), 3))
+            if s != e:
+                segments.append((s, e))
+        elif item.head == "gr_arc":
+            start, mid, end = item.find("start"), item.find("mid"), item.find("end")
+            arc_pts = _linearize_arc(
+                float(start.atoms[1].text),
+                float(start.atoms[2].text),
+                float(mid.atoms[1].text),
+                float(mid.atoms[2].text),
+                float(end.atoms[1].text),
+                float(end.atoms[2].text),
+            )
+            for k in range(len(arc_pts) - 1):
+                s = (round(arc_pts[k][0], 3), round(arc_pts[k][1], 3))
+                e = (round(arc_pts[k + 1][0], 3), round(arc_pts[k + 1][1], 3))
+                if s != e:
+                    segments.append((s, e))
+    return _chain_edge_polygon(segments)
+
+
+def _zone_forbids_footprints(zone, x: float, y: float, layer: str, pts) -> bool:
+    ko = zone.find("keepout")
+    if ko is None:
+        return False
+    rule = ko.find("footprints")
+    if rule is None or rule.atoms[1].text != "not_allowed":
+        return False
+    layers_node = zone.find("layers") or zone.find("layer")
+    if layers_node is None or layer not in [a.text for a in layers_node.atoms[1:]]:
+        return False
+    return bool(pts) and _point_in_polygon(x, y, pts)
+
+
+def _zone_pts(zone):
+    poly = zone.find("polygon")
+    if poly is None:
+        return []
+    return [
+        (round(float(p.atoms[1].text), 3), round(float(p.atoms[2].text), 3))
+        for p in poly.find("pts").find_all("xy")
+    ]
+
+
+def _keepout_hit_cst(root, x: float, y: float, layer: str) -> bool:
+    """CST twin of _check_footprint_keepout_violations, boolean form."""
+    for zone in root.find_all("zone"):
+        if _zone_forbids_footprints(zone, x, y, layer, _zone_pts(zone)):
+            return True
+    for fp in root.find_all("footprint"):
+        at = fp.find("at")
+        if at is None:
+            continue
+        fx, fy = float(at.atoms[1].text), float(at.atoms[2].text)
+        angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
+        fl = fp.find("layer")
+        mirrored = fl is not None and fl.atoms[1].text == "B.Cu"
+        for zone in fp.find_all("zone"):
+            pts = []
+            for px, py in _zone_pts(zone):
+                bx, by = _transform_local_to_board(fx, fy, angle, px, py, mirrored=mirrored)
+                pts.append((round(bx, 3), round(by, 3)))
+            if _zone_forbids_footprints(zone, x, y, layer, pts):
+                return True
+    return False
+
+
+_FOOTPRINT_TPL = _cst.parse(
+    b'(footprint ""\n\t\t(layer "F.Cu")\n\t\t(uuid "x")\n\t\t(at 0 0 0)'
+    b'\n\t\t(property "Reference" "R"\n\t\t\t(at 0 -2 0)\n\t\t\t(layer "F.SilkS")\n\t\t\t(uuid "x")'
+    b"\n\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 1.27 1.27)\n\t\t\t\t)\n\t\t\t)\n\t\t)"
+    b'\n\t\t(property "Value" "V"\n\t\t\t(at 0 2 0)\n\t\t\t(layer "F.Fab")\n\t\t\t(uuid "x")'
+    b"\n\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 1.27 1.27)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)"
+).lists[0]
+
+# Board children that sort after footprints in native files.
+_PCB_TAIL_HEADS = (
+    "gr_line",
+    "gr_text",
+    "gr_rect",
+    "gr_circle",
+    "gr_arc",
+    "gr_poly",
+    "gr_curve",
+    "gr_text_box",
+    "image",
+    "segment",
+    "arc",
+    "via",
+    "zone",
+    "group",
+    "embedded_fonts",
+)
+
+
+_GRAPHIC_HEADS = ("gr_line", "gr_text") + tuple(_GRAPHIC_CLASS)
+_TRACE_AND_TAIL_HEADS = ("segment", "arc", "via", "zone", "group", "embedded_fonts")
+
+
+def _splice_after(root, node, heads, tail_heads) -> None:
+    """Insert after the last *heads* child, else before the first *tail_heads*."""
+    anchors = [c for c in root.lists if c.head in heads]
+    if anchors:
+        root.insert_after(anchors[-1], node)
+        return
+    tail = next((c for c in root.lists if c.head in tail_heads), None)
+    if tail is not None:
+        root.insert_before(tail, node)
+    else:
+        root.append_child(node, b"\n\t")
+
+
+def _resolve_net_cst(root, net_name: str) -> int:
+    """Net number for *net_name*, or ToolError listing the available names."""
+    for num, name in _net_table(root):
+        if name == net_name:
+            return num
+    available = [name for _, name in _net_table(root) if name]
+    raise ToolError(f"Net {net_name!r} not found. Available nets: {available}")
+
+
+def _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max) -> list:
+    """CST twin of the retired _filter_segments: segment nodes matching filters."""
+    if all(v is None for v in (net_name, layer, x_min, y_min, x_max, y_max)):
+        raise ToolError("at least one filter is required")
+    net_num = None
+    name_to_num = {name: num for num, name in _net_table(root)}
+    if net_name is not None:
+        net_num = _resolve_net_cst(root, net_name)
+    result = []
+    for item in root.lists:
+        if item.head != "segment":
+            continue
+        if net_num is not None and _item_net_number(item.find("net"), name_to_num) != net_num:
+            continue
+        if layer is not None and item.find("layer").atoms[1].text != layer:
+            continue
+        if x_min is not None or y_min is not None or x_max is not None or y_max is not None:
+            start, end = item.find("start"), item.find("end")
+            sx, sy = float(start.atoms[1].text), float(start.atoms[2].text)
+            ex, ey = float(end.atoms[1].text), float(end.atoms[2].text)
+            if x_min is not None and (sx < x_min or ex < x_min):
+                continue
+            if y_min is not None and (sy < y_min or ey < y_min):
+                continue
+            if x_max is not None and (sx > x_max or ex > x_max):
+                continue
+            if y_max is not None and (sy > y_max or ey > y_max):
+                continue
+        result.append(item)
+    return result
+
+
+# Zone templates follow the measured native shapes: KiCad 9 solid connect is
+# "(connect_pads yes ...)" (measured locally via pcbnew 9, kiutils' "full" is
+# wrong); the KiCad 10 dialect (slice-14 probe) drops net_name and
+# filled_areas_thickness and uses name-only (net "NAME").
+_COPPER_ZONE_TPL = _cst.parse(
+    b'(zone\n\t\t(net 0)\n\t\t(net_name "x")\n\t\t(layer "F.Cu")\n\t\t(uuid "x")'
+    b"\n\t\t(hatch edge 0.5)\n\t\t(priority 0)"
+    b"\n\t\t(connect_pads\n\t\t\t(clearance 0.5)\n\t\t)"
+    b"\n\t\t(min_thickness 0.25)\n\t\t(filled_areas_thickness no)"
+    b"\n\t\t(fill\n\t\t\t(thermal_gap 0.5)\n\t\t\t(thermal_bridge_width 0.5)\n\t\t)"
+    b"\n\t\t(polygon\n\t\t\t(pts\n\t\t\t\t(xy 0 0)\n\t\t\t)\n\t\t)\n\t)"
+).lists[0]
+
+_KEEPOUT_ZONE_TPL = _cst.parse(
+    b'(zone\n\t\t(net 0)\n\t\t(net_name "")\n\t\t(layers "F.Cu" "B.Cu")\n\t\t(uuid "x")'
+    b"\n\t\t(hatch edge 0.5)"
+    b"\n\t\t(connect_pads\n\t\t\t(clearance 0)\n\t\t)"
+    b"\n\t\t(min_thickness 0.25)"
+    b"\n\t\t(keepout\n\t\t\t(tracks not_allowed)\n\t\t\t(vias not_allowed)"
+    b"\n\t\t\t(pads not_allowed)"
+    b"\n\t\t\t(copperpour not_allowed)\n\t\t\t(footprints not_allowed)\n\t\t)"
+    b"\n\t\t(polygon\n\t\t\t(pts\n\t\t\t\t(xy 0 0)\n\t\t\t)\n\t\t)\n\t)"
+).lists[0]
+
+
+def _fill_zone_polygon(node, corners: list[dict]) -> None:
+    """Fill the template's single (xy) with corner 0 and clone the rest inline."""
+    pts = node.find("polygon").find("pts")
+    first = pts.find("xy")
+    first.atoms[1].set_text(_num(corners[0]["x"]))
+    first.atoms[2].set_text(_num(corners[0]["y"]))
+    anchor = first
+    for c in corners[1:]:
+        xy = first.copy()
+        xy.atoms[1].set_text(_num(c["x"]))
+        xy.atoms[2].set_text(_num(c["y"]))
+        pts.insert_after(anchor, xy, sep=b" ")
+        anchor = xy
+
+
+def _splice_pcb_zone(root, node) -> None:
+    anchors = [c for c in root.lists if c.head == "zone"]
+    if anchors:
+        root.insert_after(anchors[-1], node)
+    else:
+        _splice_pcb_node(root, node)
+
+
+_GR_TEXT_TPL = _cst.parse(
+    b'(gr_text "x"\n\t\t(at 0 0 0)\n\t\t(layer "F.SilkS")\n\t\t(uuid "x")'
+    b"\n\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t)\n\t)"
+).lists[0]
+
+_GR_LINE_TPL = _cst.parse(
+    b"(gr_line\n\t\t(start 0 0)\n\t\t(end 0 0)"
+    b"\n\t\t(stroke\n\t\t\t(width 0.05)\n\t\t\t(type default)\n\t\t)"
+    b'\n\t\t(layer "Edge.Cuts")\n\t\t(uuid "x")\n\t)'
+).lists[0]
 
 
 # ---------------------------------------------------------------------------
@@ -444,11 +635,18 @@ def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
                 for p in poly.find("pts").find_all("xy")
             ]
         net_name = z.find("net_name")
+        if net_name is not None:
+            zone_net = net_name.atoms[1].text
+        else:
+            # K10 zones carry name-only (net "NAME") and no net_name child.
+            znet = z.find("net")
+            t = znet.atoms[1].text if znet is not None and len(znet.atoms) > 1 else ""
+            zone_net = t if t and not t.lstrip("-").isdigit() else ""
         layers_node = z.find("layers") or z.find("layer")
         priority = z.find("priority")
         items.append(
             ZoneItem(
-                net_name=net_name.atoms[1].text if net_name is not None else "",
+                net_name=zone_net,
                 layers=[a.text for a in layers_node.atoms[1:]] if layers_node is not None else [],
                 priority=int(priority.atoms[1].text) if priority is not None else 0,
                 is_keepout=ko is not None,
@@ -546,21 +744,10 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
         pcb_path: Path to .kicad_pcb file
     """
     _, root, _ = _open_pcb_cst(pcb_path)
-    fp = next(
-        (f for f in root.find_all("footprint") if _fp_prop_cst(f, "Reference") == reference), None
-    )
-    if fp is None:
-        raise ToolError(f"Footprint {reference!r} not found.")
+    fp = _find_fp_cst(root, reference)
     lines = [f"{reference} pads:"]
     for pad in fp.find_all("pad"):
-        net = pad.find("net")
-        if net is None or len(net.atoms) < 2:
-            net_name = "none"
-        elif len(net.atoms) > 2:
-            net_name = net.atoms[2].text
-        else:
-            t = net.atoms[1].text
-            net_name = t if not t.lstrip("-").isdigit() else "none"
+        net_name = _pad_net_name(pad.find("net"), "none")
         at, size = pad.find("at"), pad.find("size")
         layers = pad.find("layers")
         lines.append(
@@ -599,29 +786,17 @@ def place_footprint(
         layer: Layer (F.Cu or B.Cu)
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    fp = Footprint()
-    fp.layer = layer
-    fp.position = Position(X=x, Y=y, angle=rotation)
-    fp.properties = {"Reference": reference, "Value": value}
-    fp.graphicItems = [
-        FpText(
-            type="reference",
-            text=reference,
-            layer="F.SilkS",
-            effects=_default_effects(),
-            position=Position(X=0, Y=-2),
-        ),
-        FpText(
-            type="value",
-            text=value,
-            layer="F.Fab",
-            effects=_default_effects(),
-            position=Position(X=0, Y=2),
-        ),
-    ]
-    board.footprints.append(fp)
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    node = _FOOTPRINT_TPL.copy()
+    node.find("layer").atoms[1].set_text(layer)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _fill_at(node, x, y, rotation)
+    for prop in node.find_all("property"):
+        prop.atoms[2].set_text(reference if prop.atoms[1].text == "Reference" else value)
+        prop.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_after(root, node, ("footprint",), _PCB_TAIL_HEADS)
+    Path(key).write_bytes(_cst.serialize(tree))
     return f"Placed {reference} ({value}) at ({x}, {y}) on {layer}"
 
 
@@ -644,22 +819,21 @@ def move_footprint(
         layer: New layer (empty = keep current)
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    fp = _find_fp(board, reference)
-    fp.position.X = x
-    fp.position.Y = y
-    if rotation is not None:
-        fp.position.angle = rotation
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    fp = _find_fp_cst(root, reference)
+    _fill_at(fp, x, y, rotation)
     if layer:
-        fp.layer = layer
-    board.to_file()
+        fp.find("layer").atoms[1].set_text(layer)
+    Path(key).write_bytes(_cst.serialize(tree))
     # Validation (never blocks the move)
+    fp_layer_node = fp.find("layer")
+    fp_layer = fp_layer_node.atoms[1].text if fp_layer_node is not None else "F.Cu"
     warnings: list[str] = []
     try:
-        violations = _check_footprint_keepout_violations(board, x, y, fp.layer)
-        if violations:
+        if _keepout_hit_cst(root, x, y, fp_layer):
             warnings.append("WARNING: position is inside a keep-out zone (footprints not allowed)")
-        edge_poly = _board_edge_polygon(board)
+        edge_poly = _edge_polygon_cst(root)
         if edge_poly is not None and not _point_in_polygon(x, y, edge_poly):
             warnings.append("WARNING: position is outside the board edge")
     except Exception:
@@ -714,9 +888,10 @@ def remove_footprint(reference: str, pcb_path: str = PCB_PATH) -> str:
         reference: Reference designator (e.g. "R1")
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    board.footprints.remove(_find_fp(board, reference))
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    root.remove_child(_find_fp_cst(root, reference))
+    Path(key).write_bytes(_cst.serialize(tree))
     return f"Removed {reference}"
 
 
@@ -823,15 +998,15 @@ def add_pcb_text(
         rotation: Rotation in degrees
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    gt = GrText()
-    gt.text = text
-    gt.position = Position(X=x, Y=y, angle=rotation)
-    gt.layer = layer
-    gt.effects = _default_effects()
-    gt.tstamp = _gen_uuid()
-    board.graphicItems.append(gt)
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    node = _GR_TEXT_TPL.copy()
+    node.atoms[1].set_text(text)
+    _fill_at(node, x, y, rotation)
+    node.find("layer").atoms[1].set_text(layer)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_after(root, node, _GRAPHIC_HEADS, _TRACE_AND_TAIL_HEADS)
+    Path(key).write_bytes(_cst.serialize(tree))
     return f"Text '{text}' at ({x}, {y}) on {layer}"
 
 
@@ -856,15 +1031,19 @@ def add_pcb_line(
         width: Line width in mm
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    line = GrLine()
-    line.start = Position(X=x1, Y=y1)
-    line.end = Position(X=x2, Y=y2)
-    line.layer = layer
-    line.width = width
-    line.tstamp = _gen_uuid()
-    board.graphicItems.append(line)
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    node = _GR_LINE_TPL.copy()
+    start, end = node.find("start"), node.find("end")
+    start.atoms[1].set_text(_num(x1))
+    start.atoms[2].set_text(_num(y1))
+    end.atoms[1].set_text(_num(x2))
+    end.atoms[2].set_text(_num(y2))
+    node.find("stroke").find("width").atoms[1].set_text(_num(width))
+    node.find("layer").atoms[1].set_text(layer)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_after(root, node, _GRAPHIC_HEADS, _TRACE_AND_TAIL_HEADS)
+    Path(key).write_bytes(_cst.serialize(tree))
     return f"Line: ({x1}, {y1}) -> ({x2}, {y2}) on {layer}"
 
 
@@ -897,30 +1076,34 @@ def add_copper_zone(
     """
     if len(corners) < 3:
         raise ToolError("At least 3 corners required for a zone polygon.")
-    board = _load_board(pcb_path)
-    try:
-        net_num, _ = _find_net(board, net_name)
-    except ValueError as e:
-        raise ToolError(str(e)) from e
-    zone = Zone()
-    zone.net = net_num
-    zone.netName = net_name
-    zone.layers = [layer]
-    zone.priority = priority
-    zone.clearance = clearance
-    zone.minThickness = min_thickness
-    zone.tstamp = _gen_uuid()
-    zone.hatch = Hatch(style="edge", pitch=0.5)
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    net_num = _resolve_net_cst(root, net_name)
+    node = _COPPER_ZONE_TPL.copy()
+    node.find("layer").atoms[1].set_text(layer)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    node.find("priority").atoms[1].set_text(str(priority))
+    cp = node.find("connect_pads")
+    cp.find("clearance").atoms[1].set_text(_num(clearance))
     if not thermal_relief:
-        zone.connectPads = "full"
-    zone.fillSettings = FillSettings(
-        thermalGap=thermal_gap, thermalBridgeWidth=thermal_bridge_width
-    )
-    poly = ZonePolygon()
-    poly.coordinates = [Position(X=c["x"], Y=c["y"]) for c in corners]
-    zone.polygons = [poly]
-    board.zones.append(zone)
-    board.to_file()
+        solid = cp.children[0].copy()
+        solid.sep = b" "
+        solid.set_text("yes")
+        cp.children.insert(1, solid)
+    node.find("min_thickness").atoms[1].set_text(_num(min_thickness))
+    fill = node.find("fill")
+    fill.find("thermal_gap").atoms[1].set_text(_num(thermal_gap))
+    fill.find("thermal_bridge_width").atoms[1].set_text(_num(thermal_bridge_width))
+    _fill_zone_polygon(node, corners)
+    if _board_version(root) <= _FORMAT_VERSION_LIMITS["kicad_pcb"]:
+        node.find("net").atoms[1].set_text(str(net_num))
+        node.find("net_name").atoms[1].set_text(net_name)
+    else:
+        _set_item_net(node, root, net_num)
+        node.remove_child(node.find("net_name"))
+        node.remove_child(node.find("filled_areas_thickness"))
+    _splice_pcb_zone(root, node)
+    Path(key).write_bytes(_cst.serialize(tree))
     return ZoneResult(net=net_name, layer=layer, corners=len(corners), clearance_mm=clearance)
 
 
@@ -949,29 +1132,40 @@ def add_keepout_zone(
     """
     if len(corners) < 3:
         raise ToolError("At least 3 corners required for a zone polygon.")
-    board = _load_board(pcb_path)
-    zone = Zone()
-    zone.net = 0
-    zone.netName = ""
-    zone.layers = layers or ["F.Cu", "B.Cu"]
-    zone.tstamp = _gen_uuid()
-    zone.hatch = Hatch(style="edge", pitch=0.5)
-    zone.keepoutSettings = KeepoutSettings(
-        tracks="not_allowed" if no_tracks else "allowed",
-        vias="not_allowed" if no_vias else "allowed",
-        pads="not_allowed" if no_pads else "allowed",
-        copperpour="not_allowed" if no_copper_pour else "allowed",
-        footprints="not_allowed" if no_footprints else "allowed",
-    )
-    poly = ZonePolygon()
-    poly.coordinates = [Position(X=c["x"], Y=c["y"]) for c in corners]
-    zone.polygons = [poly]
-    board.zones.append(zone)
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    zone_layers = layers or ["F.Cu", "B.Cu"]
+    node = _KEEPOUT_ZONE_TPL.copy()
+    layers_node = node.find("layers")
+    tpl_atom = layers_node.atoms[1]
+    del layers_node.children[1:]
+    for name in zone_layers:
+        a = tpl_atom.copy()
+        a.sep = b" "
+        a.set_text(name)
+        layers_node.children.append(a)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    restrictions = {
+        "tracks": "not_allowed" if no_tracks else "allowed",
+        "vias": "not_allowed" if no_vias else "allowed",
+        "pads": "not_allowed" if no_pads else "allowed",
+        "copperpour": "not_allowed" if no_copper_pour else "allowed",
+        "footprints": "not_allowed" if no_footprints else "allowed",
+    }
+    ko = node.find("keepout")
+    for k, v in restrictions.items():
+        ko.find(k).atoms[1].set_text(v)
+    _fill_zone_polygon(node, corners)
+    if _board_version(root) > _FORMAT_VERSION_LIMITS["kicad_pcb"]:
+        # Measured K10 rule areas carry no net tokens at all.
+        node.remove_child(node.find("net"))
+        node.remove_child(node.find("net_name"))
+    _splice_pcb_zone(root, node)
+    Path(key).write_bytes(_cst.serialize(tree))
     return KeepoutZoneResult(
         corners=len(corners),
-        layers=zone.layers,
-        restrictions=_keepout_restrictions(zone.keepoutSettings),
+        layers=zone_layers,
+        restrictions=restrictions,
     )
 
 
@@ -1133,14 +1327,12 @@ def set_trace_width(
         y_max: Bottom edge of bounding box filter (mm)
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    try:
-        segments = _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max)
-    except ValueError as e:
-        raise ToolError(str(e)) from e
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    segments = _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max)
     for seg in segments:
-        seg.width = width
-    board.to_file()
+        seg.find("width").atoms[1].set_text(_num(width))
+    Path(key).write_bytes(_cst.serialize(tree))
     return TraceWidthResult(traces_modified=len(segments), net=net_name, new_width_mm=width)
 
 
@@ -1166,14 +1358,12 @@ def remove_traces(
         y_max: Bottom edge of bounding box filter (mm)
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    try:
-        segments = _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max)
-    except ValueError as e:
-        raise ToolError(str(e)) from e
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    segments = _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max)
     for seg in segments:
-        board.traceItems.remove(seg)
-    board.to_file()
+        root.remove_child(seg)
+    Path(key).write_bytes(_cst.serialize(tree))
     return RemoveTracesResult(traces_removed=len(segments), net=net_name, layer=layer)
 
 
@@ -1202,24 +1392,24 @@ def add_thermal_vias(
         net_name: Net to assign to vias. If None, auto-detect from pad.
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    fp = _find_fp(board, reference)
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    fp = _find_fp_cst(root, reference)
+    pads = fp.find_all("pad")
 
     # Find pad
     pad = None
     if pad_number:
-        for p in fp.pads:
-            if p.number == pad_number:
-                pad = p
-                break
+        pad = next((p for p in pads if p.atoms[1].text == pad_number), None)
         if pad is None:
             raise ToolError(f"Pad {pad_number!r} not found on {reference}.")
     else:
         # Auto-detect: largest SMD pad by area
         best_area = 0
-        for p in fp.pads:
-            if p.type == "smd":
-                area = (p.size.X or 0) * (p.size.Y or 0)
+        for p in pads:
+            size = p.find("size")
+            if p.atoms[2].text == "smd" and size is not None:
+                area = float(size.atoms[1].text) * float(size.atoms[2].text)
                 if area > best_area:
                     best_area = area
                     pad = p
@@ -1227,26 +1417,27 @@ def add_thermal_vias(
             raise ToolError(f"No SMD pad found on {reference}. Specify pad_number explicitly.")
 
     # Compute pad center in board coordinates with rotation
-    fp_x = fp.position.X
-    fp_y = fp.position.Y
+    at = fp.find("at")
+    fp_x, fp_y = float(at.atoms[1].text), float(at.atoms[2].text)
+    fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
+    fl = fp.find("layer")
+    pad_at = pad.find("at")
     pad_x, pad_y = _transform_local_to_board(
         fp_x,
         fp_y,
-        fp.position.angle or 0,
-        pad.position.X,
-        pad.position.Y,
-        mirrored=fp.layer == "B.Cu",
+        fp_angle,
+        float(pad_at.atoms[1].text),
+        float(pad_at.atoms[2].text),
+        mirrored=fl is not None and fl.atoms[1].text == "B.Cu",
     )
 
-    # Determine net
-    via_net = 0
+    # Determine net. A netless pad on a KiCad 10 format board resolves to
+    # net 0, which _set_item_net refuses (guardrail 5, same as add_via).
+    name_to_num = {name: num for num, name in _net_table(root)}
     if net_name:
-        try:
-            via_net, _ = _find_net(board, net_name)
-        except ValueError as e:
-            raise ToolError(str(e)) from e
-    elif pad.net is not None:
-        via_net = pad.net.number
+        via_net = _resolve_net_cst(root, net_name)
+    else:
+        via_net = _item_net_number(pad.find("net"), name_to_num)
 
     # Generate grid centered on pad
     vias_added = 0
@@ -1254,22 +1445,23 @@ def add_thermal_vias(
         for c in range(cols):
             vx = pad_x + (c - (cols - 1) / 2) * spacing
             vy = pad_y + (r - (rows - 1) / 2) * spacing
-            via = Via()
-            via.position = Position(X=round(vx, 4), Y=round(vy, 4))
-            via.size = via_size
-            via.drill = via_drill
-            via.net = via_net
-            via.layers = ["F.Cu", "B.Cu"]
-            via.tstamp = _gen_uuid()
-            board.traceItems.append(via)
+            node = _VIA_TPL.copy()
+            via_at = node.find("at")
+            via_at.atoms[1].set_text(_num(round(vx, 4)))
+            via_at.atoms[2].set_text(_num(round(vy, 4)))
+            node.find("size").atoms[1].set_text(_num(via_size))
+            node.find("drill").atoms[1].set_text(_num(via_drill))
+            _set_item_net(node, root, via_net)
+            node.find("uuid").atoms[1].set_text(_gen_uuid())
+            _splice_pcb_node(root, node)
             vias_added += 1
 
-    board.to_file()
+    Path(key).write_bytes(_cst.serialize(tree))
     return ThermalViasResult(
         vias_added=vias_added,
         reference=reference,
-        pad=pad.number,
-        net=net_name or (pad.net.name if pad.net else ""),
+        pad=pad.atoms[1].text,
+        net=net_name or _pad_net_name(pad.find("net"), ""),
         center={"x": round(pad_x, 4), "y": round(pad_y, 4)},
     )
 
@@ -1374,48 +1566,67 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
     Args:
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
     tolerance = 0.001  # mm
     total_removed = 0
     iterations = 0
+
+    def _seg_ends(seg) -> tuple[tuple[float, float], tuple[float, float]]:
+        start, end = seg.find("start"), seg.find("end")
+        return (
+            (round(float(start.atoms[1].text), 3), round(float(start.atoms[2].text), 3)),
+            (round(float(end.atoms[1].text), 3), round(float(end.atoms[2].text), 3)),
+        )
 
     while True:
         # Build connection points: pad positions + via centers + trace endpoints
         connection_points: list[tuple[float, float]] = []
 
         # Pad positions in board coordinates
-        for fp in board.footprints:
-            fp_x = fp.position.X
-            fp_y = fp.position.Y
-            for pad in fp.pads:
+        for fp in root.find_all("footprint"):
+            at = fp.find("at")
+            if at is None:
+                continue
+            fp_x, fp_y = float(at.atoms[1].text), float(at.atoms[2].text)
+            fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
+            fl = fp.find("layer")
+            mirrored = fl is not None and fl.atoms[1].text == "B.Cu"
+            for pad in fp.find_all("pad"):
+                pad_at = pad.find("at")
                 px, py = _transform_local_to_board(
                     fp_x,
                     fp_y,
-                    fp.position.angle or 0,
-                    pad.position.X,
-                    pad.position.Y,
-                    mirrored=fp.layer == "B.Cu",
+                    fp_angle,
+                    float(pad_at.atoms[1].text),
+                    float(pad_at.atoms[2].text),
+                    mirrored=mirrored,
                 )
                 connection_points.append((round(px, 3), round(py, 3)))
 
         # Via positions
-        for item in board.traceItems:
-            if isinstance(item, Via):
-                connection_points.append((round(item.position.X, 3), round(item.position.Y, 3)))
+        for item in root.lists:
+            if item.head == "via":
+                at = item.find("at")
+                connection_points.append(
+                    (round(float(at.atoms[1].text), 3), round(float(at.atoms[2].text), 3))
+                )
 
         # Trace endpoints (each segment contributes both start and end)
-        segments = [t for t in board.traceItems if isinstance(t, Segment)]
+        segments = [c for c in root.lists if c.head == "segment"]
         for seg in segments:
-            connection_points.append((round(seg.start.X, 3), round(seg.start.Y, 3)))
-            connection_points.append((round(seg.end.X, 3), round(seg.end.Y, 3)))
+            s, e = _seg_ends(seg)
+            connection_points.append(s)
+            connection_points.append(e)
 
-        # Check each segment for dangling endpoints
+        # ponytail: O(segments x points) scan per iteration, no spatial index;
+        # fine at hand-routed scale, index it if boards with thousands of
+        # segments ever route through here.
         dangling = []
         for seg in segments:
-            start = (round(seg.start.X, 3), round(seg.start.Y, 3))
-            end = (round(seg.end.X, 3), round(seg.end.Y, 3))
+            start, end = _seg_ends(seg)
 
-            # Count connections at start point (subtract this segment's own contribution)
+            # Count connections at each endpoint (minus the segment's own).
             start_connections = (
                 sum(
                     1
@@ -1424,8 +1635,6 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
                 )
                 - 1
             )
-
-            # Count connections at end point (subtract this segment's own contribution)
             end_connections = (
                 sum(
                     1
@@ -1442,12 +1651,12 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
             break
 
         for seg in dangling:
-            board.traceItems.remove(seg)
+            root.remove_child(seg)
         total_removed += len(dangling)
         iterations += 1
 
     if total_removed > 0:
-        board.to_file()
+        Path(key).write_bytes(_cst.serialize(tree))
 
     return DanglingTracksResult(tracks_removed=total_removed, iterations=iterations)
 

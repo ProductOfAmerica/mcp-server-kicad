@@ -209,19 +209,6 @@ class TestAutoroutePcb:
                         )
 
 
-class TestFindNet:
-    def test_finds_existing_net(self, scratch_pcb):
-        board = Board.from_file(str(scratch_pcb))
-        net_num, net_name = pcb._find_net(board, "Net1")
-        assert net_num == 1
-        assert net_name == "Net1"
-
-    def test_raises_for_missing_net(self, scratch_pcb):
-        board = Board.from_file(str(scratch_pcb))
-        with pytest.raises(ValueError, match="not found"):
-            pcb._find_net(board, "NonExistent")
-
-
 def _board_with_traces(scratch_pcb):
     """Add several traces on different nets/layers for filter testing."""
     board = Board.from_file(str(scratch_pcb))
@@ -243,43 +230,6 @@ def _board_with_traces(scratch_pcb):
         board.traceItems.append(seg)
     board.to_file()
     return board
-
-
-class TestFilterSegments:
-    def test_filter_by_net(self, scratch_pcb):
-        board = _board_with_traces(scratch_pcb)
-        result = pcb._filter_segments(
-            board, net_name="Net1", layer=None, x_min=None, y_min=None, x_max=None, y_max=None
-        )
-        assert len(result) == 3  # original scratch trace + 2 new
-
-    def test_filter_by_layer(self, scratch_pcb):
-        board = _board_with_traces(scratch_pcb)
-        result = pcb._filter_segments(
-            board, net_name=None, layer="B.Cu", x_min=None, y_min=None, x_max=None, y_max=None
-        )
-        assert len(result) == 2
-
-    def test_filter_by_net_and_layer(self, scratch_pcb):
-        board = _board_with_traces(scratch_pcb)
-        result = pcb._filter_segments(
-            board, net_name="Net1", layer="F.Cu", x_min=None, y_min=None, x_max=None, y_max=None
-        )
-        assert len(result) == 2
-
-    def test_filter_by_bbox(self, scratch_pcb):
-        board = _board_with_traces(scratch_pcb)
-        result = pcb._filter_segments(
-            board, net_name=None, layer=None, x_min=25, y_min=45, x_max=45, y_max=55
-        )
-        assert len(result) == 2
-
-    def test_no_filters_raises(self, scratch_pcb):
-        board = _board_with_traces(scratch_pcb)
-        with pytest.raises(ValueError, match="at least one filter"):
-            pcb._filter_segments(
-                board, net_name=None, layer=None, x_min=None, y_min=None, x_max=None, y_max=None
-            )
 
 
 class TestAddCopperZone:
@@ -312,7 +262,7 @@ class TestAddCopperZone:
         )
         board = Board.from_file(str(scratch_pcb))
         zone = board.zones[0]
-        assert zone.connectPads == "full"
+        assert zone.connectPads == "yes"  # measured: native solid connect token
 
     def test_fewer_than_3_corners(self, scratch_pcb):
         with pytest.raises(ToolError):
