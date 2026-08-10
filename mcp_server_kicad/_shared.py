@@ -354,10 +354,17 @@ def _extract_raw_symbol(lib_path: str, symbol_name: str) -> str | None:
 # macOS keeps kicad-cli inside the .app bundle and never puts it on PATH.
 _KICAD_APP = "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli"
 
+# The Windows installers leave it off PATH too, under a versioned directory:
+# the machine-wide install root, then the per-user one.
+_LOCALAPPDATA = os.environ.get("LOCALAPPDATA")
+_KICAD_WIN_DIRS = (r"C:\Program Files\KiCad",) + (
+    (str(Path(_LOCALAPPDATA) / "Programs" / "KiCad"),) if _LOCALAPPDATA else ()
+)
+
 
 @lru_cache(maxsize=1)
 def _find_kicad_cli() -> str | None:
-    """Absolute path to kicad-cli: KICAD_CLI_PATH, then PATH, then the macOS bundle.
+    """Absolute path to kicad-cli: KICAD_CLI_PATH, PATH, macOS bundle, Windows install.
 
     Resolved, not raw.  KiCad finds its stock symbol and footprint libraries at
     ``<exe_dir>/../SharedSupport``, so reaching it through a symlink on PATH
@@ -368,6 +375,19 @@ def _find_kicad_cli() -> str | None:
     found = os.environ.get("KICAD_CLI_PATH") or shutil.which("kicad-cli")
     if not found and os.path.isfile(_KICAD_APP):
         found = _KICAD_APP
+    if not found:
+        installed = []
+        for root in _KICAD_WIN_DIRS:
+            for exe in Path(root).glob("*/bin/kicad-cli.exe"):
+                try:
+                    # Sort on the parsed numbers: lexically "10.0" sorts below "9.0".
+                    key = tuple(int(part) for part in exe.parents[1].name.split("."))
+                except ValueError:
+                    continue  # not a version directory, e.g. a nightly build
+                if exe.is_file():
+                    installed.append((key, str(exe)))
+        if installed:
+            found = max(installed)[1]
     return str(Path(found).resolve()) if found else None
 
 
