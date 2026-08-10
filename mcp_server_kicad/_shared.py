@@ -403,21 +403,80 @@ def _kicad_root() -> Path | None:
     return Path(cli).parent.parent if cli else None
 
 
-def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
-    """Run a kicad-cli command, return CompletedProcess."""
-    executable = _find_kicad_cli()
-    if executable is None:
-        raise RuntimeError("kicad-cli not found. Install KiCad, or set KICAD_CLI_PATH.")
-    result = subprocess.run(
+# KiCad builds a user data tree (3D cache, templates) under Documents, and
+# kicad-cli aborts at startup when it cannot create it: no output, no work done,
+# not even for --version. Windows with Documents redirected to OneDrive is the
+# case that reaches users, because OneDrive owns the folder and the create
+# fails. Measured 2026-08-10 against an uncreatable path: exit 3221225477
+# (0xC0000005), empty stdout, a repeated "couldn't be created" on stderr. The
+# exit code is the gate rather than the message: it cannot be confused with the
+# non-zero exits ERC and DRC use for violation counts, and it does not change
+# with the error locale.
+_KICAD_STARTUP_CRASH = 3221225477
+
+# Set once a repair has worked, so only the first call pays for a dead process.
+_documents_home: str | None = None
+
+
+def _fallback_documents_home() -> str:
+    """Somewhere KiCad can write, away from whatever is broken.
+
+    LOCALAPPDATA exists only on Windows and is never synced, which is precisely
+    what the OneDrive case needs; elsewhere the XDG data directory plays the
+    same role.
+    """
+    base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.local/share")
+    return str(Path(base) / "KiCad")
+
+
+def _spawn_cli(executable: str, args: list[str]) -> subprocess.CompletedProcess:
+    """One kicad-cli invocation.
+
+    ``env`` stays None until a repair is needed, so a healthy install runs with
+    its environment untouched.
+    """
+    env = None
+    if _documents_home is not None:
+        env = {**os.environ, "KICAD_DOCUMENTS_HOME": _documents_home}
+    return subprocess.run(
         [executable] + args,
         capture_output=True,
         text=True,
         errors="replace",
         timeout=120,
+        env=env,
     )
+
+
+def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
+    """Run a kicad-cli command, return CompletedProcess.
+
+    A startup crash is repaired once and the call retried, and it raises whatever
+    *check* says: no caller can do anything useful with a process that died
+    before it ran, unlike the non-zero exits ERC and DRC report violations with.
+    """
+    global _documents_home
+    executable = _find_kicad_cli()
+    if executable is None:
+        raise RuntimeError("kicad-cli not found. Install KiCad, or set KICAD_CLI_PATH.")
+
+    result = _spawn_cli(executable, args)
+    if (
+        result.returncode == _KICAD_STARTUP_CRASH
+        and _documents_home is None
+        and not os.environ.get("KICAD_DOCUMENTS_HOME")
+    ):
+        _documents_home = _fallback_documents_home()
+        result = _spawn_cli(executable, args)
+
+    if result.returncode == _KICAD_STARTUP_CRASH:
+        tried = _documents_home or os.environ.get("KICAD_DOCUMENTS_HOME")
+        raise RuntimeError(
+            "kicad-cli died at startup because it could not create its data folder"
+            f" ({tried}). Point KICAD_DOCUMENTS_HOME at a writable directory that is"
+            f" not synced by OneDrive. Exit code {result.returncode}."
+        )
     if check and result.returncode != 0:
-        # kicad-cli can die with an empty stderr, e.g. the Windows access
-        # violation when it cannot write to a OneDrive-redirected Documents.
         detail = result.stderr.strip() or f"no error output, exit code {result.returncode}"
         raise RuntimeError(f"kicad-cli failed: {detail}")
     return result

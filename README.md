@@ -240,11 +240,16 @@ behind the substrate is written up in
 
 ### Windows and OneDrive
 
-If your Documents folder is redirected to OneDrive, `kicad-cli` can die at
-startup with an access violation (exit `3221225477`) because it cannot create
-its `KiCad` subfolder there. Every invocation fails, including
-`kicad-cli --version`. Point KiCad's own `KICAD_DOCUMENTS_HOME` at a directory
-that is not synced.
+If your Documents folder is redirected to OneDrive, `kicad-cli` dies at startup
+with an access violation (exit `3221225477`) because it cannot create its
+`KiCad` subfolder there. Every invocation fails, including
+`kicad-cli --version`.
+
+This is handled for you: on that crash the server retries once with KiCad's own
+`KICAD_DOCUMENTS_HOME` pointed at a local folder that OneDrive does not sync,
+and reuses it for the rest of the session. Nothing to configure, and a healthy
+install never sees it. Set `KICAD_DOCUMENTS_HOME` yourself to choose the folder,
+which also disables the retry, since a directory you picked is yours to fix.
 
 ## Tool reference
 

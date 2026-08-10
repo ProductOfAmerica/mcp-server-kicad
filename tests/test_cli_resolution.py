@@ -115,15 +115,109 @@ def test_missing_cli_raises_actionable_error(monkeypatch):
 
 
 def test_failure_without_stderr_reports_exit_code(monkeypatch):
-    """kicad-cli can exit non-zero with nothing on stderr (see #6, OneDrive)."""
+    """kicad-cli can exit non-zero with nothing on stderr, leaving only the code.
+
+    The OneDrive crash that motivated this (#6) now has its own handling below,
+    so this uses an ordinary failing exit: the branch still has to name the code
+    when there is nothing else to report.
+    """
     monkeypatch.setattr("mcp_server_kicad._shared._find_kicad_cli", lambda: "/bin/kicad-cli")
+    monkeypatch.setattr("mcp_server_kicad._shared._documents_home", None)
     monkeypatch.setattr(
         subprocess,
         "run",
-        lambda *a, **k: subprocess.CompletedProcess(a[0], 3221225477, stdout="", stderr=""),
+        lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr=""),
     )
-    with pytest.raises(RuntimeError, match="exit code 3221225477"):
+    with pytest.raises(RuntimeError, match="exit code 1"):
         _run_cli(["version"])
+
+
+# ---------------------------------------------------------------------------
+# Documents-home repair
+#
+# KiCad builds a user data tree under Documents, and kicad-cli dies at startup
+# when it cannot be created: no output, no work done, not even for --version.
+# A OneDrive-owned Documents folder is the case that reaches users. Measured
+# 2026-08-10 by pointing KICAD_DOCUMENTS_HOME at an uncreatable path: exit
+# 3221225477 (0xC0000005), empty stdout, and a repeated "couldn't be created"
+# on stderr. The exit code is the gate because it cannot collide with an ERC or
+# DRC violation count, and unlike the stderr text it does not depend on locale.
+# ---------------------------------------------------------------------------
+
+_CRASH = 3221225477
+
+
+def _queue_cli(monkeypatch, *returncodes):
+    """Stub kicad-cli with a queued list of exits. Returns the env of each call."""
+    envs: list[dict | None] = []
+
+    def run(cmd, **kw):
+        envs.append(kw.get("env"))
+        code = returncodes[min(len(envs) - 1, len(returncodes) - 1)]
+        return subprocess.CompletedProcess(
+            cmd, code, stdout="" if code else "9.0.8", stderr="crashed" if code else ""
+        )
+
+    monkeypatch.setattr("mcp_server_kicad._shared._find_kicad_cli", lambda: "/bin/kicad-cli")
+    monkeypatch.setattr("mcp_server_kicad._shared._documents_home", None)
+    monkeypatch.delenv("KICAD_DOCUMENTS_HOME", raising=False)
+    monkeypatch.setattr(subprocess, "run", run)
+    return envs
+
+
+def test_startup_crash_is_repaired_and_the_call_succeeds(monkeypatch):
+    """The whole point: the user never learns that KICAD_DOCUMENTS_HOME exists."""
+    envs = _queue_cli(monkeypatch, _CRASH, 0)
+    assert _run_cli(["version"]).stdout == "9.0.8"
+    assert len(envs) == 2, "expected one retry"
+    assert envs[0] is None, "first attempt must inherit the environment untouched"
+    retry = envs[1]
+    assert retry is not None and retry["KICAD_DOCUMENTS_HOME"], "retry must set a documents home"
+
+
+def test_a_working_install_is_never_given_an_override(monkeypatch):
+    """No extra process, no environment change, for the overwhelming majority."""
+    envs = _queue_cli(monkeypatch, 0)
+    _run_cli(["version"])
+    assert envs == [None]
+
+
+def test_repair_sticks_for_later_calls(monkeypatch):
+    """Otherwise every single tool call pays for one crashed process."""
+    envs = _queue_cli(monkeypatch, _CRASH, 0)
+    _run_cli(["version"])
+    _run_cli(["version"])
+    assert len(envs) == 3, "second call must not re-crash to rediscover the repair"
+    repaired, reused = envs[1], envs[2]
+    assert repaired is not None and reused is not None
+    assert reused["KICAD_DOCUMENTS_HOME"] == repaired["KICAD_DOCUMENTS_HOME"]
+
+
+def test_an_explicit_documents_home_is_never_overridden(monkeypatch):
+    """If the user chose a folder, a crash is theirs to see, not ours to paper over."""
+    envs = _queue_cli(monkeypatch, _CRASH)
+    monkeypatch.setenv("KICAD_DOCUMENTS_HOME", "/somewhere/the/user/picked")
+    with pytest.raises(RuntimeError):
+        _run_cli(["version"])
+    assert len(envs) == 1, "must not retry over an explicit choice"
+
+
+def test_unrepairable_crash_names_the_variable(monkeypatch):
+    """A locked-down machine can defeat the fallback too; say what to set."""
+    _queue_cli(monkeypatch, _CRASH, _CRASH)
+    with pytest.raises(RuntimeError, match="KICAD_DOCUMENTS_HOME"):
+        _run_cli(["version"])
+
+
+def test_startup_crash_raises_even_when_unchecked(monkeypatch):
+    """check=False exists for ERC and DRC violation counts, not for a crash.
+
+    get_version passes check=False and reports result.stderr itself, so without
+    this the caller surfaces raw wxWidgets noise instead of the actual problem.
+    """
+    _queue_cli(monkeypatch, _CRASH, _CRASH)
+    with pytest.raises(RuntimeError, match="KICAD_DOCUMENTS_HOME"):
+        _run_cli(["version"], check=False)
 
 
 # ---------------------------------------------------------------------------
