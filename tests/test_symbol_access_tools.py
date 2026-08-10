@@ -2,6 +2,7 @@
 
 import pytest
 from conftest import HAS_KICAD_CLI
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import symbol
 
@@ -45,8 +46,13 @@ class TestGetSymbolInfo:
         assert "passive" in result
 
     def test_unknown(self, scratch_sym_lib):
-        result = symbol.get_symbol_info("NOPE", str(scratch_sym_lib))
-        assert "not found" in result
+        """A missing symbol is a failure, so it must reach the client as one.
+
+        Returning the sentence as a normal result gave isError false, which a
+        client cannot tell apart from a symbol report.
+        """
+        with pytest.raises(ToolError, match="not found in"):
+            symbol.get_symbol_info("NOPE", str(scratch_sym_lib))
 
 
 @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
@@ -133,4 +139,5 @@ class TestUnitSuffixNames:
 
     def test_found_under_its_full_name(self, lib):
         assert symbol.get_symbol_info("Part_2_3", lib).startswith("Symbol: Part_2_3")
-        assert "not found" in symbol.get_symbol_info("Part", lib)
+        with pytest.raises(ToolError, match="not found in"):
+            symbol.get_symbol_info("Part", lib)

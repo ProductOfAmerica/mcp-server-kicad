@@ -76,7 +76,7 @@ def list_lib_footprints(pretty_dir: str = FP_LIB_PATH) -> str:
     """
     p = Path(pretty_dir)
     if not p.is_dir():
-        return f"'{pretty_dir}' is not a directory."
+        raise ToolError(f"'{pretty_dir}' is not a directory.")
     mods = sorted(p.glob("*.kicad_mod"))
     if not mods:
         return "No footprints found."
