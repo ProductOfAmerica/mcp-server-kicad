@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import subprocess
 import tempfile
 from pathlib import Path
 
-from kiutils.board import Board
-from kiutils.items.brditems import Segment, Via
-from kiutils.items.fpitems import FpText
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
@@ -50,9 +48,7 @@ from mcp_server_kicad._shared import (
     _keepout_dict,
     _kicad_root,
     _linearize_arc,
-    _load_board,
     _point_in_polygon,
-    _promote_footprint_keepouts,
     _resolve_root,
     _run_cli,
     _transform_local_to_board,
@@ -1974,45 +1970,158 @@ def export_ipc2581(
     return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format="ipc2581")
 
 
+# ---------------------------------------------------------------------------
+# Autoroute internals (CST; the DSN/SES round trip itself lives in
+# _freerouting.py and rides pcbnew and Java)
+# ---------------------------------------------------------------------------
+
+
+def _trace_counts(pcb_path: str) -> tuple[int, int]:
+    """(segments, vias) on the board at *pcb_path*, counted as top-level heads.
+
+    Arcs stay out of both counts, which is what the retired kiutils count
+    did: its Arc is a class of its own, not a Segment subclass. Parsed
+    fresh rather than through _open_pcb_cst, because the routed file this
+    runs on is written between the two calls.
+    """
+    heads = [c.head for c in _cst.parse(Path(pcb_path).read_bytes()).lists[0].lists]
+    return heads.count("segment"), heads.count("via")
+
+
+_HATCH_TPL = _cst.parse(b"(hatch edge 0.5)").lists[0]
+_ZONE_NET_TPLS = _cst.parse(b'(net 0)\n(net_name "")').lists
+_UUID_TPL = _cst.parse(b'(uuid "x")').lists[0]
+
+
+def _replace_child(node, new) -> None:
+    """Swap *node*'s child named like *new* for *new*, splicing it in if absent."""
+    old = node.find(new.head)
+    if old is None:
+        node.insert_after(node.atoms[0], new, sep=b" ")
+        return
+    new.sep = old.sep
+    node.children[node.children.index(old)] = new
+
+
+def _set_promoted_zone_net(zone, root) -> None:
+    """Net tokens on a promoted keepout, per the measured board dialects.
+
+    Numeric (net 0) with an empty net_name at or below the KiCad 9 format;
+    no net tokens at all above it, which is the KiCad 10 rule-area shape
+    add_keepout_zone emits (ADR-2 guardrail 5).
+    """
+    for head in ("net", "net_name"):
+        stale = zone.find(head)
+        if stale is not None:
+            zone.remove_child(stale)
+    if _board_version(root) > _FORMAT_VERSION_LIMITS["kicad_pcb"]:
+        return
+    anchor = zone.atoms[0]
+    for tpl in _ZONE_NET_TPLS:
+        node = tpl.copy()
+        zone.insert_after(anchor, node, sep=b" ")
+        anchor = node
+
+
+def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
+    """Promote footprint-level keepout zones to board level in a copy.
+
+    pcbnew's ExportSpecctraDSN does not export keepout zones defined inside
+    a footprint, so the autorouter would never see them. This parses
+    *pcb_path*, appends one board-level zone per footprint keepout polygon
+    with its points transformed into board coordinates, and writes the
+    result to *output_path*. The source board is never modified.
+
+    Returns the number of polygons promoted. At zero, *output_path* is not
+    written and the caller feeds the original board to the DSN export.
+    """
+    tree = _cst.parse(Path(pcb_path).read_bytes())
+    root = tree.lists[0]
+    count = 0
+
+    for fp in root.find_all("footprint"):
+        at = fp.find("at")
+        if at is None:
+            continue
+        fp_x, fp_y = _xy(at)
+        fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
+        mirrored = _fp_layer(fp) == "B.Cu"
+
+        for source_zone in fp.find_all("zone"):
+            if source_zone.find("keepout") is None:
+                continue
+            for index in range(len(source_zone.find_all("polygon"))):
+                # One board zone per polygon, as the kiutils twin produced.
+                zone = source_zone.copy()
+                polygons = zone.find_all("polygon")
+                for other in polygons[:index] + polygons[index + 1 :]:
+                    zone.remove_child(other)
+                for xy in polygons[index].find("pts").find_all("xy"):
+                    bx, by = _transform_local_to_board(
+                        fp_x, fp_y, fp_angle, *_xy(xy), mirrored=mirrored
+                    )
+                    xy.atoms[1].set_text(_num(round(bx, 6)))
+                    xy.atoms[2].set_text(_num(round(by, 6)))
+                _replace_child(zone, _HATCH_TPL.copy())
+                fresh_uuid = _UUID_TPL.copy()
+                fresh_uuid.atoms[1].set_text(_gen_uuid())
+                _replace_child(zone, fresh_uuid)
+                _set_promoted_zone_net(zone, root)
+                _splice_pcb_zone(root, zone)
+                count += 1
+
+    if count > 0:
+        try:
+            Path(output_path).write_bytes(_cst.serialize(tree))
+        except OSError as e:
+            raise ToolError(f"Failed to prepare PCB for autorouting: {e}") from e
+    return count
+
+
 _FP_TEXT_DISPLACEMENT_THRESHOLD_MM = 5.0
-"""Maximum distance (mm) an FpText position may be from the footprint center
-before it is considered displaced and reset.  FpText positions are stored
-relative to their parent footprint, so (0, 0) means centered on the footprint."""
+"""Maximum distance (mm) a footprint text may sit from the footprint origin
+before it counts as displaced and is reset. Footprint text positions are
+stored relative to their parent footprint, so (0, 0) means centered on it."""
 
 _FP_TEXT_DEFAULT_OFFSETS: dict[str, tuple[float, float]] = {
     "reference": (0, -1.5),
     "value": (0, 1.5),
 }
-"""Default (X, Y) offsets for well-known FpText types, relative to footprint
-center.  Any displaced text type not listed here is reset to (0, 0)."""
+"""Default (X, Y) offsets for well-known text types, relative to the footprint
+origin.  Any displaced text type not listed here is reset to (0, 0)."""
 
 
-def _fix_displaced_fp_text(board: Board) -> int:
-    """Reset footprint text fields displaced by Freerouting round-trip.
+def _fix_displaced_fp_text(pcb_path: str) -> int:
+    """Reset footprint text fields displaced by the Freerouting round trip.
 
-    After the DSN->SES round-trip, FpText items (Reference, Value, etc.)
-    may have their positions scrambled.  This function checks every FpText
-    on every footprint and, if the text's relative position exceeds
-    ``_FP_TEXT_DISPLACEMENT_THRESHOLD_MM`` from the footprint center,
-    resets it to a sensible default offset.
+    After the DSN->SES round trip, footprint texts (Reference, Value, etc.)
+    can come back scrambled far from their footprint. Every text further
+    from the origin than ``_FP_TEXT_DISPLACEMENT_THRESHOLD_MM`` is reset to
+    its type's default offset, keeping any rotation atom it carries.
 
-    Returns the number of text fields that were fixed.
+    Both node shapes are covered: ``(fp_text <type> ...)`` and the
+    ``(property "Reference"/"Value" ...)`` fields pcbnew 7 and newer write
+    for those two. The retired kiutils twin saw only FpText graphic items,
+    so on a board pcbnew itself had written it reached user texts and
+    nothing else.
+
+    Returns the number of texts reset; the file is rewritten only when that
+    count is non-zero.
     """
+    tree = _cst.parse(Path(pcb_path).read_bytes())
     fixed = 0
-    for fp in board.footprints:
-        for item in fp.graphicItems:
-            if not isinstance(item, FpText):
+    for fp in tree.lists[0].find_all("footprint"):
+        for text in fp.find_all("fp_text") + fp.find_all("property"):
+            at = text.find("at")
+            if at is None:
+                continue  # e.g. the bare (property "Reference" "R1") kiutils writes
+            if math.hypot(*_xy(at)) <= _FP_TEXT_DISPLACEMENT_THRESHOLD_MM:
                 continue
-            if item.position is None:
-                continue
-            dist = (item.position.X**2 + item.position.Y**2) ** 0.5
-            if dist > _FP_TEXT_DISPLACEMENT_THRESHOLD_MM:
-                default_x, default_y = _FP_TEXT_DEFAULT_OFFSETS.get(item.type, (0, 0))
-                item.position.X = default_x
-                item.position.Y = default_y
-                fixed += 1
+            kind = text.atoms[1].text.lower()
+            _fill_at(text, *_FP_TEXT_DEFAULT_OFFSETS.get(kind, (0, 0)))
+            fixed += 1
     if fixed > 0:
-        board.to_file()
+        Path(pcb_path).write_bytes(_cst.serialize(tree))
     return fixed
 
 
@@ -2054,9 +2163,7 @@ def autoroute_pcb(
         raise ToolError(jar_err or "Freerouting JAR not found.")
 
     # Count existing traces/vias for before/after comparison
-    board = _load_board(pcb_path)
-    traces_before = sum(1 for t in board.traceItems if isinstance(t, Segment))
-    vias_before = sum(1 for t in board.traceItems if isinstance(t, Via))
+    traces_before, vias_before = _trace_counts(pcb_path)
 
     out_dir = output_dir or str(Path(pcb_path).parent)
     stem = Path(pcb_path).stem
@@ -2097,12 +2204,10 @@ def autoroute_pcb(
             raise ToolError(ses_err)
 
     # Step 5: Fix displaced footprint text fields
-    text_fields_fixed = _fix_displaced_fp_text(_load_board(routed_path))
+    text_fields_fixed = _fix_displaced_fp_text(routed_path)
 
     # Count traces/vias in routed board
-    routed_board = _load_board(routed_path)
-    traces_after = sum(1 for t in routed_board.traceItems if isinstance(t, Segment))
-    vias_after = sum(1 for t in routed_board.traceItems if isinstance(t, Via))
+    traces_after, vias_after = _trace_counts(routed_path)
 
     drc_violations: int | None = None
     drc_unconnected: int | None = None

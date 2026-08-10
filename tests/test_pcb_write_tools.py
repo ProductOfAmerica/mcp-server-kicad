@@ -16,7 +16,7 @@ from kiutils.items.gritems import GrLine
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
 from mcp.server.fastmcp.exceptions import ToolError
 
-from mcp_server_kicad import pcb
+from mcp_server_kicad import _cst, pcb
 from mcp_server_kicad._shared import _fp_ref
 
 
@@ -207,6 +207,117 @@ class TestAutoroutePcb:
                             f"{item.type} text for {_fp_ref(fp)} is {dist:.1f}mm "
                             f"from center at ({item.position.X}, {item.position.Y})"
                         )
+
+    def test_kicad10_board_routes(self, tmp_path):
+        """A KiCad 10 format board runs the whole tool, where the retired
+        version guard refused it outright. Every subprocess seam is mocked,
+        so this pins the internals, not Java or pcbnew."""
+        from test_cst_pcb import _bump_version
+        from test_freerouting import _make_board_with_fp_keepout
+
+        pcb_path = _bump_version(_make_board_with_fp_keepout(tmp_path, fp_x=100, fp_y=100))
+
+        def mock_export_dsn(dsn_source, dsn_path):
+            # The keepout promotion ran, so the DSN source is its temp copy.
+            assert dsn_source != pcb_path
+            Path(dsn_path).touch()
+            return None
+
+        def mock_run_freerouting(**kwargs):
+            Path(kwargs["ses_path"]).touch()
+            return None
+
+        def mock_import_ses(source, ses_path, output_path):
+            """Splice 4 segments and 2 vias in through the CST: kiutils cannot
+            read a KiCad 10 header, and named nets are that board's dialect."""
+            tree = _cst.parse(Path(source).read_bytes())
+            root = tree.lists[0]
+            for i in range(4):
+                root.append_child(
+                    _cst.parse(
+                        f"(segment (start {50 + i * 10} 50) (end {60 + i * 10} 50)"
+                        f' (width 0.25) (layer "F.Cu") (net "Net1") (uuid "seg-{i}"))'.encode()
+                    ).lists[0],
+                    b"\n  ",
+                )
+            for i in range(2):
+                root.append_child(
+                    _cst.parse(
+                        f"(via (at {70 + i * 10} 50) (size 0.6) (drill 0.3)"
+                        f' (layers "F.Cu" "B.Cu") (net "Net1") (uuid "via-{i}"))'.encode()
+                    ).lists[0],
+                    b"\n  ",
+                )
+            Path(output_path).write_bytes(_cst.serialize(tree))
+            return None
+
+        with (
+            patch("mcp_server_kicad.pcb._check_java", lambda: None),
+            patch("mcp_server_kicad.pcb._ensure_jar", lambda: ("/fake/freerouting.jar", None)),
+            patch("mcp_server_kicad.pcb._export_dsn", mock_export_dsn),
+            patch("mcp_server_kicad.pcb._run_freerouting", mock_run_freerouting),
+            patch("mcp_server_kicad.pcb._import_ses", mock_import_ses),
+        ):
+            result = pcb.autoroute_pcb(pcb_path=pcb_path)
+
+        assert (result.traces_added, result.vias_added) == (4, 2)
+        assert result.keepouts_promoted == 1
+        assert Path(result.routed_path).exists()
+
+
+_PROPERTY_TEXT_BOARD = """(kicad_pcb (version 20241108) (generator "pcbnew")
+  (general (thickness 1.6))
+  (paper "A4")
+  (layers (0 "F.Cu" signal) (31 "B.Cu" signal))
+  (setup (pad_to_mask_clearance 0))
+  (net 0 "")
+  (footprint "Test:U"
+    (layer "F.Cu")
+    (uuid "fp-0001")
+    (at 100 100 0)
+    (property "Reference" "U1" (at 50 -50 90) (layer "F.SilkS") (uuid "p-1"))
+    (property "Value" "TEST" (at -30 40 0) (layer "F.Fab") (uuid "p-2"))
+    (property "Datasheet" "" (at 0 0 0) (layer "F.Fab") (uuid "p-3"))
+    (property "MPN" "XYZ-1" (at 20 0 0) (layer "F.Fab") (uuid "p-4"))
+    (property "Description" "no position at all")
+    (fp_text user "note" (at 0 -20) (layer "F.Fab") (uuid "t-1"))
+    (fp_text reference "U1" (at 0 -1) (layer "F.SilkS") (uuid "t-2"))
+  )
+)
+"""
+
+
+class TestFixDisplacedFpText:
+    """The widening: pcbnew 7+ stores Reference and Value as (property ...)
+    nodes, which the retired kiutils twin never saw."""
+
+    def test_property_nodes_reset_with_rotation_kept(self, tmp_path):
+        board = tmp_path / "props.kicad_pcb"
+        board.write_text(_PROPERTY_TEXT_BOARD)
+
+        assert pcb._fix_displaced_fp_text(str(board)) == 4
+
+        fp = _cst.parse(board.read_bytes()).lists[0].find("footprint")
+        at = {p.atoms[1].text: p.find("at") for p in fp.find_all("property")}
+        # Reference and Value land on their defaults; the rotation atom stays.
+        assert [a.text for a in at["Reference"].atoms[1:]] == ["0", "-1.5", "90"]
+        assert [a.text for a in at["Value"].atoms[1:]] == ["0", "1.5", "0"]
+        # Undisplaced text is untouched, unknown keys reset to the origin.
+        assert [a.text for a in at["Datasheet"].atoms[1:]] == ["0", "0", "0"]
+        assert [a.text for a in at["MPN"].atoms[1:]] == ["0", "0", "0"]
+        assert at["Description"] is None
+        texts = {t.atoms[1].text: t.find("at") for t in fp.find_all("fp_text")}
+        assert [a.text for a in texts["user"].atoms[1:]] == ["0", "0"]
+        assert [a.text for a in texts["reference"].atoms[1:]] == ["0", "-1"]
+
+    def test_nothing_displaced_leaves_the_file_alone(self, tmp_path):
+        board = tmp_path / "props.kicad_pcb"
+        board.write_text(_PROPERTY_TEXT_BOARD)
+        pcb._fix_displaced_fp_text(str(board))
+
+        settled = board.read_bytes()
+        assert pcb._fix_displaced_fp_text(str(board)) == 0
+        assert board.read_bytes() == settled
 
 
 def _board_with_traces(scratch_pcb):

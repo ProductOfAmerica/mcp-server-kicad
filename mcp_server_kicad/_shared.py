@@ -13,9 +13,8 @@ from pathlib import Path
 
 from kiutils.board import Board
 from kiutils.footprint import Footprint
-from kiutils.items.common import Effects, Font, Position, Stroke
+from kiutils.items.common import Effects, Font, Stroke
 from kiutils.items.fpitems import FpText
-from kiutils.items.zones import Hatch, Zone, ZonePolygon
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -932,68 +931,3 @@ def _linearize_arc(
         points.append((px, py))
 
     return points
-
-
-def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
-    """Promote footprint-level keepout zones to board-level in a temp copy.
-
-    KiCad's ``ExportSpecctraDSN`` does not export keepout zones defined
-    inside footprints.  This function copies the board, transforms
-    footprint-local keepout zones into board-level zones, and saves
-    the result to *output_path*.  The original PCB is never modified.
-
-    Returns the number of keepout zones promoted.  If zero, *output_path*
-    is not written.
-    """
-    import copy
-
-    board = _load_board(pcb_path)
-    count = 0
-
-    for fp in board.footprints:
-        fp_zones = getattr(fp, "zones", None)
-        if not fp_zones:
-            continue
-        if fp.position is None:
-            continue
-        fp_x = fp.position.X
-        fp_y = fp.position.Y
-        fp_angle = fp.position.angle or 0
-        mirrored = fp.layer == "B.Cu"
-
-        for source_zone in fp_zones:
-            ks = source_zone.keepoutSettings
-            if ks is None:
-                continue
-            if not source_zone.polygons:
-                continue
-
-            for source_poly in source_zone.polygons:
-                zone = Zone()
-                zone.net = 0
-                zone.netName = ""
-                zone.layers = copy.deepcopy(source_zone.layers)
-                zone.tstamp = _gen_uuid()
-                zone.hatch = Hatch(style="edge", pitch=0.5)
-                zone.keepoutSettings = copy.deepcopy(ks)
-
-                transformed_poly = ZonePolygon()
-                transformed_poly.coordinates = []
-                for c in source_poly.coordinates:
-                    bx, by = _transform_local_to_board(
-                        fp_x, fp_y, fp_angle, c.X, c.Y, mirrored=mirrored
-                    )
-                    transformed_poly.coordinates.append(Position(X=bx, Y=by))
-
-                zone.polygons = [transformed_poly]
-                board.zones.append(zone)
-                count += 1
-
-    if count > 0:
-        board.filePath = output_path
-        try:
-            board.to_file()
-        except OSError as e:
-            raise ToolError(f"Failed to prepare PCB for autorouting: {e}") from e
-
-    return count
