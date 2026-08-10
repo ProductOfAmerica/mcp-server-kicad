@@ -29,6 +29,9 @@ from mcp_server_kicad._freerouting import (
     import_ses as _import_ses,
 )
 from mcp_server_kicad._freerouting import (
+    pcbnew_major as _pcbnew_major,
+)
+from mcp_server_kicad._freerouting import (
     run_freerouting as _run_freerouting,
 )
 from mcp_server_kicad._shared import (
@@ -1981,16 +1984,18 @@ def export_ipc2581(
 # ---------------------------------------------------------------------------
 
 
-def _trace_counts(pcb_path: str) -> tuple[int, int]:
-    """(segments, vias) on the board at *pcb_path*, counted as top-level heads.
+def _trace_counts(pcb_path: str) -> tuple[int, int, int]:
+    """(segments, vias, format version) for the board at *pcb_path*.
 
-    Arcs stay out of both counts, which is what the retired kiutils count
-    did: its Arc is a class of its own, not a Segment subclass. Parsed
-    fresh rather than through _open_pcb_cst, because the routed file this
-    runs on is written between the two calls.
+    Segments and vias are counted as top-level heads. Arcs stay out of both
+    counts, which is what the retired kiutils count did: its Arc is a class
+    of its own, not a Segment subclass. Parsed fresh rather than through
+    _open_pcb_cst, because the routed file this runs on is written between
+    the two calls.
     """
-    heads = [c.head for c in _cst.parse(Path(pcb_path).read_bytes()).lists[0].lists]
-    return heads.count("segment"), heads.count("via")
+    root = _cst.parse(Path(pcb_path).read_bytes()).lists[0]
+    heads = [c.head for c in root.lists]
+    return heads.count("segment"), heads.count("via"), _board_version(root)
 
 
 _HATCH_TPL = _cst.parse(b"(hatch edge 0.5)").lists[0]
@@ -2144,8 +2149,9 @@ def autoroute_pcb(
     trace routing, and imports the results into a new PCB file. The original
     board is never modified.
 
-    Requires Java 17+ and KiCad's pcbnew Python bindings. On first run,
-    the Freerouting JAR is auto-downloaded (~20MB).
+    Requires Java 17+ and KiCad's pcbnew Python bindings, whose major version
+    has to match the board's format era. On first run, the Freerouting JAR is
+    auto-downloaded (~20MB).
 
     Args:
         pcb_path: Path to .kicad_pcb file
@@ -2168,7 +2174,29 @@ def autoroute_pcb(
         raise ToolError(jar_err or "Freerouting JAR not found.")
 
     # Count existing traces/vias for before/after comparison
-    traces_before, vias_before = _trace_counts(pcb_path)
+    traces_before, vias_before, board_version = _trace_counts(pcb_path)
+
+    # Pre-flight: the pcbnew era has to match the board's. The DSN export and
+    # the SES import both ride pcbnew, and _NUMERIC_NET_VERSION_MAX is the
+    # highest KiCad 9 board format, so anything above it needs a pcbnew 10.
+    warnings: list[str] = []
+    needs10 = board_version > _NUMERIC_NET_VERSION_MAX
+    major = _pcbnew_major()
+    if major is not None and needs10 and major < 10:
+        raise ToolError(
+            f"This board is in the KiCad 10 format (version {board_version}), which "
+            f"pcbnew {major} cannot load. Install KiCad 10, or point KICAD_PYTHON at "
+            "the Python of a KiCad 10 install."
+        )
+    if major is not None and not needs10 and major >= 10:
+        # pcbnew writes the routed copy through SaveBoard, which always saves
+        # in the running pcbnew's format.
+        warnings.append(
+            f"This board is in a KiCad 9 era format (version {board_version}) but "
+            f"pcbnew {major} is doing the routing, so the routed copy is written in "
+            "the KiCad 10 format and may not open in KiCad 9. The original board is "
+            "not touched."
+        )
 
     out_dir = output_dir or str(Path(pcb_path).parent)
     stem = Path(pcb_path).stem
@@ -2212,7 +2240,7 @@ def autoroute_pcb(
     text_fields_fixed = _fix_displaced_fp_text(routed_path)
 
     # Count traces/vias in routed board
-    traces_after, vias_after = _trace_counts(routed_path)
+    traces_after, vias_after, _ = _trace_counts(routed_path)
 
     drc_violations: int | None = None
     drc_unconnected: int | None = None
@@ -2239,6 +2267,7 @@ def autoroute_pcb(
         drc_violations=drc_violations,
         drc_unconnected=drc_unconnected,
         keepouts_promoted=keepouts_promoted,
+        warnings=warnings,
     )
 
 
