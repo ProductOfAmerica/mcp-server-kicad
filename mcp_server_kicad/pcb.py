@@ -254,15 +254,7 @@ def _board_version(root) -> int:
 
 def _splice_pcb_node(root, node) -> None:
     """Insert *node* after the last trace item, else before the board tail."""
-    anchors = [c for c in root.lists if c.head in ("segment", "arc", "via")]
-    if anchors:
-        root.insert_after(anchors[-1], node)
-        return
-    tail = root.find("zone") or root.find("group") or root.find("embedded_fonts")
-    if tail is not None:
-        root.insert_before(tail, node)
-    else:
-        root.append_child(node, b"\n\t")
+    _splice_after(root, node, ("segment", "arc", "via"), ("zone", "group", "embedded_fonts"))
 
 
 def _set_item_net(node, root, net: int) -> None:
@@ -292,6 +284,16 @@ def _find_fp_cst(root, reference):
         if _fp_prop_cst(fp, "Reference") == reference:
             return fp
     raise ToolError(f"Footprint {reference!r} not found.")
+
+
+def _pad_net_name(net_node, default: str) -> str:
+    """Display name from a pad's (net ...) child, either dialect."""
+    if net_node is None or len(net_node.atoms) < 2:
+        return default
+    if len(net_node.atoms) > 2:
+        return net_node.atoms[2].text
+    t = net_node.atoms[1].text
+    return t if not t.lstrip("-").isdigit() else default
 
 
 def _edge_polygon_cst(root) -> list[tuple[float, float]] | None:
@@ -399,34 +401,17 @@ _PCB_TAIL_HEADS = (
 )
 
 
-def _splice_pcb_footprint(root, node) -> None:
-    anchors = [c for c in root.lists if c.head == "footprint"]
-    if anchors:
-        root.insert_after(anchors[-1], node)
-        return
-    tail = next((c for c in root.lists if c.head in _PCB_TAIL_HEADS), None)
-    if tail is not None:
-        root.insert_before(tail, node)
-    else:
-        root.append_child(node, b"\n\t")
-
-
 _GRAPHIC_HEADS = ("gr_line", "gr_text") + tuple(_GRAPHIC_CLASS)
+_TRACE_AND_TAIL_HEADS = ("segment", "arc", "via", "zone", "group", "embedded_fonts")
 
 
-def _splice_pcb_graphic(root, node) -> None:
-    anchors = [c for c in root.lists if c.head in _GRAPHIC_HEADS]
+def _splice_after(root, node, heads, tail_heads) -> None:
+    """Insert after the last *heads* child, else before the first *tail_heads*."""
+    anchors = [c for c in root.lists if c.head in heads]
     if anchors:
         root.insert_after(anchors[-1], node)
         return
-    tail = next(
-        (
-            c
-            for c in root.lists
-            if c.head in ("segment", "arc", "via", "zone", "group", "embedded_fonts")
-        ),
-        None,
-    )
+    tail = next((c for c in root.lists if c.head in tail_heads), None)
     if tail is not None:
         root.insert_before(tail, node)
     else:
@@ -762,14 +747,7 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
     fp = _find_fp_cst(root, reference)
     lines = [f"{reference} pads:"]
     for pad in fp.find_all("pad"):
-        net = pad.find("net")
-        if net is None or len(net.atoms) < 2:
-            net_name = "none"
-        elif len(net.atoms) > 2:
-            net_name = net.atoms[2].text
-        else:
-            t = net.atoms[1].text
-            net_name = t if not t.lstrip("-").isdigit() else "none"
+        net_name = _pad_net_name(pad.find("net"), "none")
         at, size = pad.find("at"), pad.find("size")
         layers = pad.find("layers")
         lines.append(
@@ -817,7 +795,7 @@ def place_footprint(
     for prop in node.find_all("property"):
         prop.atoms[2].set_text(reference if prop.atoms[1].text == "Reference" else value)
         prop.find("uuid").atoms[1].set_text(_gen_uuid())
-    _splice_pcb_footprint(root, node)
+    _splice_after(root, node, ("footprint",), _PCB_TAIL_HEADS)
     Path(key).write_bytes(_cst.serialize(tree))
     return f"Placed {reference} ({value}) at ({x}, {y}) on {layer}"
 
@@ -1027,7 +1005,7 @@ def add_pcb_text(
     _fill_at(node, x, y, rotation)
     node.find("layer").atoms[1].set_text(layer)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
-    _splice_pcb_graphic(root, node)
+    _splice_after(root, node, _GRAPHIC_HEADS, _TRACE_AND_TAIL_HEADS)
     Path(key).write_bytes(_cst.serialize(tree))
     return f"Text '{text}' at ({x}, {y}) on {layer}"
 
@@ -1064,7 +1042,7 @@ def add_pcb_line(
     node.find("stroke").find("width").atoms[1].set_text(_num(width))
     node.find("layer").atoms[1].set_text(layer)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
-    _splice_pcb_graphic(root, node)
+    _splice_after(root, node, _GRAPHIC_HEADS, _TRACE_AND_TAIL_HEADS)
     Path(key).write_bytes(_cst.serialize(tree))
     return f"Line: ({x1}, {y1}) -> ({x2}, {y2}) on {layer}"
 
@@ -1479,20 +1457,11 @@ def add_thermal_vias(
             vias_added += 1
 
     Path(key).write_bytes(_cst.serialize(tree))
-    pad_net = pad.find("net")
-    if net_name:
-        result_net = net_name
-    elif pad_net is not None and len(pad_net.atoms) > 2:
-        result_net = pad_net.atoms[2].text
-    elif pad_net is not None and not pad_net.atoms[1].text.lstrip("-").isdigit():
-        result_net = pad_net.atoms[1].text
-    else:
-        result_net = ""
     return ThermalViasResult(
         vias_added=vias_added,
         reference=reference,
         pad=pad.atoms[1].text,
-        net=result_net,
+        net=net_name or _pad_net_name(pad.find("net"), ""),
         center={"x": round(pad_x, 4), "y": round(pad_y, 4)},
     )
 

@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 
 import pytest
-from conftest import _confined, _pure_insertion, _span_preserved, build_test_footprint, requires_cli
+from conftest import _confined, _pure_insertion, _span_preserved, requires_cli
 from kiutils.board import Board
 from kiutils.items.brditems import Segment, Via
 from mcp.server.fastmcp.exceptions import ToolError
@@ -298,40 +298,10 @@ class TestAddTraceViaCst:
 
 
 def _make_keepout_board_bumped(tmp_path):
-    """Kiutils-built keepout board with its version text-swapped to KiCad 10."""
-    import uuid as _uuid
+    """The shared kiutils keepout board with its version text-swapped to KiCad 10."""
+    from test_pcb_write_tools import _make_keepout_pcb
 
-    from kiutils.items.common import Net, Position
-    from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
-
-    board = Board.create_new()
-    board.nets = [Net(number=0, name="")]
-    kz = Zone()
-    kz.net = 0
-    kz.netName = ""
-    kz.layers = ["F.Cu"]
-    kz.tstamp = str(_uuid.uuid4())
-    kz.hatch = Hatch(style="edge", pitch=0.5)
-    kz.keepoutSettings = KeepoutSettings(
-        tracks="not_allowed",
-        vias="not_allowed",
-        pads="not_allowed",
-        copperpour="not_allowed",
-        footprints="not_allowed",
-    )
-    poly = ZonePolygon()
-    poly.coordinates = [
-        Position(X=10, Y=10),
-        Position(X=40, Y=10),
-        Position(X=40, Y=40),
-        Position(X=10, Y=40),
-    ]
-    kz.polygons = [poly]
-    board.zones.append(kz)
-    board.footprints.append(build_test_footprint())
-    path = tmp_path / "keep.kicad_pcb"
-    board.filePath = str(path)
-    board.to_file()
+    path = Path(_make_keepout_pcb(tmp_path))
     path.write_text(path.read_text().replace("(version 20211014)", "(version 20260206)"))
     return str(path)
 
