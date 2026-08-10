@@ -227,9 +227,14 @@ Every tool parses and edits through the byte-preserving substrate, so none of
 them refuses a file on its format version and none of them rewrites bytes you
 did not ask to change. One caveat, and it is not about the file format:
 `autoroute_pcb` hands the board to `pcbnew` for the DSN export and the SES
-import, so it additionally needs a `pcbnew` whose era matches the board. Point
-`KICAD_PYTHON` at a KiCad 10 install before autorouting a KiCad 10 board. The
-design behind the substrate is written up in
+import, so it additionally needs a `pcbnew` whose era matches the board. It
+checks that before it starts. A KiCad 10 board on a KiCad 9 `pcbnew` is refused
+with a message naming both versions, rather than failing somewhere inside the
+export; install KiCad 10 or point `KICAD_PYTHON` at one. The other direction
+runs, and the result carries a warning: a KiCad 9 board routed through a KiCad
+10 `pcbnew` comes back as a routed copy in the KiCad 10 format, because that is
+what `pcbnew` saves. Your original board is untouched either way. The design
+behind the substrate is written up in
 [docs/adr-cst-substrate.md](docs/adr-cst-substrate.md).
 
 ### Windows and OneDrive
