@@ -366,8 +366,8 @@ class TestHybridRoutingPreservation:
         bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
         kicad_native_sch.write_bytes(bumped)
         p = str(kicad_native_sch)
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.get_schematic_summary(schematic_path=p)
+        # Slice 12B: reads are CST-native too, so the summary now succeeds.
+        assert schematic.get_schematic_summary(schematic_path=p).components >= 0
         before = kicad_native_sch.read_bytes()
         schematic.no_connect_pin("R1", "1", schematic_path=p)
         assert _pure_insertion(before, kicad_native_sch.read_bytes())
@@ -485,8 +485,8 @@ class TestWirePinsToNetPreservation:
         bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
         kicad_native_sch.write_bytes(bumped)
         p = str(kicad_native_sch)
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.get_schematic_summary(schematic_path=p)
+        # Slice 12B: reads are CST-native too, so the summary now succeeds.
+        assert schematic.get_schematic_summary(schematic_path=p).components >= 0
         assert "Wired 1 pins" in schematic.wire_pins_to_net(
             pins=[{"reference": "R1", "pin": "1"}], label_text="K10NET", schematic_path=p
         )
@@ -885,6 +885,36 @@ class TestMemoryGate:
         assert _cst.serialize(_cst.parse(data)) == data
 
 
+class TestReadToolsRelaxed:
+    """Slice 12B: the 13 schematic read tools are CST-native and guard-free."""
+
+    @pytest.mark.no_kicad_validation
+    def test_future_version_file_reads_work(self, kicad_native_sch):
+        bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
+        kicad_native_sch.write_bytes(bumped)
+        p = str(kicad_native_sch)
+        summary = schematic.get_schematic_summary(schematic_path=p)
+        assert summary.components == 1 and summary.wires == 1 and summary.labels == 1
+        comps = schematic.list_schematic_components(schematic_path=p)
+        assert [c.reference for c in comps] == ["R1"]
+        assert comps[0].lib_id == "Device:R"
+        labels = schematic.list_schematic_labels(schematic_path=p)
+        assert [(lbl.text, lbl.x, lbl.y) for lbl in labels] == [("TEST_NET", 60.0, 100.0)]
+        wires = schematic.list_schematic_wires(schematic_path=p)
+        assert (wires[0].x1, wires[0].y1, wires[0].x2, wires[0].y2) == (50.0, 100.0, 80.0, 100.0)
+        pins = schematic.get_pin_positions("R1", schematic_path=p)
+        assert "Pin 1" in pins and "(100.0, 96.19)" in pins
+
+    def test_net_connections_cst(self, kicad_native_sch):
+        p = str(kicad_native_sch)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}], label_text="NETX", schematic_path=p
+        )
+        result = schematic.get_net_connections("NETX", schematic_path=p)
+        assert result.label_count == 1
+        assert any(c["reference"] == "R1" and c["pin"] == "1" for c in result.connections)
+
+
 def _kicad_cli_major() -> int:
     result = _run_cli(["version"], check=False)
     try:
@@ -899,8 +929,8 @@ class TestGuardRelax:
         # Simulate a KiCad-10-saved schematic: bump only the version claim.
         bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
         kicad_native_sch.write_bytes(bumped)
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.get_schematic_summary(schematic_path=str(kicad_native_sch))
+        # Slice 12B: reads are CST-native too, so the summary now succeeds.
+        assert schematic.get_schematic_summary(schematic_path=str(kicad_native_sch)).components >= 0
         before = kicad_native_sch.read_bytes()
         schematic.add_label("RELAXED", 60, 90, schematic_path=str(kicad_native_sch))
         after = kicad_native_sch.read_bytes()
@@ -933,8 +963,8 @@ class TestGuardRelax:
         schematic.add_label("R1X", 60, 90, schematic_path=p)
         schematic.add_hierarchical_label("H1X", "input", 60, 92, schematic_path=p)
         schematic.add_junctions([{"x": 60, "y": 96}], schematic_path=p)
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.get_schematic_summary(schematic_path=p)
+        # Slice 12B: reads are CST-native too, so the summary now succeeds.
+        assert schematic.get_schematic_summary(schematic_path=p).components >= 0
         assert "1 label(s)" in schematic.remove_label("R1X", schematic_path=p)
         assert "output" in schematic.modify_hierarchical_label(
             "H1X", schematic_path=p, new_shape="output"
@@ -950,8 +980,8 @@ class TestGuardRelax:
         bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
         kicad_native_sch.write_bytes(bumped)
         p = str(kicad_native_sch)
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.get_schematic_summary(schematic_path=p)
+        # Slice 12B: reads are CST-native too, so the summary now succeeds.
+        assert schematic.get_schematic_summary(schematic_path=p).components >= 0
         assert "Moved R1" in schematic.move_component("R1", 63.5, 63.5, schematic_path=p)
         assert "22K" in schematic.set_component_property("R1", "Value", "22K", schematic_path=p)
         assert "A3" in schematic.set_page_size("A3", schematic_path=p)
@@ -968,8 +998,8 @@ class TestGuardRelax:
         for f in (kicad_native_sch, child):
             f.write_bytes(f.read_bytes().replace(b"(version 20250114)", b"(version 20260306)"))
         p = str(kicad_native_sch)
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.get_schematic_summary(schematic_path=p)
+        # Slice 12B: reads are CST-native too, so the summary now succeeds.
+        assert schematic.get_schematic_summary(schematic_path=p).components >= 0
         project.add_hierarchical_sheet(p, "sub", str(child), [{"name": "A", "direction": "input"}])
         s_uuid = _cst.parse(kicad_native_sch.read_bytes()).lists[0].find("sheet")
         uuid = _node_uuid(s_uuid)
@@ -984,8 +1014,8 @@ class TestGuardRelax:
         bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
         kicad_native_sch.write_bytes(bumped)
         p = str(kicad_native_sch)
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            schematic.get_schematic_summary(schematic_path=p)
+        # Slice 12B: reads are CST-native too, so the summary now succeeds.
+        assert schematic.get_schematic_summary(schematic_path=p).components >= 0
         result = schematic.place_component(
             lib_id="Test:TestPart",
             reference="U1",
@@ -1191,3 +1221,18 @@ class TestKicad10E2E:
         assert len(_cst.parse(kicad_native_sch.read_bytes()).lists[0].find_all("sheet")) == 2
         result = project.flatten_hierarchy(schematic_path=p)
         assert "components" in result
+
+    def test_read_tools_on_real_kicad10(self, kicad_native_sch):
+        self._mint(kicad_native_sch)
+        p = str(kicad_native_sch)
+        schematic.wire_pins_to_net(
+            pins=[{"reference": "R1", "pin": "1"}], label_text="K10NET", schematic_path=p
+        )
+        summary = schematic.get_schematic_summary(schematic_path=p)
+        assert summary.components == 1 and summary.wires == 2
+        assert [c.reference for c in schematic.list_schematic_components(schematic_path=p)] == [
+            "R1"
+        ]
+        assert "Pin 1" in schematic.get_pin_positions("R1", schematic_path=p)
+        result = schematic.get_net_connections("K10NET", schematic_path=p)
+        assert any(c["reference"] == "R1" for c in result.connections)

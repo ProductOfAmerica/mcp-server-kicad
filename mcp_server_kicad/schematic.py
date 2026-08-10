@@ -7,9 +7,6 @@ import os
 import re
 from pathlib import Path
 
-from kiutils.items.schitems import (
-    Connection,
-)
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -24,7 +21,6 @@ from mcp_server_kicad._shared import (
     _check_format_version,
     _file_meta,
     _gen_uuid,
-    _load_sch,
     _node_uuid,
     _remove_root_symbol_instance,
     _resolve_hierarchy_path,
@@ -273,23 +269,19 @@ def get_schematic_summary(schematic_path: str = SCH_PATH) -> SchematicSummary:
     Args:
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
-    page_w, page_h = _get_page_size(sch)
-    wire_count = sum(
-        1 for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"
-    )
+    _, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     return SchematicSummary(
-        page_size=sch.paper.paperSize if sch.paper else "A4",
+        page_size=page_name,
         page_width_mm=page_w,
         page_height_mm=page_h,
-        components=len(sch.schematicSymbols),
-        labels=len(sch.labels),
-        global_labels=len(sch.globalLabels),
-        hierarchical_labels=len(sch.hierarchicalLabels),
-        sheets=len(sch.sheets),
-        wires=wire_count,
-        junctions=len(sch.junctions),
-        no_connects=len(sch.noConnects),
+        components=len(root.find_all("symbol")),
+        labels=len(root.find_all("label")),
+        global_labels=len(root.find_all("global_label")),
+        hierarchical_labels=len(root.find_all("hierarchical_label")),
+        sheets=len(root.find_all("sheet")),
+        wires=len(root.find_all("wire")),
+        junctions=len(root.find_all("junction")),
+        no_connects=len(root.find_all("no_connect")),
     )
 
 
@@ -300,20 +292,19 @@ def list_schematic_components(schematic_path: str = SCH_PATH) -> list[ComponentI
     Args:
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     items = []
-    for sym in sch.schematicSymbols:
-        ref = next((p.value for p in sym.properties if p.key == "Reference"), "?")
-        val = next((p.value for p in sym.properties if p.key == "Value"), "?")
-        pos = sym.position
+    for sym in root.find_all("symbol"):
+        at = sym.find("at")
+        lib_id = sym.find("lib_id")
         items.append(
             ComponentItem(
-                reference=ref,
-                value=val,
-                lib_id=sym.libId,
-                x=pos.X,
-                y=pos.Y,
-                rotation=pos.angle or 0,
+                reference=_sym_property_cst(sym, "Reference") or "?",
+                value=_sym_property_cst(sym, "Value") or "?",
+                lib_id=lib_id.atoms[1].text if lib_id is not None else "",
+                x=float(at.atoms[1].text),
+                y=float(at.atoms[2].text),
+                rotation=float(at.atoms[3].text) if len(at.atoms) > 3 else 0,
             )
         )
     return items
@@ -326,10 +317,11 @@ def list_schematic_labels(schematic_path: str = SCH_PATH) -> list[LabelItem]:
     Args:
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     items = []
-    for label in sch.labels:
-        items.append(LabelItem(text=label.text, x=label.position.X, y=label.position.Y))
+    for label in root.find_all("label"):
+        x, y = _node_xy(label)
+        items.append(LabelItem(text=_node_text(label), x=x, y=y))
     return items
 
 
@@ -340,13 +332,12 @@ def list_schematic_wires(schematic_path: str = SCH_PATH) -> list[WireItem]:
     Args:
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     items = []
-    for item in sch.graphicalItems:
-        if isinstance(item, Connection) and item.type == "wire":
-            p = item.points
-            if len(p) >= 2:
-                items.append(WireItem(x1=p[0].X, y1=p[0].Y, x2=p[1].X, y2=p[1].Y))
+    for wire in root.find_all("wire"):
+        pts = _wire_xys(wire)
+        if len(pts) >= 2:
+            items.append(WireItem(x1=pts[0][0], y1=pts[0][1], x2=pts[1][0], y2=pts[1][1]))
     return items
 
 
@@ -357,15 +348,17 @@ def list_schematic_global_labels(schematic_path: str = SCH_PATH) -> list[GlobalL
     Args:
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     items = []
-    for gl in sch.globalLabels:
+    for gl in root.find_all("global_label"):
+        x, y = _node_xy(gl)
+        shape = gl.find("shape")
         items.append(
             GlobalLabelItem(
-                text=gl.text,
-                shape=gl.shape,
-                x=gl.position.X,
-                y=gl.position.Y,
+                text=_node_text(gl),
+                shape=shape.atoms[1].text if shape is not None else "input",
+                x=x,
+                y=y,
             )
         )
     return items
@@ -380,17 +373,19 @@ def list_schematic_hierarchical_labels(
     Args:
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     items = []
-    for hl in sch.hierarchicalLabels:
+    for hl in root.find_all("hierarchical_label"):
+        at = hl.find("at")
+        shape = hl.find("shape")
         items.append(
             HierarchicalLabelItem(
-                text=hl.text,
-                shape=hl.shape,
-                x=hl.position.X,
-                y=hl.position.Y,
-                rotation=hl.position.angle or 0,
-                uuid=hl.uuid or "",
+                text=_node_text(hl),
+                shape=shape.atoms[1].text if shape is not None else "input",
+                x=float(at.atoms[1].text),
+                y=float(at.atoms[2].text),
+                rotation=float(at.atoms[3].text) if len(at.atoms) > 3 else 0,
+                uuid=_node_uuid(hl),
             )
         )
     return items
@@ -403,19 +398,22 @@ def list_schematic_sheets(schematic_path: str = SCH_PATH) -> list[SheetItem]:
     Args:
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     items = []
-    for sheet in sch.sheets:
+    for sheet in root.find_all("sheet"):
+        at = sheet.find("at")
+        size = sheet.find("size")
+        name = _sym_property_cst(sheet, "Sheetname") or _sym_property_cst(sheet, "Sheet name")
         items.append(
             SheetItem(
-                sheet_name=sheet.sheetName.value,
-                file_name=sheet.fileName.value,
-                x=sheet.position.X,
-                y=sheet.position.Y,
-                width=sheet.width,
-                height=sheet.height,
-                pin_count=len(sheet.pins),
-                uuid=sheet.uuid or "",
+                sheet_name=name or "",
+                file_name=_sheet_file_cst(sheet) or "",
+                x=float(at.atoms[1].text),
+                y=float(at.atoms[2].text),
+                width=float(size.atoms[1].text),
+                height=float(size.atoms[2].text),
+                pin_count=len(sheet.find_all("pin")),
+                uuid=_node_uuid(sheet),
             )
         )
     return items
@@ -428,14 +426,16 @@ def list_schematic_junctions(schematic_path: str = SCH_PATH) -> list[JunctionIte
     Args:
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     items = []
-    for j in sch.junctions:
+    for j in root.find_all("junction"):
+        x, y = _node_xy(j)
+        diameter = j.find("diameter")
         items.append(
             JunctionItem(
-                x=j.position.X,
-                y=j.position.Y,
-                diameter=j.diameter,
+                x=x,
+                y=y,
+                diameter=float(diameter.atoms[1].text) if diameter is not None else 0,
             )
         )
     return items
@@ -448,15 +448,11 @@ def list_schematic_no_connects(schematic_path: str = SCH_PATH) -> list[NoConnect
     Args:
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     items = []
-    for nc in sch.noConnects:
-        items.append(
-            NoConnectItem(
-                x=nc.position.X,
-                y=nc.position.Y,
-            )
-        )
+    for nc in root.find_all("no_connect"):
+        x, y = _node_xy(nc)
+        items.append(NoConnectItem(x=x, y=y))
     return items
 
 
@@ -467,15 +463,17 @@ def list_schematic_bus_entries(schematic_path: str = SCH_PATH) -> list[BusEntryI
     Args:
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     items = []
-    for be in sch.busEntries:
+    for be in root.find_all("bus_entry"):
+        x, y = _node_xy(be)
+        size = be.find("size")
         items.append(
             BusEntryItem(
-                x=be.position.X,
-                y=be.position.Y,
-                size_x=be.size.X,
-                size_y=be.size.Y,
+                x=x,
+                y=y,
+                size_x=float(size.atoms[1].text),
+                size_y=float(size.atoms[2].text),
             )
         )
     return items
@@ -489,17 +487,26 @@ def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
         symbol_name: Symbol name (e.g. "LM7805", "C", "Fuse")
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
-    ls = _find_lib_symbol(sch, symbol_name)
-    if ls:
+    _, root, *_ = _open_sch_cst(schematic_path)
+    ls = _find_lib_symbol_cst(root, symbol_name)
+    if ls is not None:
         lines = [f"Symbol: {symbol_name}"]
-        for unit in ls.units:
-            for pin in unit.pins:
+        for unit in ls.find_all("symbol"):
+            for pin in unit.find_all("pin"):
+                number = pin.find("number")
+                name = pin.find("name")
+                at = pin.find("at")
+                length = pin.find("length")
+                px = _numish(at.atoms[1].text)
+                py = _numish(at.atoms[2].text)
+                rot = _numish(at.atoms[3].text) if len(at.atoms) > 3 else 0
+                plen = _numish(length.atoms[1].text) if length is not None else 0
                 lines.append(
-                    f"  Pin {pin.number}: {pin.name} "
-                    f"({pin.electricalType}) "
-                    f"@ ({pin.position.X}, {pin.position.Y}) "
-                    f"rot={pin.position.angle} len={pin.length}"
+                    f"  Pin {number.atoms[1].text if number is not None else ''}: "
+                    f"{name.atoms[1].text if name is not None else '~'} "
+                    f"({pin.atoms[1].text}) "
+                    f"@ ({px}, {py}) "
+                    f"rot={rot} len={plen}"
                 )
         return "\n".join(lines)
     raise ToolError(f"'{symbol_name}' not found.")
@@ -513,36 +520,45 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
         reference: Component reference (e.g. "U1", "R1")
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
 
-    target = _find_sym(sch, reference)
+    target = _find_sym_cst(root, reference)
     if target is None:
         raise ToolError(f"{reference} not found.")
 
-    symbol_name = target.libId.split(":")[-1] if ":" in target.libId else target.libId
-    lib_sym = _find_lib_symbol(sch, target.libId)
+    lib_id = target.find("lib_id").atoms[1].text
+    symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
+    lib_sym = _find_lib_symbol_cst(root, lib_id)
     if lib_sym is None:
         raise ToolError(f"Lib symbol for {reference} not found.")
 
-    cx, cy = target.position.X, target.position.Y
-    angle_deg = target.position.angle or 0
-    mir = getattr(target, "mirror", None)
+    at = target.find("at")
+    cx = _numish(at.atoms[1].text)
+    cy = _numish(at.atoms[2].text)
+    angle_deg = _numish(at.atoms[3].text) if len(at.atoms) > 3 else 0
+    m = target.find("mirror")
+    mir = m.atoms[1].text if m is not None else None
 
     lines = [f"{reference} ({symbol_name}) @ ({cx}, {cy}) rot={angle_deg} mirror={mir}"]
 
-    for unit in lib_sym.units:
-        for pin in unit.pins:
+    for unit in lib_sym.find_all("symbol"):
+        for pin in unit.find_all("pin"):
+            pat = pin.find("at")
             final_x, final_y, _ = _transform_pin_pos(
-                pin.position.X,
-                pin.position.Y,
-                pin.position.angle or 0,
+                float(pat.atoms[1].text),
+                float(pat.atoms[2].text),
+                float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0,
                 cx,
                 cy,
                 angle_deg,
                 mir,
             )
+            number = pin.find("number")
+            name = pin.find("name")
             lines.append(
-                f"  Pin {pin.number} ({pin.name}): ({round(final_x, 2)}, {round(final_y, 2)})"
+                f"  Pin {number.atoms[1].text if number is not None else ''} "
+                f"({name.atoms[1].text if name is not None else '~'}): "
+                f"({round(final_x, 2)}, {round(final_y, 2)})"
             )
 
     return "\n".join(lines)
@@ -562,37 +578,35 @@ def get_net_connections(
         label_text: Net name to search for (e.g. "VCC", "GND")
         schematic_path: Path to .kicad_sch file
     """
-    sch = _load_sch(schematic_path)
+    _, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
 
     # Collect all label positions for this net
     label_positions: set[tuple[float, float]] = set()
-    for lbl in sch.labels:
-        if lbl.text == label_text:
-            label_positions.add((lbl.position.X, lbl.position.Y))
-    for glbl in sch.globalLabels:
-        if glbl.text == label_text:
-            label_positions.add((glbl.position.X, glbl.position.Y))
+    for token in ("label", "global_label"):
+        for lbl in root.find_all(token):
+            if _node_text(lbl) == label_text:
+                label_positions.add(_node_xy(lbl))
 
     # BFS: expand from label positions through connected wire endpoints
+    wire_ends = []
+    for wire in root.find_all("wire"):
+        pts = _wire_xys(wire)
+        if len(pts) >= 2:
+            wire_ends.append((pts[0], pts[1]))
     reachable: set[tuple[float, float]] = set(label_positions)
     frontier = set(label_positions)
     while frontier:
         next_frontier: set[tuple[float, float]] = set()
         for fx, fy in frontier:
-            for item in sch.graphicalItems:
-                if not (isinstance(item, Connection) and item.type == "wire"):
-                    continue
-                if len(item.points) < 2:
-                    continue
-                p0, p1 = item.points[0], item.points[1]
-                if abs(p0.X - fx) < tol and abs(p0.Y - fy) < tol:
-                    pt = (p1.X, p1.Y)
+            for (p0x, p0y), (p1x, p1y) in wire_ends:
+                if abs(p0x - fx) < tol and abs(p0y - fy) < tol:
+                    pt = (p1x, p1y)
                     if pt not in reachable:
                         reachable.add(pt)
                         next_frontier.add(pt)
-                elif abs(p1.X - fx) < tol and abs(p1.Y - fy) < tol:
-                    pt = (p0.X, p0.Y)
+                elif abs(p1x - fx) < tol and abs(p1y - fy) < tol:
+                    pt = (p0x, p0y)
                     if pt not in reachable:
                         reachable.add(pt)
                         next_frontier.add(pt)
@@ -600,37 +614,42 @@ def get_net_connections(
 
     # Find component pins at reachable positions
     connections = []
-    for sym in sch.schematicSymbols:
-        ref = next(
-            (p.value for p in sym.properties if p.key == "Reference"),
-            None,
-        )
+    for sym in root.find_all("symbol"):
+        ref = _sym_property_cst(sym, "Reference")
         if ref is None:
             continue
-        lib_sym = _find_lib_symbol(sch, sym.libId)
+        lib_id_node = sym.find("lib_id")
+        if lib_id_node is None:
+            continue
+        lib_sym = _find_lib_symbol_cst(root, lib_id_node.atoms[1].text)
         if lib_sym is None:
             continue
-        cx, cy = sym.position.X, sym.position.Y
-        comp_angle = sym.position.angle or 0
-        mir = getattr(sym, "mirror", None)
-        for unit in lib_sym.units:
-            for pin in unit.pins:
+        at = sym.find("at")
+        cx, cy = float(at.atoms[1].text), float(at.atoms[2].text)
+        comp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
+        m = sym.find("mirror")
+        mir = m.atoms[1].text if m is not None else None
+        for unit in lib_sym.find_all("symbol"):
+            for pin in unit.find_all("pin"):
+                pat = pin.find("at")
                 px, py, _ = _transform_pin_pos(
-                    pin.position.X,
-                    pin.position.Y,
-                    pin.position.angle or 0,
+                    float(pat.atoms[1].text),
+                    float(pat.atoms[2].text),
+                    float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0,
                     cx,
                     cy,
                     comp_angle,
                     mir,
                 )
+                number = pin.find("number")
+                name = pin.find("name")
                 for rx, ry in reachable:
                     if abs(px - rx) < tol and abs(py - ry) < tol:
                         connections.append(
                             {
                                 "reference": ref,
-                                "pin": pin.number,
-                                "pin_name": pin.name,
+                                "pin": number.atoms[1].text if number is not None else "",
+                                "pin_name": name.atoms[1].text if name is not None else "~",
                                 "x": px,
                                 "y": py,
                             }
@@ -1117,6 +1136,12 @@ def _fill_at(node, x: float, y: float, rotation: float | None = None) -> None:
     at.atoms[2].set_text(_num(y))
     if rotation is not None:
         at.atoms[3].set_text(_num(rotation))
+
+
+def _numish(s: str) -> float | int:
+    """Numeric text as int when whole, else float: mirrors kiutils' repr in prints."""
+    v = float(s)
+    return int(v) if v == int(v) else v
 
 
 def _node_text(node) -> str:
