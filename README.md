@@ -238,18 +238,33 @@ what `pcbnew` saves. Your original board is untouched either way. The design
 behind the substrate is written up in
 [docs/adr-cst-substrate.md](docs/adr-cst-substrate.md).
 
-### Windows and OneDrive
+### Windows: Controlled Folder Access
 
-If your Documents folder is redirected to OneDrive, `kicad-cli` dies at startup
-with an access violation (exit `3221225477`) because it cannot create its
-`KiCad` subfolder there. Every invocation fails, including
-`kicad-cli --version`.
+Windows Defender's ransomware protection, Controlled Folder Access, guards your
+Documents folder and blocks writes from applications it does not recognise.
+KiCad keeps its own data there, a 3D cache and templates under `Documents\KiCad`,
+so a blocked write kills `kicad-cli` at startup with an access violation (exit
+`3221225477`) before it does any work. Every invocation fails, `--version`
+included.
 
-This is handled for you: on that crash the server retries once with KiCad's own
-`KICAD_DOCUMENTS_HOME` pointed at a local folder that OneDrive does not sync,
-and reuses it for the rest of the session. Nothing to configure, and a healthy
-install never sees it. Set `KICAD_DOCUMENTS_HOME` yourself to choose the folder,
-which also disables the retry, since a directory you picked is yours to fix.
+The block surfaces as `error 2: The system cannot find the file specified`,
+which is why this reads like a missing folder rather than a permission problem.
+Measured on a machine with the feature on: the folder is plainly there and a
+write into it still fails with `FileNotFoundError`.
+
+`kicad-cli` is handled for you. On that crash the server retries once with
+KiCad's own `KICAD_DOCUMENTS_HOME` pointed at a local folder outside the
+protected set, then reuses it for the session. Nothing to configure, and a
+machine without the block never sees any of it. Setting `KICAD_DOCUMENTS_HOME`
+yourself picks the folder and disables the retry, on the grounds that a
+directory you chose is yours to fix.
+
+**Your project files are a separate matter.** The same block applies to any
+write, so if your KiCad project lives under Documents, the write tools can fail
+the same confusing way, and the server cannot repair that: it is the location
+you asked it to edit. Either keep projects outside the protected folders, or
+allow the tools through at Windows Security, Virus & threat protection,
+Ransomware protection, Allow an app through Controlled folder access.
 
 ## Tool reference
 

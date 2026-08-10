@@ -137,11 +137,13 @@ def test_failure_without_stderr_reports_exit_code(monkeypatch):
 #
 # KiCad builds a user data tree under Documents, and kicad-cli dies at startup
 # when it cannot be created: no output, no work done, not even for --version.
-# A OneDrive-owned Documents folder is the case that reaches users. Measured
-# 2026-08-10 by pointing KICAD_DOCUMENTS_HOME at an uncreatable path: exit
-# 3221225477 (0xC0000005), empty stdout, and a repeated "couldn't be created"
-# on stderr. The exit code is the gate because it cannot collide with an ERC or
-# DRC violation count, and unlike the stderr text it does not depend on locale.
+# The case that reaches users is Windows Defender's Controlled Folder Access,
+# which protects Documents and reports its block as ENOENT, so it reads as a
+# missing folder rather than a denied write. Measured 2026-08-10 on a machine
+# with the feature on: exit 3221225477 (0xC0000005), empty stdout, a repeated
+# "couldn't be created" on stderr. The exit code is the gate because it cannot
+# collide with an ERC or DRC violation count, and unlike the stderr text it does
+# not depend on locale.
 # ---------------------------------------------------------------------------
 
 _CRASH = 3221225477

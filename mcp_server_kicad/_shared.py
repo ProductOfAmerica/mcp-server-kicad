@@ -405,13 +405,16 @@ def _kicad_root() -> Path | None:
 
 # KiCad builds a user data tree (3D cache, templates) under Documents, and
 # kicad-cli aborts at startup when it cannot create it: no output, no work done,
-# not even for --version. Windows with Documents redirected to OneDrive is the
-# case that reaches users, because OneDrive owns the folder and the create
-# fails. Measured 2026-08-10 against an uncreatable path: exit 3221225477
-# (0xC0000005), empty stdout, a repeated "couldn't be created" on stderr. The
-# exit code is the gate rather than the message: it cannot be confused with the
-# non-zero exits ERC and DRC use for violation counts, and it does not change
-# with the error locale.
+# not even for --version. The case that reaches users is Windows Defender's
+# Controlled Folder Access, which protects Documents and blocks writes from
+# applications it does not recognise. It reports the block as ENOENT, so this
+# presents as a missing folder rather than a denied write, which is why it
+# resisted diagnosis. Measured 2026-08-10 on a machine with the feature on:
+# exit 3221225477 (0xC0000005), empty stdout, a repeated "couldn't be created
+# (error 2: The system cannot find the file specified)" on stderr, for a folder
+# that demonstrably exists. The exit code is the gate rather than the message:
+# it cannot be confused with the non-zero exits ERC and DRC use for violation
+# counts, and it does not change with the error locale.
 _KICAD_STARTUP_CRASH = 3221225477
 
 # Set once a repair has worked, so only the first call pays for a dead process.
@@ -421,9 +424,9 @@ _documents_home: str | None = None
 def _fallback_documents_home() -> str:
     """Somewhere KiCad can write, away from whatever is broken.
 
-    LOCALAPPDATA exists only on Windows and is never synced, which is precisely
-    what the OneDrive case needs; elsewhere the XDG data directory plays the
-    same role.
+    LOCALAPPDATA exists only on Windows and sits outside the folders Controlled
+    Folder Access protects by default, which is exactly what that case needs;
+    elsewhere the XDG data directory plays the same role.
     """
     base = os.environ.get("LOCALAPPDATA") or os.path.expanduser("~/.local/share")
     return str(Path(base) / "KiCad")
@@ -473,8 +476,10 @@ def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess
         tried = _documents_home or os.environ.get("KICAD_DOCUMENTS_HOME")
         raise RuntimeError(
             "kicad-cli died at startup because it could not create its data folder"
-            f" ({tried}). Point KICAD_DOCUMENTS_HOME at a writable directory that is"
-            f" not synced by OneDrive. Exit code {result.returncode}."
+            f" ({tried}). On Windows this is usually Defender's Controlled Folder"
+            " Access. Point KICAD_DOCUMENTS_HOME at a writable directory outside the"
+            f" protected folders, or allow kicad-cli.exe through. Exit code"
+            f" {result.returncode}."
         )
     if check and result.returncode != 0:
         detail = result.stderr.strip() or f"no error output, exit code {result.returncode}"
