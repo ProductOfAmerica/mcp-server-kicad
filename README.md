@@ -220,14 +220,16 @@ message naming `KICAD_CLI_PATH`, rather than vanishing from the tool list.
 | File | What works today |
 |------|------------------|
 | `.kicad_sch` | Everything, read and write: the whole schematic server and the whole project server |
-| `.kicad_pcb` | Everything except `autoroute_pcb` |
+| `.kicad_pcb` | Everything, read and write |
 | `.kicad_sym`, `.kicad_mod` | Everything: your own libraries as well as the stock ones |
 
-`autoroute_pcb` is the one tool left on the old parser, and it refuses a KiCad
-10 board instead of silently downgrading it: the file is left untouched and the
-error names the format limit it hit. Migration progress is
-tracked in [#9](https://github.com/ProductOfAmerica/mcp-server-kicad/issues/9);
-the design behind it is written up in
+Every tool parses and edits through the byte-preserving substrate, so none of
+them refuses a file on its format version and none of them rewrites bytes you
+did not ask to change. One caveat, and it is not about the file format:
+`autoroute_pcb` hands the board to `pcbnew` for the DSN export and the SES
+import, so it additionally needs a `pcbnew` whose era matches the board. Point
+`KICAD_PYTHON` at a KiCad 10 install before autorouting a KiCad 10 board. The
+design behind the substrate is written up in
 [docs/adr-cst-substrate.md](docs/adr-cst-substrate.md).
 
 ### Windows and OneDrive

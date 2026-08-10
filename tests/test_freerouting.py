@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from conftest import requires_cli
 from kiutils.board import Board
 from kiutils.footprint import Footprint
 from kiutils.items.common import Net, Position, Property
@@ -13,6 +14,7 @@ from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._freerouting as _fr_module
+from mcp_server_kicad import _cst
 from mcp_server_kicad._freerouting import (
     check_java,
     ensure_jar,
@@ -22,7 +24,8 @@ from mcp_server_kicad._freerouting import (
     import_ses,
     run_freerouting,
 )
-from mcp_server_kicad._shared import _promote_footprint_keepouts
+from mcp_server_kicad._shared import _keepout_dict, _xy
+from mcp_server_kicad.pcb import _promote_footprint_keepouts, run_drc
 
 
 class TestCheckJava:
@@ -501,21 +504,32 @@ class TestPromoteFootprintKeepouts:
         assert count == 0
         assert not Path(out_path).exists()
 
-    def test_deep_copy_isolation(self, tmp_path):
-        """Modifying promoted zone's keepoutSettings doesn't affect source."""
-        pcb_path = _make_board_with_fp_keepout(tmp_path)
+    def test_source_zone_not_mutated(self, tmp_path):
+        """The zone copy is deep, the CST twin of the old deep_copy_isolation.
+
+        Transforming the promoted polygon must leave the footprint's own
+        zone on its local coordinates, and the source file must not be
+        written at all.
+        """
+        pcb_path = _make_board_with_fp_keepout(tmp_path, fp_x=100, fp_y=100)
         out_path = str(tmp_path / "out.kicad_pcb")
+        before = Path(pcb_path).read_bytes()
 
         _promote_footprint_keepouts(pcb_path, out_path)
 
-        # Reload original and mutate promoted zone keepoutSettings
-        out_board = Board.from_file(out_path)
-        out_board.zones[0].keepoutSettings.tracks = "allowed"
-
-        # Reload source and confirm it wasn't mutated
-        src_board = Board.from_file(pcb_path)
-        src_fp_zone = src_board.footprints[0].zones[0]
-        assert src_fp_zone.keepoutSettings.tracks == "not_allowed"
+        assert Path(pcb_path).read_bytes() == before
+        out_root = _cst.parse(Path(out_path).read_bytes()).lists[0]
+        fp_zone = out_root.find("footprint").find("zone")
+        assert [_xy(p) for p in fp_zone.find("polygon").find("pts").find_all("xy")] == [
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (0.0, 10.0),
+        ]
+        # The restrictions travel with the copy rather than being aliased away.
+        assert _keepout_dict(out_root.find("zone").find("keepout")) == _keepout_dict(
+            fp_zone.find("keepout")
+        )
 
     def test_dsn_source_branching_with_keepouts(self, tmp_path):
         """count > 0 means out_path is written."""
@@ -542,10 +556,49 @@ class TestPromoteFootprintKeepouts:
         assert not Path(out_path).exists()
 
     def test_save_failure_raises_tool_error(self, tmp_path):
-        """Mock Board.to_file to raise OSError; verify ToolError is raised."""
+        """An unwritable output path surfaces as ToolError, not a raw OSError."""
+        pcb_path = _make_board_with_fp_keepout(tmp_path)
+        out_path = str(tmp_path / "no_such_dir" / "out.kicad_pcb")
+
+        with pytest.raises(ToolError, match="Failed to prepare PCB for autorouting"):
+            _promote_footprint_keepouts(pcb_path, out_path)
+
+    @requires_cli
+    def test_kicad_accepts_the_promoted_board(self, tmp_path):
+        """The live oracle for the promoted zone: KiCad itself loads the file
+        and runs DRC on it, on whichever major the runner has installed. The
+        promoted board's only real consumer is pcbnew, so our own parser
+        reading it back proves nothing."""
+        pcb_path = _make_board_with_fp_keepout(tmp_path, fp_angle=45, fp_x=100, fp_y=100)
+        out_path = str(tmp_path / "out.kicad_pcb")
+
+        assert _promote_footprint_keepouts(pcb_path, out_path) == 1
+
+        result = run_drc(pcb_path=out_path, output_dir=str(tmp_path))
+        assert result.violation_count >= 0
+
+    def test_net_tokens_k9_numeric(self, tmp_path):
+        """A KiCad 9 format board gets the numeric (net 0) plus empty net_name."""
         pcb_path = _make_board_with_fp_keepout(tmp_path)
         out_path = str(tmp_path / "out.kicad_pcb")
 
-        with patch.object(Board, "to_file", side_effect=OSError("disk full")):
-            with pytest.raises(ToolError, match="disk full"):
-                _promote_footprint_keepouts(pcb_path, out_path)
+        assert _promote_footprint_keepouts(pcb_path, out_path) == 1
+
+        zone = _cst.parse(Path(out_path).read_bytes()).lists[0].find("zone")
+        assert zone.find("net").atoms[1].text == "0"
+        assert zone.find("net_name").atoms[1].text == ""
+
+    def test_net_tokens_absent_on_kicad10(self, tmp_path):
+        """A KiCad 10 format board gets no net tokens at all on a rule area:
+        numeric references are silently rebound there (ADR-2 guardrail 5)."""
+        from test_cst_pcb import _bump_version
+
+        pcb_path = _bump_version(_make_board_with_fp_keepout(tmp_path))
+        out_path = str(tmp_path / "out.kicad_pcb")
+
+        assert _promote_footprint_keepouts(pcb_path, out_path) == 1
+
+        zone = _cst.parse(Path(out_path).read_bytes()).lists[0].find("zone")
+        assert zone.find("net") is None
+        assert zone.find("net_name") is None
+        assert zone.find("keepout") is not None

@@ -16,7 +16,6 @@ classifiers = [
 ]
 dependencies = [
     "mcp>=1.1.3,<2.0.0",
-    "kiutils>=1.4",
 ]
 
 [project.urls]
@@ -33,7 +32,10 @@ mcp-server-kicad-footprint = "mcp_server_kicad.footprint:main"
 mcp-server-kicad-project = "mcp_server_kicad.project:main"
 
 [project.optional-dependencies]
-dev = ["pytest>=9.0", "ruff", "pyright"]
+# kiutils builds board and schematic fixtures in the test suite and reads
+# written files back as an independent oracle. No runtime path parses
+# through it, so it is not a runtime dependency.
+dev = ["pytest>=9.0", "ruff", "pyright", "kiutils>=1.4"]
 
 [build-system]
 requires = ["hatchling"]

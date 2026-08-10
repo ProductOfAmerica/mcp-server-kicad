@@ -2,7 +2,6 @@
 
 import math
 import os
-import re
 import shutil
 import subprocess
 import uuid
@@ -11,13 +10,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _dist_version
 from pathlib import Path
 
-from kiutils.board import Board
-from kiutils.footprint import Footprint
-from kiutils.items.common import Effects, Font, Position, Stroke
-from kiutils.items.fpitems import FpText
-from kiutils.items.zones import Hatch, Zone, ZonePolygon
 from mcp.server.fastmcp import FastMCP
-from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 import mcp_server_kicad._cst as _cst
@@ -162,89 +155,12 @@ FP_LIB_PATH: str = _cfg["fp_lib_path"]
 OUTPUT_DIR: str = _cfg["output_dir"]
 
 # ---------------------------------------------------------------------------
-# Format version guard
-# ---------------------------------------------------------------------------
-
-# Read-max format versions: what KiCad 9 stable writes per file family. These
-# are distinct from the write constants in project.py/symbol.py. Newer files
-# are refused before parsing: kiutils 1.4.8 crashes on KiCad 10 boards and
-# silently rewrites KiCad 10 schematics into its 2021 dialect (measured in #9).
-_FORMAT_VERSION_LIMITS = {
-    "kicad_sch": 20250114,
-    "kicad_pcb": 20241229,
-    "kicad_symbol_lib": 20241209,
-    "footprint": 20241229,
-}
-_ROOT_TOKEN_RE = re.compile(r"^\s*\(\s*([a-z_0-9]+)")
-_FILE_VERSION_RE = re.compile(r"\(version\s+(\d+)\s*\)")
-
-
-def _check_format_version(path: str, head: str | None = None) -> None:
-    """Refuse to load *path* if its format version is newer than KiCad 9.
-
-    Callers that already read the file pass its text as *head*; otherwise only
-    the first 512 bytes are read. Files with no version token (pre-KiCad-6)
-    and non-KiCad files pass through so downstream behavior is unchanged.
-    """
-    if head is None:
-        try:
-            with open(path, "rb") as f:
-                head = f.read(512).decode("utf-8", errors="ignore")
-        except OSError:
-            return  # missing/unreadable: keep today's downstream error
-    else:
-        head = head[:512]
-    root = _ROOT_TOKEN_RE.match(head)
-    if not root:
-        return
-    limit = _FORMAT_VERSION_LIMITS.get(root.group(1))
-    if limit is None:
-        return
-    version = _FILE_VERSION_RE.search(head)
-    if not version:
-        return
-    found = int(version.group(1))
-    if found <= limit:
-        return
-    # KiCad 10 installs ship stock libraries already in newer formats
-    # (Device.kicad_sym at 20251024). We only ever read those, and refusing
-    # them would break system-symbol placement, so anything under a KiCad
-    # install or configured symbol dir is exempt. On a Linux system install
-    # _kicad_root() is /usr, so the exemption is deliberately loose.
-    resolved = Path(path).resolve()
-    system_dirs = list(_SYSTEM_SYM_DIRS)
-    install_root = _kicad_root()
-    if install_root is not None:
-        system_dirs.append(install_root)
-    env_dir = os.environ.get("KICAD_SYMBOL_DIR")
-    if env_dir:
-        system_dirs.append(Path(env_dir))
-    if any(resolved.is_relative_to(d.resolve()) for d in system_dirs):
-        return
-    raise ToolError(
-        f"{Path(path).name}: format version {found} is newer than the KiCad 9 "
-        f"formats this server supports ({root.group(1)} <= {limit}). Loading "
-        "would silently drop KiCad 10+ data and a save could corrupt the "
-        "file, so it is refused. Keep editing this file in KiCad 10+; parser "
-        "upgrade tracked in #9."
-    )
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
 def _gen_uuid() -> str:
     return str(uuid.uuid4())
-
-
-def _default_effects(size: float = 1.27) -> Effects:
-    return Effects(font=Font(height=size, width=size))
-
-
-def _default_stroke() -> Stroke:
-    return Stroke(width=0, type="default")
 
 
 # Default KiCad grid spacing in mm (50 mils).
@@ -311,8 +227,8 @@ def _resolve_hierarchy_path(
     if Path(schematic_path).resolve() == root_sch_path.resolve():
         return project_name, f"/{sch_uuid}"
 
-    # Sub-sheet — find its sheet block UUID in the root schematic (CST read,
-    # so no version guard and no format restriction on the root)
+    # Sub-sheet: find its sheet block UUID in the root schematic (CST read,
+    # so no format restriction on the root)
     root = _cst.parse(root_sch_path.read_bytes()).lists[0]
     target_name = Path(schematic_path).name
     for sheet in root.find_all("sheet"):
@@ -435,74 +351,6 @@ def _extract_raw_symbol(lib_path: str, symbol_name: str) -> str | None:
         return None
 
 
-def _fix_empty_tstamps(board: Board) -> None:
-    """Fill in empty tstamp fields so kiutils can round-trip the file.
-
-    KiCad 9 uses ``(uuid ...)`` instead of ``(tstamp ...)`` in segments,
-    vias, footprints, graphic items, and zones.  kiutils 1.4.8 only
-    handles ``tstamp``, so after loading a KiCad 9 board the tstamp
-    attribute is left at its default (empty string or ``None``).  When
-    kiutils writes the file it emits ``(tstamp )`` with no value, and
-    the *next* load crashes with ``IndexError: list index out of range``
-    because it tries ``item[1]`` on a single-element list.
-
-    This helper assigns a fresh UUID to every object whose tstamp is
-    empty or ``None`` so the saved file is always valid.
-    """
-    # Trace items: Segment and Via
-    for item in board.traceItems:
-        if not item.tstamp:
-            item.tstamp = _gen_uuid()
-
-    # Footprints
-    for fp in board.footprints:
-        if not fp.tstamp:
-            fp.tstamp = _gen_uuid()
-
-    # Graphic items (GrLine, GrText, GrArc, etc.)
-    for gi in board.graphicItems:
-        if hasattr(gi, "tstamp") and not gi.tstamp:
-            gi.tstamp = _gen_uuid()
-
-    # Zones
-    for zone in board.zones:
-        if not zone.tstamp:
-            zone.tstamp = _gen_uuid()
-
-
-_EMPTY_TSTAMP_RE = re.compile(r"\(tstamp\s*\)")
-
-
-def _load_board(path: str = PCB_PATH) -> Board:
-    """Load a KiCad PCB from *path*.
-
-    Handles two KiCad 9 compatibility issues with kiutils 1.4.8:
-
-    1. **Already-corrupted files**: A previous kiutils save may have
-       written ``(tstamp )`` with no value.  kiutils crashes on
-       ``item[1]`` when parsing these.  We fix the raw text before
-       parsing.
-    2. **uuid vs tstamp**: KiCad 9 uses ``(uuid ...)`` which kiutils
-       ignores, leaving tstamp as ``""``.  After parsing we fill
-       empties with fresh UUIDs so the *next* save is also valid.
-    """
-    if not path:
-        raise ValueError("No PCB path provided. Pass pcb_path parameter.")
-
-    # Pre-process: replace empty (tstamp ) with a generated UUID so
-    # kiutils' parser doesn't crash on item[1].
-    from kiutils.utils import sexpr
-
-    raw = Path(path).read_text()
-    _check_format_version(path, raw)
-    fixed = _EMPTY_TSTAMP_RE.sub(lambda _m: f'(tstamp "{uuid.uuid4()}")', raw)
-    board = Board.from_sexpr(sexpr.parse_sexp(fixed))
-    board.filePath = path
-
-    _fix_empty_tstamps(board)
-    return board
-
-
 # macOS keeps kicad-cli inside the .app bundle and never puts it on PATH.
 _KICAD_APP = "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli"
 
@@ -559,16 +407,6 @@ def _file_meta(path: str) -> dict:
     """Return basic file metadata."""
     p = Path(path)
     return {"path": str(p.resolve()), "size_bytes": p.stat().st_size}
-
-
-def _fp_ref(fp: Footprint) -> str:
-    """Extract the reference designator from a footprint."""
-    if "Reference" in fp.properties:
-        return fp.properties["Reference"]
-    for item in fp.graphicItems:
-        if isinstance(item, FpText) and item.type == "reference":
-            return item.text
-    return "?"
 
 
 _SYM_INSTANCE_TPL = _cst.parse(
@@ -932,68 +770,3 @@ def _linearize_arc(
         points.append((px, py))
 
     return points
-
-
-def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
-    """Promote footprint-level keepout zones to board-level in a temp copy.
-
-    KiCad's ``ExportSpecctraDSN`` does not export keepout zones defined
-    inside footprints.  This function copies the board, transforms
-    footprint-local keepout zones into board-level zones, and saves
-    the result to *output_path*.  The original PCB is never modified.
-
-    Returns the number of keepout zones promoted.  If zero, *output_path*
-    is not written.
-    """
-    import copy
-
-    board = _load_board(pcb_path)
-    count = 0
-
-    for fp in board.footprints:
-        fp_zones = getattr(fp, "zones", None)
-        if not fp_zones:
-            continue
-        if fp.position is None:
-            continue
-        fp_x = fp.position.X
-        fp_y = fp.position.Y
-        fp_angle = fp.position.angle or 0
-        mirrored = fp.layer == "B.Cu"
-
-        for source_zone in fp_zones:
-            ks = source_zone.keepoutSettings
-            if ks is None:
-                continue
-            if not source_zone.polygons:
-                continue
-
-            for source_poly in source_zone.polygons:
-                zone = Zone()
-                zone.net = 0
-                zone.netName = ""
-                zone.layers = copy.deepcopy(source_zone.layers)
-                zone.tstamp = _gen_uuid()
-                zone.hatch = Hatch(style="edge", pitch=0.5)
-                zone.keepoutSettings = copy.deepcopy(ks)
-
-                transformed_poly = ZonePolygon()
-                transformed_poly.coordinates = []
-                for c in source_poly.coordinates:
-                    bx, by = _transform_local_to_board(
-                        fp_x, fp_y, fp_angle, c.X, c.Y, mirrored=mirrored
-                    )
-                    transformed_poly.coordinates.append(Position(X=bx, Y=by))
-
-                zone.polygons = [transformed_poly]
-                board.zones.append(zone)
-                count += 1
-
-    if count > 0:
-        board.filePath = output_path
-        try:
-            board.to_file()
-        except OSError as e:
-            raise ToolError(f"Failed to prepare PCB for autorouting: {e}") from e
-
-    return count
