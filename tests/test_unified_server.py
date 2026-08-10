@@ -1,7 +1,11 @@
 """Tests for the unified MCP server."""
 
+import re
+from pathlib import Path
+
 from mcp.server.fastmcp import FastMCP
 
+import mcp_server_kicad
 from mcp_server_kicad import footprint, pcb, project, schematic, server, symbol
 
 _MODULES = [schematic, pcb, symbol, footprint, project]
@@ -41,6 +45,19 @@ class TestUnifiedServer:
         assert "export_gerbers" in registered
         # Total tool count
         assert len(registered) == 109, f"Expected 109 tools, got {len(registered)}: {registered}"
+
+    def test_runtime_imports_no_kiutils(self):
+        """kiutils is a test-only dependency since slice 18, so an import of
+        it in the package would break a runtime install of the wheel. The
+        suite cannot notice that by running, because the dev extra installs
+        kiutils, so scan the source instead."""
+        src = Path(mcp_server_kicad.__file__).parent
+        offenders = [
+            p.name
+            for p in sorted(src.glob("*.py"))
+            if re.search(r"^\s*(from|import) kiutils", p.read_text(), re.M)
+        ]
+        assert offenders == [], f"kiutils imported by {offenders}; it is in the dev extra only"
 
     def test_no_tool_name_collisions(self):
         """All tool names across modules are unique."""
