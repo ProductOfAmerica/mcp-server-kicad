@@ -37,9 +37,11 @@ from mcp_server_kicad.models import (
     HierarchicalNetlistResult,
     HierarchyResult,
     HierarchyValidationResult,
+    LibTableEntry,
     NetTraceResult,
     RootSchematicResult,
     SheetInfoResult,
+    SheetPinSpec,
     SymbolInstancesResult,
     VersionResult,
 )
@@ -199,8 +201,8 @@ def create_symbol_library(symbol_lib_path: str) -> str:
     return f"Created symbol library at {p}"
 
 
-@mcp.tool(annotations=_ADDITIVE)
-def create_sym_lib_table(directory: str, entries: list[dict]) -> str:
+@mcp.tool(annotations=_DESTRUCTIVE)
+def create_sym_lib_table(directory: str, entries: list[LibTableEntry]) -> str:
     """Create a sym-lib-table file in the given directory.
 
     Each entry dict needs 'name' and 'uri' keys.
@@ -230,7 +232,7 @@ def add_hierarchical_sheet(
     parent_schematic_path: str,
     sheet_name: str,
     sheet_file: str,
-    pins: list[dict],
+    pins: list[SheetPinSpec],
     x: float = 25.4,
     y: float = 25.4,
     project_path: str = "",
@@ -451,15 +453,24 @@ def remove_hierarchical_sheet(
 
     # Handle child file deletion
     if delete_child_file:
-        parent_dir = Path(parent_schematic_path).parent
+        parent_dir = Path(parent_schematic_path).parent.resolve()
         child_path = parent_dir / child_filename
+        # child_filename is the Sheetfile property, so it is file content and can
+        # name ../../../anything. This is the only delete in the package, and it
+        # runs before the parent is written, so refusing leaves both files intact.
+        if not child_path.resolve().is_relative_to(parent_dir):
+            raise ToolError(
+                f"Sheet file '{child_filename}' resolves outside {parent_dir}, so it was "
+                "not deleted and the sheet block was not removed. Re-run with "
+                "delete_child_file=False to remove the block on its own."
+            )
         # Check if any OTHER sheet still references this child file
         other_refs = any(
             _sheet_file_cst(s) == child_filename for j, s in enumerate(sheets) if j != matches[0]
         )
         if other_refs:
             msg += f" Kept child file '{child_filename}' — still referenced by another sheet block."
-        elif child_path.exists():
+        elif child_path.is_file():
             child_path.unlink()
             msg += f" Deleted child file '{child_filename}'."
 
@@ -1162,7 +1173,7 @@ def reorder_sheet_pages(
     return f"Reordered {len(page_order)} sheets"
 
 
-@mcp.tool(annotations=_ADDITIVE)
+@mcp.tool(annotations=_DESTRUCTIVE)
 def duplicate_sheet(
     sheet_uuid: str,
     new_sheet_name: str,
@@ -1274,7 +1285,7 @@ def duplicate_sheet(
     return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
 
 
-@mcp.tool(annotations=_ADDITIVE)
+@mcp.tool(annotations=_DESTRUCTIVE)
 def flatten_hierarchy(
     schematic_path: str = SCH_PATH,
     output_path: str = "",
@@ -1404,7 +1415,7 @@ def flatten_hierarchy(
     return f"Flattened hierarchy to {Path(output_path).name}: {total_components} components"
 
 
-@mcp.tool(annotations=_EXPORT)
+@mcp.tool(annotations=_EXPORT, title="Export a netlist with sheet paths for the whole hierarchy")
 def export_hierarchical_netlist(
     schematic_path: str = SCH_PATH,
     output_dir: str = "",

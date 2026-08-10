@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
 import mcp_server_kicad._cst as _cst
 from mcp_server_kicad._cst import _fill_at, _num, _numish
@@ -69,15 +70,15 @@ from mcp_server_kicad.models import (
     GraphicItem,
     KeepoutZoneResult,
     LayerItem,
+    Model3dExportResult,
     NetClassResult,
     NetItem,
     PcbExportResult,
     PcbFootprintItem,
     PlacementCheckResult,
+    PointSpec,
     PositionExportResult,
     RemoveTracesResult,
-    RenderExportResult,
-    SingleGerberExportResult,
     ThermalViasResult,
     TraceSegmentItem,
     TraceWidthResult,
@@ -495,7 +496,7 @@ _KEEPOUT_ZONE_TPL = _cst.parse(
 ).lists[0]
 
 
-def _fill_zone_polygon(node, corners: list[dict]) -> None:
+def _fill_zone_polygon(node, corners: list[PointSpec]) -> None:
     """Fill the template's single (xy) with corner 0 and clone the rest inline."""
     pts = node.find("polygon").find("pts")
     first = pts.find("xy")
@@ -732,7 +733,7 @@ def get_board_info(pcb_path: str = PCB_PATH) -> str:
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Pads of a footprint placed on the board")
 def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
     """Get pad info for a placed footprint on the PCB.
 
@@ -839,7 +840,7 @@ def move_footprint(
     return msg
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Check one proposed footprint position")
 def check_placement(
     reference: str,
     x: float,
@@ -1043,7 +1044,7 @@ def add_pcb_line(
 def add_copper_zone(
     net_name: str,
     layer: str,
-    corners: list[dict],
+    corners: list[PointSpec],
     clearance: float = 0.5,
     min_thickness: float = 0.25,
     thermal_relief: bool = True,
@@ -1101,7 +1102,7 @@ def add_copper_zone(
 
 @mcp.tool(annotations=_ADDITIVE)
 def add_keepout_zone(
-    corners: list[dict],
+    corners: list[PointSpec],
     layers: list[str] | None = None,
     no_tracks: bool = True,
     no_vias: bool = True,
@@ -1779,11 +1780,13 @@ def export_gerbers(
     output_dir: str = OUTPUT_DIR,
     include_drill: bool = True,
     layers: list[str] | None = None,
-) -> SingleGerberExportResult | GerberExportResult:
+) -> GerberExportResult:
     """Export Gerber files for manufacturing.
 
-    When layers contains exactly one layer, exports a single Gerber file.
-    Otherwise exports all layers (or the specified subset) plus optional drill files.
+    When layers contains exactly one layer, exports a single Gerber file: path
+    names it, and size_bytes and layer are filled. Otherwise exports all layers
+    (or the specified subset) plus optional drill files, and path names the
+    output directory. files and count are filled either way.
 
     Args:
         pcb_path: Path to .kicad_pcb file
@@ -1827,8 +1830,13 @@ def export_gerbers(
                 )
             os.replace(produced[0], out_path)
         meta = _file_meta(out_path)
-        return SingleGerberExportResult(
-            path=meta["path"], size_bytes=meta["size_bytes"], format="gerber", layer=layer
+        return GerberExportResult(
+            path=meta["path"],
+            format="gerber",
+            files=[Path(meta["path"]).name],
+            count=1,
+            size_bytes=meta["size_bytes"],
+            layer=layer,
         )
 
     # Multi-layer mode: directory of files
@@ -1864,8 +1872,10 @@ def export_3d(
     height: int = 900,
     side: str = "top",
     quality: str = "basic",
-) -> RenderExportResult | ExportResult:
+) -> Model3dExportResult:
     """Export PCB 3D model or render 3D view to image.
+
+    `render` fills width, height and side; the mesh formats leave them unset.
 
     Args:
         format: Output format - "step", "stl", "glb", or "render" (PNG image)
@@ -1901,7 +1911,7 @@ def export_3d(
             ]
         )
         meta = _file_meta(out_path)
-        return RenderExportResult(
+        return Model3dExportResult(
             path=meta["path"],
             size_bytes=meta["size_bytes"],
             format="png",
@@ -1915,7 +1925,7 @@ def export_3d(
     out_path = str(Path(out_dir) / (Path(pcb_path).stem + f".{fmt}"))
     _run_cli(["pcb", "export", fmt, "--output", out_path, pcb_path])
     meta = _file_meta(out_path)
-    return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format=fmt)
+    return Model3dExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format=fmt)
 
 
 @mcp.tool(annotations=_EXPORT)
@@ -1942,7 +1952,7 @@ def export_positions(
     )
 
 
-@mcp.tool(annotations=_EXPORT)
+@mcp.tool(annotations=_DESTRUCTIVE)
 def export_ipc2581(
     pcb_path: str = PCB_PATH,
     output: str = "",
@@ -2135,7 +2145,23 @@ def _fix_displaced_fp_text(pcb_path: str) -> int:
     return fixed
 
 
-@mcp.tool(annotations=_EXPORT)
+# autoroute_pcb fits no preset, so it carries its own hints.
+#
+# openWorldHint is true because _ensure_jar reaches api.github.com for the
+# latest Freerouting release, downloads that JAR, and then runs it. A client
+# using the hint to decide whether a tool may run offline or without egress
+# approval has to be told the truth about that.
+#
+# destructiveHint and idempotentHint are deliberately left unset rather than
+# asserted. The spec defaults are true and false respectively, which are both
+# the accurate readings here: the tool rewrites <stem>_routed.kicad_pcb and a
+# _routed-drc.json beside it, and Freerouting is a heuristic router steered by
+# max_passes and num_threads, so two runs with the same arguments need not
+# agree. An unset hint beats a wrongly asserted one.
+_AUTOROUTE = ToolAnnotations(readOnlyHint=False, openWorldHint=True)
+
+
+@mcp.tool(annotations=_AUTOROUTE)
 def autoroute_pcb(
     pcb_path: str = PCB_PATH,
     max_passes: int = 20,
@@ -2271,7 +2297,7 @@ def autoroute_pcb(
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Outline bounds of a footprint placed on the board")
 def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintBoundsResult:
     """Get the board-coordinate bounding box of a placed footprint.
 
@@ -2324,7 +2350,7 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintB
     )
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Check every footprint already on the board")
 def validate_board(pcb_path: str = PCB_PATH) -> BoardValidationResult:
     """Validate all footprint placements against keep-out zones and board edge.
 

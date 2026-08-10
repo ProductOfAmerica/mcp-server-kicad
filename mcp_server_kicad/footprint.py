@@ -29,8 +29,8 @@ mcp = build_server(
         "- NEVER read, edit, or write .kicad_mod files directly. Use these"
         " MCP tools for all footprint library operations.\n"
         "- NEVER run kicad-cli commands directly. Use export_footprint_svg"
-        " and upgrade_fp_lib instead.\n"
-        "- Use list_lib_footprints to browse, get_footprint_details to"
+        " and upgrade_footprint_lib instead.\n"
+        "- Use list_lib_footprints to browse, get_footprint_info to"
         " inspect. Do NOT grep inside .pretty directories."
     ),
 )
@@ -76,7 +76,7 @@ def list_lib_footprints(pretty_dir: str = FP_LIB_PATH) -> str:
     """
     p = Path(pretty_dir)
     if not p.is_dir():
-        return f"'{pretty_dir}' is not a directory."
+        raise ToolError(f"'{pretty_dir}' is not a directory.")
     mods = sorted(p.glob("*.kicad_mod"))
     if not mods:
         return "No footprints found."
@@ -84,7 +84,7 @@ def list_lib_footprints(pretty_dir: str = FP_LIB_PATH) -> str:
     return "\n".join(lines)
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Footprint details from a .kicad_mod file")
 def get_footprint_info(footprint_path: str) -> str:
     """Get pad and outline details for a footprint .kicad_mod file.
 

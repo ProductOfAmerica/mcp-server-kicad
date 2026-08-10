@@ -43,13 +43,16 @@ from mcp_server_kicad.models import (
     HierarchicalLabelItem,
     JunctionItem,
     LabelItem,
-    MultiFileExportResult,
     NetConnectionsResult,
     NoConnectItem,
+    PinRefSpec,
+    PointSpec,
+    SchematicExportResult,
     SchematicSummary,
     SheetItem,
     UnconnectedPinsResult,
     WireItem,
+    WireSpec,
 )
 
 mcp = build_server(
@@ -63,14 +66,15 @@ mcp = build_server(
         "- NEVER run kicad-cli commands directly. Use the export and ERC tools"
         " provided by this server instead.\n"
         "- NEVER grep/search inside .kicad_sch files for coordinates or data."
-        " Use get_pin_positions, list_components, list_labels, get_net_connections.\n"
+        " Use get_pin_positions, list_schematic_components,"
+        " list_schematic_labels, get_net_connections.\n"
         "- When a tool returns an error, try different parameters or a different"
         " MCP tool. Do NOT fall back to manual file editing.\n\n"
         "WIRING WORKFLOW:\n"
         "1. Place components with place_component\n"
         "2. Discover pin names with get_pin_positions\n"
         "3. Wire using wire_pins_to_net (pins-to-net) or connect_pins (pin-to-pin)\n"
-        "4. Verify with list_labels and get_net_connections\n\n"
+        "4. Verify with list_schematic_labels and get_net_connections\n\n"
         "CLEANUP WORKFLOW:\n"
         "- To find existing wires before removal, use"
         " list_schematic_wires which returns x1/y1/x2/y2"
@@ -479,7 +483,7 @@ def list_schematic_bus_entries(schematic_path: str = SCH_PATH) -> list[BusEntryI
     return items
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Symbol pins from the schematic's embedded library")
 def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
     """Get pin info for a symbol in the schematic's lib_symbols.
 
@@ -962,7 +966,7 @@ def remove_junction(
 
 
 @mcp.tool(annotations=_ADDITIVE)
-def add_wires(wires: list[dict], schematic_path: str = SCH_PATH) -> str:
+def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
     """Add multiple wires at once. Each wire dict has keys: x1, y1, x2, y2.
 
     Args:
@@ -1300,7 +1304,7 @@ def add_label(
 
 
 @mcp.tool(annotations=_ADDITIVE)
-def add_junctions(points: list[dict], schematic_path: str = SCH_PATH) -> str:
+def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> str:
     """Add multiple junctions. Each point dict has keys: x, y.
 
     Args:
@@ -1860,7 +1864,7 @@ _ANGLE_TO_DIR = {0: "right", 90: "down", 180: "left", 270: "up"}
 
 @mcp.tool(annotations=_ADDITIVE)
 def wire_pins_to_net(
-    pins: list[dict],
+    pins: list[PinRefSpec],
     label_text: str,
     direction: str = "auto",
     stub_length: float = 2.54,
@@ -2245,7 +2249,7 @@ def _parse_unconnected_pins(erc_report: dict, sheet_filter: str | None = None) -
     return results
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_EXPORT)
 def list_unconnected_pins(
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
@@ -2353,8 +2357,12 @@ def export_schematic(
     format: str = "pdf",
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
-) -> ExportResult | MultiFileExportResult:
+) -> SchematicExportResult:
     """Export schematic to PDF, SVG, or DXF format.
+
+    pdf and dxf produce one file, so path names it and size_bytes is filled.
+    svg produces one file per sheet, so path names the directory. files and
+    count are filled either way.
 
     Args:
         format: Output format - "pdf", "svg", or "dxf"
@@ -2368,29 +2376,30 @@ def export_schematic(
     out_dir = output_dir or str(Path(schematic_path).parent)
     stem = Path(schematic_path).stem
 
-    if fmt == "pdf":
-        out_path = str(Path(out_dir) / f"{stem}.pdf")
-        _run_cli(["sch", "export", "pdf", "--output", out_path, schematic_path])
-        meta = _file_meta(out_path)
-        return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format="pdf")
-    elif fmt == "svg":
+    if fmt == "svg":
         os.makedirs(out_dir, exist_ok=True)
         _run_cli(["sch", "export", "svg", "--output", out_dir, schematic_path])
         svgs = sorted(Path(out_dir).glob("*.svg"))
-        return MultiFileExportResult(
+        return SchematicExportResult(
             path=out_dir,
             format="svg",
             files=[f.name for f in svgs],
             count=len(svgs),
         )
-    else:  # dxf
-        out_path = str(Path(out_dir) / f"{stem}.dxf")
-        _run_cli(["sch", "export", "dxf", "--output", out_path, schematic_path])
-        meta = _file_meta(out_path)
-        return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format="dxf")
+
+    out_path = str(Path(out_dir) / f"{stem}.{fmt}")
+    _run_cli(["sch", "export", fmt, "--output", out_path, schematic_path])
+    meta = _file_meta(out_path)
+    return SchematicExportResult(
+        path=meta["path"],
+        format=fmt,
+        files=[Path(meta["path"]).name],
+        count=1,
+        size_bytes=meta["size_bytes"],
+    )
 
 
-@mcp.tool(annotations=_EXPORT)
+@mcp.tool(annotations=_EXPORT, title="Export a netlist for one schematic")
 def export_netlist(
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,

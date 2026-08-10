@@ -456,6 +456,37 @@ class TestRemoveHierarchicalSheet:
         assert "Deleted child file" in result
         assert not child.exists()
 
+    def test_delete_child_file_refuses_to_escape_the_parent_dir(self, tmp_path: Path):
+        """Sheetfile is file content, so it can name a path outside the project.
+
+        This is the only delete in the package. A parent schematic carrying
+        ``Sheetfile`` of ``../victim.kicad_sch`` must not reach it, and the
+        parent must be left intact so the caller can retry without the delete.
+        """
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        parent, child = self._make_parent_and_child(proj)
+        self._add_sheet(parent, child, name="Power")
+
+        victim = tmp_path / "victim.kicad_sch"
+        victim.write_text("keep me")
+
+        # Point the sheet at the file outside the project directory.
+        parent.write_bytes(
+            parent.read_bytes().replace(b'"child.kicad_sch"', b'"../victim.kicad_sch"')
+        )
+        pointed = parent.read_bytes()
+
+        with pytest.raises(ToolError, match="resolves outside"):
+            project.remove_hierarchical_sheet(
+                name="Power",
+                delete_child_file=True,
+                parent_schematic_path=str(parent),
+            )
+
+        assert victim.read_text() == "keep me"
+        assert parent.read_bytes() == pointed, "parent schematic must be untouched"
+
     def test_delete_child_file_still_referenced(self, tmp_path: Path):
         parent, child = self._make_parent_and_child(tmp_path)
         # Two sheet blocks pointing to the same child file

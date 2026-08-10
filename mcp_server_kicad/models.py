@@ -1,13 +1,86 @@
-"""Pydantic response models for MCP tool structured output.
+"""Schemas for the MCP tool surface, both directions.
 
-These models enable FastMCP's automatic ``outputSchema`` generation
-and ``structuredContent`` population.  Every tool that returns
-structured data should use one of these models as its return type.
+Response models are Pydantic and drive FastMCP's ``outputSchema`` generation
+and ``structuredContent`` population.  Every tool returning structured data
+should use one of them as its return type.
+
+Parameter shapes are ``TypedDict``, not ``BaseModel``, so that a list of them
+publishes real ``properties`` and ``required`` in ``inputSchema`` while the
+values still arrive in the tool body as plain dicts.  That keeps every caller,
+and every existing test, passing dict literals.  They must come from
+``typing_extensions``: on Python 3.10 and 3.11, which this package supports,
+pydantic rejects ``typing.TypedDict`` outright.
 """
 
 from __future__ import annotations
 
 from pydantic import BaseModel, Field
+from typing_extensions import NotRequired, TypedDict
+
+# ---------------------------------------------------------------------------
+# Tool parameter shapes
+# ---------------------------------------------------------------------------
+
+
+class PointSpec(TypedDict):
+    """A bare coordinate: junction positions and zone polygon corners."""
+
+    x: float
+    y: float
+
+
+class WireSpec(TypedDict):
+    """One wire segment's two endpoints."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+
+
+class RectangleSpec(TypedDict):
+    """A symbol body rectangle. ``fill`` defaults to "background"."""
+
+    x1: float
+    y1: float
+    x2: float
+    y2: float
+    fill: NotRequired[str]
+
+
+class SymbolPinSpec(TypedDict):
+    """One pin on a new symbol. ``type`` is str, not Literal, so add_symbol's
+    own error still names the offending pin index and lists the valid values."""
+
+    number: str
+    name: str
+    type: str
+    x: NotRequired[float]
+    y: NotRequired[float]
+    rotation: NotRequired[float]
+    length: NotRequired[float]
+
+
+class PinRefSpec(TypedDict):
+    """A reference to a pin on a placed component."""
+
+    reference: str
+    pin: str
+
+
+class SheetPinSpec(TypedDict):
+    """A hierarchical sheet pin and its direction."""
+
+    name: str
+    direction: str
+
+
+class LibTableEntry(TypedDict):
+    """One library row in a sym-lib-table."""
+
+    name: str
+    uri: str
+
 
 # ---------------------------------------------------------------------------
 # Schematic list-item models (replacing list_schematic_items)
@@ -197,10 +270,6 @@ class PcbExportResult(ExportResult):
     layers: list[str]
 
 
-class SingleGerberExportResult(ExportResult):
-    layer: str
-
-
 class MultiFileExportResult(BaseModel):
     path: str
     format: str
@@ -208,15 +277,45 @@ class MultiFileExportResult(BaseModel):
     count: int
 
 
-class GerberExportResult(MultiFileExportResult):
+# The three below have two output modes each, but return one concrete model,
+# not a union: FastMCP wraps a union in {"result": ...} and a plain model not.
+
+
+class SchematicExportResult(BaseModel):
+    """pdf and dxf name one file and fill size_bytes; svg names a directory."""
+
+    path: str
+    format: str
+    files: list[str]
+    count: int
+    size_bytes: int | None = None
+
+
+class GerberExportResult(BaseModel):
+    """Single-layer mode names one file and fills size_bytes and layer.
+
+    Multi-layer mode names the output directory and fills the drill fields.
+    """
+
+    path: str
+    format: str
+    files: list[str]
+    count: int
+    size_bytes: int | None = None
+    layer: str | None = None
     drill_files: list[str] = []
     drill_count: int = 0
 
 
-class RenderExportResult(ExportResult):
-    width: int
-    height: int
-    side: str
+class Model3dExportResult(BaseModel):
+    """`render` fills width, height and side; step, stl and glb do not."""
+
+    path: str
+    format: str
+    size_bytes: int
+    width: int | None = None
+    height: int | None = None
+    side: str | None = None
 
 
 class BomExportResult(ExportResult):

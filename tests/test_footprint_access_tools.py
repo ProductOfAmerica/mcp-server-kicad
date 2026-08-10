@@ -6,6 +6,7 @@ from kiutils.footprint import Footprint, Pad
 from kiutils.items.common import Position
 from kiutils.items.fpitems import FpCircle, FpLine, FpRect
 from kiutils.items.zones import Hatch, KeepoutSettings, Zone, ZonePolygon
+from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import footprint
 
@@ -23,6 +24,21 @@ class TestListLibFootprints:
         fp.to_file()
         result = footprint.list_lib_footprints(str(pretty))
         assert "R_0603" in result
+
+    def test_not_a_directory_is_an_error(self, tmp_path):
+        """A bad path is a failure, so it must reach the client as one.
+
+        Returning the sentence as a normal result gave isError false, which a
+        client cannot tell apart from a listing.
+        """
+        with pytest.raises(ToolError, match="is not a directory"):
+            footprint.list_lib_footprints(str(tmp_path / "nope.pretty"))
+
+    def test_empty_library_is_not_an_error(self, tmp_path):
+        """An empty library is a successful empty result, not a failure."""
+        pretty = tmp_path / "Empty.pretty"
+        pretty.mkdir()
+        assert footprint.list_lib_footprints(str(pretty)) == "No footprints found."
 
 
 class TestGetFootprintInfo:

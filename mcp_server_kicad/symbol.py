@@ -18,7 +18,7 @@ from mcp_server_kicad._shared import (
     _run_cli,
     build_server,
 )
-from mcp_server_kicad.models import MultiFileExportResult
+from mcp_server_kicad.models import MultiFileExportResult, RectangleSpec, SymbolPinSpec
 
 mcp = build_server(
     "kicad-symbol",
@@ -29,7 +29,7 @@ mcp = build_server(
         "- NEVER read, edit, or write .kicad_sym files directly. Use these"
         " MCP tools for all symbol library operations.\n"
         "- NEVER run kicad-cli commands directly. Use export_symbol_svg and"
-        " upgrade_sym_lib instead.\n"
+        " upgrade_symbol_lib instead.\n"
         "- Use list_lib_symbols to browse, get_symbol_info to inspect pin"
         " details, add_symbol to create new symbols."
         " Do NOT grep inside .kicad_sym files."
@@ -205,7 +205,7 @@ def list_lib_symbols(symbol_lib_path: str = SYM_LIB_PATH) -> str:
     return "\n".join(lines) if lines else "No symbols found."
 
 
-@mcp.tool(annotations=_READ_ONLY)
+@mcp.tool(annotations=_READ_ONLY, title="Symbol details from a library file")
 def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> str:
     """Get detailed pin and property info for a symbol in a library.
 
@@ -230,13 +230,13 @@ def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> st
                     f"@ ({_numish(at.atoms[1].text)}, {_numish(at.atoms[2].text)}) rot={angle}"
                 )
         return "\n".join(lines)
-    return f"'{symbol_name}' not found in {symbol_lib_path}."
+    raise ToolError(f"'{symbol_name}' not found in {symbol_lib_path}.")
 
 
 # ── Symbol authoring ─────────────────────────────────────────────
 
 
-def _auto_body_rect(pins_data: list[dict]) -> tuple[float, float, float, float]:
+def _auto_body_rect(pins_data: list[SymbolPinSpec]) -> tuple[float, float, float, float]:
     """Compute a body rectangle from pin body-attachment points.
 
     Each pin extends from its position toward the body.  The body-end
@@ -272,7 +272,7 @@ def _auto_body_rect(pins_data: list[dict]) -> tuple[float, float, float, float]:
 @mcp.tool(annotations=_ADDITIVE)
 def add_symbol(
     name: str,
-    pins: list[dict],
+    pins: list[SymbolPinSpec],
     reference_prefix: str = "U",
     is_power: bool = False,
     pin_names_offset: float = 0.508,
@@ -280,7 +280,7 @@ def add_symbol(
     on_board: bool = True,
     footprint: str = "",
     datasheet: str = "~",
-    rectangles: list[dict] | None = None,
+    rectangles: list[RectangleSpec] | None = None,
     symbol_lib_path: str = SYM_LIB_PATH,
 ) -> str:
     """Add a new symbol definition to a .kicad_sym library.
@@ -368,7 +368,11 @@ def add_symbol(
     unit0.atoms[1].set_text(f"{name}_0_1")
     unit1.atoms[1].set_text(f"{name}_1_1")
 
-    rects = rectangles or [dict(zip(("x1", "y1", "x2", "y2"), _auto_body_rect(pins)))]
+    if rectangles:
+        rects = rectangles
+    else:
+        auto_x1, auto_y1, auto_x2, auto_y2 = _auto_body_rect(pins)
+        rects = [RectangleSpec(x1=auto_x1, y1=auto_y1, x2=auto_x2, y2=auto_y2)]
     for rect_node, r in zip(_repeat(unit0, unit0.find("rectangle"), len(rects)), rects):
         start, end = rect_node.find("start"), rect_node.find("end")
         start.atoms[1].set_text(_num(r["x1"]))
