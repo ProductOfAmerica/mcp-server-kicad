@@ -62,6 +62,34 @@ KICAD_SYM_VERSION = "20231120"
 # ---------------------------------------------------------------------------
 
 
+def _diff_spans(before: bytes, after: bytes) -> tuple[int, int]:
+    """Byte counts of the single differing region on each side, after
+    stripping the common prefix and suffix."""
+    p = 0
+    lo = min(len(before), len(after))
+    while p < lo and before[p] == after[p]:
+        p += 1
+    s = 0
+    while s < lo - p and before[-1 - s] == after[-1 - s]:
+        s += 1
+    return len(before) - p - s, len(after) - p - s
+
+
+def _pure_insertion(before: bytes, after: bytes) -> bool:
+    """*after* is *before* with one contiguous run of bytes inserted."""
+    return len(after) >= len(before) and _diff_spans(before, after)[0] == 0
+
+
+def _span_preserved(before: bytes, after: bytes) -> bool:
+    """One contiguous insertion OR deletion: the shorter side is untouched."""
+    return min(_diff_spans(before, after)) == 0
+
+
+def _confined(before: bytes, after: bytes, limit: int = 200) -> bool:
+    """All differences sit inside one span of <= limit bytes on each side."""
+    return max(_diff_spans(before, after)) <= limit
+
+
 def _gen_uuid() -> str:
     return str(_uuid.uuid4())
 

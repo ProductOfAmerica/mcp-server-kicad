@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
+from mcp_server_kicad._cst import _fill_at, _node_text, _node_xy, _num, _numish
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -1073,10 +1074,6 @@ _PWR_FLAG_SYM_TPL = _cst.parse(
 ).lists[0]
 
 
-def _num(v: float) -> str:
-    return str(int(v)) if v == int(v) else str(v)
-
-
 def _page_size_cst(root) -> tuple[float, float, str]:
     """(width, height, page name) from a CST schematic root; mirrors _get_page_size."""
     paper = root.find("paper")
@@ -1128,29 +1125,6 @@ def _splice_sch_node(root, token: str, node) -> None:
         root.insert_before(tail, node)
     else:
         root.append_child(node, b"\n")
-
-
-def _fill_at(node, x: float, y: float, rotation: float | None = None) -> None:
-    at = node.find("at")
-    at.atoms[1].set_text(_num(x))
-    at.atoms[2].set_text(_num(y))
-    if rotation is not None:
-        at.atoms[3].set_text(_num(rotation))
-
-
-def _numish(s: str) -> float | int:
-    """Numeric text as int when whole, else float: mirrors kiutils' repr in prints."""
-    v = float(s)
-    return int(v) if v == int(v) else v
-
-
-def _node_text(node) -> str:
-    return node.atoms[1].text
-
-
-def _node_xy(node) -> tuple[float, float]:
-    at = node.find("at")
-    return float(at.atoms[1].text), float(at.atoms[2].text)
 
 
 def _wire_xys(node) -> list[tuple[float, float]]:
