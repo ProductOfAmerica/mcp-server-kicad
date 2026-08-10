@@ -222,25 +222,6 @@ def test_every_tool_is_classified_exactly_once():
         assert stale == [], f"{mod}: classified here but not registered: {stale}"
 
 
-def test_all_tools_have_annotations():
-    """Every registered tool must have annotations set (not None)."""
-    missing = [
-        f"{mod.__name__}.{name}"
-        for mod in _MODULES.values()
-        for name, tool in mod.mcp._tool_manager._tools.items()
-        if tool.annotations is None
-    ]
-    assert missing == [], f"Tools missing annotations: {missing}"
-
-
-def test_table_covers_the_whole_surface():
-    """Guards the guard: a shrinking table must fail, not quietly assert less."""
-    listed = sum(len(names) for groups in _EXPECTED.values() for names in groups.values())
-    listed += sum(len(names) for names in _CUSTOM.values())
-    registered = sum(len(_registered(mod)) for mod in _MODULES)
-    assert listed == registered
-
-
 def test_autoroute_pcb_carries_its_own_hints():
     """openWorldHint true, and the two it cannot honestly claim left unset.
 

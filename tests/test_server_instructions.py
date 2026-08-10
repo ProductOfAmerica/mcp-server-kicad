@@ -10,18 +10,11 @@ import re
 
 from mcp_server_kicad import footprint, pcb, project, schematic, server, symbol
 
-# Servers whose instructions are checked. The unified server names no tools of
-# its own today; it is included so that stays true.
-_SERVERS = {
-    "footprint": footprint.mcp,
-    "pcb": pcb.mcp,
-    "project": project.mcp,
-    "schematic": schematic.mcp,
-    "symbol": symbol.mcp,
-    "unified": server.mcp,
-}
-
 _TOOL_MODULES = [footprint, pcb, project, schematic, symbol]
+
+# The unified server registers no tools of its own until main() runs, and names
+# none in its instructions; it is checked so that stays true.
+_SERVER_MODULES = [*_TOOL_MODULES, server]
 
 # snake_case tokens that are deliberately not tool names: file extensions the
 # rules tell the model never to touch, and tool parameters named in prose.
@@ -55,7 +48,7 @@ def _unresolved(instructions: str, tools: set[str]) -> list[str]:
 
 def test_instructions_name_only_real_tools():
     tools = _registered_tools()
-    bad = {name: _unresolved(mcp.instructions or "", tools) for name, mcp in _SERVERS.items()}
+    bad = {m.__name__: _unresolved(m.mcp.instructions or "", tools) for m in _SERVER_MODULES}
     bad = {name: tokens for name, tokens in bad.items() if tokens}
     assert bad == {}, (
         "instructions mention names that are not registered tools "
