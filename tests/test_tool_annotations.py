@@ -135,7 +135,6 @@ _EXPECTED: dict[str, dict[str, list[str]]] = {
             "export_3d",
             "export_positions",
             "export_ipc2581",
-            "autoroute_pcb",
         ],
     },
     "project": {
@@ -172,6 +171,14 @@ _EXPECTED: dict[str, dict[str, list[str]]] = {
 }
 
 
+# Tools whose behavior fits no preset, so they carry their own ToolAnnotations.
+# They are still classified: completeness counts them, and each has a test
+# asserting its fields one by one.
+_CUSTOM: dict[str, list[str]] = {
+    "pcb": ["autoroute_pcb"],
+}
+
+
 def _expected_pairs() -> list[tuple[str, str, str]]:
     """(module, preset, tool) for every entry in the table."""
     return [
@@ -198,6 +205,7 @@ def test_every_tool_is_classified_exactly_once():
     """No tool may be missing from the table, and none may appear twice."""
     for mod in _MODULES:
         listed = [n for names in _EXPECTED[mod].values() for n in names]
+        listed += _CUSTOM.get(mod, [])
         dupes = sorted({n for n in listed if listed.count(n) > 1})
         assert dupes == [], f"{mod}: listed under more than one preset: {dupes}"
 
@@ -222,8 +230,27 @@ def test_all_tools_have_annotations():
 def test_table_covers_the_whole_surface():
     """Guards the guard: a shrinking table must fail, not quietly assert less."""
     listed = sum(len(names) for groups in _EXPECTED.values() for names in groups.values())
+    listed += sum(len(names) for names in _CUSTOM.values())
     registered = sum(len(_registered(mod)) for mod in _MODULES)
     assert listed == registered
+
+
+def test_autoroute_pcb_carries_its_own_hints():
+    """openWorldHint true, and the two it cannot honestly claim left unset.
+
+    Asserting `is None` rather than `is False` is the point: an unset hint
+    falls back to the spec default, and for a tool that rewrites its output
+    file and runs a heuristic router those defaults (destructive true,
+    idempotent false) are the accurate readings. Writing False here would be a
+    claim the tool cannot support, which is what carrying _EXPORT did.
+    """
+    annotations = pcb.mcp._tool_manager._tools["autoroute_pcb"].annotations
+    assert annotations is not None
+    assert annotations.openWorldHint is True
+    assert annotations.readOnlyHint is False
+    assert annotations.destructiveHint is None
+    assert annotations.idempotentHint is None
+    assert annotations != _EXPORT
 
 
 def test_read_only_tools_do_not_write_output_files():

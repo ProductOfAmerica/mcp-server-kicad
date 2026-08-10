@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import ToolAnnotations
 
 import mcp_server_kicad._cst as _cst
 from mcp_server_kicad._cst import _fill_at, _num, _numish
@@ -2135,7 +2136,23 @@ def _fix_displaced_fp_text(pcb_path: str) -> int:
     return fixed
 
 
-@mcp.tool(annotations=_EXPORT)
+# autoroute_pcb fits no preset, so it carries its own hints.
+#
+# openWorldHint is true because _ensure_jar reaches api.github.com for the
+# latest Freerouting release, downloads that JAR, and then runs it. A client
+# using the hint to decide whether a tool may run offline or without egress
+# approval has to be told the truth about that.
+#
+# destructiveHint and idempotentHint are deliberately left unset rather than
+# asserted. The spec defaults are true and false respectively, which are both
+# the accurate readings here: the tool rewrites <stem>_routed.kicad_pcb and a
+# _routed-drc.json beside it, and Freerouting is a heuristic router steered by
+# max_passes and num_threads, so two runs with the same arguments need not
+# agree. An unset hint beats a wrongly asserted one.
+_AUTOROUTE = ToolAnnotations(readOnlyHint=False, openWorldHint=True)
+
+
+@mcp.tool(annotations=_AUTOROUTE)
 def autoroute_pcb(
     pcb_path: str = PCB_PATH,
     max_passes: int = 20,
