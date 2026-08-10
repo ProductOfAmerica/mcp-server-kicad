@@ -209,19 +209,6 @@ class TestAutoroutePcb:
                         )
 
 
-class TestFindNet:
-    def test_finds_existing_net(self, scratch_pcb):
-        board = Board.from_file(str(scratch_pcb))
-        net_num, net_name = pcb._find_net(board, "Net1")
-        assert net_num == 1
-        assert net_name == "Net1"
-
-    def test_raises_for_missing_net(self, scratch_pcb):
-        board = Board.from_file(str(scratch_pcb))
-        with pytest.raises(ValueError, match="not found"):
-            pcb._find_net(board, "NonExistent")
-
-
 def _board_with_traces(scratch_pcb):
     """Add several traces on different nets/layers for filter testing."""
     board = Board.from_file(str(scratch_pcb))
@@ -275,7 +262,7 @@ class TestAddCopperZone:
         )
         board = Board.from_file(str(scratch_pcb))
         zone = board.zones[0]
-        assert zone.connectPads == "full"
+        assert zone.connectPads == "yes"  # measured: native solid connect token
 
     def test_fewer_than_3_corners(self, scratch_pcb):
         with pytest.raises(ToolError):

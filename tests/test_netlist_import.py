@@ -278,6 +278,44 @@ class TestUpdatePcbE2E:
         assert result.stale_removed == ["R99"]
         assert not any(f.reference == "R99" for f in list_pcb_footprints(pcb_path=pcb_path))
 
+    def test_zone_fill_acceptance(self, tmp_path):
+        """Copper zone, keepout and thermal vias spliced by the CST writers,
+        then pcbnew's ZONE_FILLER loads, fills and rewrites the board: the
+        live acceptance oracle for the zone dialect on both majors."""
+        from mcp_server_kicad.pcb import (
+            add_copper_zone,
+            add_keepout_zone,
+            add_thermal_vias,
+            fill_zones,
+            list_pcb_traces,
+            list_pcb_zones,
+            update_pcb_from_schematic,
+        )
+
+        sch, pcb_path = _make_project(tmp_path)
+        update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
+        add_copper_zone(
+            "/GND",
+            "F.Cu",
+            [{"x": 80, "y": 60}, {"x": 150, "y": 60}, {"x": 150, "y": 100}, {"x": 80, "y": 100}],
+            pcb_path=pcb_path,
+        )
+        add_keepout_zone(
+            [{"x": 160, "y": 60}, {"x": 180, "y": 60}, {"x": 180, "y": 80}],
+            pcb_path=pcb_path,
+        )
+        add_thermal_vias("R1", pad_number="2", rows=2, cols=2, pcb_path=pcb_path)
+
+        result = fill_zones(pcb_path=pcb_path)
+        assert result.status == "ok"
+        assert result.zones_filled == 2
+
+        zones = list_pcb_zones(pcb_path=pcb_path)
+        assert any(z.net_name == "/GND" and not z.is_keepout for z in zones)
+        assert any(z.is_keepout for z in zones)
+        vias = [t for t in list_pcb_traces(pcb_path=pcb_path) if t.type == "via"]
+        assert len(vias) == 4
+
     def test_add_trace_net_binding_survives_reimport(self, tmp_path):
         """Live trap-#1 gate: on the KiCad 10 runner the imported board is
         K10-format, so add_trace/add_via must emit the name-based net

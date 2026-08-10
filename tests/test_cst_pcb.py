@@ -468,6 +468,83 @@ class TestTraceFiltersCst:
             pcb.remove_traces(pcb_path=str(scratch_pcb))
 
 
+class TestZoneWritersCst:
+    _CORNERS = [{"x": 10, "y": 10}, {"x": 40, "y": 10}, {"x": 40, "y": 40}, {"x": 10, "y": 40}]
+
+    def test_copper_k9_bytes(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.add_copper_zone("Net1", "F.Cu", self._CORNERS, priority=1, pcb_path=p)
+        assert (result.net, result.layer, result.corners) == ("Net1", "F.Cu", 4)
+        after = Path(p).read_bytes()
+        assert _pure_insertion(before, after)
+        i = after.index(b"(zone")
+        span = after[i : i + 700]
+        assert b"(net 1)" in span
+        assert b'(net_name "Net1")' in span
+        assert b"(priority 1)" in span
+        zones = pcb.list_pcb_zones(p)
+        assert [(z.net_name, z.layers, z.priority, z.is_keepout) for z in zones] == [
+            ("Net1", ["F.Cu"], 1, False)
+        ]
+        assert len(zones[0].polygon) == 4
+
+    def test_copper_solid_connect(self, scratch_pcb):
+        p = str(scratch_pcb)
+        pcb.add_copper_zone("Net1", "F.Cu", self._CORNERS, thermal_relief=False, pcb_path=p)
+        after = Path(p).read_bytes()
+        assert b"(connect_pads yes" in after
+        zone = next(z for z in Board.from_file(p).zones)
+        assert zone.connectPads == "yes"
+
+    def test_copper_k10_named(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        pcb.add_copper_zone("/GND", "F.Cu", self._CORNERS, pcb_path=p)
+        after = Path(p).read_bytes()
+        assert _pure_insertion(before, after)
+        i = after.index(b"(zone")
+        span = after[i : i + 700]
+        assert b'(net "/GND")' in span
+        assert b"net_name" not in span
+        assert b"filled_areas_thickness" not in span
+        zones = pcb.list_pcb_zones(p)
+        assert [(z.net_name, z.is_keepout) for z in zones] == [("/GND", False)]
+
+    def test_copper_k10_unknown_net_refuses_untouched(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        with pytest.raises(ToolError, match="Net 'Nope' not found"):
+            pcb.add_copper_zone("Nope", "F.Cu", self._CORNERS, pcb_path=p)
+        assert Path(p).read_bytes() == before
+
+    def test_keepout_k9_bytes(self, scratch_pcb):
+        p = str(scratch_pcb)
+        before = Path(p).read_bytes()
+        result = pcb.add_keepout_zone(self._CORNERS[:3], no_tracks=False, no_vias=True, pcb_path=p)
+        assert result.corners == 3
+        assert result.restrictions["tracks"] == "allowed"
+        assert result.restrictions["vias"] == "not_allowed"
+        after = Path(p).read_bytes()
+        assert _pure_insertion(before, after)
+        i = after.index(b"(keepout")
+        span = after[i : i + 250]
+        assert b"(tracks allowed)" in span and b"(vias not_allowed)" in span
+        kz = next(z for z in pcb.list_pcb_zones(p) if z.is_keepout)
+        assert kz.keepout["tracks"] == "allowed"
+
+    def test_keepout_k10_drops_net_tokens(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        pcb.add_keepout_zone(self._CORNERS, pcb_path=p)
+        after = Path(p).read_bytes()
+        i = after.index(b"(zone")
+        span = after[i : i + 700]
+        assert b"(net " not in span
+        assert b"net_name" not in span
+        kz = next(z for z in pcb.list_pcb_zones(p) if z.is_keepout)
+        assert kz.keepout["footprints"] == "not_allowed"
+
+
 class TestThermalViasCst:
     def test_k9_grid_pure_insertion(self, scratch_pcb):
         p = str(scratch_pcb)

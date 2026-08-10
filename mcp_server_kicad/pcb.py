@@ -11,9 +11,7 @@ from pathlib import Path
 from kiutils.board import Board
 from kiutils.footprint import Footprint
 from kiutils.items.brditems import Segment, Via
-from kiutils.items.common import Position
 from kiutils.items.fpitems import FpText
-from kiutils.items.zones import FillSettings, Hatch, KeepoutSettings, Zone, ZonePolygon
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
@@ -54,7 +52,6 @@ from mcp_server_kicad._shared import (
     _file_meta,
     _fp_ref,
     _gen_uuid,
-    _keepout_restrictions,
     _kicad_root,
     _linearize_arc,
     _load_board,
@@ -120,15 +117,6 @@ mcp = FastMCP(
 # ---------------------------------------------------------------------------
 # Internal helpers
 # ---------------------------------------------------------------------------
-
-
-def _find_net(board, net_name: str) -> tuple[int, str]:
-    """Return (net_number, net_name) for a named net, or raise ValueError."""
-    for n in board.nets:
-        if n.name == net_name:
-            return n.number, n.name
-    available = [n.name for n in board.nets if n.name]
-    raise ValueError(f"Net {net_name!r} not found. Available nets: {available}")
 
 
 def _find_fp(board: Board, reference: str) -> Footprint:
@@ -486,6 +474,54 @@ def _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max) -> l
     return result
 
 
+# Zone templates follow the measured native shapes: KiCad 9 solid connect is
+# "(connect_pads yes ...)" (measured locally via pcbnew 9, kiutils' "full" is
+# wrong); the KiCad 10 dialect (slice-14 probe) drops net_name and
+# filled_areas_thickness and uses name-only (net "NAME").
+_COPPER_ZONE_TPL = _cst.parse(
+    b'(zone\n\t\t(net 0)\n\t\t(net_name "x")\n\t\t(layer "F.Cu")\n\t\t(uuid "x")'
+    b"\n\t\t(hatch edge 0.5)\n\t\t(priority 0)"
+    b"\n\t\t(connect_pads\n\t\t\t(clearance 0.5)\n\t\t)"
+    b"\n\t\t(min_thickness 0.25)\n\t\t(filled_areas_thickness no)"
+    b"\n\t\t(fill\n\t\t\t(thermal_gap 0.5)\n\t\t\t(thermal_bridge_width 0.5)\n\t\t)"
+    b"\n\t\t(polygon\n\t\t\t(pts\n\t\t\t\t(xy 0 0)\n\t\t\t)\n\t\t)\n\t)"
+).lists[0]
+
+_KEEPOUT_ZONE_TPL = _cst.parse(
+    b'(zone\n\t\t(net 0)\n\t\t(net_name "")\n\t\t(layers "F.Cu" "B.Cu")\n\t\t(uuid "x")'
+    b"\n\t\t(hatch edge 0.5)"
+    b"\n\t\t(connect_pads\n\t\t\t(clearance 0)\n\t\t)"
+    b"\n\t\t(min_thickness 0.25)"
+    b"\n\t\t(keepout\n\t\t\t(tracks not_allowed)\n\t\t\t(vias not_allowed)"
+    b"\n\t\t\t(pads not_allowed)"
+    b"\n\t\t\t(copperpour not_allowed)\n\t\t\t(footprints not_allowed)\n\t\t)"
+    b"\n\t\t(polygon\n\t\t\t(pts\n\t\t\t\t(xy 0 0)\n\t\t\t)\n\t\t)\n\t)"
+).lists[0]
+
+
+def _fill_zone_polygon(node, corners: list[dict]) -> None:
+    """Fill the template's single (xy) with corner 0 and clone the rest inline."""
+    pts = node.find("polygon").find("pts")
+    first = pts.find("xy")
+    first.atoms[1].set_text(_num(corners[0]["x"]))
+    first.atoms[2].set_text(_num(corners[0]["y"]))
+    anchor = first
+    for c in corners[1:]:
+        xy = first.copy()
+        xy.atoms[1].set_text(_num(c["x"]))
+        xy.atoms[2].set_text(_num(c["y"]))
+        pts.insert_after(anchor, xy, sep=b" ")
+        anchor = xy
+
+
+def _splice_pcb_zone(root, node) -> None:
+    anchors = [c for c in root.lists if c.head == "zone"]
+    if anchors:
+        root.insert_after(anchors[-1], node)
+    else:
+        _splice_pcb_node(root, node)
+
+
 _GR_TEXT_TPL = _cst.parse(
     b'(gr_text "x"\n\t\t(at 0 0 0)\n\t\t(layer "F.SilkS")\n\t\t(uuid "x")'
     b"\n\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t)\n\t)"
@@ -614,11 +650,18 @@ def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
                 for p in poly.find("pts").find_all("xy")
             ]
         net_name = z.find("net_name")
+        if net_name is not None:
+            zone_net = net_name.atoms[1].text
+        else:
+            # K10 zones carry name-only (net "NAME") and no net_name child.
+            znet = z.find("net")
+            t = znet.atoms[1].text if znet is not None and len(znet.atoms) > 1 else ""
+            zone_net = t if t and not t.lstrip("-").isdigit() else ""
         layers_node = z.find("layers") or z.find("layer")
         priority = z.find("priority")
         items.append(
             ZoneItem(
-                net_name=net_name.atoms[1].text if net_name is not None else "",
+                net_name=zone_net,
                 layers=[a.text for a in layers_node.atoms[1:]] if layers_node is not None else [],
                 priority=int(priority.atoms[1].text) if priority is not None else 0,
                 is_keepout=ko is not None,
@@ -1055,30 +1098,34 @@ def add_copper_zone(
     """
     if len(corners) < 3:
         raise ToolError("At least 3 corners required for a zone polygon.")
-    board = _load_board(pcb_path)
-    try:
-        net_num, _ = _find_net(board, net_name)
-    except ValueError as e:
-        raise ToolError(str(e)) from e
-    zone = Zone()
-    zone.net = net_num
-    zone.netName = net_name
-    zone.layers = [layer]
-    zone.priority = priority
-    zone.clearance = clearance
-    zone.minThickness = min_thickness
-    zone.tstamp = _gen_uuid()
-    zone.hatch = Hatch(style="edge", pitch=0.5)
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    net_num = _resolve_net_cst(root, net_name)
+    node = _COPPER_ZONE_TPL.copy()
+    node.find("layer").atoms[1].set_text(layer)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    node.find("priority").atoms[1].set_text(str(priority))
+    cp = node.find("connect_pads")
+    cp.find("clearance").atoms[1].set_text(_num(clearance))
     if not thermal_relief:
-        zone.connectPads = "full"
-    zone.fillSettings = FillSettings(
-        thermalGap=thermal_gap, thermalBridgeWidth=thermal_bridge_width
-    )
-    poly = ZonePolygon()
-    poly.coordinates = [Position(X=c["x"], Y=c["y"]) for c in corners]
-    zone.polygons = [poly]
-    board.zones.append(zone)
-    board.to_file()
+        solid = cp.children[0].copy()
+        solid.sep = b" "
+        solid.set_text("yes")
+        cp.children.insert(1, solid)
+    node.find("min_thickness").atoms[1].set_text(_num(min_thickness))
+    fill = node.find("fill")
+    fill.find("thermal_gap").atoms[1].set_text(_num(thermal_gap))
+    fill.find("thermal_bridge_width").atoms[1].set_text(_num(thermal_bridge_width))
+    _fill_zone_polygon(node, corners)
+    if _board_version(root) <= _FORMAT_VERSION_LIMITS["kicad_pcb"]:
+        node.find("net").atoms[1].set_text(str(net_num))
+        node.find("net_name").atoms[1].set_text(net_name)
+    else:
+        _set_item_net(node, root, net_num)
+        node.remove_child(node.find("net_name"))
+        node.remove_child(node.find("filled_areas_thickness"))
+    _splice_pcb_zone(root, node)
+    Path(key).write_bytes(_cst.serialize(tree))
     return ZoneResult(net=net_name, layer=layer, corners=len(corners), clearance_mm=clearance)
 
 
@@ -1107,29 +1154,40 @@ def add_keepout_zone(
     """
     if len(corners) < 3:
         raise ToolError("At least 3 corners required for a zone polygon.")
-    board = _load_board(pcb_path)
-    zone = Zone()
-    zone.net = 0
-    zone.netName = ""
-    zone.layers = layers or ["F.Cu", "B.Cu"]
-    zone.tstamp = _gen_uuid()
-    zone.hatch = Hatch(style="edge", pitch=0.5)
-    zone.keepoutSettings = KeepoutSettings(
-        tracks="not_allowed" if no_tracks else "allowed",
-        vias="not_allowed" if no_vias else "allowed",
-        pads="not_allowed" if no_pads else "allowed",
-        copperpour="not_allowed" if no_copper_pour else "allowed",
-        footprints="not_allowed" if no_footprints else "allowed",
-    )
-    poly = ZonePolygon()
-    poly.coordinates = [Position(X=c["x"], Y=c["y"]) for c in corners]
-    zone.polygons = [poly]
-    board.zones.append(zone)
-    board.to_file()
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    zone_layers = layers or ["F.Cu", "B.Cu"]
+    node = _KEEPOUT_ZONE_TPL.copy()
+    layers_node = node.find("layers")
+    tpl_atom = layers_node.atoms[1]
+    del layers_node.children[1:]
+    for name in zone_layers:
+        a = tpl_atom.copy()
+        a.sep = b" "
+        a.set_text(name)
+        layers_node.children.append(a)
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    restrictions = {
+        "tracks": "not_allowed" if no_tracks else "allowed",
+        "vias": "not_allowed" if no_vias else "allowed",
+        "pads": "not_allowed" if no_pads else "allowed",
+        "copperpour": "not_allowed" if no_copper_pour else "allowed",
+        "footprints": "not_allowed" if no_footprints else "allowed",
+    }
+    ko = node.find("keepout")
+    for k, v in restrictions.items():
+        ko.find(k).atoms[1].set_text(v)
+    _fill_zone_polygon(node, corners)
+    if _board_version(root) > _FORMAT_VERSION_LIMITS["kicad_pcb"]:
+        # Measured K10 rule areas carry no net tokens at all.
+        node.remove_child(node.find("net"))
+        node.remove_child(node.find("net_name"))
+    _splice_pcb_zone(root, node)
+    Path(key).write_bytes(_cst.serialize(tree))
     return KeepoutZoneResult(
         corners=len(corners),
-        layers=zone.layers,
-        restrictions=_keepout_restrictions(zone.keepoutSettings),
+        layers=zone_layers,
+        restrictions=restrictions,
     )
 
 
