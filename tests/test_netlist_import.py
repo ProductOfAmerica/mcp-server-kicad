@@ -278,6 +278,39 @@ class TestUpdatePcbE2E:
         assert result.stale_removed == ["R99"]
         assert not any(f.reference == "R99" for f in list_pcb_footprints(pcb_path=pcb_path))
 
+    def test_geometry_trio_on_imported_board(self, tmp_path):
+        """The geometry reads answer on a board pcbnew itself wrote, with real
+        stock footprints supplying the courtyards. On the KiCad 10 runner this
+        is the whole point of the slice: the kiutils path refused the file."""
+        from mcp_server_kicad.pcb import (
+            check_placement,
+            get_footprint_bounds,
+            update_pcb_from_schematic,
+            validate_board,
+        )
+
+        sch, pcb_path = _make_project(tmp_path)
+        update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
+
+        # No Edge.Cuts on an imported board, so board_edge_checked is False
+        # and every footprint is clean.
+        validation = validate_board(pcb_path=pcb_path)
+        assert validation.total_footprints == 2
+        assert validation.violations == []
+        assert validation.status == "ok"
+
+        bounds = get_footprint_bounds("R1", pcb_path=pcb_path)
+        assert bounds.layer == "F.Cu"
+        assert bounds.courtyard is not None
+        assert bounds.courtyard["width"] > 0
+        assert bounds.courtyard["height"] > 0
+
+        placement = check_placement(
+            "R1", bounds.position["x"], bounds.position["y"], pcb_path=pcb_path
+        )
+        assert placement.status == "ok"
+        assert placement.keepout_violations == []
+
     def test_zone_fill_acceptance(self, tmp_path):
         """Copper zone, keepout and thermal vias spliced by the CST writers,
         then pcbnew's ZONE_FILLER loads, fills and rewrites the board: the
