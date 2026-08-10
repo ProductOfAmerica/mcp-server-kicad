@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import subprocess
 import tempfile
@@ -45,8 +44,10 @@ from mcp_server_kicad._shared import (
     PCB_PATH,
     SCH_PATH,
     _chain_edge_polygon,
+    _courtyard_bbox_cst,
     _file_meta,
     _gen_uuid,
+    _keepout_dict,
     _kicad_root,
     _linearize_arc,
     _load_board,
@@ -55,6 +56,7 @@ from mcp_server_kicad._shared import (
     _resolve_root,
     _run_cli,
     _transform_local_to_board,
+    _xy,
     build_server,
 )
 from mcp_server_kicad.models import (
@@ -321,11 +323,6 @@ def _edge_polygon_cst(root) -> list[tuple[float, float]] | None:
     return _chain_edge_polygon(segments)
 
 
-def _xy(node) -> tuple[float, float]:
-    """The two coordinates of a node like (start x y), (center x y) or (xy x y)."""
-    return float(node.atoms[1].text), float(node.atoms[2].text)
-
-
 def _zone_forbids_footprints(zone, x: float, y: float, layer: str, pts) -> bool:
     ko = zone.find("keepout")
     if ko is None:
@@ -344,26 +341,6 @@ def _zone_pts(zone):
     if poly is None:
         return []
     return [(round(x, 3), round(y, 3)) for x, y in map(_xy, poly.find("pts").find_all("xy"))]
-
-
-# kiutils KeepoutSettings defaults, used when a (keepout) child is absent.
-_KEEPOUT_DEFAULTS = {
-    "tracks": "allowed",
-    "vias": "allowed",
-    "pads": "allowed",
-    "copperpour": "not-allowed",
-    "footprints": "not-allowed",
-}
-
-
-def _keepout_dict(ko) -> dict[str, str]:
-    """Restriction values of a (keepout ...) node, defaults filling the gaps."""
-    out = dict(_KEEPOUT_DEFAULTS)
-    for k in out:
-        child = ko.find(k)
-        if child is not None:
-            out[k] = child.atoms[1].text
-    return out
 
 
 def _keepout_violations_cst(root, x: float, y: float, layer: str) -> list[dict]:
@@ -401,61 +378,6 @@ def _keepout_violations_cst(root, x: float, y: float, layer: str) -> list[dict]:
             }
         )
     return violations
-
-
-def _courtyard_bbox_cst(fp) -> dict | None:
-    """CST twin of _shared._courtyard_bbox: courtyard bbox in footprint-local mm.
-
-    Points are grouped by layer and the bbox comes from F.CrtYd, else
-    B.CrtYd, else the first courtyard layer seen. Unrounded, like the
-    kiutils original.
-    """
-    layer_points: dict[str, list[tuple[float, float]]] = {}
-
-    for item in fp.lists:
-        pts: list[tuple[float, float]] = []
-        if item.head in ("fp_line", "fp_rect"):
-            # A rect contributes its 2 stored corners, kiutils parity.
-            pts = [_xy(item.find("start")), _xy(item.find("end"))]
-        elif item.head == "fp_circle":
-            cx, cy = _xy(item.find("center"))
-            ex, ey = _xy(item.find("end"))
-            radius = math.hypot(ex - cx, ey - cy)
-            pts = [(cx - radius, cy - radius), (cx + radius, cy + radius)]
-        elif item.head == "fp_arc":
-            pts = _linearize_arc(
-                *_xy(item.find("start")), *_xy(item.find("mid")), *_xy(item.find("end"))
-            )
-        elif item.head == "fp_poly":
-            poly_pts = item.find("pts")
-            pts = [_xy(p) for p in poly_pts.find_all("xy")] if poly_pts is not None else []
-        else:
-            continue
-
-        layer = item.find("layer")
-        if layer is None or not layer.atoms[1].text.endswith(".CrtYd") or not pts:
-            continue
-        layer_points.setdefault(layer.atoms[1].text, []).extend(pts)
-
-    if not layer_points:
-        return None
-
-    preferred = ("F.CrtYd", "B.CrtYd")
-    chosen_layer = next((p for p in preferred if p in layer_points), next(iter(layer_points)))
-
-    xs = [p[0] for p in layer_points[chosen_layer]]
-    ys = [p[1] for p in layer_points[chosen_layer]]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    return {
-        "layer": chosen_layer,
-        "min_x": min_x,
-        "min_y": min_y,
-        "max_x": max_x,
-        "max_y": max_y,
-        "width": max_x - min_x,
-        "height": max_y - min_y,
-    }
 
 
 _FOOTPRINT_TPL = _cst.parse(

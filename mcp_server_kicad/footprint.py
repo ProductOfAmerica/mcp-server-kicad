@@ -3,17 +3,18 @@
 import os
 from pathlib import Path
 
-from kiutils.footprint import Footprint
-from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpText
+from mcp.server.fastmcp.exceptions import ToolError
 
+import mcp_server_kicad._cst as _cst
+from mcp_server_kicad._cst import _numish
 from mcp_server_kicad._shared import (
     _DESTRUCTIVE,
     _EXPORT,
     _READ_ONLY,
     FP_LIB_PATH,
     OUTPUT_DIR,
-    _check_format_version,
-    _courtyard_bbox,
+    _courtyard_bbox_cst,
+    _keepout_dict,
     _run_cli,
     build_server,
 )
@@ -33,6 +34,34 @@ mcp = build_server(
         " inspect. Do NOT grep inside .pretty directories."
     ),
 )
+
+
+# ── CST substrate ─────────────────────────────────────────────────
+
+# Graphic heads the summary counts, and the noun each prints as. fp_text and
+# the KiCad 9 (property ...) fields are absent on purpose: they were never
+# counted.
+_GRAPHIC_NAMES = {
+    "fp_line": "line",
+    "fp_rect": "rect",
+    "fp_circle": "circle",
+    "fp_arc": "arc",
+    "fp_poly": "poly",
+}
+
+
+def _open_footprint(footprint_path: str):
+    """Root node of a .kicad_mod, which IS the footprint node. Guard-free."""
+    tree = _cst.parse(Path(footprint_path).read_bytes())
+    root = tree.lists[0] if tree.lists else None
+    if root is None or root.head != "footprint":
+        raise ToolError(f"{footprint_path} is not a KiCad footprint.")
+    return root
+
+
+def _layer_list(node) -> list[str]:
+    """Layer names of a (layers ...) or (layer ...) node, quoted or bare."""
+    return [a.text for a in node.atoms[1:]] if node is not None else []
 
 
 # ── Library browsing ──────────────────────────────────────────────
@@ -62,19 +91,21 @@ def get_footprint_info(footprint_path: str) -> str:
     Args:
         footprint_path: Path to .kicad_mod file
     """
-    _check_format_version(footprint_path)
-    fp = Footprint.from_file(footprint_path)
-    lines = [f"Footprint: {fp.entryName}"]
-    lines.append(f"  Layer: {fp.layer}")
-    for pad in fp.pads:
+    fp = _open_footprint(footprint_path)
+    layer = fp.find("layer")
+    lines = [f"Footprint: {fp.atoms[1].text}"]
+    lines.append(f"  Layer: {layer.atoms[1].text if layer is not None else 'F.Cu'}")
+    for pad in fp.find_all("pad"):
+        at, size, layers = pad.find("at"), pad.find("size"), pad.find("layers")
         lines.append(
-            f"  Pad {pad.number}: {pad.type} {pad.shape} "
-            f"@ ({pad.position.X}, {pad.position.Y}) "
-            f"size=({pad.size.X}, {pad.size.Y}) layers={pad.layers}"
+            f"  Pad {pad.atoms[1].text}: {pad.atoms[2].text} {pad.atoms[3].text} "
+            f"@ ({_numish(at.atoms[1].text)}, {_numish(at.atoms[2].text)}) "
+            f"size=({_numish(size.atoms[1].text)}, {_numish(size.atoms[2].text)}) "
+            f"layers={_layer_list(layers)}"
         )
 
     # Courtyard bounding box
-    crtyd = _courtyard_bbox(fp)
+    crtyd = _courtyard_bbox_cst(fp)
     if crtyd is not None:
         lines.append(
             f"  Courtyard: {crtyd['layer']} {crtyd['width']:.1f} x {crtyd['height']:.1f} mm "
@@ -83,40 +114,38 @@ def get_footprint_info(footprint_path: str) -> str:
         )
 
     # Keep-out zones
-    for zone in fp.zones:
-        if zone.keepoutSettings is None:
+    for zone in fp.find_all("zone"):
+        ko = zone.find("keepout")
+        if ko is None:
             continue
-        ks = zone.keepoutSettings
-        layer_str = ", ".join(zone.layers) if zone.layers else "none"
+        ks = _keepout_dict(ko)
+        zone_layers = _layer_list(zone.find("layers") or zone.find("layer"))
+        layer_str = ", ".join(zone_layers) if zone_layers else "none"
         lines.append(
             f"  Keep-out zone: layers=[{layer_str}] "
-            f"footprints={ks.footprints} tracks={ks.tracks} "
-            f"vias={ks.vias} pads={ks.pads} copperpour={ks.copperpour}"
+            f"footprints={ks['footprints']} tracks={ks['tracks']} "
+            f"vias={ks['vias']} pads={ks['pads']} copperpour={ks['copperpour']}"
         )
-        if zone.polygons:
-            coords = [(round(c.X, 3), round(c.Y, 3)) for c in zone.polygons[0].coordinates]
+        polygon = zone.find("polygon")
+        if polygon is not None:
+            pts = polygon.find("pts")
+            coords = [
+                (round(_numish(p.atoms[1].text), 3), round(_numish(p.atoms[2].text), 3))
+                for p in (pts.find_all("xy") if pts is not None else [])
+            ]
             lines.append(f"    polygon: {coords}")
 
-    # Graphics summary — group non-CrtYd, non-FpText items by layer
-    type_names = {
-        FpLine: "line",
-        FpRect: "rect",
-        FpCircle: "circle",
-        FpArc: "arc",
-        FpPoly: "poly",
-    }
+    # Graphics summary — group non-CrtYd, non-text items by layer
     layer_counts: dict[str, dict[str, int]] = {}
-    for item in fp.graphicItems:
-        if isinstance(item, FpText):
+    for item in fp.lists:
+        name = _GRAPHIC_NAMES.get(item.head)
+        if name is None:
             continue
-        item_layer: str | None = getattr(item, "layer", None)
-        if item_layer is None or item_layer.endswith(".CrtYd"):
+        item_layer = item.find("layer")
+        if item_layer is None or item_layer.atoms[1].text.endswith(".CrtYd"):
             continue
-        for cls, name in type_names.items():
-            if isinstance(item, cls):
-                counts = layer_counts.setdefault(item_layer, {})
-                counts[name] = counts.get(name, 0) + 1
-                break
+        counts = layer_counts.setdefault(item_layer.atoms[1].text, {})
+        counts[name] = counts.get(name, 0) + 1
 
     if layer_counts:
         parts: list[str] = []
