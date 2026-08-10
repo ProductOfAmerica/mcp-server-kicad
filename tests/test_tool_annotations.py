@@ -1,247 +1,219 @@
-"""Verify every MCP tool has correct ToolAnnotations."""
+"""Every MCP tool's ToolAnnotations, pinned exhaustively.
+
+One table, every registered tool in it exactly once. The completeness test is
+the point: the previous version of this file asserted on 92 of 109 tools, and
+the 17 with no expectation were where wrong annotations sat unnoticed.
+
+Annotations drive the client's approval gate, so a wrong one is not cosmetic:
+readOnlyHint says the tool does not modify its environment, destructiveHint
+false says it performs only additive updates, and a client is entitled to skip
+confirmation on that basis.
+"""
 
 import pytest
 
 from mcp_server_kicad import footprint, pcb, project, schematic, symbol
 from mcp_server_kicad._shared import _ADDITIVE, _DESTRUCTIVE, _EXPORT, _READ_ONLY
 
+_MODULES = {
+    "symbol": symbol,
+    "schematic": schematic,
+    "pcb": pcb,
+    "footprint": footprint,
+    "project": project,
+}
 
-def _get_annotations(module, tool_name):
-    """Get ToolAnnotations for a tool from a server module's mcp instance."""
-    tool = module.mcp._tool_manager._tools[tool_name]
-    return tool.annotations
+_PRESETS = {
+    "read_only": _READ_ONLY,
+    "additive": _ADDITIVE,
+    "destructive": _DESTRUCTIVE,
+    "export": _EXPORT,
+}
 
-
-# -- symbol.py --
-
-
-@pytest.mark.parametrize("tool_name", ["list_lib_symbols", "get_symbol_info"])
-def test_symbol_read_only(tool_name):
-    assert _get_annotations(symbol, tool_name) == _READ_ONLY
-
-
-@pytest.mark.parametrize("tool_name", ["add_symbol"])
-def test_symbol_additive(tool_name):
-    assert _get_annotations(symbol, tool_name) == _ADDITIVE
-
-
-@pytest.mark.parametrize("tool_name", ["export_symbol_svg"])
-def test_symbol_export(tool_name):
-    assert _get_annotations(symbol, tool_name) == _EXPORT
-
-
-@pytest.mark.parametrize("tool_name", ["upgrade_symbol_lib"])
-def test_symbol_destructive(tool_name):
-    assert _get_annotations(symbol, tool_name) == _DESTRUCTIVE
-
-
-# -- schematic.py --
-
-
-@pytest.mark.parametrize(
-    "tool_name",
-    [
-        "get_schematic_summary",
-        "list_schematic_components",
-        "list_schematic_labels",
-        "list_schematic_wires",
-        "list_schematic_global_labels",
-        "list_schematic_hierarchical_labels",
-        "list_schematic_sheets",
-        "list_schematic_junctions",
-        "list_schematic_no_connects",
-        "list_schematic_bus_entries",
-        "get_symbol_pins",
-        "get_pin_positions",
-        "get_net_connections",
-        "list_unconnected_pins",
-    ],
-)
-def test_schematic_read_only(tool_name):
-    assert _get_annotations(schematic, tool_name) == _READ_ONLY
-
-
-@pytest.mark.parametrize(
-    "tool_name",
-    [
-        "place_component",
-        "add_wires",
-        "add_label",
-        "add_junctions",
-        "add_lib_symbol",
-        "move_component",
-        "set_component_property",
-        "add_global_label",
-        "add_power_symbol",
-        "auto_place_decoupling_cap",
-        "add_text",
-        "wire_pins_to_net",
-        "connect_pins",
-        "no_connect_pin",
-        "add_hierarchical_label",
-    ],
-)
-def test_schematic_additive(tool_name):
-    assert _get_annotations(schematic, tool_name) == _ADDITIVE
-
-
-@pytest.mark.parametrize(
-    "tool_name",
-    [
-        "remove_component",
-        "remove_label",
-        "remove_wire",
-        "remove_junction",
-        "remove_no_connect",
-        "remove_text",
-        "remove_hierarchical_label",
-        "modify_hierarchical_label",
-    ],
-)
-def test_schematic_destructive(tool_name):
-    assert _get_annotations(schematic, tool_name) == _DESTRUCTIVE
-
-
-@pytest.mark.parametrize(
-    "tool_name",
-    [
-        "run_erc",
-        "export_schematic",
-        "export_netlist",
-        "export_bom",
-    ],
-)
-def test_schematic_export(tool_name):
-    assert _get_annotations(schematic, tool_name) == _EXPORT
-
-
-# -- pcb.py --
-
-
-@pytest.mark.parametrize(
-    "tool_name",
-    [
-        "list_pcb_footprints",
-        "list_pcb_traces",
-        "list_pcb_nets",
-        "list_pcb_zones",
-        "list_pcb_layers",
-        "list_pcb_graphic_items",
-        "get_board_info",
-        "get_footprint_pads",
-        "get_footprint_bounds",
-        "validate_board",
-        "check_placement",
-    ],
-)
-def test_pcb_read_only(tool_name):
-    assert _get_annotations(pcb, tool_name) == _READ_ONLY
-
-
-@pytest.mark.parametrize(
-    "tool_name",
-    [
-        "place_footprint",
-        "move_footprint",
-        "add_trace",
-        "add_via",
-        "add_pcb_text",
-        "add_pcb_line",
-        "add_copper_zone",
-        "add_keepout_zone",
-        "fill_zones",
-        "set_trace_width",
-        "add_thermal_vias",
-        "set_net_class",
-        "update_pcb_from_schematic",
-    ],
-)
-def test_pcb_additive(tool_name):
-    assert _get_annotations(pcb, tool_name) == _ADDITIVE
+# module -> preset -> tool names. Exhaustive by construction: see
+# test_every_tool_is_classified_exactly_once.
+_EXPECTED: dict[str, dict[str, list[str]]] = {
+    "symbol": {
+        "read_only": ["list_lib_symbols", "get_symbol_info"],
+        "additive": ["add_symbol"],
+        "destructive": ["upgrade_symbol_lib"],
+        "export": ["export_symbol_svg"],
+    },
+    "footprint": {
+        "read_only": ["list_lib_footprints", "get_footprint_info"],
+        "destructive": ["upgrade_footprint_lib"],
+        "export": ["export_footprint_svg"],
+    },
+    "schematic": {
+        "read_only": [
+            "get_schematic_summary",
+            "list_schematic_components",
+            "list_schematic_labels",
+            "list_schematic_wires",
+            "list_schematic_global_labels",
+            "list_schematic_hierarchical_labels",
+            "list_schematic_sheets",
+            "list_schematic_junctions",
+            "list_schematic_no_connects",
+            "list_schematic_bus_entries",
+            "get_symbol_pins",
+            "get_pin_positions",
+            "get_net_connections",
+            "list_unconnected_pins",
+        ],
+        "additive": [
+            "place_component",
+            "add_wires",
+            "add_label",
+            "add_junctions",
+            "add_lib_symbol",
+            "move_component",
+            "set_component_property",
+            "set_page_size",
+            "add_global_label",
+            "add_hierarchical_label",
+            "add_power_symbol",
+            "auto_place_decoupling_cap",
+            "add_text",
+            "wire_pins_to_net",
+            "connect_pins",
+            "no_connect_pin",
+        ],
+        "destructive": [
+            "remove_component",
+            "remove_label",
+            "remove_wire",
+            "remove_junction",
+            "remove_hierarchical_label",
+            "modify_hierarchical_label",
+            "remove_text",
+            "remove_no_connect",
+        ],
+        "export": ["run_erc", "export_schematic", "export_netlist", "export_bom"],
+    },
+    "pcb": {
+        "read_only": [
+            "list_pcb_footprints",
+            "list_pcb_traces",
+            "list_pcb_nets",
+            "list_pcb_zones",
+            "list_pcb_layers",
+            "list_pcb_graphic_items",
+            "get_board_info",
+            "get_footprint_pads",
+            "check_placement",
+            "get_footprint_bounds",
+            "validate_board",
+        ],
+        "additive": [
+            "place_footprint",
+            "move_footprint",
+            "add_trace",
+            "add_via",
+            "add_pcb_text",
+            "add_pcb_line",
+            "add_copper_zone",
+            "add_keepout_zone",
+            "fill_zones",
+            "update_pcb_from_schematic",
+            "set_trace_width",
+            "add_thermal_vias",
+            "set_net_class",
+        ],
+        "destructive": ["remove_footprint", "remove_traces", "remove_dangling_tracks"],
+        "export": [
+            "run_drc",
+            "export_pcb",
+            "export_gerbers",
+            "export_3d",
+            "export_positions",
+            "export_ipc2581",
+            "autoroute_pcb",
+        ],
+    },
+    "project": {
+        "read_only": [
+            "validate_hierarchy",
+            "is_root_schematic",
+            "list_hierarchy",
+            "get_sheet_info",
+            "trace_hierarchical_net",
+            "list_cross_sheet_nets",
+            "get_symbol_instances",
+            "get_version",
+        ],
+        "additive": [
+            "create_project",
+            "create_schematic",
+            "create_symbol_library",
+            "create_sym_lib_table",
+            "add_hierarchical_sheet",
+            "add_sheet_pin",
+            "annotate_schematic",
+            "duplicate_sheet",
+            "flatten_hierarchy",
+        ],
+        "destructive": [
+            "remove_hierarchical_sheet",
+            "modify_hierarchical_sheet",
+            "remove_sheet_pin",
+            "move_hierarchical_sheet",
+            "reorder_sheet_pages",
+        ],
+        "export": ["export_hierarchical_netlist", "run_jobset"],
+    },
+}
 
 
-@pytest.mark.parametrize(
-    "tool_name", ["remove_footprint", "remove_traces", "remove_dangling_tracks"]
-)
-def test_pcb_destructive(tool_name):
-    assert _get_annotations(pcb, tool_name) == _DESTRUCTIVE
+def _expected_pairs() -> list[tuple[str, str, str]]:
+    """(module, preset, tool) for every entry in the table."""
+    return [
+        (mod, preset, name)
+        for mod, groups in _EXPECTED.items()
+        for preset, names in groups.items()
+        for name in names
+    ]
 
 
-@pytest.mark.parametrize(
-    "tool_name",
-    [
-        "run_drc",
-        "export_pcb",
-        "export_gerbers",
-        "export_3d",
-        "export_positions",
-        "export_ipc2581",
-        "autoroute_pcb",
-    ],
-)
-def test_pcb_export(tool_name):
-    assert _get_annotations(pcb, tool_name) == _EXPORT
-
-
-# -- footprint.py --
-
-
-@pytest.mark.parametrize("tool_name", ["list_lib_footprints", "get_footprint_info"])
-def test_footprint_read_only(tool_name):
-    assert _get_annotations(footprint, tool_name) == _READ_ONLY
-
-
-@pytest.mark.parametrize("tool_name", ["export_footprint_svg"])
-def test_footprint_export(tool_name):
-    assert _get_annotations(footprint, tool_name) == _EXPORT
-
-
-@pytest.mark.parametrize("tool_name", ["upgrade_footprint_lib"])
-def test_footprint_destructive(tool_name):
-    assert _get_annotations(footprint, tool_name) == _DESTRUCTIVE
-
-
-# -- project.py --
-
-
-@pytest.mark.parametrize("tool_name", ["get_version"])
-def test_project_read_only(tool_name):
-    assert _get_annotations(project, tool_name) == _READ_ONLY
+def _registered(mod: str) -> set[str]:
+    return set(_MODULES[mod].mcp._tool_manager._tools)
 
 
 @pytest.mark.parametrize(
-    "tool_name",
-    [
-        "create_project",
-        "create_schematic",
-        "create_symbol_library",
-        "create_sym_lib_table",
-        "add_hierarchical_sheet",
-    ],
+    "mod,preset,name", _expected_pairs(), ids=lambda v: v if isinstance(v, str) else str(v)
 )
-def test_project_additive(tool_name):
-    assert _get_annotations(project, tool_name) == _ADDITIVE
+def test_tool_carries_expected_annotations(mod, preset, name):
+    tool = _MODULES[mod].mcp._tool_manager._tools[name]
+    assert tool.annotations == _PRESETS[preset]
 
 
-@pytest.mark.parametrize("tool_name", ["run_jobset"])
-def test_project_export(tool_name):
-    assert _get_annotations(project, tool_name) == _EXPORT
+def test_every_tool_is_classified_exactly_once():
+    """No tool may be missing from the table, and none may appear twice."""
+    for mod in _MODULES:
+        listed = [n for names in _EXPECTED[mod].values() for n in names]
+        dupes = sorted({n for n in listed if listed.count(n) > 1})
+        assert dupes == [], f"{mod}: listed under more than one preset: {dupes}"
 
+        missing = sorted(_registered(mod) - set(listed))
+        assert missing == [], f"{mod}: registered but not classified here: {missing}"
 
-@pytest.mark.parametrize("tool_name", ["remove_hierarchical_sheet"])
-def test_project_destructive(tool_name):
-    assert _get_annotations(project, tool_name) == _DESTRUCTIVE
-
-
-# -- Completeness check --
+        stale = sorted(set(listed) - _registered(mod))
+        assert stale == [], f"{mod}: classified here but not registered: {stale}"
 
 
 def test_all_tools_have_annotations():
     """Every registered tool must have annotations set (not None)."""
-    modules = [symbol, schematic, pcb, footprint, project]
-    missing = []
-    for mod in modules:
-        for name, tool in mod.mcp._tool_manager._tools.items():
-            if tool.annotations is None:
-                missing.append(f"{mod.__name__}.{name}")
+    missing = [
+        f"{mod.__name__}.{name}"
+        for mod in _MODULES.values()
+        for name, tool in mod.mcp._tool_manager._tools.items()
+        if tool.annotations is None
+    ]
     assert missing == [], f"Tools missing annotations: {missing}"
+
+
+def test_table_covers_the_whole_surface():
+    """Guards the guard: a shrinking table must fail, not quietly assert less."""
+    listed = sum(len(names) for groups in _EXPECTED.values() for names in groups.values())
+    registered = sum(len(_registered(mod)) for mod in _MODULES)
+    assert listed == registered
