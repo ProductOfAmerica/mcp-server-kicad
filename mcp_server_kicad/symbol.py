@@ -29,7 +29,7 @@ mcp = build_server(
         "- NEVER read, edit, or write .kicad_sym files directly. Use these"
         " MCP tools for all symbol library operations.\n"
         "- NEVER run kicad-cli commands directly. Use export_symbol_svg and"
-        " upgrade_sym_lib instead.\n"
+        " upgrade_symbol_lib instead.\n"
         "- Use list_lib_symbols to browse, get_symbol_info to inspect pin"
         " details, add_symbol to create new symbols."
         " Do NOT grep inside .kicad_sym files."

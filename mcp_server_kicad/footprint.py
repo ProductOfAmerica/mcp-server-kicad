@@ -29,8 +29,8 @@ mcp = build_server(
         "- NEVER read, edit, or write .kicad_mod files directly. Use these"
         " MCP tools for all footprint library operations.\n"
         "- NEVER run kicad-cli commands directly. Use export_footprint_svg"
-        " and upgrade_fp_lib instead.\n"
-        "- Use list_lib_footprints to browse, get_footprint_details to"
+        " and upgrade_footprint_lib instead.\n"
+        "- Use list_lib_footprints to browse, get_footprint_info to"
         " inspect. Do NOT grep inside .pretty directories."
     ),
 )
