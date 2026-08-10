@@ -7,6 +7,8 @@ import shutil
 import subprocess
 import uuid
 from functools import lru_cache
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as _dist_version
 from pathlib import Path
 
 from kiutils.board import Board
@@ -14,11 +16,36 @@ from kiutils.footprint import Footprint
 from kiutils.items.common import Effects, Font, Position, Stroke
 from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpText
 from kiutils.items.zones import Hatch, Zone, ZonePolygon
-from kiutils.schematic import Schematic
+from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 import mcp_server_kicad._cst as _cst
+
+# ---------------------------------------------------------------------------
+# Server construction
+# ---------------------------------------------------------------------------
+
+try:
+    SERVER_VERSION = _dist_version("mcp-server-kicad")
+except PackageNotFoundError:  # source checkout with no install
+    SERVER_VERSION = "0.0.0+unknown"
+
+
+def build_server(name: str, instructions: str) -> FastMCP:
+    """Build a FastMCP server that reports *this package's* version.
+
+    FastMCP takes no version argument and leaves the low-level server's
+    version as None, in which case the SDK substitutes its own version. That
+    is what clients and directory listings then display as the server
+    version. Setting it through the private attribute is the only route the
+    SDK offers; test_server_reports_package_version pins the behavior so an
+    SDK upgrade that moves it fails loudly instead of silently regressing.
+    """
+    mcp = FastMCP(name, instructions=instructions)
+    mcp._mcp_server.version = SERVER_VERSION
+    return mcp
+
 
 # ---------------------------------------------------------------------------
 # Tool annotation presets
@@ -208,14 +235,6 @@ def _check_format_version(path: str, head: str | None = None) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _load_sch(path: str = SCH_PATH) -> Schematic:
-    """Load a KiCad schematic from *path* (kiutils, read paths only)."""
-    if not path:
-        raise ValueError("No schematic path provided. Pass sch_path parameter.")
-    _check_format_version(path)
-    return Schematic.from_file(path)
-
-
 def _gen_uuid() -> str:
     return str(uuid.uuid4())
 
@@ -253,6 +272,15 @@ def _node_uuid(node) -> str:
 def _sheet_file_cst(sheet) -> str | None:
     """Sheet file name; KiCad 9 writes "Sheetfile", kiutils "Sheet file"."""
     for key in ("Sheetfile", "Sheet file"):
+        v = _sym_property_cst(sheet, key)
+        if v is not None:
+            return v
+    return None
+
+
+def _sheet_name_cst(sheet) -> str | None:
+    """Sheet display name; KiCad 9 writes "Sheetname", kiutils "Sheet name"."""
+    for key in ("Sheetname", "Sheet name"):
         v = _sym_property_cst(sheet, key)
         if v is not None:
             return v

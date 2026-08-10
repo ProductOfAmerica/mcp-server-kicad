@@ -7,7 +7,6 @@ import os
 import re
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
@@ -29,9 +28,11 @@ from mcp_server_kicad._shared import (
     _resolve_system_lib,
     _run_cli,
     _sheet_file_cst,
+    _sheet_name_cst,
     _snap_grid,
     _sym_property_cst,
     _upsert_root_symbol_instance,
+    build_server,
 )
 from mcp_server_kicad.models import (
     BomExportResult,
@@ -52,7 +53,7 @@ from mcp_server_kicad.models import (
     WireItem,
 )
 
-mcp = FastMCP(
+mcp = build_server(
     "kicad-schematic",
     instructions=(
         "KiCad schematic manipulation, ERC analysis, and schematic export tools.\n\n"
@@ -404,10 +405,9 @@ def list_schematic_sheets(schematic_path: str = SCH_PATH) -> list[SheetItem]:
     for sheet in root.find_all("sheet"):
         at = sheet.find("at")
         size = sheet.find("size")
-        name = _sym_property_cst(sheet, "Sheetname") or _sym_property_cst(sheet, "Sheet name")
         items.append(
             SheetItem(
-                sheet_name=name or "",
+                sheet_name=_sheet_name_cst(sheet) or "",
                 file_name=_sheet_file_cst(sheet) or "",
                 x=float(at.atoms[1].text),
                 y=float(at.atoms[2].text),

@@ -7,7 +7,6 @@ from pathlib import Path
 from kiutils.items.common import Effects, Fill, Font, Position, Property, Stroke
 from kiutils.items.syitems import SyRect
 from kiutils.symbol import Symbol, SymbolLib, SymbolPin
-from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad._shared import (
@@ -19,10 +18,11 @@ from mcp_server_kicad._shared import (
     SYM_LIB_PATH,
     _check_format_version,
     _run_cli,
+    build_server,
 )
 from mcp_server_kicad.models import MultiFileExportResult
 
-mcp = FastMCP(
+mcp = build_server(
     "kicad-symbol",
     instructions=(
         "KiCad symbol library tools for browsing, inspecting, exporting,"

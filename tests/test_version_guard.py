@@ -17,7 +17,7 @@ import re
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from mcp_server_kicad import footprint, project, schematic, symbol
+from mcp_server_kicad import footprint, schematic, symbol
 from mcp_server_kicad._shared import _FORMAT_VERSION_LIMITS, _check_format_version
 
 # Real versions each file family gets from a KiCad 10 save (measured in #9).
@@ -133,20 +133,12 @@ class TestGuardPassThrough:
         _check_format_version(str(tmp_path / "missing.kicad_sch"))
 
 
+# No .kicad_sch tool appears here: since slice 16 every schematic and project
+# read and write runs on the CST, so nothing refuses a future-version
+# schematic. The symbol and footprint libraries are the permanent guarded
+# surface, and the tests below are the standing refusal coverage.
 @pytest.mark.no_kicad_validation
 class TestToolRefusal:
-    def _future_sch(self, tmp_path):
-        f = tmp_path / "future.kicad_sch"
-        f.write_text(_stub("kicad_sch", 20260306))
-        return f
-
-    def test_read_only_tool_refuses(self, tmp_path):
-        # Schematic reads went CST-native in slice 12B; a project.py read
-        # tool (still on the guarded kiutils parse) carries the flag.
-        f = self._future_sch(tmp_path)
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            project.get_symbol_instances(schematic_path=str(f))
-
     def test_rmw_tool_refuses_and_leaves_file_untouched(self, tmp_path):
         # The representative guarded RMW tool tracks the migration: since
         # slice 14 every board writer is CST-native, so a symbol-library
@@ -175,8 +167,8 @@ class TestToolRefusal:
             footprint.get_footprint_info(footprint_path=str(f))
 
     def test_current_format_still_loads(self, empty_sch):
-        # empty_sch is written at exactly 20250114: the ==limit boundary
-        # through a real tool.
+        # A schematic tool never refuses on version any more; this pins that
+        # the CST read path stays working on a stock 20250114 file.
         result = schematic.get_schematic_summary(schematic_path=str(empty_sch))
         assert result is not None
 

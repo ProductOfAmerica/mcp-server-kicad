@@ -5,7 +5,6 @@ from pathlib import Path
 
 from kiutils.footprint import Footprint
 from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpText
-from mcp.server.fastmcp import FastMCP
 
 from mcp_server_kicad._shared import (
     _DESTRUCTIVE,
@@ -16,10 +15,11 @@ from mcp_server_kicad._shared import (
     _check_format_version,
     _courtyard_bbox,
     _run_cli,
+    build_server,
 )
 from mcp_server_kicad.models import MultiFileExportResult
 
-mcp = FastMCP(
+mcp = build_server(
     "kicad-footprint",
     instructions=(
         "KiCad footprint library tools for browsing, inspecting, exporting,"

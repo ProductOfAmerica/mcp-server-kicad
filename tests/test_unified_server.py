@@ -48,3 +48,25 @@ class TestUnifiedServer:
         for mod in _MODULES:
             all_names.extend(mod.mcp._tool_manager._tools.keys())
         assert len(all_names) == len(set(all_names)), "Duplicate tool names found"
+
+    def test_server_reports_package_version(self):
+        """Every entry point reports our version, not the mcp SDK's.
+
+        FastMCP leaves the low-level version as None and the SDK then
+        substitutes its own, so clients and directory listings show the SDK
+        version as the server version. build_server sets it through a private
+        attribute; if an SDK upgrade moves that attribute this test fails
+        rather than letting the wrong version ship silently.
+        """
+        from importlib.metadata import version as dist_version
+
+        from mcp_server_kicad._shared import SERVER_VERSION
+
+        assert SERVER_VERSION != "0.0.0+unknown", "package metadata not found"
+        assert SERVER_VERSION != dist_version("mcp"), "fixture cannot detect a regression"
+
+        for mod in [*_MODULES, server]:
+            opts = mod.mcp._mcp_server.create_initialization_options()
+            assert opts.server_version == SERVER_VERSION, (
+                f"{mod.__name__} reports {opts.server_version!r}, expected {SERVER_VERSION!r}"
+            )
