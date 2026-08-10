@@ -18,7 +18,6 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     OUTPUT_DIR,
     SCH_PATH,
-    _check_format_version,
     _file_meta,
     _gen_uuid,
     _node_uuid,
@@ -713,7 +712,6 @@ def place_component(
     suggestions_lib = None
     if _find_lib_symbol_cst(root, lib_id) is None:
         if symbol_lib_path:
-            _check_format_version(symbol_lib_path)
             _copy_lib_symbol_from_file_cst(root, symbol_lib_path, symbol_name, symbol_name)
             suggestions_lib = symbol_lib_path
         elif ":" in lib_id:
@@ -1331,7 +1329,6 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
         symbol_name: Symbol name (e.g. "LM7805")
         schematic_path: Path to .kicad_sch file
     """
-    _check_format_version(symbol_lib_path)
     tree, root, *_ = _open_sch_cst(schematic_path)
     if _find_lib_symbol_cst(root, symbol_name) is not None:
         raise ToolError(f"'{symbol_name}' already in lib_symbols.")
