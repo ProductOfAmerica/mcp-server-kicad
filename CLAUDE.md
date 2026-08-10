@@ -23,7 +23,7 @@ Run a server by hand: `uv run mcp-server-kicad` (stdio), or via the MCP Inspecto
 
 ## Architecture
 
-Five FastMCP servers, one module each: `schematic.py`, `pcb.py`, `project.py`, `symbol.py`, `footprint.py`. Each defines its own `mcp` instance and `main()` console script; `server.py` merges all tools into the unified `kicad` server through `_copy_tools`, which reaches into FastMCP's private `_tool_manager._tools` (no public copy API; `test_tool_annotations.py` depends on the same internals). Every tool passes one of the annotation presets from `_shared.py` (`_READ_ONLY`, `_ADDITIVE`, `_DESTRUCTIVE`, `_EXPORT`) and returns a Pydantic model from `models.py` when it has structured output.
+Five `MCPServer` servers, one module each: `schematic.py`, `pcb.py`, `project.py`, `symbol.py`, `footprint.py`. Each defines its own `mcp` instance and `main()` console script; `server.py` merges all tools into the unified `kicad` server through `_copy_tools`, which reaches into the private `_tool_manager._tools` (no public copy API; `test_tool_annotations.py` depends on the same internals). Every tool passes one of the annotation presets from `_shared.py` (`_READ_ONLY`, `_ADDITIVE`, `_DESTRUCTIVE`, `_EXPORT`) and returns a Pydantic model from `models.py` when it has structured output.
 
 ### One parse/write stack: the CST substrate (`_cst.py`)
 
@@ -53,7 +53,7 @@ Fixtures in `conftest.py` build schematics/boards through kiutils builders. Byte
 - `ci.yml`: lint + pyright + pytest matrix (3.10-3.13), no KiCad installed. Triggers on `ci/**` pushes too, so preverify branches get the full matrix.
 - `kicad-suite.yml`: full suite on Linux with KiCad 9. Runs on PRs and `ci/**` pushes.
 - `macos-discovery.yml`: macOS with KiCad 10; the gating KiCad 10 e2e tests live here. Runs only on pushes to `main` and `ci/**`, **not on PR branches**: validate KiCad-10-affecting changes pre-merge by pushing a `ci/**` branch.
-- `release.yml`: manual dispatch. Bumps the version (pyproject, uv.lock, plugin.json, server.json), tags a GitHub release, publishes to PyPI. Its bump commit is pushed with the default GITHUB_TOKEN, so it triggers no CI runs; zero runs on a bump commit is normal. The MCP Registry entry is a separate follow-up step (`mcp-publisher`): ownership is proved by the `mcp-name:` token in the README as published on PyPI, and registry metadata is immutable per version, so description fixes need a new release.
+- `release.yml`: manual dispatch, and the whole release. Bumps the version (pyproject, uv.lock, plugin.json, server.json), tags a GitHub release, publishes to PyPI, then publishes to the MCP Registry with `mcp-publisher login github-oidc` (never the interactive device flow: that JWT expires five minutes after issue). Its bump commit is pushed with the default GITHUB_TOKEN, so it triggers no CI runs; zero runs on a bump commit is normal. Registry ownership is proved by the `mcp-name:` token in the README as published on PyPI, and registry metadata is immutable per version, so description fixes need a new release. The registry step runs last and retries, because the registry rejects a package version PyPI is not serving yet.
 
 New files are stamped with the KiCad 9 formats the templates were harvested at (`KICAD_SCH_VERSION = 20250114` in conftest; `_EMPTY_SCH_TPL` in `project.py`, `_SYM_LIB_TPL` in `symbol.py`). Editing an existing file never changes its version stamp, so a KiCad 10 file stays KiCad 10.
 

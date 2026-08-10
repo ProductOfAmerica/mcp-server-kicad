@@ -3,7 +3,7 @@
 import re
 from pathlib import Path
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server import MCPServer
 
 import mcp_server_kicad
 from mcp_server_kicad import footprint, pcb, project, schematic, server, symbol
@@ -11,9 +11,9 @@ from mcp_server_kicad import footprint, pcb, project, schematic, server, symbol
 _MODULES = [schematic, pcb, symbol, footprint, project]
 
 
-def _build_unified() -> FastMCP:
-    """Build a fresh unified FastMCP instance for testing (avoids mutating module state)."""
-    target = FastMCP("kicad-test")
+def _build_unified() -> MCPServer:
+    """Build a fresh unified MCPServer instance for testing (avoids mutating module state)."""
+    target = MCPServer("kicad-test")
     for mod in _MODULES:
         server._copy_tools(mod.mcp, target)
     return target
@@ -69,11 +69,9 @@ class TestUnifiedServer:
     def test_server_reports_package_version(self):
         """Every entry point reports our version, not the mcp SDK's.
 
-        FastMCP leaves the low-level version as None and the SDK then
-        substitutes its own, so clients and directory listings show the SDK
-        version as the server version. build_server sets it through a private
-        attribute; if an SDK upgrade moves that attribute this test fails
-        rather than letting the wrong version ship silently.
+        An MCPServer left without an explicit version reports an empty string
+        and clients fall back to showing something else, so this pins that
+        build_server passes ours through to every server instance.
         """
         from importlib.metadata import version as dist_version
 
@@ -83,7 +81,6 @@ class TestUnifiedServer:
         assert SERVER_VERSION != dist_version("mcp"), "fixture cannot detect a regression"
 
         for mod in [*_MODULES, server]:
-            opts = mod.mcp._mcp_server.create_initialization_options()
-            assert opts.server_version == SERVER_VERSION, (
-                f"{mod.__name__} reports {opts.server_version!r}, expected {SERVER_VERSION!r}"
+            assert mod.mcp.version == SERVER_VERSION, (
+                f"{mod.__name__} reports {mod.mcp.version!r}, expected {SERVER_VERSION!r}"
             )

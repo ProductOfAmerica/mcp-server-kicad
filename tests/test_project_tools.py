@@ -9,9 +9,17 @@ import conftest
 import pytest
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import project
+from mcp_server_kicad.models import LibTableEntry, SheetPinSpec
+
+
+def _first_sheet_uuid(schematic_path: str) -> str:
+    """UUID of the first hierarchical sheet. kiutils types it optional; it is not."""
+    uuid = Schematic.from_file(schematic_path).sheets[0].uuid
+    assert uuid is not None
+    return uuid
 
 
 class TestCreateProject:
@@ -94,7 +102,7 @@ class TestCreateSymbolLibrary:
 
 class TestCreateSymLibTable:
     def test_creates_table_with_entries(self, tmp_path: Path):
-        entries = [
+        entries: list[LibTableEntry] = [
             {"name": "skrimp", "uri": "${KIPRJMOD}/skrimp.kicad_sym"},
             {"name": "power", "uri": "${KICAD8_SYMBOL_DIR}/power.kicad_sym"},
         ]
@@ -115,7 +123,7 @@ class TestCreateSymLibTable:
 
     def test_overwrites_existing(self, tmp_path: Path):
         (tmp_path / "sym-lib-table").write_text("old content")
-        entries = [{"name": "new", "uri": "new.kicad_sym"}]
+        entries: list[LibTableEntry] = [{"name": "new", "uri": "new.kicad_sym"}]
         result = project.create_sym_lib_table(directory=str(tmp_path), entries=entries)
         assert "1 entries" in result
         content = (tmp_path / "sym-lib-table").read_text()
@@ -134,7 +142,7 @@ class TestAddHierarchicalSheet:
 
     def test_adds_sheet_to_parent(self, tmp_path: Path):
         parent, child = self._make_parent_and_child(tmp_path)
-        pins = [
+        pins: list[SheetPinSpec] = [
             {"name": "VIN", "direction": "input"},
             {"name": "VOUT", "direction": "output"},
             {"name": "GND", "direction": "bidirectional"},
@@ -158,7 +166,7 @@ class TestAddHierarchicalSheet:
 
     def test_adds_labels_to_child(self, tmp_path: Path):
         parent, child = self._make_parent_and_child(tmp_path)
-        pins = [
+        pins: list[SheetPinSpec] = [
             {"name": "VIN", "direction": "input"},
             {"name": "VOUT", "direction": "output"},
         ]
@@ -176,7 +184,7 @@ class TestAddHierarchicalSheet:
 
     def test_pin_directions_match(self, tmp_path: Path):
         parent, child = self._make_parent_and_child(tmp_path)
-        pins = [{"name": "SIG", "direction": "bidirectional"}]
+        pins: list[SheetPinSpec] = [{"name": "SIG", "direction": "bidirectional"}]
         project.add_hierarchical_sheet(
             parent_schematic_path=str(parent),
             sheet_name="Sub",
@@ -221,7 +229,7 @@ class TestAddHierarchicalSheet:
     def test_child_labels_have_wire_stubs_and_net_labels(self, tmp_path: Path):
         """Each hierarchical label in the child should have a wire stub and local label."""
         parent, child = self._make_parent_and_child(tmp_path)
-        pins = [
+        pins: list[SheetPinSpec] = [
             {"name": "VIN", "direction": "input"},
             {"name": "GND", "direction": "bidirectional"},
         ]
@@ -275,7 +283,7 @@ class TestAddHierarchicalSheet:
     def test_parent_pins_have_wire_stubs_and_net_labels(self, tmp_path: Path):
         """Each hierarchical pin in the parent should have a wire stub and local label."""
         parent, child = self._make_parent_and_child(tmp_path)
-        pins = [
+        pins: list[SheetPinSpec] = [
             {"name": "VIN", "direction": "input"},
             {"name": "GND", "direction": "bidirectional"},
         ]
@@ -516,8 +524,7 @@ class TestModifyHierarchicalSheet:
             sheet_file=child,
             pins=[{"name": "VIN", "direction": "input"}],
         )
-        sch = Schematic.from_file(parent)
-        sheet_uuid = sch.sheets[0].uuid
+        sheet_uuid = _first_sheet_uuid(parent)
 
         result = project.modify_hierarchical_sheet(
             sheet_uuid=sheet_uuid,
@@ -542,8 +549,7 @@ class TestAddSheetPin:
             sheet_file=child,
             pins=[{"name": "A", "direction": "input"}],
         )
-        sch = Schematic.from_file(parent)
-        sheet_uuid = sch.sheets[0].uuid
+        sheet_uuid = _first_sheet_uuid(parent)
 
         result = project.add_sheet_pin(
             sheet_uuid=sheet_uuid,
@@ -574,8 +580,7 @@ class TestRemoveSheetPin:
                 {"name": "B", "direction": "output"},
             ],
         )
-        sch = Schematic.from_file(parent)
-        sheet_uuid = sch.sheets[0].uuid
+        sheet_uuid = _first_sheet_uuid(parent)
 
         result = project.remove_sheet_pin(
             sheet_uuid=sheet_uuid,
@@ -617,7 +622,7 @@ class TestHierarchicalSheetParseable:
         project.create_schematic(schematic_path=str(child_path))
 
         # Add hierarchical sheet with pins
-        pins = [
+        pins: list[SheetPinSpec] = [
             {"name": "VIN", "direction": "input"},
             {"name": "GND", "direction": "bidirectional"},
         ]
@@ -667,7 +672,7 @@ class TestSubSheetErcRedirect:
         project.create_project(directory=str(proj_dir), name="erc_proj")
         child_path = proj_dir / "child.kicad_sch"
         project.create_schematic(schematic_path=str(child_path))
-        pins = [
+        pins: list[SheetPinSpec] = [
             {"name": "VIN", "direction": "input"},
             {"name": "GND", "direction": "bidirectional"},
         ]
@@ -714,7 +719,7 @@ class TestSubSheetErcRedirect:
         project.create_project(directory=str(proj_dir), name="erc_proj")
         child_path = proj_dir / "child.kicad_sch"
         project.create_schematic(schematic_path=str(child_path))
-        pins = [
+        pins: list[SheetPinSpec] = [
             {"name": "VIN", "direction": "input"},
             {"name": "GND", "direction": "bidirectional"},
         ]
@@ -921,6 +926,7 @@ class TestIsRootSchematic:
 
         result = project.is_root_schematic(schematic_path=str(child))
         assert result.is_root is False
+        assert result.root_path is not None
         assert "proj.kicad_sch" in result.root_path
 
 
@@ -1017,8 +1023,7 @@ class TestGetSheetInfo:
                 {"name": "GND", "direction": "bidirectional"},
             ],
         )
-        sch = Schematic.from_file(parent)
-        sheet_uuid = sch.sheets[0].uuid
+        sheet_uuid = _first_sheet_uuid(parent)
 
         result = project.get_sheet_info(
             sheet_uuid=sheet_uuid,
@@ -1106,8 +1111,7 @@ class TestMoveHierarchicalSheet:
             sheet_file=child,
             pins=[{"name": "A", "direction": "input"}],
         )
-        sch = Schematic.from_file(parent)
-        sheet_uuid = sch.sheets[0].uuid
+        sheet_uuid = _first_sheet_uuid(parent)
 
         result = project.move_hierarchical_sheet(
             sheet_uuid=sheet_uuid,
@@ -1149,6 +1153,7 @@ class TestReorderSheetPages:
 
         sch = Schematic.from_file(root)
         uuid1, uuid2 = sch.sheets[0].uuid, sch.sheets[1].uuid
+        assert uuid1 is not None and uuid2 is not None
 
         result = project.reorder_sheet_pages(
             page_order=[uuid2, uuid1],
@@ -1172,8 +1177,7 @@ class TestDuplicateSheet:
             pins=[{"name": "VIN", "direction": "input"}],
             project_path=pro,
         )
-        sch = Schematic.from_file(root)
-        sheet_uuid = sch.sheets[0].uuid
+        sheet_uuid = _first_sheet_uuid(root)
 
         result = project.duplicate_sheet(
             sheet_uuid=sheet_uuid,

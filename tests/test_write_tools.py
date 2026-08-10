@@ -14,10 +14,11 @@ from conftest import (
     reparse,
 )
 from kiutils.items.schitems import Connection
-from mcp.server.fastmcp.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import schematic
 from mcp_server_kicad._shared import _resolve_system_lib
+from mcp_server_kicad.models import PointSpec, WireSpec
 
 HAS_KICAD_LIBS = _resolve_system_lib("Device") is not None
 
@@ -461,7 +462,7 @@ class TestAddWires:
         sch_before = reparse(str(scratch_sch))
         count_before = _count_wires(sch_before)
 
-        wires = [
+        wires: list[WireSpec] = [
             {"x1": 10, "y1": 10, "x2": 20, "y2": 10},
             {"x1": 20, "y1": 10, "x2": 30, "y2": 10},
             {"x1": 30, "y1": 10, "x2": 40, "y2": 10},
@@ -569,7 +570,7 @@ class TestAddJunctions:
         sch_before = reparse(str(scratch_sch))
         junctions_before = len(sch_before.junctions)
 
-        points = [
+        points: list[PointSpec] = [
             {"x": 10, "y": 10},
             {"x": 20, "y": 20},
             {"x": 30, "y": 30},
