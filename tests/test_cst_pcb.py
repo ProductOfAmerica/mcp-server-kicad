@@ -198,10 +198,16 @@ class TestBoardCache:
         t3, _, _ = pcb._open_pcb_cst(p)
         assert t3 is not t1
 
-    def test_kiutils_write_invalidates(self, scratch_pcb):
+    def test_external_rewrite_invalidates(self, scratch_pcb):
+        """A non-CST rewrite (kiutils here, standing in for any external
+        editor) moves mtime, so the next read re-parses."""
         p = str(scratch_pcb)
         pcb._open_pcb_cst(p)
-        pcb.set_trace_width(width=0.5, net_name="Net1", pcb_path=p)
+        board = Board.from_file(p)
+        for t in board.traceItems:
+            if isinstance(t, Segment):
+                t.width = 0.5
+        board.to_file()
         traces = pcb.list_pcb_traces(p)
         assert traces[0].width == 0.5
 
@@ -432,3 +438,31 @@ class TestGraphicWritersCst:
         assert _confined(before, Path(p).read_bytes(), limit=500)
         kinds = [g.type for g in pcb.list_pcb_graphic_items(p)]
         assert "text" in kinds and "line" in kinds
+
+
+class TestTraceFiltersCst:
+    def test_width_by_net_name_k10(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        result = pcb.set_trace_width(width=0.5, net_name="/SIG", pcb_path=p)
+        assert result.traces_modified == 1
+        after = Path(p).read_bytes()
+        assert _confined(before, after)
+        assert b"(width 0.5)" in after
+
+    def test_remove_by_net_k10(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        result = pcb.remove_traces(net_name="/SIG", pcb_path=p)
+        assert result.traces_removed == 1
+        after = Path(p).read_bytes()
+        assert _span_preserved(before, after)
+        assert pcb.list_pcb_traces(p) == []
+
+    def test_unknown_net_message_parity(self, scratch_pcb):
+        with pytest.raises(ToolError, match=r"Net 'Nope' not found\. Available nets:"):
+            pcb.set_trace_width(width=0.5, net_name="Nope", pcb_path=str(scratch_pcb))
+
+    def test_no_filters_message_parity(self, scratch_pcb):
+        with pytest.raises(ToolError, match="at least one filter is required"):
+            pcb.remove_traces(pcb_path=str(scratch_pcb))

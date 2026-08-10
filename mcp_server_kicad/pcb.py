@@ -139,36 +139,6 @@ def _find_fp(board: Board, reference: str) -> Footprint:
     raise ToolError(f"Footprint {reference!r} not found.")
 
 
-def _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max):
-    """Filter board trace segments by net name, layer, and/or bounding box."""
-    if all(v is None for v in (net_name, layer, x_min, y_min, x_max, y_max)):
-        raise ValueError("at least one filter is required")
-    net_num = None
-    if net_name is not None:
-        net_num, _ = _find_net(board, net_name)
-    result = []
-    for item in board.traceItems:
-        if not isinstance(item, Segment):
-            continue
-        if net_num is not None and item.net != net_num:
-            continue
-        if layer is not None and item.layer != layer:
-            continue
-        if x_min is not None or y_min is not None or x_max is not None or y_max is not None:
-            sx, sy = item.start.X, item.start.Y
-            ex, ey = item.end.X, item.end.Y
-            if x_min is not None and (sx < x_min or ex < x_min):
-                continue
-            if y_min is not None and (sy < y_min or ey < y_min):
-                continue
-            if x_max is not None and (sx > x_max or ex > x_max):
-                continue
-            if y_max is not None and (sy > y_max or ey > y_max):
-                continue
-        result.append(item)
-    return result
-
-
 # ---------------------------------------------------------------------------
 # CST substrate (guard-free board paths; see docs/adr-cst-substrate.md)
 # ---------------------------------------------------------------------------
@@ -473,6 +443,47 @@ def _splice_pcb_graphic(root, node) -> None:
         root.insert_before(tail, node)
     else:
         root.append_child(node, b"\n\t")
+
+
+def _resolve_net_cst(root, net_name: str) -> int:
+    """Net number for *net_name*, or ToolError listing the available names."""
+    for num, name in _net_table(root):
+        if name == net_name:
+            return num
+    available = [name for _, name in _net_table(root) if name]
+    raise ToolError(f"Net {net_name!r} not found. Available nets: {available}")
+
+
+def _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max) -> list:
+    """CST twin of the retired _filter_segments: segment nodes matching filters."""
+    if all(v is None for v in (net_name, layer, x_min, y_min, x_max, y_max)):
+        raise ToolError("at least one filter is required")
+    net_num = None
+    name_to_num = {name: num for num, name in _net_table(root)}
+    if net_name is not None:
+        net_num = _resolve_net_cst(root, net_name)
+    result = []
+    for item in root.lists:
+        if item.head != "segment":
+            continue
+        if net_num is not None and _item_net_number(item.find("net"), name_to_num) != net_num:
+            continue
+        if layer is not None and item.find("layer").atoms[1].text != layer:
+            continue
+        if x_min is not None or y_min is not None or x_max is not None or y_max is not None:
+            start, end = item.find("start"), item.find("end")
+            sx, sy = float(start.atoms[1].text), float(start.atoms[2].text)
+            ex, ey = float(end.atoms[1].text), float(end.atoms[2].text)
+            if x_min is not None and (sx < x_min or ex < x_min):
+                continue
+            if y_min is not None and (sy < y_min or ey < y_min):
+                continue
+            if x_max is not None and (sx > x_max or ex > x_max):
+                continue
+            if y_max is not None and (sy > y_max or ey > y_max):
+                continue
+        result.append(item)
+    return result
 
 
 _GR_TEXT_TPL = _cst.parse(
@@ -1280,14 +1291,12 @@ def set_trace_width(
         y_max: Bottom edge of bounding box filter (mm)
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    try:
-        segments = _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max)
-    except ValueError as e:
-        raise ToolError(str(e)) from e
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    segments = _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max)
     for seg in segments:
-        seg.width = width
-    board.to_file()
+        seg.find("width").atoms[1].set_text(_num(width))
+    Path(key).write_bytes(_cst.serialize(tree))
     return TraceWidthResult(traces_modified=len(segments), net=net_name, new_width_mm=width)
 
 
@@ -1313,14 +1322,12 @@ def remove_traces(
         y_max: Bottom edge of bounding box filter (mm)
         pcb_path: Path to .kicad_pcb file
     """
-    board = _load_board(pcb_path)
-    try:
-        segments = _filter_segments(board, net_name, layer, x_min, y_min, x_max, y_max)
-    except ValueError as e:
-        raise ToolError(str(e)) from e
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+    segments = _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max)
     for seg in segments:
-        board.traceItems.remove(seg)
-    board.to_file()
+        root.remove_child(seg)
+    Path(key).write_bytes(_cst.serialize(tree))
     return RemoveTracesResult(traces_removed=len(segments), net=net_name, layer=layer)
 
 

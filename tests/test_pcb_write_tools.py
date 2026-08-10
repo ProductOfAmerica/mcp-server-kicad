@@ -245,43 +245,6 @@ def _board_with_traces(scratch_pcb):
     return board
 
 
-class TestFilterSegments:
-    def test_filter_by_net(self, scratch_pcb):
-        board = _board_with_traces(scratch_pcb)
-        result = pcb._filter_segments(
-            board, net_name="Net1", layer=None, x_min=None, y_min=None, x_max=None, y_max=None
-        )
-        assert len(result) == 3  # original scratch trace + 2 new
-
-    def test_filter_by_layer(self, scratch_pcb):
-        board = _board_with_traces(scratch_pcb)
-        result = pcb._filter_segments(
-            board, net_name=None, layer="B.Cu", x_min=None, y_min=None, x_max=None, y_max=None
-        )
-        assert len(result) == 2
-
-    def test_filter_by_net_and_layer(self, scratch_pcb):
-        board = _board_with_traces(scratch_pcb)
-        result = pcb._filter_segments(
-            board, net_name="Net1", layer="F.Cu", x_min=None, y_min=None, x_max=None, y_max=None
-        )
-        assert len(result) == 2
-
-    def test_filter_by_bbox(self, scratch_pcb):
-        board = _board_with_traces(scratch_pcb)
-        result = pcb._filter_segments(
-            board, net_name=None, layer=None, x_min=25, y_min=45, x_max=45, y_max=55
-        )
-        assert len(result) == 2
-
-    def test_no_filters_raises(self, scratch_pcb):
-        board = _board_with_traces(scratch_pcb)
-        with pytest.raises(ValueError, match="at least one filter"):
-            pcb._filter_segments(
-                board, net_name=None, layer=None, x_min=None, y_min=None, x_max=None, y_max=None
-            )
-
-
 class TestAddCopperZone:
     def test_basic_zone(self, scratch_pcb):
         result = pcb.add_copper_zone(
