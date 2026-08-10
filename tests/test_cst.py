@@ -9,11 +9,18 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from conftest import _confined, _pure_insertion, _span_preserved, reparse, requires_cli
+from conftest import (
+    _confined,
+    _pure_insertion,
+    _span_preserved,
+    build_test_footprint,
+    reparse,
+    requires_cli,
+)
 from kiutils.items.schitems import Connection
 from mcp.server.fastmcp.exceptions import ToolError
 
-from mcp_server_kicad import _cst, project, schematic
+from mcp_server_kicad import _cst, footprint, project, schematic, symbol
 from mcp_server_kicad._shared import _node_uuid, _resolve_system_lib, _run_cli
 
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
@@ -1252,3 +1259,68 @@ class TestKicad10E2E:
         assert "Pin 1" in schematic.get_pin_positions("R1", schematic_path=p)
         result = schematic.get_net_connections("K10NET", schematic_path=p)
         assert any(c["reference"] == "R1" for c in result.connections)
+
+    def test_symbol_lib_on_real_kicad10(self, kicad_native_sch, scratch_sym_lib):
+        # Slice 17: the symbol library tools are CST-native, so a real KiCad 10
+        # .kicad_sym is listed, inspected, written to, and placed from. Minting
+        # goes through KiCad itself so the file is the runner's own dialect.
+        self._mint(kicad_native_sch)  # skips the whole test below kicad-cli 10
+        lib = str(scratch_sym_lib)
+        _run_cli(["sym", "upgrade", "--force", lib])
+        before = scratch_sym_lib.read_bytes()
+        version = int(_cst.parse(before).lists[0].find("version").atoms[1].text)
+        assert version > 20241209, version
+
+        assert symbol.list_lib_symbols(lib) == "TestPart (2 pins)"
+        info = symbol.get_symbol_info("TestPart", lib)
+        assert "Pin 1: IN (passive) @ (-5.08, 0) rot=0" in info
+
+        symbol.add_symbol(
+            name="K10Part",
+            pins=[{"number": "1", "name": "A", "type": "input", "x": -5.08, "y": 0}],
+            pin_names_offset=1.016,
+            symbol_lib_path=lib,
+        )
+        after = scratch_sym_lib.read_bytes()
+        assert _pure_insertion(before, after)
+        # The KiCad 10 stamp survives: no downgrade, and KiCad still loads it.
+        assert int(_cst.parse(after).lists[0].find("version").atoms[1].text) == version
+        _run_cli(["sym", "upgrade", "--force", lib])
+
+        p = str(kicad_native_sch)
+        assert "Placed U1" in schematic.place_component(
+            lib_id="K10Part",
+            reference="U1",
+            value="x",
+            x=63.5,
+            y=63.5,
+            symbol_lib_path=lib,
+            schematic_path=p,
+        )
+        lib_names = [
+            s.atoms[1].text
+            for s in _cst.parse(kicad_native_sch.read_bytes())
+            .lists[0]
+            .find("lib_symbols")
+            .find_all("symbol")
+        ]
+        assert "K10Part" in lib_names
+
+    def test_footprint_lib_on_real_kicad10(self, tmp_path):
+        # get_footprint_info against a .kicad_mod KiCad 10 wrote itself.
+        if _kicad_cli_major() < 10:
+            pytest.skip("needs kicad-cli 10+ to mint a current-format footprint")
+        pretty = tmp_path / "K10.pretty"
+        pretty.mkdir()
+        fp = build_test_footprint()
+        fp.filePath = str(pretty / "R_0603.kicad_mod")
+        fp.to_file()
+        _run_cli(["fp", "upgrade", str(pretty)])
+        mod = pretty / "R_0603.kicad_mod"
+        version = int(_cst.parse(mod.read_bytes()).lists[0].find("version").atoms[1].text)
+        assert version > 20241229, version
+
+        result = footprint.get_footprint_info(str(mod))
+        assert result.startswith("Footprint: R_0603")
+        assert "Pad 1:" in result and "Pad 2:" in result
+        assert footprint.list_lib_footprints(str(pretty)) == "R_0603"
