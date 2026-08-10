@@ -191,3 +191,65 @@ class TestGetFootprintInfoExtended:
         # The output should contain bbox approximately -5 to 5
         assert "-5.0" in result
         assert "5.0" in result
+
+
+class TestKicad10Header:
+    """A KiCad 10 .kicad_mod reads identically: the version guard is gone."""
+
+    def _rich_footprint(self, tmp_path):
+        fp = Footprint()
+        fp.entryName = "Rich"
+        pad = Pad()
+        pad.number = "1"
+        pad.type = "smd"
+        pad.shape = "rect"
+        pad.position = Position(X=-0.75, Y=0)
+        pad.size = Position(X=0.7, Y=0.8)
+        pad.layers = ["F.Cu", "F.Paste"]
+        fp.pads = [pad]
+
+        crtyd = FpRect()
+        crtyd.start = Position(X=-2, Y=-1)
+        crtyd.end = Position(X=2, Y=1)
+        crtyd.layer = "F.CrtYd"
+        silk = FpLine()
+        silk.start = Position(X=-1, Y=0)
+        silk.end = Position(X=1, Y=0)
+        silk.layer = "F.SilkS"
+        fp.graphicItems = [crtyd, silk]
+
+        zone = Zone()
+        zone.net = 0
+        zone.netName = ""
+        zone.layers = ["F.Cu"]
+        zone.tstamp = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+        zone.hatch = Hatch(style="edge", pitch=0.5)
+        zone.keepoutSettings = KeepoutSettings(
+            tracks="not_allowed",
+            vias="not_allowed",
+            pads="allowed",
+            copperpour="not_allowed",
+            footprints="not_allowed",
+        )
+        poly = ZonePolygon()
+        poly.coordinates = [Position(X=-1, Y=-1), Position(X=1, Y=-1), Position(X=1, Y=1)]
+        zone.polygons = [poly]
+        fp.zones = [zone]
+
+        path = tmp_path / "rich.kicad_mod"
+        fp.filePath = str(path)
+        fp.to_file()
+        return path
+
+    def test_kicad10_stamp_reads_the_same(self, tmp_path):
+        k9 = self._rich_footprint(tmp_path)
+        expected = footprint.get_footprint_info(str(k9))
+        assert "Pad 1" in expected and "Courtyard" in expected
+        assert "Keep-out" in expected and "Graphics" in expected
+
+        # Same bytes, KiCad 10 version stamp: kiutils refused this outright.
+        k10 = tmp_path / "rich_k10.kicad_mod"
+        head, _, body = k9.read_text().partition("\n")
+        assert head == '(footprint "Rich"'
+        k10.write_text(f"{head}\n  (version 20260206)\n{body}")
+        assert footprint.get_footprint_info(str(k10)) == expected

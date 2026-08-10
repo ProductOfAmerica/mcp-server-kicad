@@ -9,7 +9,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
@@ -51,10 +50,7 @@ from mcp_server_kicad.schematic import (
     _splice_sch_node,
     _splice_wire,
 )
-
-# KiCad 9 file format constants
-_KICAD_SYM_VERSION = "20231120"
-
+from mcp_server_kicad.symbol import _SYM_LIB_TPL
 
 mcp = build_server(
     "kicad-project",
@@ -199,9 +195,7 @@ def create_symbol_library(symbol_lib_path: str) -> str:
 
     p.parent.mkdir(parents=True, exist_ok=True)
 
-    lib = SymbolLib(version=_KICAD_SYM_VERSION, generator="kicad_symbol_editor")
-    lib.filePath = str(p)
-    lib.to_file()
+    p.write_bytes(_SYM_LIB_TPL)
     return f"Created symbol library at {p}"
 
 

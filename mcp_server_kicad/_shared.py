@@ -14,7 +14,7 @@ from pathlib import Path
 from kiutils.board import Board
 from kiutils.footprint import Footprint
 from kiutils.items.common import Effects, Font, Position, Stroke
-from kiutils.items.fpitems import FpArc, FpCircle, FpLine, FpPoly, FpRect, FpText
+from kiutils.items.fpitems import FpText
 from kiutils.items.zones import Hatch, Zone, ZonePolygon
 from mcp.server.fastmcp import FastMCP
 from mcp.server.fastmcp.exceptions import ToolError
@@ -571,16 +571,6 @@ def _fp_ref(fp: Footprint) -> str:
     return "?"
 
 
-def _fp_val(fp: Footprint) -> str:
-    """Extract the value from a footprint."""
-    if "Value" in fp.properties:
-        return fp.properties["Value"]
-    for item in fp.graphicItems:
-        if isinstance(item, FpText) and item.type == "value":
-            return item.text
-    return "?"
-
-
 _SYM_INSTANCE_TPL = _cst.parse(
     b'(path "/x"\n\t\t\t(reference "R")\n\t\t\t(unit 1)\n\t\t\t(value "")'
     b'\n\t\t\t(footprint "")\n\t\t)'
@@ -710,80 +700,78 @@ def _remove_root_symbol_instance(
 # ---------------------------------------------------------------------------
 
 
-def _courtyard_bbox(fp: Footprint) -> dict | None:
-    """Compute the bounding box of courtyard items on a footprint.
+def _xy(node) -> tuple[float, float]:
+    """The two coordinates of a node like (start x y), (center x y) or (xy x y)."""
+    return float(node.atoms[1].text), float(node.atoms[2].text)
 
-    Iterates ``fp.graphicItems``, collects coordinates from items on
-    ``*.CrtYd`` layers, groups by layer, and returns the bounding box
-    for the first layer found.
+
+# kiutils KeepoutSettings defaults, used when a (keepout) child is absent.
+_KEEPOUT_DEFAULTS = {
+    "tracks": "allowed",
+    "vias": "allowed",
+    "pads": "allowed",
+    "copperpour": "not-allowed",
+    "footprints": "not-allowed",
+}
+
+
+def _keepout_dict(ko) -> dict[str, str]:
+    """Restriction values of a (keepout ...) node, defaults filling the gaps."""
+    out = dict(_KEEPOUT_DEFAULTS)
+    for k in out:
+        child = ko.find(k)
+        if child is not None:
+            out[k] = child.atoms[1].text
+    return out
+
+
+def _courtyard_bbox_cst(fp) -> dict | None:
+    """Courtyard bounding box of a CST footprint node, in footprint-local mm.
+
+    Points are grouped by layer and the bbox comes from F.CrtYd, else
+    B.CrtYd, else the first courtyard layer seen. Unrounded. A rect
+    contributes only its two stored corners, which is what the retired
+    kiutils twin did.
 
     Returns a dict with keys ``layer``, ``min_x``, ``min_y``, ``max_x``,
     ``max_y``, ``width``, ``height``, or ``None`` if no courtyard items.
     """
-    # Collect points grouped by layer
     layer_points: dict[str, list[tuple[float, float]]] = {}
 
-    for item in fp.graphicItems:
-        layer: str | None = None
+    for item in fp.lists:
         pts: list[tuple[float, float]] = []
-
-        if isinstance(item, FpLine):
-            layer = item.layer
-            pts = [
-                (item.start.X, item.start.Y),
-                (item.end.X, item.end.Y),
-            ]
-        elif isinstance(item, FpRect):
-            layer = item.layer
-            pts = [
-                (item.start.X, item.start.Y),
-                (item.end.X, item.end.Y),
-            ]
-        elif isinstance(item, FpCircle):
-            layer = item.layer
-            cx, cy = item.center.X, item.center.Y
-            ex, ey = item.end.X, item.end.Y
-            radius = math.sqrt((ex - cx) ** 2 + (ey - cy) ** 2)
-            pts = [
-                (cx - radius, cy - radius),
-                (cx + radius, cy + radius),
-            ]
-        elif isinstance(item, FpArc):
-            layer = item.layer
+        if item.head in ("fp_line", "fp_rect"):
+            pts = [_xy(item.find("start")), _xy(item.find("end"))]
+        elif item.head == "fp_circle":
+            cx, cy = _xy(item.find("center"))
+            ex, ey = _xy(item.find("end"))
+            radius = math.hypot(ex - cx, ey - cy)
+            pts = [(cx - radius, cy - radius), (cx + radius, cy + radius)]
+        elif item.head == "fp_arc":
             pts = _linearize_arc(
-                item.start.X,
-                item.start.Y,
-                item.mid.X,
-                item.mid.Y,
-                item.end.X,
-                item.end.Y,
+                *_xy(item.find("start")), *_xy(item.find("mid")), *_xy(item.find("end"))
             )
-        elif isinstance(item, FpPoly):
-            layer = item.layer
-            pts = [(c.X, c.Y) for c in item.coordinates]
-
-        if layer is None or not layer.endswith(".CrtYd") or not pts:
+        elif item.head == "fp_poly":
+            poly_pts = item.find("pts")
+            pts = [_xy(p) for p in poly_pts.find_all("xy")] if poly_pts is not None else []
+        else:
             continue
 
-        layer_points.setdefault(layer, []).extend(pts)
+        layer = item.find("layer")
+        if layer is None or not layer.atoms[1].text.endswith(".CrtYd") or not pts:
+            continue
+        layer_points.setdefault(layer.atoms[1].text, []).extend(pts)
 
     if not layer_points:
         return None
 
-    # Return the first layer found (prefer F.CrtYd, then B.CrtYd, then any)
-    for preferred in ("F.CrtYd", "B.CrtYd"):
-        if preferred in layer_points:
-            chosen_layer = preferred
-            break
-    else:
-        chosen_layer = next(iter(layer_points))
+    preferred = ("F.CrtYd", "B.CrtYd")
+    chosen_layer = next((p for p in preferred if p in layer_points), next(iter(layer_points)))
 
-    points = layer_points[chosen_layer]
-    xs = [p[0] for p in points]
-    ys = [p[1] for p in points]
+    xs = [p[0] for p in layer_points[chosen_layer]]
+    ys = [p[1] for p in layer_points[chosen_layer]]
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
-
     return {
         "layer": chosen_layer,
         "min_x": min_x,

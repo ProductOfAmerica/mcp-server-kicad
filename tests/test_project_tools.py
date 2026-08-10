@@ -79,7 +79,9 @@ class TestCreateSymbolLibrary:
         assert "custom.kicad_sym" in result
 
         lib = SymbolLib.from_file(lib_path)
-        assert str(lib.version) == "20231120"
+        # The harvested empty-library template: what KiCad 9.0.8 itself
+        # writes, not the 20231120 dialect kiutils used to emit.
+        assert str(lib.version) == "20241209"
         assert lib.generator == "kicad_symbol_editor"
         assert lib.symbols == []
 

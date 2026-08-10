@@ -10,8 +10,9 @@ from kiutils.footprint import Footprint
 from kiutils.items.common import Position
 from kiutils.items.fpitems import FpCircle, FpLine, FpRect
 
+from mcp_server_kicad import _cst
 from mcp_server_kicad._shared import (
-    _courtyard_bbox,
+    _courtyard_bbox_cst,
     _point_in_polygon,
     _resolve_hierarchy_path,
     _transform_local_to_board,
@@ -190,12 +191,20 @@ class TestTransformLocalToBoard:
 
 
 # ---------------------------------------------------------------------------
-# _courtyard_bbox
+# _courtyard_bbox_cst
 # ---------------------------------------------------------------------------
 
 
+def _bbox(fp: Footprint, tmp_path: Path) -> dict | None:
+    """Write *fp* out and read its courtyard bbox back through the CST."""
+    path = tmp_path / "crtyd.kicad_mod"
+    fp.filePath = str(path)
+    fp.to_file()
+    return _courtyard_bbox_cst(_cst.parse(path.read_bytes()).lists[0])
+
+
 class TestCourtyardBbox:
-    def test_from_lines(self):
+    def test_from_lines(self, tmp_path: Path):
         fp = Footprint()
         fp.entryName = "Test"
         for sx, sy, ex, ey in [
@@ -210,7 +219,7 @@ class TestCourtyardBbox:
             line.layer = "F.CrtYd"
             fp.graphicItems.append(line)
 
-        bbox = _courtyard_bbox(fp)
+        bbox = _bbox(fp, tmp_path)
         assert bbox is not None
         assert bbox["layer"] == "F.CrtYd"
         assert bbox["min_x"] == pytest.approx(-2)
@@ -218,7 +227,7 @@ class TestCourtyardBbox:
         assert bbox["min_y"] == pytest.approx(-1)
         assert bbox["max_y"] == pytest.approx(1)
 
-    def test_from_rect(self):
+    def test_from_rect(self, tmp_path: Path):
         fp = Footprint()
         fp.entryName = "Test"
         rect = FpRect()
@@ -227,7 +236,7 @@ class TestCourtyardBbox:
         rect.layer = "F.CrtYd"
         fp.graphicItems.append(rect)
 
-        bbox = _courtyard_bbox(fp)
+        bbox = _bbox(fp, tmp_path)
         assert bbox is not None
         assert bbox["layer"] == "F.CrtYd"
         assert bbox["min_x"] == pytest.approx(-3)
@@ -235,7 +244,7 @@ class TestCourtyardBbox:
         assert bbox["width"] == pytest.approx(6)
         assert bbox["height"] == pytest.approx(4)
 
-    def test_mixed_layers_returns_first(self):
+    def test_mixed_layers_returns_first(self, tmp_path: Path):
         """F.CrtYd + B.CrtYd items: returns F.CrtYd (preferred)."""
         fp = Footprint()
         fp.entryName = "Test"
@@ -252,18 +261,18 @@ class TestCourtyardBbox:
         line_b.layer = "B.CrtYd"
         fp.graphicItems.append(line_b)
 
-        bbox = _courtyard_bbox(fp)
+        bbox = _bbox(fp, tmp_path)
         assert bbox is not None
         assert bbox["layer"] == "F.CrtYd"
         assert bbox["min_x"] == pytest.approx(-1)
         assert bbox["max_x"] == pytest.approx(1)
 
-    def test_none_when_no_courtyard(self):
+    def test_none_when_no_courtyard(self, tmp_path: Path):
         fp = Footprint()
         fp.entryName = "Test"
-        assert _courtyard_bbox(fp) is None
+        assert _bbox(fp, tmp_path) is None
 
-    def test_from_circle(self):
+    def test_from_circle(self, tmp_path: Path):
         fp = Footprint()
         fp.entryName = "Test"
         circle = FpCircle()
@@ -272,7 +281,7 @@ class TestCourtyardBbox:
         circle.layer = "F.CrtYd"
         fp.graphicItems.append(circle)
 
-        bbox = _courtyard_bbox(fp)
+        bbox = _bbox(fp, tmp_path)
         assert bbox is not None
         assert bbox["min_x"] == pytest.approx(-5)
         assert bbox["max_x"] == pytest.approx(5)

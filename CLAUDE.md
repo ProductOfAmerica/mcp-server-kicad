@@ -25,8 +25,8 @@ Five FastMCP servers, one module each: `schematic.py`, `pcb.py`, `project.py`, `
 
 ### Two parse/write stacks — know which one a tool is on
 
-1. **CST substrate (`_cst.py`)**: stdlib-only, byte-preserving concrete syntax tree for s-expressions. Bytes in, bytes out; `serialize(parse(b)) == b` by construction; malformed input raises instead of being repaired. All `.kicad_sch` reads and writes (schematic.py and project.py), the eight board read tools, and `add_trace`/`add_via` run on it. These paths are **guard-free**: they work on KiCad 9 and KiCad 10 files.
-2. **kiutils (legacy)**: the remaining board writers, `project.py` hierarchy reads, and the symbol/footprint library tools. These call `_check_format_version` first and **refuse KiCad 10 files** (read-max limits in `_FORMAT_VERSION_LIMITS`, `_shared.py`) because kiutils crashes on K10 boards and silently downgrades K10 schematics. Stock libraries under a KiCad install are exempt from the guard.
+1. **CST substrate (`_cst.py`)**: stdlib-only, byte-preserving concrete syntax tree for s-expressions. Bytes in, bytes out; `serialize(parse(b)) == b` by construction; malformed input raises instead of being repaired. Every tool runs on it as of slice 17: all `.kicad_sch` reads and writes, all board reads and writes, and the symbol/footprint library tools. These paths are **guard-free**: they work on KiCad 9 and KiCad 10 files.
+2. **kiutils (legacy)**: only `_load_board`, which the `autoroute_pcb` internals still parse through. It is the one production caller of `_check_format_version`, which **refuses KiCad 10 files** (read-max limits in `_FORMAT_VERSION_LIMITS`, `_shared.py`) because kiutils crashes on K10 boards. Stock libraries under a KiCad install are exempt from the guard. `pcb.py` reads the same limits dict to version-gate net emission, which is a separate use.
 
 Two helper modules back the subprocess tools: `_freerouting.py` (`autoroute_pcb`; needs Java, resolves freerouting.jar via `FREEROUTING_JAR` or a cached auto-download, and hosts `find_pcbnew_python`) and `_netlist_import.py` (run under pcbnew's Python by `update_pcb_from_schematic` to load footprints and bind nets).
 
@@ -54,7 +54,7 @@ Fixtures in `conftest.py` build schematics/boards through kiutils builders. Byte
 - `macos-discovery.yml`: macOS with KiCad 10 — the gating KiCad 10 e2e tests live here. Runs only on pushes to `main` and `ci/**`, **not on PR branches**: validate KiCad-10-affecting changes pre-merge by pushing a `ci/**` branch.
 - `release.yml`: manual dispatch. Bumps the version (pyproject, uv.lock, plugin.json), tags a GitHub release, publishes to PyPI.
 
-Write formats target KiCad 9 (`KICAD_SCH_VERSION = 20250114` in conftest; write constants in `project.py`/`symbol.py` are distinct from the read-max guard limits). KiCad 10 capability exists only through CST paths.
+New files are stamped with the KiCad 9 formats the templates were harvested at (`KICAD_SCH_VERSION = 20250114` in conftest; `_EMPTY_SCH_TPL` in `project.py`, `_SYM_LIB_TPL` in `symbol.py`), which are distinct from the read-max guard limits. Editing an existing file never changes its version stamp, so a KiCad 10 file stays KiCad 10.
 
 ### This repo is also a Claude Code plugin
 

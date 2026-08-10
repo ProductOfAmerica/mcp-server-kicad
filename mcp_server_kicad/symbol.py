@@ -4,11 +4,10 @@ import math
 import os
 from pathlib import Path
 
-from kiutils.items.common import Effects, Fill, Font, Position, Property, Stroke
-from kiutils.items.syitems import SyRect
-from kiutils.symbol import Symbol, SymbolLib, SymbolPin
 from mcp.server.fastmcp.exceptions import ToolError
 
+import mcp_server_kicad._cst as _cst
+from mcp_server_kicad._cst import _fill_at, _num, _numish
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -16,7 +15,6 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     OUTPUT_DIR,
     SYM_LIB_PATH,
-    _check_format_version,
     _run_cli,
     build_server,
 )
@@ -38,8 +36,6 @@ mcp = build_server(
     ),
 )
 
-_KICAD_SYM_VERSION = "20231120"
-
 _VALID_PIN_TYPES = {
     "input",
     "output",
@@ -55,6 +51,141 @@ _VALID_PIN_TYPES = {
 }
 
 
+# ── CST substrate ─────────────────────────────────────────────────
+#
+# Both templates are verbatim `kicad-cli sym upgrade` output from KiCad
+# 9.0.8, with only the parameter slots blanked (slice 17). What KiCad
+# writes and kiutils did not: version 20241209 with a quoted generator and
+# a (generator_version "9.0"), tab indent, properties with no (id N),
+# (hide yes) inside effects instead of a bare hide, an (effects ...) block
+# on every pin name and number, and the (exclude_from_sim no) /
+# (embedded_fonts no) shape tokens.
+#
+# (pin_names (offset X)) is in the template because KiCad writes it
+# whenever the offset differs from its 0.508 mm default, and strips it at
+# the default; the builder does the same. kiutils emitted it only when its
+# unused pinNames flag was set, so the pin_names_offset parameter was a
+# silent no-op before this slice.
+
+_SYM_LIB_TPL = (
+    b"(kicad_symbol_lib\n"
+    b"\t(version 20241209)\n"
+    b'\t(generator "kicad_symbol_editor")\n'
+    b'\t(generator_version "9.0")\n'
+    b")\n"
+)
+
+_DEFAULT_PIN_NAMES_OFFSET = 0.508
+
+_LIB_SYMBOL_TPL = _cst.parse(
+    b'(symbol "NAME"\n'
+    b"\t\t(power)\n"
+    b"\t\t(pin_names\n"
+    b"\t\t\t(offset 0.508)\n"
+    b"\t\t)\n"
+    b"\t\t(exclude_from_sim no)\n"
+    b"\t\t(in_bom yes)\n"
+    b"\t\t(on_board yes)\n"
+    b'\t\t(property "Reference" "U"\n'
+    b"\t\t\t(at 0 -1.27 0)\n"
+    b"\t\t\t(effects\n"
+    b"\t\t\t\t(font\n"
+    b"\t\t\t\t\t(size 1.27 1.27)\n"
+    b"\t\t\t\t)\n"
+    b"\t\t\t)\n"
+    b"\t\t)\n"
+    b'\t\t(property "Value" "NAME"\n'
+    b"\t\t\t(at 0 1.27 0)\n"
+    b"\t\t\t(effects\n"
+    b"\t\t\t\t(font\n"
+    b"\t\t\t\t\t(size 1.27 1.27)\n"
+    b"\t\t\t\t)\n"
+    b"\t\t\t)\n"
+    b"\t\t)\n"
+    b'\t\t(property "Footprint" ""\n'
+    b"\t\t\t(at 0 0 0)\n"
+    b"\t\t\t(effects\n"
+    b"\t\t\t\t(font\n"
+    b"\t\t\t\t\t(size 1.27 1.27)\n"
+    b"\t\t\t\t)\n"
+    b"\t\t\t\t(hide yes)\n"
+    b"\t\t\t)\n"
+    b"\t\t)\n"
+    b'\t\t(property "Datasheet" ""\n'
+    b"\t\t\t(at 0 0 0)\n"
+    b"\t\t\t(effects\n"
+    b"\t\t\t\t(font\n"
+    b"\t\t\t\t\t(size 1.27 1.27)\n"
+    b"\t\t\t\t)\n"
+    b"\t\t\t\t(hide yes)\n"
+    b"\t\t\t)\n"
+    b"\t\t)\n"
+    b'\t\t(symbol "NAME_0_1"\n'
+    b"\t\t\t(rectangle\n"
+    b"\t\t\t\t(start 0 0)\n"
+    b"\t\t\t\t(end 0 0)\n"
+    b"\t\t\t\t(stroke\n"
+    b"\t\t\t\t\t(width 0.254)\n"
+    b"\t\t\t\t\t(type default)\n"
+    b"\t\t\t\t)\n"
+    b"\t\t\t\t(fill\n"
+    b"\t\t\t\t\t(type background)\n"
+    b"\t\t\t\t)\n"
+    b"\t\t\t)\n"
+    b"\t\t)\n"
+    b'\t\t(symbol "NAME_1_1"\n'
+    b"\t\t\t(pin passive line\n"
+    b"\t\t\t\t(at 0 0 0)\n"
+    b"\t\t\t\t(length 2.54)\n"
+    b'\t\t\t\t(name "~"\n'
+    b"\t\t\t\t\t(effects\n"
+    b"\t\t\t\t\t\t(font\n"
+    b"\t\t\t\t\t\t\t(size 1.27 1.27)\n"
+    b"\t\t\t\t\t\t)\n"
+    b"\t\t\t\t\t)\n"
+    b"\t\t\t\t)\n"
+    b'\t\t\t\t(number "1"\n'
+    b"\t\t\t\t\t(effects\n"
+    b"\t\t\t\t\t\t(font\n"
+    b"\t\t\t\t\t\t\t(size 1.27 1.27)\n"
+    b"\t\t\t\t\t\t)\n"
+    b"\t\t\t\t\t)\n"
+    b"\t\t\t\t)\n"
+    b"\t\t\t)\n"
+    b"\t\t)\n"
+    b"\t\t(embedded_fonts no)\n"
+    b"\t)"
+).lists[0]
+
+
+def _open_sym_lib(symbol_lib_path: str):
+    """(tree, root) for a .kicad_sym file; guard-free, works on any version."""
+    tree = _cst.parse(Path(symbol_lib_path).read_bytes())
+    root = tree.lists[0] if tree.lists else None
+    if root is None or root.head != "kicad_symbol_lib":
+        raise ToolError(f"{symbol_lib_path} is not a KiCad symbol library.")
+    return tree, root
+
+
+def _child_text(node, name: str) -> str:
+    """Text of the first atom under child list *name*, or "" when absent."""
+    child = node.find(name)
+    return child.atoms[1].text if child is not None else ""
+
+
+def _repeat(parent, model, count: int) -> list:
+    """Replace *model* with *count* copies of itself, in place."""
+    made = []
+    ref = model
+    for _ in range(count):
+        clone = model.copy()
+        parent.insert_after(ref, clone)
+        made.append(clone)
+        ref = clone
+    parent.remove_child(model)
+    return made
+
+
 # ── Library browsing ──────────────────────────────────────────────
 
 
@@ -65,12 +196,12 @@ def list_lib_symbols(symbol_lib_path: str = SYM_LIB_PATH) -> str:
     Args:
         symbol_lib_path: Path to .kicad_sym file
     """
-    _check_format_version(symbol_lib_path)
-    lib = SymbolLib.from_file(symbol_lib_path)
+    _, root = _open_sym_lib(symbol_lib_path)
     lines = []
-    for sym in lib.symbols:
-        pin_count = sum(len(u.pins) for u in sym.units)
-        lines.append(f"{sym.entryName} ({pin_count} pins)")
+    for entry in root.find_all("symbol"):
+        # Pins live in the unit sub-symbols, never on the entry itself.
+        pin_count = sum(len(unit.find_all("pin")) for unit in entry.find_all("symbol"))
+        lines.append(f"{entry.atoms[1].text} ({pin_count} pins)")
     return "\n".join(lines) if lines else "No symbols found."
 
 
@@ -82,20 +213,23 @@ def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> st
         symbol_name: Symbol name (e.g. "LM7805")
         symbol_lib_path: Path to .kicad_sym file
     """
-    _check_format_version(symbol_lib_path)
-    lib = SymbolLib.from_file(symbol_lib_path)
-    for sym in lib.symbols:
-        if sym.entryName == symbol_name:
-            lines = [f"Symbol: {symbol_name}"]
-            for prop in sym.properties or []:
-                lines.append(f"  {prop.key}: {prop.value}")
-            for unit in sym.units:
-                for pin in unit.pins:
-                    lines.append(
-                        f"  Pin {pin.number}: {pin.name} ({pin.electricalType}) "
-                        f"@ ({pin.position.X}, {pin.position.Y}) rot={pin.position.angle}"
-                    )
-            return "\n".join(lines)
+    _, root = _open_sym_lib(symbol_lib_path)
+    for entry in root.find_all("symbol"):
+        if entry.atoms[1].text != symbol_name:
+            continue
+        lines = [f"Symbol: {symbol_name}"]
+        for prop in entry.find_all("property"):
+            lines.append(f"  {prop.atoms[1].text}: {prop.atoms[2].text}")
+        for unit in entry.find_all("symbol"):
+            for pin in unit.find_all("pin"):
+                at = pin.find("at")
+                angle = _numish(at.atoms[3].text) if len(at.atoms) > 3 else 0
+                lines.append(
+                    f"  Pin {_child_text(pin, 'number')}: {_child_text(pin, 'name')} "
+                    f"({pin.atoms[1].text}) "
+                    f"@ ({_numish(at.atoms[1].text)}, {_numish(at.atoms[2].text)}) rot={angle}"
+                )
+        return "\n".join(lines)
     return f"'{symbol_name}' not found in {symbol_lib_path}."
 
 
@@ -196,110 +330,71 @@ def add_symbol(
                 f"pin {i} has invalid type '{p['type']}'. Valid: {sorted(_VALID_PIN_TYPES)}"
             )
 
-    # Load or create library
+    # Load or create the library. Existing bytes are never reformatted: the
+    # new symbol is one spliced span and everything else reaches disk as-is.
     lib_path = Path(symbol_lib_path)
     if lib_path.exists():
-        _check_format_version(str(lib_path))
-        lib = SymbolLib.from_file(str(lib_path))
-        for existing in lib.symbols:
-            if existing.entryName == name:
+        tree, root = _open_sym_lib(str(lib_path))
+        for existing in root.find_all("symbol"):
+            if existing.atoms[1].text == name:
                 raise ToolError(f"symbol '{name}' already exists in {symbol_lib_path}.")
     else:
         lib_path.parent.mkdir(parents=True, exist_ok=True)
-        lib = SymbolLib(version=_KICAD_SYM_VERSION, generator="kicad_symbol_editor")
-        lib.filePath = str(lib_path)
+        tree = _cst.parse(_SYM_LIB_TPL)
+        root = tree.lists[0]
 
-    # Build the symbol
-    sym = Symbol()
-    sym.entryName = name
-    sym.isPower = is_power
-    sym.pinNamesOffset = pin_names_offset
-    sym.inBom = in_bom
-    sym.onBoard = on_board
-
-    # Standard properties
-    sym.properties = [
-        Property(
-            key="Reference",
-            value=reference_prefix,
-            id=0,
-            effects=Effects(font=Font(height=1.27, width=1.27)),
-            position=Position(X=0, Y=-1.27, angle=0),
-        ),
-        Property(
-            key="Value",
-            value=name,
-            id=1,
-            effects=Effects(font=Font(height=1.27, width=1.27)),
-            position=Position(X=0, Y=1.27, angle=0),
-        ),
-        Property(
-            key="Footprint",
-            value=footprint,
-            id=2,
-            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-            position=Position(X=0, Y=0, angle=0),
-        ),
-        Property(
-            key="Datasheet",
-            value=datasheet,
-            id=3,
-            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-            position=Position(X=0, Y=0, angle=0),
-        ),
-    ]
-
-    # Unit 0 — graphics (no pins)
-    unit0 = Symbol()
-    unit0.entryName = name
-    unit0.unitId = 0
-    unit0.styleId = 1
-
-    if rectangles:
-        unit0.graphicItems = [
-            SyRect(
-                start=Position(X=r["x1"], Y=r["y1"]),
-                end=Position(X=r["x2"], Y=r["y2"]),
-                stroke=Stroke(width=0.254, type="default"),
-                fill=Fill(type=r.get("fill", "background")),
-            )
-            for r in rectangles
-        ]
+    node = _LIB_SYMBOL_TPL.copy()
+    node.atoms[1].set_text(name)
+    if not is_power:
+        node.remove_child(node.find("power"))
+    if pin_names_offset == _DEFAULT_PIN_NAMES_OFFSET:
+        # KiCad omits the token at its own default; anything else it writes.
+        node.remove_child(node.find("pin_names"))
     else:
-        x1, y1, x2, y2 = _auto_body_rect(pins)
-        unit0.graphicItems = [
-            SyRect(
-                start=Position(X=x1, Y=y1),
-                end=Position(X=x2, Y=y2),
-                stroke=Stroke(width=0.254, type="default"),
-                fill=Fill(type="background"),
-            )
-        ]
+        node.find("pin_names").find("offset").atoms[1].set_text(_num(pin_names_offset))
+    node.find("in_bom").atoms[1].set_text("yes" if in_bom else "no")
+    node.find("on_board").atoms[1].set_text("yes" if on_board else "no")
 
-    # Unit 1 — pins
-    unit1 = Symbol()
-    unit1.entryName = name
-    unit1.unitId = 1
-    unit1.styleId = 1
-    unit1.pins = [
-        SymbolPin(
-            electricalType=p["type"],
-            position=Position(
-                X=float(p.get("x", 0)),
-                Y=float(p.get("y", 0)),
-                angle=float(p.get("rotation", 0)),
-            ),
-            length=float(p.get("length", 2.54)),
-            name=p["name"],
-            number=p["number"],
+    values = {
+        "Reference": reference_prefix,
+        "Value": name,
+        "Footprint": footprint,
+        "Datasheet": datasheet,
+    }
+    for prop in node.find_all("property"):
+        prop.atoms[2].set_text(values[prop.atoms[1].text])
+
+    unit0, unit1 = node.find_all("symbol")
+    unit0.atoms[1].set_text(f"{name}_0_1")
+    unit1.atoms[1].set_text(f"{name}_1_1")
+
+    rects = rectangles or [dict(zip(("x1", "y1", "x2", "y2"), _auto_body_rect(pins)))]
+    for rect_node, r in zip(_repeat(unit0, unit0.find("rectangle"), len(rects)), rects):
+        start, end = rect_node.find("start"), rect_node.find("end")
+        start.atoms[1].set_text(_num(r["x1"]))
+        start.atoms[2].set_text(_num(r["y1"]))
+        end.atoms[1].set_text(_num(r["x2"]))
+        end.atoms[2].set_text(_num(r["y2"]))
+        rect_node.find("fill").find("type").atoms[1].set_text(r.get("fill", "background"))
+
+    for pin_node, p in zip(_repeat(unit1, unit1.find("pin"), len(pins)), pins):
+        pin_node.atoms[1].set_text(p["type"])
+        _fill_at(
+            pin_node,
+            float(p.get("x", 0)),
+            float(p.get("y", 0)),
+            float(p.get("rotation", 0)),
         )
-        for p in pins
-    ]
+        pin_node.find("length").atoms[1].set_text(_num(float(p.get("length", 2.54))))
+        pin_node.find("name").atoms[1].set_text(p["name"])
+        pin_node.find("number").atoms[1].set_text(p["number"])
 
-    sym.units = [unit0, unit1]
-
-    lib.symbols.append(sym)
-    lib.to_file()
+    entries = root.find_all("symbol")
+    if entries:
+        root.insert_after(entries[-1], node)
+    else:
+        root.append_child(node, b"\n\t")
+    lib_path.write_bytes(_cst.serialize(tree))
 
     return f"Added symbol '{name}' ({len(pins)} pins) to {symbol_lib_path}"
 

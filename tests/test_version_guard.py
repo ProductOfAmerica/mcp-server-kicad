@@ -5,6 +5,11 @@ KiCad 9 formats, before any kiutils parse. Measured motivation in issue #9:
 kiutils 1.4.8 crashes on KiCad 10 boards and silently rewrites KiCad 10
 schematics while keeping their version claim.
 
+Since slice 17 exactly one production path still calls it: _load_board, which
+is all that keeps the autoroute internals off a KiCad 10 board. Every other
+tool reads and writes through the CST and takes any version, so the tool-level
+refusal tests are gone and TestLastGuardedPath below pins the one that remains.
+
 Most classes carry no_kicad_validation: they write future-version stubs into
 tmp_path, and the autouse ERC fixture would otherwise fail them via kicad-cli,
 which itself rejects future versions.
@@ -17,8 +22,12 @@ import re
 import pytest
 from mcp.server.fastmcp.exceptions import ToolError
 
-from mcp_server_kicad import footprint, schematic, symbol
-from mcp_server_kicad._shared import _FORMAT_VERSION_LIMITS, _check_format_version
+from mcp_server_kicad import schematic
+from mcp_server_kicad._shared import (
+    _FORMAT_VERSION_LIMITS,
+    _check_format_version,
+    _load_board,
+)
 
 # Real versions each file family gets from a KiCad 10 save (measured in #9).
 KICAD10_VERSIONS = {
@@ -41,28 +50,6 @@ SUFFIX = {
 def _stub(kind: str, version: int) -> str:
     name = ' "Stub"' if kind == "footprint" else ""
     return f'({kind}{name}\n\t(version {version})\n\t(generator "test")\n)\n'
-
-
-# A parseable .kicad_sym body for the carve-out test: old-style content that
-# kiutils 1.4.8 reads fine, stamped with a KiCad 10 version token.
-_SYM_LIB_KICAD10 = """(kicad_symbol_lib
-  (version 20251024)
-  (generator "kicad_symbol_editor")
-  (symbol "TestSym"
-    (pin_names (offset 0))
-    (in_bom yes)
-    (on_board yes)
-    (property "Reference" "U" (at 0 0 0) (effects (font (size 1.27 1.27))))
-    (property "Value" "TestSym" (at 0 0 0) (effects (font (size 1.27 1.27))))
-    (symbol "TestSym_1_1"
-      (pin passive line (at 0 0 0) (length 2.54)
-        (name "~" (effects (font (size 1.27 1.27))))
-        (number "1" (effects (font (size 1.27 1.27))))
-      )
-    )
-  )
-)
-"""
 
 
 @pytest.mark.no_kicad_validation
@@ -133,52 +120,19 @@ class TestGuardPassThrough:
         _check_format_version(str(tmp_path / "missing.kicad_sch"))
 
 
-# No .kicad_sch tool appears here: since slice 16 every schematic and project
-# read and write runs on the CST, so nothing refuses a future-version
-# schematic. The symbol and footprint libraries are the permanent guarded
-# surface, and the tests below are the standing refusal coverage.
 @pytest.mark.no_kicad_validation
-class TestToolRefusal:
-    def test_rmw_tool_refuses_and_leaves_file_untouched(self, tmp_path):
-        # The representative guarded RMW tool tracks the migration: since
-        # slice 14 every board writer is CST-native, so a symbol-library
-        # writer (kiutils stays on .kicad_sym) carries the flag.
-        f = tmp_path / "future.kicad_sym"
-        f.write_text(_stub("kicad_symbol_lib", 20251024))
-        before = f.read_bytes()
+class TestLastGuardedPath:
+    def test_load_board_refuses_kicad10(self, tmp_path):
+        # _load_board is the only production caller left: kiutils 1.4.8
+        # crashes outright on a KiCad 10 board, and autoroute_pcb still
+        # parses through it.
+        f = tmp_path / "future.kicad_pcb"
+        f.write_text(_stub("kicad_pcb", KICAD10_VERSIONS["kicad_pcb"]))
         with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            symbol.add_symbol(
-                name="X",
-                pins=[{"number": "1", "name": "~", "type": "passive"}],
-                symbol_lib_path=str(f),
-            )
-        assert f.read_bytes() == before
-
-    def test_symbol_lib_tool_refuses(self, tmp_path):
-        f = tmp_path / "future.kicad_sym"
-        f.write_text(_stub("kicad_symbol_lib", 20251024))
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            symbol.list_lib_symbols(symbol_lib_path=str(f))
-
-    def test_footprint_tool_refuses(self, tmp_path):
-        f = tmp_path / "future.kicad_mod"
-        f.write_text(_stub("footprint", 20260206))
-        with pytest.raises(ToolError, match="newer than the KiCad 9 formats"):
-            footprint.get_footprint_info(footprint_path=str(f))
+            _load_board(str(f))
 
     def test_current_format_still_loads(self, empty_sch):
         # A schematic tool never refuses on version any more; this pins that
         # the CST read path stays working on a stock 20250114 file.
         result = schematic.get_schematic_summary(schematic_path=str(empty_sch))
         assert result is not None
-
-
-class TestSystemLibCarveOut:
-    def test_system_lib_newer_version_still_loads(self, tmp_path, monkeypatch):
-        sym_dir = tmp_path / "syms"
-        sym_dir.mkdir()
-        lib = sym_dir / "TestLib.kicad_sym"
-        lib.write_text(_SYM_LIB_KICAD10)
-        monkeypatch.setenv("KICAD_SYMBOL_DIR", str(sym_dir))
-        result = symbol.list_lib_symbols(symbol_lib_path=str(lib))
-        assert "TestSym" in result

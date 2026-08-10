@@ -1,10 +1,12 @@
 """Tests for symbol authoring tools on the symbol server."""
 
 import pytest
+from conftest import _pure_insertion, requires_cli
 from kiutils.symbol import SymbolLib
 from mcp.server.fastmcp.exceptions import ToolError
 
 from mcp_server_kicad import symbol
+from mcp_server_kicad._shared import _run_cli
 from mcp_server_kicad.symbol import _auto_body_rect
 
 # ── Helper pin dicts ─────────────────────────────────────────────
@@ -286,3 +288,71 @@ class TestAddSymbol:
         assert "PartA" in listing
         assert "PartB" in listing
         assert "PartC" in listing
+
+
+class TestAddSymbolBytes:
+    """The CST write path: one spliced span, native emission, KiCad accepts it."""
+
+    def test_insertion_is_pure(self, scratch_sym_lib):
+        before = scratch_sym_lib.read_bytes()
+        symbol.add_symbol(
+            name="Spliced",
+            pins=_two_pin_passive(),
+            symbol_lib_path=str(scratch_sym_lib),
+        )
+        assert _pure_insertion(before, scratch_sym_lib.read_bytes())
+
+    def test_pin_names_offset_emitted(self, tmp_path):
+        """The parameter was a silent no-op under kiutils; now it lands."""
+        lib_path = tmp_path / "offset.kicad_sym"
+        symbol.add_symbol(
+            name="Offset",
+            pins=_two_pin_passive(),
+            pin_names_offset=1.016,
+            symbol_lib_path=str(lib_path),
+        )
+        # Native shape, tabs and all, straight from KiCad's own writer.
+        assert "(pin_names\n\t\t\t(offset 1.016)\n\t\t)" in lib_path.read_text()
+
+    def test_pin_names_omitted_at_kicad_default(self, tmp_path):
+        """KiCad strips the token at its own 0.508 default, so we never write it."""
+        lib_path = tmp_path / "default.kicad_sym"
+        symbol.add_symbol(
+            name="Default",
+            pins=_two_pin_passive(),
+            symbol_lib_path=str(lib_path),
+        )
+        assert "pin_names" not in lib_path.read_text()
+
+    def test_power_token_only_for_power_symbols(self, tmp_path):
+        plain = tmp_path / "plain.kicad_sym"
+        power = tmp_path / "power.kicad_sym"
+        symbol.add_symbol(name="P", pins=_two_pin_passive(), symbol_lib_path=str(plain))
+        symbol.add_symbol(
+            name="P", pins=_two_pin_passive(), is_power=True, symbol_lib_path=str(power)
+        )
+        assert "(power)" not in plain.read_text()
+        assert "(power)" in power.read_text()
+
+    @requires_cli
+    def test_kicad_cli_accepts_the_written_library(self, tmp_path):
+        """The only .kicad_sym acceptance oracle in the suite."""
+        lib_path = tmp_path / "accept.kicad_sym"
+        symbol.add_symbol(
+            name="Accepted",
+            pins=_ic_pins(),
+            pin_names_offset=1.016,
+            footprint="Package_SO:SOIC-8",
+            datasheet="https://example.com/ds.pdf",
+            symbol_lib_path=str(lib_path),
+        )
+        symbol.add_symbol(
+            name="AcceptedPwr",
+            pins=[{"number": "1", "name": "VCC", "type": "power_in", "rotation": 90}],
+            is_power=True,
+            in_bom=False,
+            on_board=False,
+            reference_prefix="#PWR",
+            symbol_lib_path=str(lib_path),
+        )
+        assert _run_cli(["sym", "upgrade", "--force", str(lib_path)]).returncode == 0
