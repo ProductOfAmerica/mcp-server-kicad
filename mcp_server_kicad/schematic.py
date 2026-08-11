@@ -6,6 +6,7 @@ import math
 import os
 import re
 from pathlib import Path
+from typing import Literal
 
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -2359,7 +2360,7 @@ def run_erc(
 
 @mcp.tool(annotations=_EXPORT)
 def export_schematic(
-    format: str = "pdf",
+    format: Literal["pdf", "svg", "dxf"] = "pdf",
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
 ) -> SchematicExportResult:
@@ -2374,6 +2375,7 @@ def export_schematic(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         output_dir: Directory for output files. Optional; omit to use the configured default.
     """
+    # See export_pcb: the enum is for the model, this is for direct callers.
     fmt = format.lower()
     if fmt not in ("pdf", "svg", "dxf"):
         raise ToolError(f"Unknown format: {format}. Use: pdf, svg, dxf")
@@ -2408,17 +2410,21 @@ def export_schematic(
 def export_netlist(
     schematic_path: str = SCH_PATH,
     output_dir: str = OUTPUT_DIR,
-    format: str = "kicadxml",
+    format: Literal[
+        "kicadxml", "kicadsexpr", "cadstar", "orcadpcb2", "spice", "spicemodel", "pads", "allegro"
+    ] = "kicadxml",
 ) -> ExportResult:
-    """Export schematic netlist in KiCad XML or KiCad net format.
+    """Export a schematic netlist.
 
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         output_dir: Output directory. Optional; omit to use the configured default.
-        format: Netlist format: kicadxml, cadstar, orcadpcb2
+        format: Netlist format. spice and spicemodel produce simulator input.
     """
     out_dir = output_dir or str(Path(schematic_path).parent)
-    ext = ".xml" if format == "kicadxml" else ".net"
+    # kicad-cli writes whatever --output names, so the extension is ours to
+    # pick. Measured against kicad-cli 9.0.8, which accepts all eight.
+    ext = {"kicadxml": ".xml", "spice": ".cir", "spicemodel": ".lib"}.get(format, ".net")
     out_path = str(Path(out_dir) / (Path(schematic_path).stem + ext))
     _run_cli(["sch", "export", "netlist", "--format", format, "--output", out_path, schematic_path])
     meta = _file_meta(out_path)

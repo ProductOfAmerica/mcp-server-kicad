@@ -121,10 +121,15 @@ class TestExport3dRender:
 
 
 class TestExportPcbInvalidFormat:
+    """The enum stops a model sending these; the runtime check stops everyone
+    else, because Literal is only enforced by pydantic at the MCP boundary.
+    Passing a value the annotation forbids is the whole point, hence the
+    ignores."""
+
     def test_export_pcb_invalid_format(self):
         with pytest.raises(ToolError):
-            pcb.export_pcb(format="xyz")
+            pcb.export_pcb(format="xyz")  # type: ignore[arg-type]
 
     def test_export_3d_invalid_format(self):
         with pytest.raises(ToolError):
-            pcb.export_3d(format="obj")
+            pcb.export_3d(format="obj")  # type: ignore[arg-type]

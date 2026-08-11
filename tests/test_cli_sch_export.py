@@ -53,8 +53,10 @@ class TestExportSchematicDxf:
 
 class TestExportSchematicInvalidFormat:
     def test_invalid_format(self):
+        """Literal is only enforced by pydantic at the MCP boundary, so a direct
+        call still needs the runtime check. The ignore is deliberate."""
         with pytest.raises(ToolError):
-            schematic.export_schematic(format="xyz")
+            schematic.export_schematic(format="xyz")  # type: ignore[arg-type]
 
 
 class TestFindRootSchematic:
