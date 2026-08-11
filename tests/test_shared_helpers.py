@@ -362,9 +362,20 @@ class TestAtomicWrite:
         assert p.read_bytes() == self.ORIGINAL
         assert list(tmp_path.glob("*.tmp")) == [], "temp file left behind"
 
-    def test_goes_through_replace_exactly_once(self, tmp_path: Path, monkeypatch):
-        """Guards against a future simplification back to p.write_bytes(data)."""
-        p = self._target(tmp_path)
+    @pytest.mark.no_kicad_validation
+    def test_replaces_once_from_a_temp_that_is_not_a_kicad_file(self, tmp_path: Path, monkeypatch):
+        """Two properties of the same call, so one spy answers both.
+
+        Exactly one replace, which is what a future simplification back to
+        p.write_bytes(data) would fail. And a temp named board.kicad_sch.PID.tmp
+        rather than board.tmp.kicad_sch, because the latter is swept up by
+        _resolve_config's *.kicad_pro scan and by the suite's rglob.
+
+        The .kicad_sch target is the point, and its contents are not a real
+        schematic, hence the marker.
+        """
+        p = tmp_path / "board.kicad_sch"
+        p.write_bytes(self.ORIGINAL)
         calls: list[tuple[str, str]] = []
         real = _shared.os.replace
 
@@ -376,29 +387,8 @@ class TestAtomicWrite:
         _atomic_write(p, self.REPLACEMENT)
 
         assert len(calls) == 1
-        assert calls[0][1] == str(p)
-        assert calls[0][0] != str(p), "must not replace the file with itself"
-
-    @pytest.mark.no_kicad_validation
-    def test_temp_name_cannot_be_mistaken_for_a_kicad_file(self, tmp_path: Path, monkeypatch):
-        """A foo.tmp.kicad_sch would be swept up by the project auto-detect scan
-        and by the suite's rglob; foo.kicad_sch.PID.tmp is swept up by neither.
-
-        The .kicad_sch name is the whole point here, and its contents are not a
-        real schematic, hence the marker.
-        """
-        p = tmp_path / "board.kicad_sch"
-        p.write_bytes(self.ORIGINAL)
-        seen: list[str] = []
-        real = _shared.os.replace
-
-        def spy(src, dst):
-            seen.append(Path(src).name)
-            return real(src, dst)
-
-        monkeypatch.setattr(_shared.os, "replace", spy)
-        _atomic_write(p, self.REPLACEMENT)
-
-        assert len(seen) == 1
-        assert not seen[0].endswith(".kicad_sch"), seen[0]
-        assert seen[0].endswith(".tmp")
+        src, dst = calls[0]
+        assert dst == str(p)
+        assert src != str(p), "must not replace the file with itself"
+        assert not src.endswith(".kicad_sch"), src
+        assert src.endswith(".tmp")
