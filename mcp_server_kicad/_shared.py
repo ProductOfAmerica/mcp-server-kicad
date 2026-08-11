@@ -26,12 +26,42 @@ except PackageNotFoundError:  # source checkout with no install
     SERVER_VERSION = "0.0.0+unknown"
 
 
+# Appended to every server's instructions, because the failure it prevents is
+# not specific to any one of them.
+#
+# Measured in Claude Desktop on 2026-08-10: asked to edit a schematic, the model
+# replied "I don't have access to any of your folders yet... Click Add folder"
+# and refused, twice, while looking at a place_component schema whose
+# schematic_path default already held the configured absolute path. Hosts that
+# gate their own file tools behind a folder-permission flow teach the model that
+# touching a file needs permission first, and the per-server rules below, which
+# exist to stop it hand-editing s-expressions, read as confirmation. Nothing
+# told it these tools are a different mechanism. Now something does.
+_ACCESS = (
+    "\n\nFILE ACCESS:\n"
+    "- These tools reach the filesystem through this server's own process,"
+    " which already runs with the user's permissions. You do NOT need"
+    " filesystem access, a connected folder, or any other permission from the"
+    " host application to use them.\n"
+    "- NEVER ask the user to connect, add, or grant access to a folder. If you"
+    " need a file, call the tool.\n"
+    "- Every path parameter takes an absolute path. Where the user has"
+    " configured a default it is already filled in as the parameter's default"
+    " value, so the tool can be called with no path at all.\n"
+    "- With no path configured and none given, ask the user for the absolute"
+    " path, or offer create_project to make a new project."
+)
+
+
 def build_server(name: str, instructions: str) -> MCPServer:
     """Build an MCPServer reporting *this package's* version, not the SDK's.
 
+    Every server gets the shared FILE ACCESS rules appended, so the wording
+    cannot drift between the five of them.
+
     Pinned by test_server_reports_package_version.
     """
-    return MCPServer(name, instructions=instructions, version=SERVER_VERSION)
+    return MCPServer(name, instructions=instructions + _ACCESS, version=SERVER_VERSION)
 
 
 # ---------------------------------------------------------------------------
