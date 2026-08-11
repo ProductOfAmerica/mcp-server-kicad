@@ -30,7 +30,7 @@ from mcp_server_kicad._shared import (
     _sheet_name_cst,
     _snap_grid,
     _sym_property_cst,
-    _upsert_root_symbol_instance,
+    _upsert_root_symbol_instances,
     build_server,
 )
 from mcp_server_kicad.models import (
@@ -338,6 +338,7 @@ def add_hierarchical_sheet(
         _splice_sch_node(child_root, "label", lab)
 
     # Add parent project instances to child symbols
+    root_entries: list[tuple[str, str, int, str, str]] = []
     if project_path:
         root_sch_path = Path(project_path).with_suffix(".kicad_sch")
         if root_sch_path.exists():
@@ -365,19 +366,23 @@ def add_hierarchical_sheet(
                             instances.insert_after(projects[-1], pj)
                         else:
                             instances.append_child(pj, b"\n\t\t")
-                ref = _sym_property_cst(sym, "Reference") or "?"
-                val = _sym_property_cst(sym, "Value") or ""
-                fp = _sym_property_cst(sym, "Footprint") or ""
-                _upsert_root_symbol_instance(
-                    str(child_path),
-                    project_path,
-                    _node_uuid(sym),
-                    ref,
-                    value=val,
-                    footprint=fp,
+                root_entries.append(
+                    (
+                        _node_uuid(sym),
+                        _sym_property_cst(sym, "Reference") or "?",
+                        1,
+                        _sym_property_cst(sym, "Value") or "",
+                        _sym_property_cst(sym, "Footprint") or "",
+                    )
                 )
 
+    # Child before root, and the root once rather than once per symbol. The
+    # root's symbol_instances is an index into the child, so writing it first
+    # meant a failed child write left the root pointing at symbols that were
+    # never written. Neither file can tear now, but they could still disagree,
+    # and this is the ordering where the surviving disagreement is harmless.
     _atomic_write(sheet_file, _cst.serialize(child_tree))
+    _upsert_root_symbol_instances(str(child_path), project_path, root_entries)
 
     return f"Added sheet '{sheet_name}' with {len(pins)} pins to {parent_schematic_path}"
 
@@ -694,19 +699,23 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
 
     _atomic_write(schematic_path, _cst.serialize(tree))
 
-    # Sync root symbolInstances for all annotated symbols
-    for sym, _prefix in unannotated:
-        ref = _sym_property_cst(sym, "Reference") or "?"
-        val = _sym_property_cst(sym, "Value") or ""
-        fp = _sym_property_cst(sym, "Footprint") or ""
-        _upsert_root_symbol_instance(
-            schematic_path,
-            project_path,
-            _node_uuid(sym),
-            ref,
-            value=val,
-            footprint=fp,
-        )
+    # Sync root symbolInstances for all annotated symbols. One parse and one
+    # write for the batch: this was a per-symbol call, so a fifty-symbol sheet
+    # re-parsed and rewrote the whole root schematic fifty times.
+    _upsert_root_symbol_instances(
+        schematic_path,
+        project_path,
+        [
+            (
+                _node_uuid(sym),
+                _sym_property_cst(sym, "Reference") or "?",
+                1,
+                _sym_property_cst(sym, "Value") or "",
+                _sym_property_cst(sym, "Footprint") or "",
+            )
+            for sym, _prefix in unannotated
+        ],
+    )
 
     parts = []
     for prefix in sorted(assigned):
@@ -1217,6 +1226,12 @@ def duplicate_sheet(
     dst_path = sch_dir / new_file_name
     if not src_path.exists():
         raise ToolError(f"Source file not found: {src_path}")
+    if dst_path.exists():
+        # Called twice with the same name, this silently replaced the first
+        # copy with the source sheet. Every other create in this module guards
+        # (create_project, create_schematic, create_symbol_library); this one
+        # did not.
+        raise ToolError(f"{dst_path} already exists. Pass a different new_file_name.")
 
     shutil.copy2(str(src_path), str(dst_path))
 
@@ -1318,6 +1333,20 @@ def flatten_hierarchy(
 
     # Remember the child files, then drop hierarchy constructs from the output
     child_files = [_sheet_file_cst(s) or "" for s in flat_root.find_all("sheet")]
+
+    # The docstring above promises the original hierarchy is not modified, and
+    # output_path was unchecked, so pointing it at an input silently consumed
+    # the file being flattened. Narrow on purpose: a bare exists() check would
+    # break re-flattening to the same output, which is the normal loop, and the
+    # ADR records that refuse-to-clobber in general needs an overwrite
+    # parameter first.
+    out = Path(output_path).resolve()
+    inputs = {Path(schematic_path).resolve()} | {(sch_dir / f).resolve() for f in child_files if f}
+    if out in inputs:
+        raise ToolError(
+            f"output_path {out.name} is part of the hierarchy being flattened."
+            " Choose a different output file."
+        )
     for token in ("sheet", "hierarchical_label", "symbol_instances", "sheet_instances"):
         for node in flat_root.find_all(token):
             flat_root.remove_child(node)

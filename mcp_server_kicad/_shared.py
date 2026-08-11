@@ -582,28 +582,19 @@ def _root_instance_target(schematic_path: str, project_path: str):
     return tree, root, schematic_path, f"/{_node_uuid(root)}"
 
 
-def _upsert_root_symbol_instance(
-    schematic_path: str,
-    project_path: str,
-    sym_uuid: str,
+def _upsert_entry(
+    root,
+    sym_path: str,
     reference: str,
     unit: int = 1,
     value: str = "",
     footprint: str = "",
-) -> bool:
-    """Create or update a symbol_instances entry in the root schematic.
+) -> None:
+    """Create or update one symbol_instances entry in an already-parsed root.
 
-    Automatically detects whether *schematic_path* is a sub-sheet or the root
-    itself and builds the correct instance path accordingly.
-
-    Returns True if the root was updated, False if no root could be determined.
+    Pure: touches no disk, so a caller with many symbols can parse once, apply
+    this per symbol, and write once.
     """
-    target = _root_instance_target(schematic_path, project_path)
-    if target is None:
-        return False
-    tree, root, out_path, prefix = target
-    sym_path = f"{prefix}/{sym_uuid}"
-
     si = root.find("symbol_instances")
     if si is None:
         si = _cst.parse(b"(symbol_instances\n)").lists[0]
@@ -626,6 +617,53 @@ def _upsert_root_symbol_instance(
     entry.find("unit").atoms[1].set_text(str(unit))
     entry.find("value").atoms[1].set_text(value)
     entry.find("footprint").atoms[1].set_text(footprint)
+
+
+def _upsert_root_symbol_instance(
+    schematic_path: str,
+    project_path: str,
+    sym_uuid: str,
+    reference: str,
+    unit: int = 1,
+    value: str = "",
+    footprint: str = "",
+) -> bool:
+    """Create or update a symbol_instances entry in the root schematic.
+
+    Automatically detects whether *schematic_path* is a sub-sheet or the root
+    itself and builds the correct instance path accordingly.
+
+    Returns True if the root was updated, False if no root could be determined.
+    """
+    return _upsert_root_symbol_instances(
+        schematic_path, project_path, [(sym_uuid, reference, unit, value, footprint)]
+    )
+
+
+def _upsert_root_symbol_instances(
+    schematic_path: str,
+    project_path: str,
+    entries: list[tuple[str, str, int, str, str]],
+) -> bool:
+    """Upsert many symbol_instances entries with one parse and one write.
+
+    *entries* are ``(sym_uuid, reference, unit, value, footprint)``.
+
+    The single-symbol wrapper above used to be called in a loop, which re-parsed
+    and rewrote the whole root schematic per symbol. The ADR measures ~1.07 s to
+    parse a 2.4 MB file, so annotating fifty symbols was fifty parses, fifty
+    serializes and fifty chances for a write to fail part way.
+
+    Returns True if the root was updated, False if no root could be determined.
+    """
+    if not entries:
+        return False
+    target = _root_instance_target(schematic_path, project_path)
+    if target is None:
+        return False
+    tree, root, out_path, prefix = target
+    for sym_uuid, reference, unit, value, footprint in entries:
+        _upsert_entry(root, f"{prefix}/{sym_uuid}", reference, unit, value, footprint)
     _atomic_write(out_path, _cst.serialize(tree))
     return True
 

@@ -54,6 +54,65 @@ def _count_wires(sch) -> int:
 # ===========================================================================
 
 
+class TestFanOutResidual:
+    """One tool call writes two files, and that is not transactional.
+
+    place_component writes the schematic, then the root schematic's
+    symbol_instances index. Per-file atomicity means neither can tear, but a
+    failure on the second still leaves the two disagreeing. Making that
+    transactional needs a journal with crash recovery, which is grossly
+    disproportionate to a stale reference designator in an index KiCad rewrites
+    on its next save.
+
+    This test states the decision rather than describing it: the payload lands,
+    the index does not, and neither file is damaged.
+    """
+
+    def test_failed_index_write_leaves_the_payload_undamaged(self, scratch_sch, monkeypatch):
+        from mcp_server_kicad import _shared
+
+        # A .kicad_pro sibling is what makes the root-instance write happen at
+        # all; without it _root_instance_target returns None and there is only
+        # one write.
+        scratch_sch.with_suffix(".kicad_pro").write_text("{}")
+        before = scratch_sch.read_bytes()
+
+        calls: list[str] = []
+        real = _shared._atomic_write
+
+        def fail_second(path, data):
+            calls.append(str(path))
+            if len(calls) == 2:
+                raise OSError("simulated failure on the root index write")
+            return real(path, data)
+
+        monkeypatch.setattr(_shared, "_atomic_write", fail_second)
+        monkeypatch.setattr(schematic, "_atomic_write", fail_second)
+
+        with pytest.raises(OSError):
+            schematic.place_component(
+                lib_id="Device:R",
+                reference="R9",
+                value="1K",
+                x=150,
+                y=150,
+                schematic_path=str(scratch_sch),
+                project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+            )
+
+        monkeypatch.undo()
+        assert len(calls) == 2, f"expected a payload write then an index write, got {calls}"
+
+        after = scratch_sch.read_bytes()
+        assert after != before, "the payload write should have landed"
+        # Whole and parseable, not torn: this is the guarantee.
+        assert after.startswith(b"(kicad_sch")
+        assert after.rstrip().endswith(b")")
+        assert b"R9" in after
+        # And this is the residual we accepted: the index never got the entry.
+        assert b"symbol_instances" not in after
+
+
 class TestPlaceComponent:
     def test_basic_placement(self, scratch_sch):
         result = schematic.place_component(
