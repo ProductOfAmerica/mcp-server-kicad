@@ -198,6 +198,10 @@ def upgrade_footprint_lib(footprint_path: str) -> str:
     directory.  kicad-cli has no per-footprint option here, and a single
     .kicad_mod path is rejected.
 
+    kicad-cli does the writing, in place and with no undo, so this is one of the
+    few paths that cannot go through the server's atomic write. Keep the library
+    in version control before running it.
+
     Args:
         footprint_path: Path to a .pretty library directory
     """

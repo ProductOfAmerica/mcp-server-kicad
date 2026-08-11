@@ -10,8 +10,9 @@ from kiutils.footprint import Footprint
 from kiutils.items.common import Position
 from kiutils.items.fpitems import FpCircle, FpLine, FpRect
 
-from mcp_server_kicad import _cst
+from mcp_server_kicad import _cst, _shared
 from mcp_server_kicad._shared import (
+    _atomic_write,
     _courtyard_bbox_cst,
     _point_in_polygon,
     _resolve_hierarchy_path,
@@ -287,3 +288,107 @@ class TestCourtyardBbox:
         assert bbox["max_x"] == pytest.approx(5)
         assert bbox["min_y"] == pytest.approx(-5)
         assert bbox["max_y"] == pytest.approx(5)
+
+
+class TestAtomicWrite:
+    """The invariant is that a write we cannot finish leaves the file intact.
+
+    A plain write_bytes opens with O_TRUNC and cannot offer that. Measured on
+    NTFS with a concurrent reader: 345 torn reads out of 800, including reads of
+    zero bytes, against 0 out of 25,529 through _atomic_write.
+
+    These use a .bin target so the autouse kicad-cli validation fixture has
+    nothing to say about them.
+    """
+
+    ORIGINAL = b"(kicad_sch original)\n"
+    REPLACEMENT = b"(kicad_sch replacement that is considerably longer)\n"
+
+    def _target(self, tmp_path: Path) -> Path:
+        p = tmp_path / "target.bin"
+        p.write_bytes(self.ORIGINAL)
+        return p
+
+    def test_replaces_the_file(self, tmp_path: Path):
+        p = self._target(tmp_path)
+        _atomic_write(p, self.REPLACEMENT)
+        assert p.read_bytes() == self.REPLACEMENT
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    def test_creates_a_file_that_did_not_exist(self, tmp_path: Path):
+        """copymode must not be attempted against a missing destination."""
+        p = tmp_path / "new.bin"
+        _atomic_write(p, self.REPLACEMENT)
+        assert p.read_bytes() == self.REPLACEMENT
+
+    def test_blocked_replace_leaves_the_file_intact(self, tmp_path: Path, monkeypatch):
+        """Windows refuses the swap while another process holds the destination.
+
+        The decision this pins: give up and raise rather than fall back to a
+        direct write. A refused edit with the file intact is the invariant; a
+        torn file is what it forbids.
+        """
+        p = self._target(tmp_path)
+        monkeypatch.setattr(_shared, "_REPLACE_RETRY_DELAYS", (0, 0))
+
+        def blocked(src, dst):
+            raise PermissionError(5, "Access is denied")
+
+        monkeypatch.setattr(_shared.os, "replace", blocked)
+
+        with pytest.raises(OSError, match="unchanged"):
+            _atomic_write(p, self.REPLACEMENT)
+
+        assert p.read_bytes() == self.ORIGINAL
+        assert list(tmp_path.glob("*.tmp")) == [], "temp file left behind"
+
+    def test_failed_temp_write_leaves_the_file_intact(self, tmp_path: Path, monkeypatch):
+        """Disk full, or the folder itself refusing new files as Controlled
+        Folder Access does. Separate test because the cleanup branch differs."""
+        p = self._target(tmp_path)
+        real = Path.write_bytes
+
+        def explode(self, data):
+            if self.name.endswith(".tmp"):
+                raise OSError(28, "No space left on device")
+            return real(self, data)
+
+        monkeypatch.setattr(Path, "write_bytes", explode)
+
+        with pytest.raises(OSError):
+            _atomic_write(p, self.REPLACEMENT)
+
+        monkeypatch.undo()
+        assert p.read_bytes() == self.ORIGINAL
+        assert list(tmp_path.glob("*.tmp")) == [], "temp file left behind"
+
+    @pytest.mark.no_kicad_validation
+    def test_replaces_once_from_a_temp_that_is_not_a_kicad_file(self, tmp_path: Path, monkeypatch):
+        """Two properties of the same call, so one spy answers both.
+
+        Exactly one replace, which is what a future simplification back to
+        p.write_bytes(data) would fail. And a temp named board.kicad_sch.PID.tmp
+        rather than board.tmp.kicad_sch, because the latter is swept up by
+        _resolve_config's *.kicad_pro scan and by the suite's rglob.
+
+        The .kicad_sch target is the point, and its contents are not a real
+        schematic, hence the marker.
+        """
+        p = tmp_path / "board.kicad_sch"
+        p.write_bytes(self.ORIGINAL)
+        calls: list[tuple[str, str]] = []
+        real = _shared.os.replace
+
+        def spy(src, dst):
+            calls.append((str(src), str(dst)))
+            return real(src, dst)
+
+        monkeypatch.setattr(_shared.os, "replace", spy)
+        _atomic_write(p, self.REPLACEMENT)
+
+        assert len(calls) == 1
+        src, dst = calls[0]
+        assert dst == str(p)
+        assert src != str(p), "must not replace the file with itself"
+        assert not src.endswith(".kicad_sch"), src
+        assert src.endswith(".tmp")

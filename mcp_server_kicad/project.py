@@ -19,6 +19,7 @@ from mcp_server_kicad._shared import (
     _EXPORT,
     _READ_ONLY,
     SCH_PATH,
+    _atomic_write,
     _find_root_schematic,
     _gen_uuid,
     _node_uuid,
@@ -29,7 +30,7 @@ from mcp_server_kicad._shared import (
     _sheet_name_cst,
     _snap_grid,
     _sym_property_cst,
-    _upsert_root_symbol_instance,
+    _upsert_root_symbol_instances,
     build_server,
 )
 from mcp_server_kicad.models import (
@@ -149,11 +150,11 @@ def create_project(directory: str, name: str) -> str:
         raise ToolError(f"{pro_path} already exists.")
 
     pro_data = {"meta": {"filename": f"{name}.kicad_pro", "version": 1}}
-    pro_path.write_text(json.dumps(pro_data, indent=2) + "\n")
+    _atomic_write(pro_path, (json.dumps(pro_data, indent=2) + "\n").encode())
 
     prl_data = {"meta": {"filename": f"{name}.kicad_prl", "version": 3}}
     prl_path = d / f"{name}.kicad_prl"
-    prl_path.write_text(json.dumps(prl_data, indent=2) + "\n")
+    _atomic_write(prl_path, (json.dumps(prl_data, indent=2) + "\n").encode())
 
     # Also create the root schematic (matching real KiCad behavior).
     # Guard is defensive — the .kicad_pro check above ensures this is
@@ -180,7 +181,7 @@ def create_schematic(schematic_path: str) -> str:
 
     tree = _cst.parse(_EMPTY_SCH_TPL)
     tree.lists[0].find("uuid").atoms[1].set_text(_gen_uuid())
-    p.write_bytes(_cst.serialize(tree))
+    _atomic_write(p, _cst.serialize(tree))
     return f"Created schematic at {p}"
 
 
@@ -197,7 +198,7 @@ def create_symbol_library(symbol_lib_path: str) -> str:
 
     p.parent.mkdir(parents=True, exist_ok=True)
 
-    p.write_bytes(_SYM_LIB_TPL)
+    _atomic_write(p, _SYM_LIB_TPL)
     return f"Created symbol library at {p}"
 
 
@@ -223,7 +224,9 @@ def create_sym_lib_table(directory: str, entries: list[LibTableEntry]) -> str:
     lines.append(")")
 
     table_path = d / "sym-lib-table"
-    table_path.write_text("\n".join(lines) + "\n")
+    # .encode() is UTF-8, where write_text was the platform default. KiCad reads
+    # these as UTF-8, so a non-ASCII library path was already wrong on Windows.
+    _atomic_write(table_path, ("\n".join(lines) + "\n").encode())
     return f"Created sym-lib-table with {len(entries)} entries at {table_path}"
 
 
@@ -311,7 +314,7 @@ def add_hierarchical_sheet(
     ipath.find("page").atoms[1].set_text(page)
 
     _splice_sch_node(parent_root, "sheet", sheet)
-    Path(parent_schematic_path).write_bytes(_cst.serialize(parent_tree))
+    _atomic_write(parent_schematic_path, _cst.serialize(parent_tree))
 
     # Add matching hierarchical labels to child schematic
     child_tree, child_root, *_ = _open_sch_cst(sheet_file)
@@ -335,6 +338,7 @@ def add_hierarchical_sheet(
         _splice_sch_node(child_root, "label", lab)
 
     # Add parent project instances to child symbols
+    root_entries: list[tuple[str, str, int, str, str]] = []
     if project_path:
         root_sch_path = Path(project_path).with_suffix(".kicad_sch")
         if root_sch_path.exists():
@@ -362,19 +366,23 @@ def add_hierarchical_sheet(
                             instances.insert_after(projects[-1], pj)
                         else:
                             instances.append_child(pj, b"\n\t\t")
-                ref = _sym_property_cst(sym, "Reference") or "?"
-                val = _sym_property_cst(sym, "Value") or ""
-                fp = _sym_property_cst(sym, "Footprint") or ""
-                _upsert_root_symbol_instance(
-                    str(child_path),
-                    project_path,
-                    _node_uuid(sym),
-                    ref,
-                    value=val,
-                    footprint=fp,
+                root_entries.append(
+                    (
+                        _node_uuid(sym),
+                        _sym_property_cst(sym, "Reference") or "?",
+                        1,
+                        _sym_property_cst(sym, "Value") or "",
+                        _sym_property_cst(sym, "Footprint") or "",
+                    )
                 )
 
-    Path(sheet_file).write_bytes(_cst.serialize(child_tree))
+    # Child before root, and the root once rather than once per symbol. The
+    # root's symbol_instances is an index into the child, so writing it first
+    # meant a failed child write left the root pointing at symbols that were
+    # never written. Neither file can tear now, but they could still disagree,
+    # and this is the ordering where the surviving disagreement is harmless.
+    _atomic_write(sheet_file, _cst.serialize(child_tree))
+    _upsert_root_symbol_instances(str(child_path), project_path, root_entries)
 
     return f"Added sheet '{sheet_name}' with {len(pins)} pins to {parent_schematic_path}"
 
@@ -475,7 +483,7 @@ def remove_hierarchical_sheet(
             msg += f" Deleted child file '{child_filename}'."
 
     root.remove_child(target)
-    Path(parent_schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(parent_schematic_path, _cst.serialize(tree))
     return msg
 
 
@@ -515,7 +523,7 @@ def modify_hierarchical_sheet(
     if height is not None:
         size.atoms[2].set_text(_num(height))
         changes.append(f"height={height}")
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Modified sheet: {', '.join(changes)}"
 
 
@@ -560,7 +568,7 @@ def add_sheet_pin(
     else:
         props = target.find_all("property")
         target.insert_after(props[-1], pin)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Added sheet pin '{pin_name}' ({connection_type}) to sheet"
 
 
@@ -583,7 +591,7 @@ def remove_sheet_pin(
     if pin is None:
         raise ToolError(f"Pin '{pin_name}' not found on sheet")
     target.remove_child(pin)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Removed pin '{pin_name}' from sheet"
 
 
@@ -689,21 +697,25 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
             sym.append_child(node, b"\n\t")
         assigned.setdefault(prefix, []).append(new_ref)
 
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
 
-    # Sync root symbolInstances for all annotated symbols
-    for sym, _prefix in unannotated:
-        ref = _sym_property_cst(sym, "Reference") or "?"
-        val = _sym_property_cst(sym, "Value") or ""
-        fp = _sym_property_cst(sym, "Footprint") or ""
-        _upsert_root_symbol_instance(
-            schematic_path,
-            project_path,
-            _node_uuid(sym),
-            ref,
-            value=val,
-            footprint=fp,
-        )
+    # Sync root symbolInstances for all annotated symbols. One parse and one
+    # write for the batch: this was a per-symbol call, so a fifty-symbol sheet
+    # re-parsed and rewrote the whole root schematic fifty times.
+    _upsert_root_symbol_instances(
+        schematic_path,
+        project_path,
+        [
+            (
+                _node_uuid(sym),
+                _sym_property_cst(sym, "Reference") or "?",
+                1,
+                _sym_property_cst(sym, "Value") or "",
+                _sym_property_cst(sym, "Footprint") or "",
+            )
+            for sym, _prefix in unannotated
+        ],
+    )
 
     parts = []
     for prefix in sorted(assigned):
@@ -1140,7 +1152,7 @@ def move_hierarchical_sheet(
         _shift(pin)
     for prop in target.find_all("property"):
         _shift(prop)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Moved sheet to ({new_x}, {new_y})"
 
 
@@ -1169,7 +1181,7 @@ def reorder_sheet_pages(
     for slot, sep, node in zip(slots, slot_seps, new_order):
         node.sep = sep
         root.children[slot] = node
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Reordered {len(page_order)} sheets"
 
 
@@ -1214,6 +1226,12 @@ def duplicate_sheet(
     dst_path = sch_dir / new_file_name
     if not src_path.exists():
         raise ToolError(f"Source file not found: {src_path}")
+    if dst_path.exists():
+        # Called twice with the same name, this silently replaced the first
+        # copy with the source sheet. Every other create in this module guards
+        # (create_project, create_schematic, create_symbol_library); this one
+        # did not.
+        raise ToolError(f"{dst_path} already exists. Pass a different new_file_name.")
 
     shutil.copy2(str(src_path), str(dst_path))
 
@@ -1241,7 +1259,7 @@ def duplicate_sheet(
             iu = item.find("uuid")
             if iu is not None:
                 iu.atoms[1].set_text(str(_uuid_mod.uuid4()))
-    dst_path.write_bytes(_cst.serialize(copy_tree))
+    _atomic_write(dst_path, _cst.serialize(copy_tree))
 
     # Create new sheet block in parent (geometry from source, fresh identity)
     dx = src_w + 5
@@ -1281,7 +1299,7 @@ def duplicate_sheet(
     pp.find("page").atoms[1].set_text(page)
 
     _splice_sch_node(root, "sheet", new_sheet)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
 
 
@@ -1315,6 +1333,20 @@ def flatten_hierarchy(
 
     # Remember the child files, then drop hierarchy constructs from the output
     child_files = [_sheet_file_cst(s) or "" for s in flat_root.find_all("sheet")]
+
+    # The docstring above promises the original hierarchy is not modified, and
+    # output_path was unchecked, so pointing it at an input silently consumed
+    # the file being flattened. Narrow on purpose: a bare exists() check would
+    # break re-flattening to the same output, which is the normal loop, and the
+    # ADR records that refuse-to-clobber in general needs an overwrite
+    # parameter first.
+    out = Path(output_path).resolve()
+    inputs = {Path(schematic_path).resolve()} | {(sch_dir / f).resolve() for f in child_files if f}
+    if out in inputs:
+        raise ToolError(
+            f"output_path {out.name} is part of the hierarchy being flattened."
+            " Choose a different output file."
+        )
     for token in ("sheet", "hierarchical_label", "symbol_instances", "sheet_instances"):
         for node in flat_root.find_all(token):
             flat_root.remove_child(node)
@@ -1409,7 +1441,7 @@ def flatten_hierarchy(
 
         sheet_index += 1
 
-    Path(output_path).write_bytes(_cst.serialize(flat_tree))
+    _atomic_write(output_path, _cst.serialize(flat_tree))
 
     total_components = len(flat_root.find_all("symbol"))
     return f"Flattened hierarchy to {Path(output_path).name}: {total_components} components"

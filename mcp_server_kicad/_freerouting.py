@@ -10,7 +10,7 @@ import subprocess
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from mcp_server_kicad._shared import _kicad_root
+from mcp_server_kicad._shared import _atomic_write, _kicad_root
 
 _GITHUB_RELEASES_URL = "https://api.github.com/repos/freerouting/freerouting/releases/latest"
 
@@ -93,7 +93,7 @@ def _download_jar() -> str:
 
     req = Request(download_url)
     with urlopen(req, timeout=120) as resp:
-        dest.write_bytes(resp.read())
+        _atomic_write(dest, resp.read())
 
     return str(dest)
 

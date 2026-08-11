@@ -205,6 +205,13 @@ def parse(data: bytes) -> Doc:
 
 
 def serialize(node: Node) -> bytes:
+    """Bytes for a node, exactly as parsed apart from edited spans.
+
+    Write the result through ``_shared._atomic_write``, never straight to the
+    destination: a plain write opens with O_TRUNC, so a failure part way through
+    leaves the file truncated, which the invariant in docs/adr-cst-substrate.md
+    forbids. Enforced by test_every_write_goes_through_atomic_write.
+    """
     out = []
     stack: list[Node | bytes] = [node]
     while stack:

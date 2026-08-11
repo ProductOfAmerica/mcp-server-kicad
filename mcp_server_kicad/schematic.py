@@ -18,6 +18,7 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     OUTPUT_DIR,
     SCH_PATH,
+    _atomic_write,
     _file_meta,
     _gen_uuid,
     _node_uuid,
@@ -813,7 +814,7 @@ def place_component(
             break
 
     _splice_sch_node(root, "symbol", node)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     _upsert_root_symbol_instance(
         schematic_path,
         project_path,
@@ -839,7 +840,7 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
         raise ToolError(f"Component {reference} not found.")
     uuid = _node_uuid(target)
     root.remove_child(target)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     _remove_root_symbol_instance(schematic_path, "", uuid)
     return f"Removed {reference}"
 
@@ -883,7 +884,7 @@ def remove_label(
         counts[token] = len(matched)
     if not counts["label"] and not counts["global_label"]:
         raise ToolError(f"Label '{text}' not found.")
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     parts = []
     if counts["label"]:
         parts.append(f"{counts['label']} label(s)")
@@ -937,7 +938,7 @@ def remove_wire(
             removed += 1
     if not removed:
         raise ToolError(f"Wire ({x1},{y1})->({x2},{y2}) not found.")
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Removed {removed} wire(s)."
 
 
@@ -960,7 +961,7 @@ def remove_junction(
         nx, ny = _node_xy(node)
         if abs(nx - x) < tol and abs(ny - y) < tol:
             root.remove_child(node)
-            Path(schematic_path).write_bytes(_cst.serialize(tree))
+            _atomic_write(schematic_path, _cst.serialize(tree))
             return f"Removed junction at ({x}, {y})"
     raise ToolError(f"Junction at ({x}, {y}) not found.")
 
@@ -983,7 +984,7 @@ def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
     # Auto-add junctions where new wire endpoints hit wire interiors (the scan
     # includes the wires just spliced, matching the kiutils-era behavior)
     _auto_junctions_cst(root, all_points)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Added {len(wires)} wires"
 
 
@@ -1299,7 +1300,7 @@ def add_label(
     _fill_at(node, x, y, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "label", node)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Label '{text}' at ({x}, {y})"
 
 
@@ -1319,7 +1320,7 @@ def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> st
         _fill_at(node, round(p["x"], 4), round(p["y"], 4))
         node.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(root, "junction", node)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Added {len(points)} junctions"
 
 
@@ -1337,7 +1338,7 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
         raise ToolError(f"'{symbol_name}' already in lib_symbols.")
     if not _copy_lib_symbol_from_file_cst(root, symbol_lib_path, symbol_name, symbol_name):
         raise ToolError(f"'{symbol_name}' not found in {symbol_lib_path}.")
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Added '{symbol_name}' to lib_symbols."
 
 
@@ -1365,7 +1366,7 @@ def move_component(
     if sym is None:
         raise ToolError(f"Component {reference} not found.")
     _fill_at(sym, x, y, rotation)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Moved {reference} to ({x}, {y})"
 
 
@@ -1419,7 +1420,7 @@ def set_component_property(
                     ref_node = path_node.find("reference")
                     if ref_node is not None:
                         ref_node.atoms[1].set_text(value)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     if key in ("Reference", "Value", "Footprint"):
         ref = _sym_property_cst(sym, "Reference") or "?"
         val = _sym_property_cst(sym, "Value") or ""
@@ -1476,7 +1477,7 @@ def set_page_size(
         root.children[root.children.index(paper)] = new_paper
     else:
         _splice_sch_node(root, "paper", new_paper)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
 
     if portrait:
         return f"Page size set to {size_key} ({h}x{w}mm, portrait)"
@@ -1511,7 +1512,7 @@ def add_global_label(
     _fill_at(node, x, y, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "global_label", node)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Global label '{text}' ({shape}) at ({x}, {y})"
 
 
@@ -1548,7 +1549,7 @@ def add_hierarchical_label(
     _fill_at(node, x, y, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "hierarchical_label", node)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Added hierarchical label '{text}' ({shape}) at ({x}, {y})"
 
 
@@ -1578,7 +1579,7 @@ def remove_hierarchical_label(
         raise ToolError(f"Hierarchical label '{text}' not found")
     target_text = _node_text(target)
     root.remove_child(target)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Removed hierarchical label '{target_text}'"
 
 
@@ -1632,7 +1633,7 @@ def modify_hierarchical_label(
     if new_y is not None:
         at.atoms[2].set_text(_num(round(new_y, 4)))
         changes.append(f"y={new_y}")
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     warning = ""
     if new_text:
         warning = " Warning: update the matching sheet pin in the parent schematic."
@@ -1804,7 +1805,7 @@ def add_text(
     _fill_at(node, x, y, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "text", node)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Text '{text}' at ({x}, {y})"
 
 
@@ -1842,7 +1843,7 @@ def remove_text(
         raise ToolError(f"Text '{text}' not found.")
     for node in matched:
         root.remove_child(node)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Removed {len(matched)} text(s) '{text}'."
 
 
@@ -2050,7 +2051,7 @@ def wire_pins_to_net(
 
             _splice_sch_node(root, "symbol", node)
 
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     msg = f"Wired {len(pins)} pins to '{label_text}'."
     if warnings:
         msg += " WARNINGS: " + "; ".join(warnings)
@@ -2141,7 +2142,7 @@ def connect_pins(
         node.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(root, "label", node)
 
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
 
     n = len(segments)
     return f"Connected {ref1}:{pin1} -> {ref2}:{pin2} via {n} wire segment{'s' if n > 1 else ''}"
@@ -2177,7 +2178,7 @@ def no_connect_pin(
     _fill_at(node, px, py)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "no_connect", node)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
 
     return f"No-connect on {reference}:{pin_name} at ({px}, {py})"
 
@@ -2211,7 +2212,7 @@ def remove_no_connect(
         raise ToolError(f"No no-connect flag on {reference}:{pin_name}.")
     for nc in matched:
         root.remove_child(nc)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Removed {len(matched)} no-connect flag(s) from {reference}:{pin_name}"
 
 

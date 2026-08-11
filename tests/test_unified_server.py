@@ -59,6 +59,32 @@ class TestUnifiedServer:
         ]
         assert offenders == [], f"kiutils imported by {offenders}; it is in the dev extra only"
 
+    def test_every_write_goes_through_atomic_write(self):
+        """The only write_bytes/write_text in the package is the temp file
+        inside _atomic_write.
+
+        A plain write opens with O_TRUNC, so a failure part way through leaves
+        the user's file truncated, which the invariant at the top of
+        docs/adr-cst-substrate.md forbids. Measured on NTFS with a concurrent
+        reader before this was fixed: 345 torn reads out of 800, including reads
+        of zero bytes.
+
+        Scanned rather than exercised, for the same reason as the kiutils check
+        above: a new direct write would pass every functional test in the suite.
+        Ruff cannot express this, because banned-api matches qualified names and
+        Path(x).write_bytes(...) is a method on an instance.
+        """
+        src = Path(mcp_server_kicad.__file__).parent
+        offenders = []
+        for p in sorted(src.glob("*.py")):
+            for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
+                if re.search(r"\.write_(bytes|text)\(", line) and "not a user file" not in line:
+                    offenders.append(f"{p.name}:{n}: {line.strip()}")
+        assert offenders == [], (
+            "write directly to disk; use _shared._atomic_write so a failed write"
+            " cannot truncate the file:\n  " + "\n  ".join(offenders)
+        )
+
     def test_no_tool_name_collisions(self):
         """All tool names across modules are unique."""
         all_names: list[str] = []
