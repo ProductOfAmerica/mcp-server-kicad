@@ -74,11 +74,19 @@ class _Bundle:
         return self
 
     def __exit__(self, *exc):
-        if self.proc:
-            if self.proc.stdin:
-                self.proc.stdin.close()
-            self.proc.terminate()
-            self.proc.wait(timeout=30)
+        if not self.proc:
+            return
+        # Closing stdin is the stdio transport's shutdown signal, so give the
+        # server a chance to exit on its own before killing it. `uv run` spawns
+        # python as a child, and terminating uv does not reap the grandchild on
+        # Windows, which then keeps cryptography's _rust.pyd mapped.
+        if self.proc.stdin:
+            self.proc.stdin.close()
+        try:
+            self.proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(timeout=15)
 
     def rpc(self, method: str, params: dict | None = None) -> dict:
         assert self.proc and self.proc.stdin and self.proc.stdout
@@ -107,7 +115,14 @@ class _Bundle:
 
 @pytest.fixture(scope="module")
 def bundle():
-    with tempfile.TemporaryDirectory() as tmp, _Bundle(Path(tmp) / "bundle") as b:
+    # ignore_cleanup_errors because the bundle's .venv holds native extensions.
+    # Windows refuses to delete a DLL that is still mapped, and a grandchild
+    # process can outlive the uv parent by a moment. The directory is under the
+    # OS temp root, so leaving it is a non-event; failing the run over it is not.
+    with (
+        tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp,
+        _Bundle(Path(tmp) / "bundle") as b,
+    ):
         init = b.rpc(
             "initialize",
             {
