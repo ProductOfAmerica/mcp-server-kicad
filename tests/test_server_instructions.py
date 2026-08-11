@@ -61,3 +61,21 @@ def test_scanner_would_catch_a_phantom_name():
     tools = _registered_tools()
     assert _unresolved("Use upgrade_fp_lib instead.", tools) == ["upgrade_fp_lib"]
     assert _unresolved("Use upgrade_footprint_lib instead.", tools) == []
+
+
+def test_every_server_says_it_needs_no_folder_permission():
+    """Measured failure, not a hypothetical.
+
+    In Claude Desktop the model twice refused to edit a schematic, asking the
+    user to "Add folder" first, while looking at a place_component schema whose
+    schematic_path default already held the configured absolute path. Hosts that
+    gate their own file tools behind a permission flow teach that reflex, and
+    each server's CRITICAL RULES (never touch these files directly) read as
+    confirmation of it. The counter-statement has to reach the model on every
+    server, so it is appended in build_server rather than copied five times.
+    """
+    for mod in _SERVER_MODULES:
+        text = mod.mcp.instructions or ""
+        assert "FILE ACCESS:" in text, mod.__name__
+        assert "do NOT need" in text, mod.__name__
+        assert "NEVER ask the user to connect" in text, mod.__name__
