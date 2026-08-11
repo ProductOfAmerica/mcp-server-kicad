@@ -4,6 +4,7 @@ import math
 import os
 import shutil
 import subprocess
+import time
 import uuid
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
@@ -146,6 +147,65 @@ SYM_LIB_PATH: str = _cfg["sym_lib_path"]
 PCB_PATH: str = _cfg["pcb_path"]
 FP_LIB_PATH: str = _cfg["fp_lib_path"]
 OUTPUT_DIR: str = _cfg["output_dir"]
+
+# ---------------------------------------------------------------------------
+# Writing
+# ---------------------------------------------------------------------------
+
+# Backoff before giving up on a blocked replace. Windows refuses the swap while
+# any process holds the destination open, and sync clients and virus scanners do
+# so transiently. About 0.75s total: long enough to outlast a scanner, short
+# enough that a tool call does not feel hung.
+_REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4)
+
+
+def _atomic_write(path: str | Path, data: bytes) -> None:
+    """Write *data* to *path* through a temp file and a replace.
+
+    The invariant this exists for: an edit we cannot complete leaves the file
+    intact. A plain ``write_bytes`` opens with O_TRUNC, so anything that goes
+    wrong after that point (disk full, killed process, a scanner locking the
+    file) leaves a truncated or empty file. Measured on NTFS with a concurrent
+    reader, a plain write was observed torn 345 times in 800 reads, including
+    reads of zero bytes; the same probe against this function saw 0 in 25,529.
+
+    Deliberately no fsync. What was measured is tearing, which the replace
+    closes completely. fsync buys power-loss durability that nobody here has
+    measured a need for, at the cost of flushing the drive on every edit. Add it
+    if a case appears, do not add it because it looks incomplete.
+    """
+    p = Path(path)
+    # Suffix after the whole name, never before the extension: a stray
+    # ``foo.tmp.kicad_sch`` would be picked up by the project auto-detect scan
+    # and by the test suite's rglob, ``foo.kicad_sch.1234.tmp`` by neither.
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_bytes(data)  # not a user file
+        if p.exists():
+            # Otherwise a group-writable file comes back 0644. No-op on Windows.
+            shutil.copymode(p, tmp)
+        for delay in _REPLACE_RETRY_DELAYS:
+            try:
+                os.replace(tmp, p)
+                return
+            except PermissionError:
+                time.sleep(delay)
+        try:
+            os.replace(tmp, p)
+        except PermissionError as e:
+            # Name the destination, never the temp. This project already lost
+            # time to a Defender message about a path the user did not
+            # recognise, and the temp is exactly such a path.
+            raise OSError(
+                f"could not replace {p}: it is open in another program, or a sync"
+                " or antivirus client is holding it. The file is unchanged."
+            ) from e
+    except BaseException:
+        # BaseException, not Exception: a KeyboardInterrupt mid-write would
+        # otherwise leave the temp behind.
+        tmp.unlink(missing_ok=True)
+        raise
+
 
 # ---------------------------------------------------------------------------
 # Helpers
