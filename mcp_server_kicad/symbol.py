@@ -195,7 +195,7 @@ def list_lib_symbols(symbol_lib_path: str = SYM_LIB_PATH) -> str:
     """List all symbols in a .kicad_sym library file.
 
     Args:
-        symbol_lib_path: Path to .kicad_sym file
+        symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.
     """
     _, root = _open_sym_lib(symbol_lib_path)
     lines = []
@@ -212,7 +212,7 @@ def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> st
 
     Args:
         symbol_name: Symbol name (e.g. "LM7805")
-        symbol_lib_path: Path to .kicad_sym file
+        symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.
     """
     _, root = _open_sym_lib(symbol_lib_path)
     for entry in root.find_all("symbol"):
@@ -312,7 +312,7 @@ def add_symbol(
             x1, y1, x2, y2 (float): corner coordinates in mm
             fill (str): "none", "background", or "outline" (default "background")
             If omitted, a rectangle is auto-computed from pin positions.
-        symbol_lib_path: Path to .kicad_sym file
+        symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.
     """
     if not name:
         raise ToolError("symbol name is required.")
@@ -414,8 +414,8 @@ def export_symbol_svg(
     """Export symbol library to SVG images.
 
     Args:
-        symbol_lib_path: Path to .kicad_sym file
-        output_dir: Output directory
+        symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.
+        output_dir: Output directory. Optional; omit to use the configured default.
     """
     out = output_dir or str(Path(symbol_lib_path).parent)
     os.makedirs(out, exist_ok=True)
@@ -437,7 +437,7 @@ def upgrade_symbol_lib(symbol_lib_path: str) -> str:
     server's atomic write and has no undo.
 
     Args:
-        symbol_lib_path: Path to .kicad_sym file
+        symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.
     """
     _run_cli(["sym", "upgrade", symbol_lib_path])
     return f"Successfully upgraded {symbol_lib_path}"

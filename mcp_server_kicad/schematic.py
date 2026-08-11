@@ -273,7 +273,7 @@ def get_schematic_summary(schematic_path: str = SCH_PATH) -> SchematicSummary:
     """Get schematic page info and item counts.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     return SchematicSummary(
@@ -296,7 +296,7 @@ def list_schematic_components(schematic_path: str = SCH_PATH) -> list[ComponentI
     """List all placed components in the schematic.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     items = []
@@ -321,7 +321,7 @@ def list_schematic_labels(schematic_path: str = SCH_PATH) -> list[LabelItem]:
     """List all net labels in the schematic.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     items = []
@@ -336,7 +336,7 @@ def list_schematic_wires(schematic_path: str = SCH_PATH) -> list[WireItem]:
     """List all wire segments in the schematic.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     items = []
@@ -352,7 +352,7 @@ def list_schematic_global_labels(schematic_path: str = SCH_PATH) -> list[GlobalL
     """List all global labels in the schematic.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     items = []
@@ -377,7 +377,7 @@ def list_schematic_hierarchical_labels(
     """List all hierarchical labels in the schematic.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     items = []
@@ -402,7 +402,7 @@ def list_schematic_sheets(schematic_path: str = SCH_PATH) -> list[SheetItem]:
     """List all hierarchical sheets in the schematic.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     items = []
@@ -429,7 +429,7 @@ def list_schematic_junctions(schematic_path: str = SCH_PATH) -> list[JunctionIte
     """List all junctions in the schematic.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     items = []
@@ -451,7 +451,7 @@ def list_schematic_no_connects(schematic_path: str = SCH_PATH) -> list[NoConnect
     """List all no-connect flags in the schematic.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     items = []
@@ -466,7 +466,7 @@ def list_schematic_bus_entries(schematic_path: str = SCH_PATH) -> list[BusEntryI
     """List all bus entries in the schematic.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     items = []
@@ -490,7 +490,7 @@ def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
 
     Args:
         symbol_name: Symbol name (e.g. "LM7805", "C", "Fuse")
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     ls = _find_lib_symbol_cst(root, symbol_name)
@@ -523,7 +523,7 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
 
     Args:
         reference: Component reference (e.g. "U1", "R1")
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
 
@@ -581,7 +581,7 @@ def get_net_connections(
 
     Args:
         label_text: Net name to search for (e.g. "VCC", "GND")
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
@@ -693,9 +693,10 @@ def place_component(
         x: X position in schematic units (mm)
         y: Y position in schematic units (mm)
         rotation: Rotation angle in degrees (0, 90, 180, 270)
-        symbol_lib_path: Path to .kicad_sym file if using custom library
+        symbol_lib_path: Path to .kicad_sym file if using custom library.
+            Optional; omit to use the configured default.
         mirror: Mirror axis ("x", "y", or "" for none)
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file (for correct hierarchy resolution in sub-sheets)
     """
     # Validate reference designator
@@ -832,7 +833,7 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
 
     Args:
         reference: Reference designator to remove (e.g. "U2")
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     target = _find_sym_cst(root, reference)
@@ -863,7 +864,7 @@ def remove_label(
         text: Label text to match (e.g. "VCC", "PGND")
         x: Optional X position filter
         y: Optional Y position filter
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
@@ -911,7 +912,7 @@ def remove_wire(
         y1: Start Y
         x2: End X
         y2: End Y
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
@@ -953,7 +954,7 @@ def remove_junction(
     Args:
         x: X position
         y: Y position
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
@@ -972,7 +973,7 @@ def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
 
     Args:
         wires: List of wire defs [{x1, y1, x2, y2}, ...]
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     for w in wires:
@@ -1290,7 +1291,7 @@ def add_label(
         x: X position
         y: Y position
         rotation: Degrees (0=right, 90=up, 180=left, 270=down)
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     _bounds_check(x, y, page_w, page_h, page_name)
@@ -1310,7 +1311,7 @@ def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> st
 
     Args:
         points: List of junction positions [{x, y}, ...]
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     for p in points:
@@ -1329,9 +1330,9 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
     """Load a symbol definition from a .kicad_sym library into the schematic.
 
     Args:
-        symbol_lib_path: Path to .kicad_sym file
+        symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.
         symbol_name: Symbol name (e.g. "LM7805")
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     if _find_lib_symbol_cst(root, symbol_name) is not None:
@@ -1357,7 +1358,7 @@ def move_component(
         x: New X position
         y: New Y position
         rotation: New rotation in degrees (None = keep current)
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     _bounds_check(x, y, page_w, page_h, page_name)
@@ -1383,7 +1384,7 @@ def set_component_property(
         reference: Component reference (e.g. "R1")
         key: Property name (e.g. "MPN", "Tolerance", "Value")
         value: Property value
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     sym = _find_sym_cst(root, reference)
@@ -1451,7 +1452,7 @@ def set_page_size(
         width: Custom width in mm (required when size='User')
         height: Custom height in mm (required when size='User')
         portrait: If True, swap width/height for portrait orientation
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     size_key = size.strip()
     if size_key == "User":
@@ -1501,7 +1502,7 @@ def add_global_label(
         y: Y position
         rotation: Degrees (0=right, 90=up, 180=left, 270=down)
         shape: Label shape: input, output, bidirectional, tri_state, passive
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     _bounds_check(x, y, page_w, page_h, page_name)
@@ -1536,7 +1537,7 @@ def add_hierarchical_label(
         x: X position in mm
         y: Y position in mm
         rotation: Degrees (0, 90, 180, 270)
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     if shape not in _VALID_HLABEL_SHAPES:
         raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}")
@@ -1563,7 +1564,7 @@ def remove_hierarchical_label(
 
     Args:
         text: Label text to match
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         uuid: Optional UUID for disambiguation when multiple labels share a name
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
@@ -1597,7 +1598,7 @@ def modify_hierarchical_label(
 
     Args:
         text: Current label text to find
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         new_text: New label text (empty = keep current)
         new_shape: New shape/direction (empty = keep current)
         new_x: New X position (None = keep current)
@@ -1665,8 +1666,9 @@ def add_power_symbol(
         x: X position
         y: Y position
         rotation: Rotation in degrees
-        symbol_lib_path: Path to power symbol .kicad_sym if not in schematic
-        schematic_path: Path to .kicad_sch file
+        symbol_lib_path: Path to power symbol .kicad_sym if not in schematic.
+            Optional; omit to use the configured default.
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
     result = place_component(
@@ -1746,8 +1748,9 @@ def auto_place_decoupling_cap(
         power_net: Label for pin 1 (e.g. "VCC", "+3V3")
         ground_net: Label for pin 2 (e.g. "GND", "PGND")
         rotation: Rotation in degrees (default 0)
-        symbol_lib_path: Path to .kicad_sym if using custom lib
-        schematic_path: Path to .kicad_sch file
+        symbol_lib_path: Path to .kicad_sym if using custom lib.
+            Optional; omit to use the configured default.
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
     result = place_component(
@@ -1796,7 +1799,7 @@ def add_text(
         x: X position
         y: Y position
         rotation: Rotation in degrees
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     _bounds_check(x, y, page_w, page_h, page_name)
@@ -1826,7 +1829,7 @@ def remove_text(
         text: Text content to match
         x: Optional X position filter
         y: Optional Y position filter
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
@@ -1882,7 +1885,7 @@ def wire_pins_to_net(
         direction: Wire direction: "auto", "left", "right", "up", "down"
         stub_length: Wire stub length in mm (default 2.54)
         auto_pwr_flag: Auto-place PWR_FLAG when net has power_in but no power_out (default True)
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     if not pins:
         return f"Wired 0 pins to '{label_text}'."
@@ -2075,7 +2078,7 @@ def connect_pins(
         pin1: First pin name or number
         ref2: Second component reference (e.g. "C3")
         pin2: Second pin name or number
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     x1, y1, _ = _get_pin_pos_cst(root, ref1, pin1)
@@ -2162,7 +2165,7 @@ def no_connect_pin(
     Args:
         reference: Component reference (e.g. "U2")
         pin_name: Pin name (e.g. "NC") or number (e.g. "3")
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     px, py, _ = _get_pin_pos_cst(root, reference, pin_name)
@@ -2197,7 +2200,7 @@ def remove_no_connect(
     Args:
         reference: Component reference (e.g. "U2")
         pin_name: Pin name (e.g. "NC") or number (e.g. "3")
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     px, py, _ = _get_pin_pos_cst(root, reference, pin_name)
@@ -2262,8 +2265,8 @@ def list_unconnected_pins(
     to avoid false positives from hierarchical label context.
 
     Args:
-        schematic_path: Path to .kicad_sch file
-        output_dir: Directory for ERC report file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
+        output_dir: Directory for ERC report file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file for explicit root resolution
     """
     # Auto-redirect sub-sheets to root for full hierarchy context
@@ -2309,8 +2312,9 @@ def run_erc(
     Returns JSON report with violations.
 
     Args:
-        schematic_path: Path to .kicad_sch file
-        output_dir: Directory for report file (default: same as schematic)
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
+        output_dir: Directory for report file (default: same as schematic).
+            Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file for explicit root resolution
     """
     # Auto-redirect sub-sheets to root for full hierarchy context
@@ -2367,8 +2371,8 @@ def export_schematic(
 
     Args:
         format: Output format - "pdf", "svg", or "dxf"
-        schematic_path: Path to .kicad_sch file
-        output_dir: Directory for output files
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
+        output_dir: Directory for output files. Optional; omit to use the configured default.
     """
     fmt = format.lower()
     if fmt not in ("pdf", "svg", "dxf"):
@@ -2409,8 +2413,8 @@ def export_netlist(
     """Export schematic netlist in KiCad XML or KiCad net format.
 
     Args:
-        schematic_path: Path to .kicad_sch file
-        output_dir: Output directory
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
+        output_dir: Output directory. Optional; omit to use the configured default.
         format: Netlist format: kicadxml, cadstar, orcadpcb2
     """
     out_dir = output_dir or str(Path(schematic_path).parent)
@@ -2426,8 +2430,8 @@ def export_bom(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> 
     """Export Bill of Materials (BOM) as CSV.
 
     Args:
-        schematic_path: Path to .kicad_sch file
-        output_dir: Output directory
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
+        output_dir: Output directory. Optional; omit to use the configured default.
     """
     out_dir = output_dir or str(Path(schematic_path).parent)
     out_path = str(Path(out_dir) / (Path(schematic_path).stem + "-bom.csv"))
