@@ -63,6 +63,48 @@ def test_scanner_would_catch_a_phantom_name():
     assert _unresolved("Use upgrade_footprint_lib instead.", tools) == []
 
 
+CONFIGURABLE_PATH_PARAMS = (
+    "schematic_path",
+    "pcb_path",
+    "symbol_lib_path",
+    "footprint_path",
+    "output_dir",
+)
+
+
+def test_configurable_path_params_say_they_are_optional():
+    """The Args line has to say it, because nothing else the model reads does.
+
+    Measured in Claude Desktop after the FILE ACCESS rules below landed: the
+    model stopped demanding a connected folder and instead asked the user for
+    the path, which is the documented fallback for when nothing is configured.
+    A path *was* configured, and the schema said so, but the only prose it had
+    was a flat "Path to .kicad_sch file", which reads as a requirement.
+
+    Parameter descriptions never reach inputSchema at all; only the tool-level
+    description carries the Args block. So this is the one place the model is
+    guaranteed to see it, whatever the client does with instructions.
+    """
+    missing = []
+    for mod in _TOOL_MODULES:
+        for name, tool in mod.mcp._tool_manager._tools.items():
+            props = tool.parameters.get("properties", {})
+            for param in CONFIGURABLE_PATH_PARAMS:
+                if param not in props:
+                    continue
+                args_line = [
+                    ln
+                    for ln in (tool.description or "").splitlines()
+                    if ln.strip().startswith(f"{param}:")
+                ]
+                if not args_line or "Optional;" not in args_line[0] + (tool.description or ""):
+                    missing.append(f"{name}.{param}")
+    assert missing == [], (
+        "these path parameters have a configurable default but their docstring"
+        f" never says they can be omitted: {sorted(set(missing))}"
+    )
+
+
 def test_every_server_says_it_needs_no_folder_permission():
     """Measured failure, not a hypothetical.
 

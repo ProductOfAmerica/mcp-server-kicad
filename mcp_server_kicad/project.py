@@ -171,7 +171,8 @@ def create_schematic(schematic_path: str) -> str:
     """Create a valid empty KiCad 9 schematic file.
 
     Args:
-        schematic_path: Path for the new .kicad_sch file
+        schematic_path: Path for the new .kicad_sch file.
+            Optional; omit to use the configured default.
     """
     p = Path(schematic_path)
     if p.exists():
@@ -190,7 +191,8 @@ def create_symbol_library(symbol_lib_path: str) -> str:
     """Create a valid empty KiCad 9 symbol library.
 
     Args:
-        symbol_lib_path: Path for the new .kicad_sym file
+        symbol_lib_path: Path for the new .kicad_sym file.
+            Optional; omit to use the configured default.
     """
     p = Path(symbol_lib_path)
     if p.exists():
@@ -500,7 +502,7 @@ def modify_hierarchical_sheet(
 
     Args:
         sheet_uuid: UUID of the sheet to modify (from list_schematic_sheets)
-        schematic_path: Path to parent .kicad_sch
+        schematic_path: Path to parent .kicad_sch. Optional; omit to use the configured default.
         sheet_name: New display name (empty = keep)
         file_name: New file path (empty = keep)
         width: New width in mm (None = keep)
@@ -541,7 +543,7 @@ def add_sheet_pin(
         sheet_uuid: UUID of the sheet
         pin_name: Pin name (should match a hierarchical label in the child schematic)
         connection_type: input, output, bidirectional, tri_state, passive
-        schematic_path: Path to parent .kicad_sch
+        schematic_path: Path to parent .kicad_sch. Optional; omit to use the configured default.
         side: Which sheet edge to place pin on (left or right)
     """
     _valid_types = {"input", "output", "bidirectional", "tri_state", "passive"}
@@ -583,7 +585,7 @@ def remove_sheet_pin(
     Args:
         sheet_uuid: UUID of the sheet
         pin_name: Name of the pin to remove
-        schematic_path: Path to parent .kicad_sch
+        schematic_path: Path to parent .kicad_sch. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     target = _find_sheet_cst(root, sheet_uuid)
@@ -604,7 +606,7 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
     and across the hierarchy when project_path is provided.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file (scans hierarchy for existing refs)
     """
     import re
@@ -733,7 +735,7 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     reference designators, unannotated components, and missing files.
 
     Args:
-        schematic_path: Path to root .kicad_sch file
+        schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     sch_dir = Path(schematic_path).parent
@@ -836,7 +838,7 @@ def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:
     """Check if a schematic is the root or a sub-sheet.
 
     Args:
-        schematic_path: Path to .kicad_sch file
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     root = _find_root_schematic(schematic_path)
     return RootSchematicResult(
@@ -850,7 +852,7 @@ def list_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyResult:
     """List the full sheet hierarchy starting from a root schematic.
 
     Args:
-        schematic_path: Path to root .kicad_sch file
+        schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     sch_dir = Path(schematic_path).parent
@@ -900,7 +902,7 @@ def get_sheet_info(sheet_uuid: str, schematic_path: str = SCH_PATH) -> SheetInfo
 
     Args:
         sheet_uuid: UUID of the sheet
-        schematic_path: Path to parent .kicad_sch
+        schematic_path: Path to parent .kicad_sch. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     target = _find_sheet_cst(root, sheet_uuid)
@@ -954,7 +956,7 @@ def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> Net
 
     Args:
         net_name: Net/label name to trace
-        schematic_path: Path to root .kicad_sch file
+        schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     sch_dir = Path(schematic_path).parent
@@ -1042,7 +1044,7 @@ def list_cross_sheet_nets(schematic_path: str = SCH_PATH) -> CrossSheetNetsResul
     """List all nets that cross sheet boundaries (hierarchical pins and global labels).
 
     Args:
-        schematic_path: Path to root .kicad_sch file
+        schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     sch_dir = Path(schematic_path).parent
@@ -1096,7 +1098,7 @@ def get_symbol_instances(schematic_path: str = SCH_PATH) -> SymbolInstancesResul
     """List all symbol instances from a root schematic's symbolInstances table.
 
     Args:
-        schematic_path: Path to root .kicad_sch file
+        schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     instances = []
@@ -1130,7 +1132,7 @@ def move_hierarchical_sheet(
         sheet_uuid: UUID of the sheet to move
         new_x: New X position in mm
         new_y: New Y position in mm
-        schematic_path: Path to parent .kicad_sch
+        schematic_path: Path to parent .kicad_sch. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     target = _find_sheet_cst(root, sheet_uuid)
@@ -1165,7 +1167,7 @@ def reorder_sheet_pages(
 
     Args:
         page_order: List of sheet UUIDs in desired order
-        schematic_path: Path to root .kicad_sch file
+        schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     sheets = root.find_all("sheet")
@@ -1198,7 +1200,7 @@ def duplicate_sheet(
     Args:
         sheet_uuid: UUID of the sheet to duplicate
         new_sheet_name: Display name for the new sheet
-        schematic_path: Path to parent .kicad_sch
+        schematic_path: Path to parent .kicad_sch. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro (for hierarchy metadata)
         new_file_name: Name for the copied file (auto-generated if empty)
     """
@@ -1314,7 +1316,7 @@ def flatten_hierarchy(
     Creates a new file — does NOT modify the original hierarchy.
 
     Args:
-        schematic_path: Path to root .kicad_sch file
+        schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
         output_path: Path for flattened output (defaults to *_flat.kicad_sch)
     """
     import uuid as _uuid_mod
@@ -1458,8 +1460,9 @@ def export_hierarchical_netlist(
     with sheet path information for each component.
 
     Args:
-        schematic_path: Path to root .kicad_sch file
-        output_dir: Directory for netlist output (defaults to schematic directory)
+        schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
+        output_dir: Directory for netlist output (defaults to schematic directory).
+            Optional; omit to use the configured default.
     """
     import xml.etree.ElementTree as ET
 

@@ -89,7 +89,7 @@ def get_footprint_info(footprint_path: str) -> str:
     """Get pad and outline details for a footprint .kicad_mod file.
 
     Args:
-        footprint_path: Path to .kicad_mod file
+        footprint_path: Path to .kicad_mod file. Optional; omit to use the configured default.
     """
     fp = _open_footprint(footprint_path)
     layer = fp.find("layer")
@@ -167,8 +167,9 @@ def export_footprint_svg(
     """Export footprint to SVG.
 
     Args:
-        footprint_path: Path to a .kicad_mod file, or a .pretty library directory
-        output_dir: Output directory
+        footprint_path: Path to a .kicad_mod file, or a .pretty library directory.
+            Optional; omit to use the configured default.
+        output_dir: Output directory. Optional; omit to use the configured default.
     """
     src = Path(footprint_path)
     out = output_dir or str(src.parent)
@@ -203,7 +204,8 @@ def upgrade_footprint_lib(footprint_path: str) -> str:
     in version control before running it.
 
     Args:
-        footprint_path: Path to a .pretty library directory
+        footprint_path: Path to a .pretty library directory.
+            Optional; omit to use the configured default.
     """
     _run_cli(["fp", "upgrade", footprint_path])
     return f"Successfully upgraded {footprint_path}"

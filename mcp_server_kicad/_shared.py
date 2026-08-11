@@ -295,6 +295,7 @@ def _resolve_hierarchy_path(
         project_path: Path to the ``.kicad_pro`` file (used for project name
             and to locate the root schematic).
         schematic_path: Path to the ``.kicad_sch`` being edited.
+            Optional; omit to use the configured default.
         sch_uuid: UUID of the schematic being edited (already loaded by caller).
 
     Returns:

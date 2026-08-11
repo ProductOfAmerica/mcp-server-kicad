@@ -542,7 +542,7 @@ def list_pcb_footprints(pcb_path: str = PCB_PATH) -> list[PcbFootprintItem]:
     """List all footprints on the PCB.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
     items: list[PcbFootprintItem] = []
@@ -567,7 +567,7 @@ def list_pcb_traces(pcb_path: str = PCB_PATH) -> list[TraceSegmentItem]:
     """List all trace segments and vias on the PCB.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
     name_to_num = {name: num for num, name in _net_table(root)}
@@ -608,7 +608,7 @@ def list_pcb_nets(pcb_path: str = PCB_PATH) -> list[NetItem]:
     """List all named nets on the PCB.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
     return [NetItem(number=num, name=name) for num, name in _net_table(root) if name]
@@ -619,7 +619,7 @@ def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
     """List all zones (copper and keepout) on the PCB.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
     items: list[ZoneItem] = []
@@ -661,7 +661,7 @@ def list_pcb_layers(pcb_path: str = PCB_PATH) -> list[LayerItem]:
     """List all layers defined in the PCB stackup.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
     layers = root.find("layers")
@@ -677,7 +677,7 @@ def list_pcb_graphic_items(pcb_path: str = PCB_PATH) -> list[GraphicItem]:
     """List all graphic items (lines, text, etc.) on the PCB.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
     items: list[GraphicItem] = []
@@ -715,7 +715,11 @@ def list_pcb_graphic_items(pcb_path: str = PCB_PATH) -> list[GraphicItem]:
 
 @mcp.tool(annotations=_READ_ONLY)
 def get_board_info(pcb_path: str = PCB_PATH) -> str:
-    """Get board summary: footprint count, trace count, net count, thickness."""
+    """Get board summary: footprint count, trace count, net count, thickness.
+
+    Args:
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
+    """
     _, root, _ = _open_pcb_cst(pcb_path)
     counts = {"segment": 0, "via": 0, "footprint": 0, "zone": 0}
     for item in root.lists:
@@ -740,7 +744,7 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
 
     Args:
         reference: Footprint reference (e.g. "R1", "U1")
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
     fp = _find_fp_cst(root, reference)
@@ -783,7 +787,7 @@ def place_footprint(
         y: Y position in mm
         rotation: Rotation in degrees
         layer: Layer (F.Cu or B.Cu)
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
@@ -816,7 +820,7 @@ def move_footprint(
         y: New Y position
         rotation: New rotation (None = keep current)
         layer: New layer (empty = keep current)
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
@@ -856,7 +860,7 @@ def check_placement(
         x: Proposed X position
         y: Proposed Y position
         rotation: Proposed rotation in degrees
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
     fp = _find_fp_cst(root, reference)
@@ -880,7 +884,7 @@ def remove_footprint(reference: str, pcb_path: str = PCB_PATH) -> str:
 
     Args:
         reference: Reference designator (e.g. "R1")
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
@@ -910,7 +914,7 @@ def add_trace(
         width: Trace width in mm
         layer: Copper layer (e.g. "F.Cu", "B.Cu")
         net: Net number
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
@@ -948,7 +952,7 @@ def add_via(
         drill: Drill diameter in mm
         net: Net number
         layers: Via layers (default: ["F.Cu", "B.Cu"])
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
@@ -990,7 +994,7 @@ def add_pcb_text(
         y: Y position
         layer: Layer (e.g. "F.SilkS", "B.SilkS", "F.Fab")
         rotation: Rotation in degrees
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
@@ -1023,7 +1027,7 @@ def add_pcb_line(
         y2: End Y
         layer: Layer (e.g. "Edge.Cuts", "F.SilkS")
         width: Line width in mm
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
@@ -1066,7 +1070,7 @@ def add_copper_zone(
         thermal_gap: Thermal relief gap in mm
         thermal_bridge_width: Thermal relief bridge width in mm
         priority: Zone fill priority (higher fills first)
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     if len(corners) < 3:
         raise ToolError("At least 3 corners required for a zone polygon.")
@@ -1122,7 +1126,7 @@ def add_keepout_zone(
         no_pads: Restrict pads in this zone
         no_copper_pour: Restrict copper pour in this zone
         no_footprints: Restrict footprints in this zone
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     if len(corners) < 3:
         raise ToolError("At least 3 corners required for a zone polygon.")
@@ -1170,7 +1174,7 @@ def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
     Requires KiCad's pcbnew Python bindings to be installed.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     pcb_path = str(Path(pcb_path).resolve())
     python, env = _find_pcbnew_python()
@@ -1239,8 +1243,9 @@ def update_pcb_from_schematic(
     Requires kicad-cli and KiCad's pcbnew Python bindings.
 
     Args:
-        schematic_path: Path to .kicad_sch file
-        pcb_path: Path to .kicad_pcb file (created if missing)
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
+        pcb_path: Path to .kicad_pcb file (created if missing).
+            Optional; omit to use the configured default.
         delete_stale: Remove unlocked board footprints absent from the schematic
         project_path: Path to .kicad_pro for explicit root resolution (sub-sheets)
     """
@@ -1319,7 +1324,7 @@ def set_trace_width(
         y_min: Top edge of bounding box filter (mm)
         x_max: Right edge of bounding box filter (mm)
         y_max: Bottom edge of bounding box filter (mm)
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
@@ -1350,7 +1355,7 @@ def remove_traces(
         y_min: Top edge of bounding box filter (mm)
         x_max: Right edge of bounding box filter (mm)
         y_max: Bottom edge of bounding box filter (mm)
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
@@ -1384,7 +1389,7 @@ def add_thermal_vias(
         via_size: Via annular ring diameter in mm
         via_drill: Via drill diameter in mm
         net_name: Net to assign to vias. If None, auto-detect from pad.
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
@@ -1481,7 +1486,7 @@ def set_net_class(
         clearance: Clearance in mm (None = use default)
         via_size: Via diameter in mm (None = use default)
         via_drill: Via drill in mm (None = use default)
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     pcb_file = Path(pcb_path).resolve()
     pro_file = pcb_file.with_suffix(".kicad_pro")
@@ -1557,7 +1562,7 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
     to a pad, via, or another trace endpoint.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
@@ -1665,8 +1670,9 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> DrcResult
     Returns structured report with violations.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
-        output_dir: Directory for report file (default: same as PCB)
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
+        output_dir: Directory for report file (default: same as PCB).
+            Optional; omit to use the configured default.
     """
     out_dir = output_dir or str(Path(pcb_path).parent)
     out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-drc.json"))
@@ -1712,8 +1718,8 @@ def export_pcb(
 
     Args:
         format: Output format - "pdf", "svg", or "dxf"
-        pcb_path: Path to .kicad_pcb file
-        output_dir: Directory for output files
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
+        output_dir: Directory for output files. Optional; omit to use the configured default.
         layers: Optional list of layer names to include (required for DXF)
         output_units: DXF output units - "in" or "mm" (DXF only)
         exclude_refdes: Exclude reference designators (DXF only)
@@ -1790,8 +1796,8 @@ def export_gerbers(
     output directory. files and count are filled either way.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
-        output_dir: Output directory for gerber files
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
+        output_dir: Output directory for gerber files. Optional; omit to use the configured default.
         include_drill: Also export drill files (default: True, ignored in single-layer mode)
         layers: Optional list of layer names. Single layer = single file output.
     """
@@ -1880,8 +1886,8 @@ def export_3d(
 
     Args:
         format: Output format - "step", "stl", "glb", or "render" (PNG image)
-        pcb_path: Path to .kicad_pcb file
-        output_dir: Output directory
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
+        output_dir: Output directory. Optional; omit to use the configured default.
         width: Image width in pixels (render only)
         height: Image height in pixels (render only)
         side: View side: top, bottom, left, right, front, back (render only)
@@ -1936,8 +1942,8 @@ def export_positions(
     """Export component position file (pick and place).
 
     Args:
-        pcb_path: Path to .kicad_pcb file
-        output_dir: Output directory
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
+        output_dir: Output directory. Optional; omit to use the configured default.
     """
     out_dir = output_dir or str(Path(pcb_path).parent)
     out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-pos.csv"))
@@ -1965,7 +1971,7 @@ def export_ipc2581(
     """Export PCB in IPC-2581 format for manufacturing data exchange.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
         output: Output file path
         precision: Numeric precision (default: 3)
         compress: Compress output file
@@ -2181,11 +2187,12 @@ def autoroute_pcb(
     auto-downloaded (~20MB).
 
     Args:
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
         max_passes: Maximum autorouter optimization passes
         num_threads: Thread count for routing
         timeout: Max seconds to wait for routing (default: 600)
-        output_dir: Directory for output files (default: same as PCB)
+        output_dir: Directory for output files (default: same as PCB).
+            Optional; omit to use the configured default.
     """
     # Resolve to absolute path for subprocess calls
     pcb_path = str(Path(pcb_path).resolve())
@@ -2304,7 +2311,7 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintB
 
     Args:
         reference: Footprint reference designator
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
     fp = _find_fp_cst(root, reference)
@@ -2356,7 +2363,7 @@ def validate_board(pcb_path: str = PCB_PATH) -> BoardValidationResult:
     """Validate all footprint placements against keep-out zones and board edge.
 
     Args:
-        pcb_path: Path to .kicad_pcb file
+        pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
     edge_poly = _edge_polygon_cst(root)
