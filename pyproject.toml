@@ -57,6 +57,7 @@ packages = ["mcp_server_kicad"]
 pythonpath = ["tests"]
 markers = [
     "no_kicad_validation: skip kicad-cli parseability check (for tests that intentionally produce invalid files)",
+    "slow: builds a fresh uv environment; deselect with -m 'not slow'",
 ]
 
 [tool.ruff]

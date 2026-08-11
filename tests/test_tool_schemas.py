@@ -110,6 +110,31 @@ _NEEDS_A_TITLE = {
 }
 
 
+def test_fixed_choice_params_publish_an_enum():
+    """A closed set the model must pick from belongs in the schema, not prose.
+
+    export_netlist was the sharp case: its docstring named three netlist
+    formats, kicad-cli 9.0.8 accepts eight, and nothing validated the value at
+    all, so a model reading only the prose would tell a user SPICE export was
+    unsupported while the tool had always passed it straight through. The other
+    three raised at runtime for a value the schema had already allowed.
+
+    Only genuinely closed sets belong here. layer is board-dependent, and text,
+    name and reference take arbitrary strings, so an enum on those would be
+    wrong.
+    """
+    missing = [
+        tool.name
+        for tool in _all_tools()
+        if "format" in tool.parameters.get("properties", {})
+        and "enum" not in tool.parameters["properties"]["format"]
+    ]
+    assert missing == [], (
+        "these tools take a format but publish no enum, so a model can only"
+        f" learn the valid values from prose: {sorted(missing)}"
+    )
+
+
 def test_ambiguous_tools_carry_distinct_titles():
     titled = {tool.name: tool.title for tool in _all_tools() if tool.name in _NEEDS_A_TITLE}
     assert set(titled) == _NEEDS_A_TITLE, (

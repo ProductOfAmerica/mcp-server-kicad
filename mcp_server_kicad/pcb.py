@@ -8,6 +8,7 @@ import os
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Literal
 
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -1704,7 +1705,7 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> DrcResult
 
 @mcp.tool(annotations=_EXPORT)
 def export_pcb(
-    format: str = "pdf",
+    format: Literal["pdf", "svg", "dxf"] = "pdf",
     pcb_path: str = PCB_PATH,
     output_dir: str = OUTPUT_DIR,
     layers: list[str] | None = None,
@@ -1727,6 +1728,9 @@ def export_pcb(
         use_contours: Use board outline contours (DXF only)
         include_border_title: Include border and title block (DXF only)
     """
+    # Literal publishes the enum so a model picks a valid value; this check
+    # still matters because Literal is only enforced by pydantic at the MCP
+    # boundary, and a direct Python call sails straight past it.
     fmt = format.lower()
     if fmt not in ("pdf", "svg", "dxf"):
         raise ToolError(f"Unknown format: {format}. Use: pdf, svg, dxf")
@@ -1872,7 +1876,7 @@ def export_gerbers(
 
 @mcp.tool(annotations=_EXPORT)
 def export_3d(
-    format: str = "step",
+    format: Literal["step", "stl", "glb", "render"] = "step",
     pcb_path: str = PCB_PATH,
     output_dir: str = OUTPUT_DIR,
     width: int = 1600,
@@ -1893,6 +1897,7 @@ def export_3d(
         side: View side: top, bottom, left, right, front, back (render only)
         quality: Render quality: basic, high (render only)
     """
+    # See export_pcb: the enum is for the model, this is for direct callers.
     fmt = format.lower()
     if fmt not in ("step", "stl", "glb", "render"):
         raise ToolError(f"Unknown format: {format}. Use: step, stl, glb, render")
