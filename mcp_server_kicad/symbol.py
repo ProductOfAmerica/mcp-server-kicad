@@ -433,6 +433,9 @@ def export_symbol_svg(
 def upgrade_symbol_lib(symbol_lib_path: str) -> str:
     """Upgrade a symbol library to current KiCad format.
 
+    kicad-cli rewrites the file in place, so this does not go through the
+    server's atomic write and has no undo.
+
     Args:
         symbol_lib_path: Path to .kicad_sym file
     """

@@ -1,0 +1,81 @@
+name: Windows discovery
+
+# Separate from ci.yml, and on the same trigger as macos-discovery.yml, because
+# installing KiCad costs minutes of wall clock and this does not need to gate
+# every pull request.
+#
+# It exists because Windows was the one platform with no runner at all, and
+# three Windows-specific bugs reached a user before anyone noticed:
+# kicad-cli living in a versioned install folder that the installer keeps off
+# PATH, Defender's Controlled Folder Access killing kicad-cli at startup, and a
+# write path that could truncate a schematic. A maintainer machine has the
+# KICAD_* overrides set and ci.yml installs no KiCad, so neither could see them.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master, "ci/**"]
+
+jobs:
+  discovery:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    # Windows runners default to PowerShell, where the heredocs below are a
+    # parse error. Git Bash ships on the image.
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install KiCad
+        run: choco install kicad --no-progress -y
+
+      - uses: astral-sh/setup-uv@v7
+      - run: uv sync --frozen --all-extras --dev
+
+      # Non-fatal. This is the only place we see a real Windows install, so
+      # record the layout even when everything passes.
+      - name: Report the Windows layout
+        continue-on-error: true
+        run: |
+          uv run python - <<'PY'
+          import shutil
+          from mcp_server_kicad._shared import _KICAD_WIN_DIRS, _find_kicad_cli, _kicad_root
+          from mcp_server_kicad._shared import _resolve_system_lib
+          from mcp_server_kicad._freerouting import find_pcbnew_python
+
+          print("probed roots     :", _KICAD_WIN_DIRS)
+          print("shutil.which     :", shutil.which("kicad-cli"))
+          print("_find_kicad_cli():", _find_kicad_cli())
+          print("_kicad_root()    :", _kicad_root())
+          print("Device.kicad_sym :", _resolve_system_lib("Device"))
+          print("find_pcbnew_python:", find_pcbnew_python()[0])
+
+          root = _kicad_root()
+          if root:
+              for p in sorted(root.iterdir()):
+                  print("   ", p.name + ("/" if p.is_dir() else ""))
+          PY
+
+      # The reason for installing KiCad rather than running a bare suite: the
+      # Windows install-folder probe has only ever been tested against
+      # synthetic directory trees. This is the first time it meets a real one.
+      - name: Resolve a stock install with nothing on PATH
+        run: |
+          uv run python - <<'PY'
+          import os, shutil
+          from mcp_server_kicad._shared import _find_kicad_cli
+
+          for var in [k for k in os.environ if k.startswith("KICAD_")]:
+              del os.environ[var]
+          _find_kicad_cli.cache_clear()
+
+          on_path = shutil.which("kicad-cli")
+          resolved = _find_kicad_cli()
+          assert resolved, f"no kicad-cli found; PATH said {on_path!r}"
+          assert os.path.isfile(resolved), resolved
+          print("ok:", on_path, "->", resolved)
+          PY
+
+      - name: Full test suite against installed KiCad
+        run: uv run pytest -v -rA --tb=short -n auto
