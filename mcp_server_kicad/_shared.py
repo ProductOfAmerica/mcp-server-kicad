@@ -626,7 +626,7 @@ def _upsert_root_symbol_instance(
     entry.find("unit").atoms[1].set_text(str(unit))
     entry.find("value").atoms[1].set_text(value)
     entry.find("footprint").atoms[1].set_text(footprint)
-    Path(out_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(out_path, _cst.serialize(tree))
     return True
 
 
@@ -666,7 +666,7 @@ def _remove_root_symbol_instance(
     if not si.find_all("path"):
         # kiutils omitted the empty section entirely; match that shape.
         root.remove_child(si)
-    Path(out_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(out_path, _cst.serialize(tree))
     return True
 
 

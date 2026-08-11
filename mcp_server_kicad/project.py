@@ -19,6 +19,7 @@ from mcp_server_kicad._shared import (
     _EXPORT,
     _READ_ONLY,
     SCH_PATH,
+    _atomic_write,
     _find_root_schematic,
     _gen_uuid,
     _node_uuid,
@@ -149,11 +150,11 @@ def create_project(directory: str, name: str) -> str:
         raise ToolError(f"{pro_path} already exists.")
 
     pro_data = {"meta": {"filename": f"{name}.kicad_pro", "version": 1}}
-    pro_path.write_text(json.dumps(pro_data, indent=2) + "\n")
+    _atomic_write(pro_path, (json.dumps(pro_data, indent=2) + "\n").encode())
 
     prl_data = {"meta": {"filename": f"{name}.kicad_prl", "version": 3}}
     prl_path = d / f"{name}.kicad_prl"
-    prl_path.write_text(json.dumps(prl_data, indent=2) + "\n")
+    _atomic_write(prl_path, (json.dumps(prl_data, indent=2) + "\n").encode())
 
     # Also create the root schematic (matching real KiCad behavior).
     # Guard is defensive — the .kicad_pro check above ensures this is
@@ -180,7 +181,7 @@ def create_schematic(schematic_path: str) -> str:
 
     tree = _cst.parse(_EMPTY_SCH_TPL)
     tree.lists[0].find("uuid").atoms[1].set_text(_gen_uuid())
-    p.write_bytes(_cst.serialize(tree))
+    _atomic_write(p, _cst.serialize(tree))
     return f"Created schematic at {p}"
 
 
@@ -197,7 +198,7 @@ def create_symbol_library(symbol_lib_path: str) -> str:
 
     p.parent.mkdir(parents=True, exist_ok=True)
 
-    p.write_bytes(_SYM_LIB_TPL)
+    _atomic_write(p, _SYM_LIB_TPL)
     return f"Created symbol library at {p}"
 
 
@@ -223,7 +224,9 @@ def create_sym_lib_table(directory: str, entries: list[LibTableEntry]) -> str:
     lines.append(")")
 
     table_path = d / "sym-lib-table"
-    table_path.write_text("\n".join(lines) + "\n")
+    # .encode() is UTF-8, where write_text was the platform default. KiCad reads
+    # these as UTF-8, so a non-ASCII library path was already wrong on Windows.
+    _atomic_write(table_path, ("\n".join(lines) + "\n").encode())
     return f"Created sym-lib-table with {len(entries)} entries at {table_path}"
 
 
@@ -311,7 +314,7 @@ def add_hierarchical_sheet(
     ipath.find("page").atoms[1].set_text(page)
 
     _splice_sch_node(parent_root, "sheet", sheet)
-    Path(parent_schematic_path).write_bytes(_cst.serialize(parent_tree))
+    _atomic_write(parent_schematic_path, _cst.serialize(parent_tree))
 
     # Add matching hierarchical labels to child schematic
     child_tree, child_root, *_ = _open_sch_cst(sheet_file)
@@ -374,7 +377,7 @@ def add_hierarchical_sheet(
                     footprint=fp,
                 )
 
-    Path(sheet_file).write_bytes(_cst.serialize(child_tree))
+    _atomic_write(sheet_file, _cst.serialize(child_tree))
 
     return f"Added sheet '{sheet_name}' with {len(pins)} pins to {parent_schematic_path}"
 
@@ -475,7 +478,7 @@ def remove_hierarchical_sheet(
             msg += f" Deleted child file '{child_filename}'."
 
     root.remove_child(target)
-    Path(parent_schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(parent_schematic_path, _cst.serialize(tree))
     return msg
 
 
@@ -515,7 +518,7 @@ def modify_hierarchical_sheet(
     if height is not None:
         size.atoms[2].set_text(_num(height))
         changes.append(f"height={height}")
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Modified sheet: {', '.join(changes)}"
 
 
@@ -560,7 +563,7 @@ def add_sheet_pin(
     else:
         props = target.find_all("property")
         target.insert_after(props[-1], pin)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Added sheet pin '{pin_name}' ({connection_type}) to sheet"
 
 
@@ -583,7 +586,7 @@ def remove_sheet_pin(
     if pin is None:
         raise ToolError(f"Pin '{pin_name}' not found on sheet")
     target.remove_child(pin)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Removed pin '{pin_name}' from sheet"
 
 
@@ -689,7 +692,7 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
             sym.append_child(node, b"\n\t")
         assigned.setdefault(prefix, []).append(new_ref)
 
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
 
     # Sync root symbolInstances for all annotated symbols
     for sym, _prefix in unannotated:
@@ -1140,7 +1143,7 @@ def move_hierarchical_sheet(
         _shift(pin)
     for prop in target.find_all("property"):
         _shift(prop)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Moved sheet to ({new_x}, {new_y})"
 
 
@@ -1169,7 +1172,7 @@ def reorder_sheet_pages(
     for slot, sep, node in zip(slots, slot_seps, new_order):
         node.sep = sep
         root.children[slot] = node
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Reordered {len(page_order)} sheets"
 
 
@@ -1241,7 +1244,7 @@ def duplicate_sheet(
             iu = item.find("uuid")
             if iu is not None:
                 iu.atoms[1].set_text(str(_uuid_mod.uuid4()))
-    dst_path.write_bytes(_cst.serialize(copy_tree))
+    _atomic_write(dst_path, _cst.serialize(copy_tree))
 
     # Create new sheet block in parent (geometry from source, fresh identity)
     dx = src_w + 5
@@ -1281,7 +1284,7 @@ def duplicate_sheet(
     pp.find("page").atoms[1].set_text(page)
 
     _splice_sch_node(root, "sheet", new_sheet)
-    Path(schematic_path).write_bytes(_cst.serialize(tree))
+    _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
 
 
@@ -1409,7 +1412,7 @@ def flatten_hierarchy(
 
         sheet_index += 1
 
-    Path(output_path).write_bytes(_cst.serialize(flat_tree))
+    _atomic_write(output_path, _cst.serialize(flat_tree))
 
     total_components = len(flat_root.find_all("symbol"))
     return f"Flattened hierarchy to {Path(output_path).name}: {total_components} components"

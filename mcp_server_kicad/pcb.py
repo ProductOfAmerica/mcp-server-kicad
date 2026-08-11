@@ -44,6 +44,7 @@ from mcp_server_kicad._shared import (
     OUTPUT_DIR,
     PCB_PATH,
     SCH_PATH,
+    _atomic_write,
     _chain_edge_polygon,
     _courtyard_bbox_cst,
     _file_meta,
@@ -794,7 +795,7 @@ def place_footprint(
         prop.atoms[2].set_text(reference if prop.atoms[1].text == "Reference" else value)
         prop.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_after(root, node, ("footprint",), _PCB_TAIL_HEADS)
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     return f"Placed {reference} ({value}) at ({x}, {y}) on {layer}"
 
 
@@ -823,7 +824,7 @@ def move_footprint(
     _fill_at(fp, x, y, rotation)
     if layer:
         fp.find("layer").atoms[1].set_text(layer)
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     # Validation (never blocks the move)
     warnings: list[str] = []
     try:
@@ -884,7 +885,7 @@ def remove_footprint(reference: str, pcb_path: str = PCB_PATH) -> str:
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
     root.remove_child(_find_fp_cst(root, reference))
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     return f"Removed {reference}"
 
 
@@ -924,7 +925,7 @@ def add_trace(
     _set_item_net(node, root, net)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_pcb_node(root, node)
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     return f"Trace: ({x1}, {y1}) -> ({x2}, {y2}) w={width} {layer}"
 
 
@@ -968,7 +969,7 @@ def add_via(
     _set_item_net(node, root, net)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_pcb_node(root, node)
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     return f"Via at ({x}, {y}) size={size} drill={drill}"
 
 
@@ -999,7 +1000,7 @@ def add_pcb_text(
     node.find("layer").atoms[1].set_text(layer)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_after(root, node, _GRAPHIC_HEADS, _TRACE_AND_TAIL_HEADS)
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     return f"Text '{text}' at ({x}, {y}) on {layer}"
 
 
@@ -1036,7 +1037,7 @@ def add_pcb_line(
     node.find("layer").atoms[1].set_text(layer)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_after(root, node, _GRAPHIC_HEADS, _TRACE_AND_TAIL_HEADS)
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     return f"Line: ({x1}, {y1}) -> ({x2}, {y2}) on {layer}"
 
 
@@ -1096,7 +1097,7 @@ def add_copper_zone(
         node.remove_child(node.find("net_name"))
         node.remove_child(node.find("filled_areas_thickness"))
     _splice_pcb_zone(root, node)
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     return ZoneResult(net=net_name, layer=layer, corners=len(corners), clearance_mm=clearance)
 
 
@@ -1154,7 +1155,7 @@ def add_keepout_zone(
         node.remove_child(node.find("net"))
         node.remove_child(node.find("net_name"))
     _splice_pcb_zone(root, node)
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     return KeepoutZoneResult(
         corners=len(corners),
         layers=zone_layers,
@@ -1325,7 +1326,7 @@ def set_trace_width(
     segments = _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max)
     for seg in segments:
         seg.find("width").atoms[1].set_text(_num(width))
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     return TraceWidthResult(traces_modified=len(segments), net=net_name, new_width_mm=width)
 
 
@@ -1356,7 +1357,7 @@ def remove_traces(
     segments = _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max)
     for seg in segments:
         root.remove_child(seg)
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     return RemoveTracesResult(traces_removed=len(segments), net=net_name, layer=layer)
 
 
@@ -1448,7 +1449,7 @@ def add_thermal_vias(
             _splice_pcb_node(root, node)
             vias_added += 1
 
-    Path(key).write_bytes(_cst.serialize(tree))
+    _atomic_write(key, _cst.serialize(tree))
     return ThermalViasResult(
         vias_added=vias_added,
         reference=reference,
@@ -1535,7 +1536,7 @@ def set_net_class(
 
     # Write back
     try:
-        pro_file.write_text(json.dumps(pro_data, indent=2) + "\n")
+        _atomic_write(pro_file, (json.dumps(pro_data, indent=2) + "\n").encode())
     except OSError as exc:
         raise ToolError(f"Failed to write project file: {exc}") from exc
 
@@ -1647,7 +1648,7 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
         iterations += 1
 
     if total_removed > 0:
-        Path(key).write_bytes(_cst.serialize(tree))
+        _atomic_write(key, _cst.serialize(tree))
 
     return DanglingTracksResult(tracks_removed=total_removed, iterations=iterations)
 
@@ -2092,7 +2093,7 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
 
     if count > 0:
         try:
-            Path(output_path).write_bytes(_cst.serialize(tree))
+            _atomic_write(output_path, _cst.serialize(tree))
         except OSError as e:
             raise ToolError(f"Failed to prepare PCB for autorouting: {e}") from e
     return count
@@ -2141,7 +2142,7 @@ def _fix_displaced_fp_text(pcb_path: str) -> int:
             _fill_at(text, *_FP_TEXT_DEFAULT_OFFSETS.get(kind, (0, 0)))
             fixed += 1
     if fixed > 0:
-        Path(pcb_path).write_bytes(_cst.serialize(tree))
+        _atomic_write(pcb_path, _cst.serialize(tree))
     return fixed
 
 

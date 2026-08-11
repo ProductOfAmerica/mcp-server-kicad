@@ -15,6 +15,7 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     OUTPUT_DIR,
     SYM_LIB_PATH,
+    _atomic_write,
     _run_cli,
     build_server,
 )
@@ -398,7 +399,7 @@ def add_symbol(
         root.insert_after(entries[-1], node)
     else:
         root.append_child(node, b"\n\t")
-    lib_path.write_bytes(_cst.serialize(tree))
+    _atomic_write(lib_path, _cst.serialize(tree))
 
     return f"Added symbol '{name}' ({len(pins)} pins) to {symbol_lib_path}"
 
