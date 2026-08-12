@@ -1709,7 +1709,7 @@ def export_pcb(
     pcb_path: str = PCB_PATH,
     output_dir: str = OUTPUT_DIR,
     layers: list[str] | None = None,
-    output_units: str = "in",
+    output_units: Literal["in", "mm"] = "in",
     exclude_refdes: bool = False,
     exclude_value: bool = False,
     use_contours: bool = False,
@@ -1735,14 +1735,18 @@ def export_pcb(
     if fmt not in ("pdf", "svg", "dxf"):
         raise ToolError(f"Unknown format: {format}. Use: pdf, svg, dxf")
 
+    units = output_units.lower()
+    if units not in ("in", "mm"):
+        raise ToolError(f"Unknown output_units: {output_units}. Use: in, mm")
+
     if fmt == "dxf":
         if not layers:
             raise ToolError("layers parameter is required for DXF export")
         out_dir = output_dir or str(Path(pcb_path).parent)
         out_path = str(Path(out_dir) / (Path(pcb_path).stem + ".dxf"))
         args = ["pcb", "export", "dxf", pcb_path, "-o", out_path, "-l", ",".join(layers)]
-        if output_units != "in":
-            args += ["--output-units", output_units]
+        if units != "in":
+            args += ["--output-units", units]
         if exclude_refdes:
             args.append("--exclude-refdes")
         if exclude_value:

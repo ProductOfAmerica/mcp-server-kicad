@@ -110,6 +110,10 @@ _NEEDS_A_TITLE = {
 }
 
 
+#: Parameter names whose value set is closed and known ahead of time.
+_FIXED_CHOICE_PARAMS = {"format", "mirror", "output_units"}
+
+
 def test_fixed_choice_params_publish_an_enum():
     """A closed set the model must pick from belongs in the schema, not prose.
 
@@ -122,16 +126,23 @@ def test_fixed_choice_params_publish_an_enum():
     Only genuinely closed sets belong here. layer is board-dependent, and text,
     name and reference take arbitrary strings, so an enum on those would be
     wrong.
+
+    Scoped to `format` when it was written, which is why mirror and
+    output_units sat unguarded: both named their choices in prose only, and
+    place_component wrote mirror into the schematic verbatim, so "Y" became
+    (mirror Y). Widen this set whenever a closed-set parameter is added, and
+    keep the runtime check beside the Literal: Literal is enforced by pydantic
+    at the MCP boundary only, so a direct Python call sails past it.
     """
     missing = [
-        tool.name
+        f"{tool.name}.{param}"
         for tool in _all_tools()
-        if "format" in tool.parameters.get("properties", {})
-        and "enum" not in tool.parameters["properties"]["format"]
+        for param in _FIXED_CHOICE_PARAMS & set(tool.parameters.get("properties", {}))
+        if "enum" not in tool.parameters["properties"][param]
     ]
     assert missing == [], (
-        "these tools take a format but publish no enum, so a model can only"
-        f" learn the valid values from prose: {sorted(missing)}"
+        "these parameters take a closed set but publish no enum, so a model can"
+        f" only learn the valid values from prose: {sorted(missing)}"
     )
 
 
@@ -152,10 +163,13 @@ def test_ambiguous_tools_carry_distinct_titles():
 # A sweep of all 109 tools found no others: every remaining prose-only choice is
 # either already carried by the parameter's schema `default` or is standard
 # KiCad vocabulary (F.Cu, VCC) the model supplies itself.
+# place_component.mirror used to be here. It is now a Literal, so the schema
+# carries the whole set including the "" sentinel and the prose is no longer
+# the only channel. An enum is the better fix wherever the set is closed; this
+# set is for conventions no enum can express.
 _PROSE_ONLY_CONVENTIONS = {
     ("add_label", "0=right, 90=up, 180=left, 270=down"),
     ("add_global_label", "0=right, 90=up, 180=left, 270=down"),
-    ("place_component", '"" for none'),
 }
 
 

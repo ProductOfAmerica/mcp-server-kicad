@@ -114,6 +114,31 @@ class TestFanOutResidual:
 
 
 class TestPlaceComponent:
+    def test_mirror_is_normalised_and_validated(self, scratch_sch):
+        """mirror used to be written into the schematic verbatim.
+
+        Measured 2026-08-11: with tool descriptions blanked a model sent "Y",
+        which produced (mirror Y). The Literal publishes the enum, but only
+        pydantic enforces it and only at the MCP boundary, so the runtime check
+        is what a direct call hits.
+        """
+        args = dict(
+            lib_id="Device:R",
+            value="1K",
+            x=150,
+            y=150,
+            schematic_path=str(scratch_sch),
+            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+        )
+        before = scratch_sch.read_bytes()
+        with pytest.raises(ToolError, match="mirror axis"):
+            schematic.place_component(reference="R9", mirror="banana", **args)  # type: ignore[arg-type]
+        assert scratch_sch.read_bytes() == before, "refused edit still touched the file"
+
+        schematic.place_component(reference="R8", mirror="Y", **args)  # type: ignore[arg-type]
+        assert b"(mirror y)" in scratch_sch.read_bytes()
+        assert b"(mirror Y)" not in scratch_sch.read_bytes()
+
     def test_basic_placement(self, scratch_sch):
         result = schematic.place_component(
             lib_id="Device:R",
