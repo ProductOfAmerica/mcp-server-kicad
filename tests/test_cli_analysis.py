@@ -76,3 +76,53 @@ class TestRunDrc:
         assert result.violation_count == 1
         assert result.unconnected_count == 2
         assert len(result.unconnected_items) == 2
+
+
+class TestSymLibTableNote:
+    """KiCad's library warning names neither the missing file nor its home.
+
+    Measured 2026-08-12 on a Windows install where fp-lib-table had been copied
+    into the user config on KiCad's first run and sym-lib-table had not: every
+    ERC of every project warned, and a model reading it could only say "update
+    your sym-lib-table" without saying which file or where.
+    """
+
+    def test_no_note_when_there_are_no_library_violations(self):
+        assert schematic._sym_lib_table_note([]) is None
+        assert schematic._sym_lib_table_note([{"type": "pin_not_connected"}]) is None
+
+    def test_note_explains_the_missing_table(self):
+        note = schematic._sym_lib_table_note([{"type": "lib_symbol_issues"}])
+        assert note is not None
+        assert "sym-lib-table" in note
+        # The remedy, not just the symptom: placement is fine, ERC is not.
+        assert "embedded in the schematic" in note
+
+    @requires_cli
+    def test_the_template_path_is_named_only_when_it_exists(self):
+        """Layout-agnostic on purpose.
+
+        This test used to assert the path is always named when kicad-cli
+        resolves, and macOS failed it: KiCad's data lives in the .app bundle's
+        SharedSupport, not share/kicad, so the file was not where the helper
+        looked. The helper now tries both, the same pair _resolve_system_lib
+        uses, but a packaging layout matching neither is still possible, and
+        naming a path that is not there would be worse than omitting it.
+        """
+        from mcp_server_kicad._shared import _kicad_root
+
+        note = schematic._sym_lib_table_note([{"type": "lib_symbol_issues"}])
+        assert note is not None
+        root = _kicad_root()
+        found = next(
+            (
+                c
+                for sub in ("share/kicad/template", "SharedSupport/template")
+                if root and (c := root / sub / "sym-lib-table").is_file()
+            ),
+            None,
+        )
+        if found:
+            assert str(found) in note, "a template that exists must be named"
+        else:
+            assert "ships one at" not in note, "no path may be named when none was found"

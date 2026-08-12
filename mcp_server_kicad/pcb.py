@@ -286,7 +286,9 @@ def _find_fp_cst(root, reference):
     for fp in root.find_all("footprint"):
         if _fp_prop_cst(fp, "Reference") == reference:
             return fp
-    raise ToolError(f"Footprint {reference!r} not found.")
+    raise ToolError(
+        f"Footprint {reference!r} not found. Use list_pcb_footprints to see what is on the board."
+    )
 
 
 def _pad_net_name(net_node, default: str) -> str:
@@ -1469,7 +1471,10 @@ def add_thermal_vias(
     if pad_number:
         pad = next((p for p in pads if p.atoms[1].text == pad_number), None)
         if pad is None:
-            raise ToolError(f"Pad {pad_number!r} not found on {reference}.")
+            raise ToolError(
+                f"Pad {pad_number!r} not found on {reference}."
+                " Use get_footprint_pads to list its pads."
+            )
     else:
         # Auto-detect: largest SMD pad by area
         best_area = 0
@@ -2281,7 +2286,11 @@ def autoroute_pcb(
     # Pre-flight: ensure Freerouting JAR
     jar_path, jar_err = _ensure_jar()
     if jar_err or not jar_path:
-        raise ToolError(jar_err or "Freerouting JAR not found.")
+        raise ToolError(
+            jar_err
+            or "Freerouting JAR not found. Set FREEROUTING_JAR to a local"
+            " freerouting.jar, or allow the automatic download."
+        )
 
     # Count existing traces/vias for before/after comparison
     traces_before, vias_before, board_version = _trace_counts(pcb_path)

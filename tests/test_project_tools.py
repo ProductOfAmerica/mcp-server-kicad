@@ -752,7 +752,9 @@ class TestSubSheetErcRedirect:
         # Run ERC on the *root* — no redirect
         root_path = str(proj_dir / "erc_proj.kicad_sch")
         result = schematic.run_erc(schematic_path=root_path)
-        assert result.note is None, "Root schematic ERC should not have a redirect note"
+        assert "root schematic" not in (result.note or ""), (
+            "Root schematic ERC should not claim it redirected"
+        )
 
     def test_non_hierarchical_no_redirect(self, tmp_path: Path):
         """Standalone schematic with no .kicad_pro — no redirect note."""
@@ -763,7 +765,9 @@ class TestSubSheetErcRedirect:
         project.create_schematic(schematic_path=str(standalone))
 
         result = schematic.run_erc(schematic_path=str(standalone))
-        assert result.note is None, "Standalone schematic ERC should not have a redirect note"
+        assert "root schematic" not in (result.note or ""), (
+            "Standalone schematic ERC should not claim it redirected"
+        )
 
 
 @pytest.mark.skipif(not conftest.HAS_KICAD_CLI, reason="kicad-cli not found")
