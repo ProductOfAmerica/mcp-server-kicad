@@ -8,6 +8,7 @@ Provides:
     - run_erc: run kicad-cli ERC and return parsed JSON
     - assert_kicad_parseable: assert kicad-cli can parse the file
     - requires_cli: skip marker for tests that shell out to kicad-cli
+    - StdioClient: drive a server as a subprocess over stdio, as a host does
     - Builder helpers importable by test files for custom fixture creation
 """
 
@@ -18,6 +19,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import uuid as _uuid
 from pathlib import Path
 
@@ -397,6 +399,108 @@ def assert_kicad_parseable(path: str | Path) -> None:
         run_erc(path)
     except RuntimeError as exc:
         pytest.fail(f"kicad-cli cannot parse {Path(path).name}: {exc}")
+
+
+# ---------------------------------------------------------------------------
+# stdio transport
+# ---------------------------------------------------------------------------
+
+#: Tools the unified server registers.  Asserted by every test that talks to a
+#: server over the wire, because a subset silently shipping is issue #2.
+EXPECTED_TOOL_COUNT = 109
+
+
+class StdioClient:
+    """Drive an MCP server as a subprocess over stdio, the way a host does.
+
+    Importing the tool functions and calling them never exercises the protocol
+    layer, and that is where the packaging and host-behaviour defects have
+    lived.  Two test files need this, so the transport lives here rather than
+    being written twice.
+
+    ``initialize`` runs on entry, so ``server_info`` and ``instructions`` are
+    populated by the time the context manager yields.
+    """
+
+    def __init__(self, argv: list[str], env: dict[str, str] | None = None):
+        self.argv = argv
+        self.env = env
+        self.proc: subprocess.Popen[str] | None = None
+        self.server_info: dict = {}
+        self.instructions: str = ""
+        self._id = 0
+
+    def __enter__(self):
+        self.proc = subprocess.Popen(
+            self.argv,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            encoding="utf-8",
+            bufsize=1,
+            env=self.env,
+        )
+        init = self.rpc(
+            "initialize",
+            {
+                "protocolVersion": "2025-06-18",
+                "capabilities": {},
+                "clientInfo": {"name": "pytest", "version": "0"},
+            },
+        )["result"]
+        self.notify("notifications/initialized")
+        self.server_info = init["serverInfo"]
+        # What a host puts in its system prompt.  build_server appends _ACCESS
+        # to this, so it is the only place that text is observable from outside.
+        self.instructions = init.get("instructions") or ""
+        return self
+
+    def __exit__(self, *exc):
+        if not self.proc:
+            return
+        # Closing stdin is the stdio transport's shutdown signal, so give the
+        # server a chance to exit on its own before killing it.  `uv run` spawns
+        # python as a child, and terminating uv does not reap the grandchild on
+        # Windows, which then keeps cryptography's _rust.pyd mapped.
+        if self.proc.stdin:
+            self.proc.stdin.close()
+        try:
+            self.proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+            self.proc.wait(timeout=15)
+
+    def rpc(self, method: str, params: dict | None = None) -> dict:
+        assert self.proc and self.proc.stdin and self.proc.stdout
+        self._id += 1
+        msg = {"jsonrpc": "2.0", "id": self._id, "method": method, "params": params or {}}
+        self.proc.stdin.write(json.dumps(msg) + "\n")
+        self.proc.stdin.flush()
+        while True:
+            line = self.proc.stdout.readline()
+            if not line:
+                stderr = self.proc.stderr.read() if self.proc.stderr else ""
+                pytest.fail(f"server died during {method}:\n{stderr[-2000:]}")
+            if line.strip():
+                return json.loads(line)
+
+    def notify(self, method: str) -> None:
+        assert self.proc and self.proc.stdin
+        self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "method": method}) + "\n")
+        self.proc.stdin.flush()
+
+    def call(self, name: str, args: dict) -> str:
+        result = self.rpc("tools/call", {"name": name, "arguments": args})["result"]
+        assert not result.get("isError"), f"{name} failed: {json.dumps(result)[:500]}"
+        return result["content"][0]["text"]
+
+    def tools(self) -> list[dict]:
+        found = self.rpc("tools/list")["result"]["tools"]
+        assert len(found) == EXPECTED_TOOL_COUNT, (
+            f"expected {EXPECTED_TOOL_COUNT} tools over stdio, got {len(found)}"
+        )
+        return found
 
 
 # ---------------------------------------------------------------------------
