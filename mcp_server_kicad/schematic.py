@@ -2377,17 +2377,21 @@ def _sym_lib_table_note(violations: list) -> str | None:
     """
     if not any(v.get("type") == "lib_symbol_issues" for v in violations):
         return None
+    # Both layouts, the same pair _resolve_system_lib uses: a Unix prefix and a
+    # Windows install put data under share/kicad, the macOS .app bundle under
+    # SharedSupport. Named only when it is really there, because pointing a user
+    # at a path that does not exist is worse than saying nothing about it, and
+    # some packaging layouts match neither.
     root = _kicad_root()
-    template = root / "share" / "kicad" / "template" / "sym-lib-table" if root else None
-    # Named only when it is really there. share/kicad/template sitting under the
-    # binary's grandparent holds on the three platforms CI covers, not on every
-    # packaging layout, and pointing a user at a path that does not exist is
-    # worse than saying nothing about it.
-    where = (
-        f" KiCad ships one at {template}, to be copied there."
-        if template and template.is_file()
-        else ""
+    template = next(
+        (
+            candidate
+            for sub in ("share/kicad/template", "SharedSupport/template")
+            if root and (candidate := root / sub / "sym-lib-table").is_file()
+        ),
+        None,
     )
+    where = f" KiCad ships one at {template}, to be copied there." if template else ""
     return (
         "The library warnings mean KiCad's user configuration has no"
         f" sym-lib-table; opening KiCad once normally creates it.{where}"

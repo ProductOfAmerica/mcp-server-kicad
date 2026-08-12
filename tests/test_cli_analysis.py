@@ -99,8 +99,30 @@ class TestSymLibTableNote:
         assert "embedded in the schematic" in note
 
     @requires_cli
-    def test_note_names_the_stock_template_kicad_ships(self):
+    def test_the_template_path_is_named_only_when_it_exists(self):
+        """Layout-agnostic on purpose.
+
+        This test used to assert the path is always named when kicad-cli
+        resolves, and macOS failed it: KiCad's data lives in the .app bundle's
+        SharedSupport, not share/kicad, so the file was not where the helper
+        looked. The helper now tries both, the same pair _resolve_system_lib
+        uses, but a packaging layout matching neither is still possible, and
+        naming a path that is not there would be worse than omitting it.
+        """
+        from mcp_server_kicad._shared import _kicad_root
+
         note = schematic._sym_lib_table_note([{"type": "lib_symbol_issues"}])
-        assert note is not None and "template" in note, (
-            "with kicad-cli resolvable the note should point at the file to copy"
+        assert note is not None
+        root = _kicad_root()
+        found = next(
+            (
+                c
+                for sub in ("share/kicad/template", "SharedSupport/template")
+                if root and (c := root / sub / "sym-lib-table").is_file()
+            ),
+            None,
         )
+        if found:
+            assert str(found) in note, "a template that exists must be named"
+        else:
+            assert "ships one at" not in note, "no path may be named when none was found"
