@@ -143,3 +143,30 @@ def test_ambiguous_tools_carry_distinct_titles():
     untitled = sorted(name for name, title in titled.items() if not title)
     assert untitled == [], f"ambiguous tools with no title: {untitled}"
     assert len(set(titled.values())) == len(titled), f"titles are not distinct: {titled}"
+
+
+# Conventions the inputSchema cannot express, so the tool description is their
+# only channel. Measured 2026-08-11 on Haiku 4.5 against the live tool block:
+# blank every description and add_label's rotation comes back wrong 6 times out
+# of 6 (180, 270 and 0 all seen) where it is right 6/6 with the prose present.
+# A sweep of all 109 tools found no others: every remaining prose-only choice is
+# either already carried by the parameter's schema `default` or is standard
+# KiCad vocabulary (F.Cu, VCC) the model supplies itself.
+_PROSE_ONLY_CONVENTIONS = {
+    ("add_label", "0=right, 90=up, 180=left, 270=down"),
+    ("add_global_label", "0=right, 90=up, 180=left, 270=down"),
+    ("place_component", '"" for none'),
+}
+
+
+def test_conventions_only_the_prose_carries_survive():
+    by_name = {tool.name: tool for tool in _all_tools()}
+    lost = [
+        f"{name}: {needle!r}"
+        for name, needle in sorted(_PROSE_ONLY_CONVENTIONS)
+        if needle not in (by_name[name].description or "")
+    ]
+    assert lost == [], (
+        "a description lost a convention its schema cannot express, so a model"
+        f" now has to guess the value: {lost}"
+    )
