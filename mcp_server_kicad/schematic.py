@@ -1502,6 +1502,10 @@ def set_page_size(
     return f"Page size set to {size_key} ({w}x{h}mm)"
 
 
+#: KiCad uses one shape vocabulary for global and hierarchical labels.
+_VALID_LABEL_SHAPES = {"input", "output", "bidirectional", "tri_state", "passive"}
+
+
 @mcp.tool(annotations=_ADDITIVE)
 def add_global_label(
     text: str,
@@ -1521,6 +1525,11 @@ def add_global_label(
         shape: Label shape: input, output, bidirectional, tri_state, passive
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
+    # add_hierarchical_label has always checked this; add_global_label never
+    # did, so shape="banana" reached the file and kicad-cli then refused to
+    # load the schematic. Found by the hostile-value sweep, 2026-08-12.
+    if shape not in _VALID_LABEL_SHAPES:
+        raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_LABEL_SHAPES))}")
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     _bounds_check(x, y, page_w, page_h, page_name)
     x, y = round(x, 4), round(y, 4)
@@ -1533,9 +1542,6 @@ def add_global_label(
     _splice_sch_node(root, "global_label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Global label '{text}' ({shape}) at ({x}, {y})"
-
-
-_VALID_HLABEL_SHAPES = {"input", "output", "bidirectional", "tri_state", "passive"}
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1557,8 +1563,8 @@ def add_hierarchical_label(
         rotation: Degrees (0, 90, 180, 270)
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
-    if shape not in _VALID_HLABEL_SHAPES:
-        raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}")
+    if shape not in _VALID_LABEL_SHAPES:
+        raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_LABEL_SHAPES))}")
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     _bounds_check(x, y, page_w, page_h, page_name)
     x, y = round(x, 4), round(y, 4)
@@ -1624,9 +1630,9 @@ def modify_hierarchical_label(
         new_y: New Y position (None = keep current)
         uuid: UUID for disambiguation
     """
-    if new_shape and new_shape not in _VALID_HLABEL_SHAPES:
+    if new_shape and new_shape not in _VALID_LABEL_SHAPES:
         raise ToolError(
-            f"invalid shape '{new_shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}"
+            f"invalid shape '{new_shape}'. Use: {', '.join(sorted(_VALID_LABEL_SHAPES))}"
         )
     tree, root, *_ = _open_sch_cst(schematic_path)
     target = None
