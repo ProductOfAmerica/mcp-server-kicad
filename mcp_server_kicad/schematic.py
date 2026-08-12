@@ -681,7 +681,7 @@ def place_component(
     y: float,
     rotation: float = 0,
     symbol_lib_path: str = "",
-    mirror: str = "",
+    mirror: Literal["", "x", "y"] = "",
     schematic_path: str = SCH_PATH,
     project_path: str = "",
 ) -> str:
@@ -706,6 +706,14 @@ def place_component(
             f"'{reference}' is not a valid KiCad reference designator. "
             "Must match pattern [A-Z]+[0-9]+[A-Z]* (e.g. 'R1', 'U2', 'C5B')."
         )
+
+    # Literal publishes the enum so a model picks a valid value; this check
+    # still matters because Literal is only enforced by pydantic at the MCP
+    # boundary, and a direct Python call sails straight past it. The value used
+    # to be written into the file verbatim, so "Y" produced (mirror Y).
+    mirror = mirror.lower()  # type: ignore[assignment]
+    if mirror not in ("", "x", "y"):
+        raise ToolError(f'Unknown mirror axis: {mirror!r}. Use "x", "y", or "" for none.')
 
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     _bounds_check(x, y, page_w, page_h, page_name)
