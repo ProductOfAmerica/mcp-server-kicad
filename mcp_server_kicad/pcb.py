@@ -876,8 +876,11 @@ def move_footprint(
     _fill_at(fp, x, y, rotation)
     if layer:
         fp.find("layer").atoms[1].set_text(layer)
-    _atomic_write(key, _cst.serialize(tree))
-    # Validation (never blocks the move)
+    # Advisory only: moving into a keep-out or off the board edge is legal
+    # KiCad, just usually a mistake, so this warns and never refuses. It runs
+    # before the write purely so a fault in the checks cannot leave a moved
+    # footprint on disk with nothing said about it; the checks read the already
+    # mutated tree, so the answers are the same either side of the write.
     warnings: list[str] = []
     try:
         if _keepout_violations_cst(root, x, y, _fp_layer(fp)):
@@ -885,8 +888,12 @@ def move_footprint(
         edge_poly = _edge_polygon_cst(root)
         if edge_poly is not None and not _point_in_polygon(x, y, edge_poly):
             warnings.append("WARNING: position is outside the board edge")
-    except Exception:
-        pass  # Validation must never block the move
+    except Exception as exc:  # noqa: BLE001 - the move must still happen
+        # Was a bare `pass`, which hid any defect in the geometry helpers for
+        # as long as nobody went looking. Still does not block the move.
+        warnings.append(f"WARNING: placement checks could not run ({type(exc).__name__}: {exc})")
+
+    _atomic_write(key, _cst.serialize(tree))
     msg = f"Moved {reference} to ({x}, {y})"
     if warnings:
         msg += " " + " ".join(warnings)
@@ -898,16 +905,20 @@ def check_placement(
     reference: str,
     x: float,
     y: float,
-    rotation: float = 0,
     pcb_path: str = PCB_PATH,
 ) -> PlacementCheckResult:
     """Check if placing/moving a footprint to (x, y) would violate constraints.
+
+    Both checks are on the footprint's origin point, not its courtyard, so a
+    footprint whose body overlaps a keep-out while its origin does not still
+    reports ok. That is also why there is no rotation parameter: rotating about
+    the origin cannot move the origin, so an angle could not change either
+    answer. One was accepted and silently ignored until 2026-08-12.
 
     Args:
         reference: Footprint reference designator
         x: Proposed X position
         y: Proposed Y position
-        rotation: Proposed rotation in degrees
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)

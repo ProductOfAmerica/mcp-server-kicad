@@ -759,6 +759,45 @@ class TestGeometryTrioCst:
         assert hit.keepout_violations[0]["restrictions"]["footprints"] == "not_allowed"
         assert pcb.check_placement("R1", 500, 500, pcb_path=k10).outside_board_edge is True
 
+    def test_check_placement_takes_no_rotation(self, tmp_path):
+        """It accepted one and never read it, so the schema promised nothing.
+
+        Both checks are on the origin point, and rotating about the origin
+        cannot move the origin, so no angle could ever have changed the answer.
+        """
+        import inspect
+
+        from test_pcb_write_tools import _make_keepout_pcb
+
+        assert "rotation" not in inspect.signature(pcb.check_placement).parameters
+        tool = pcb.mcp._tool_manager._tools["check_placement"]
+        assert "rotation" not in tool.parameters.get("properties", {})
+
+        k9, _ = _k9_k10_pair(tmp_path, _make_keepout_pcb)
+        with pytest.raises(TypeError):
+            pcb.check_placement("R1", 25, 25, rotation=90, pcb_path=k9)  # type: ignore[call-arg]
+
+    def test_move_footprint_reports_a_failed_placement_check(self, tmp_path, monkeypatch):
+        """The checks are advisory, but a fault in them must not be silent.
+
+        This branch was `except Exception: pass`, so any defect in the geometry
+        helpers stayed invisible for as long as nobody went looking.
+        """
+        from test_pcb_write_tools import _make_keepout_pcb
+
+        k9, _ = _k9_k10_pair(tmp_path, _make_keepout_pcb)
+        monkeypatch.setattr(
+            pcb,
+            "_keepout_violations_cst",
+            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        before = Path(k9).read_bytes()
+        result = pcb.move_footprint("R1", 40, 40, pcb_path=k9)
+        assert "Moved R1" in result, "an advisory check must never block the move"
+        assert "placement checks could not run" in result
+        assert "RuntimeError: boom" in result
+        assert Path(k9).read_bytes() != before, "the move itself must still land"
+
     def test_get_footprint_bounds(self, tmp_path):
         from test_pcb_read_tools import _make_board_with_courtyard_fp
 
