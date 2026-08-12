@@ -25,6 +25,7 @@ from mcp_server_kicad._shared import (
     _gen_uuid,
     _kicad_root,
     _node_uuid,
+    _read_kicad_bytes,
     _remove_root_symbol_instance,
     _resolve_hierarchy_path,
     _resolve_root,
@@ -1137,7 +1138,7 @@ def _open_sch_cst(schematic_path: str):
     Works on any format KiCad writes (portability measured per token by the
     KiCad 10 e2e tests; see docs/adr-cst-substrate.md).
     """
-    tree = _cst.parse(Path(schematic_path).read_bytes())
+    tree = _cst.parse(_read_kicad_bytes(schematic_path, "schematic"))
     root = tree.lists[0] if tree.lists else None
     if root is None or root.head != "kicad_sch":
         raise ToolError(f"{Path(schematic_path).name} is not a KiCad schematic.")

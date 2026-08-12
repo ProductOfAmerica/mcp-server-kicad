@@ -15,6 +15,7 @@ from mcp_server_kicad._shared import (
     OUTPUT_DIR,
     _courtyard_bbox_cst,
     _keepout_dict,
+    _read_kicad_bytes,
     _run_cli,
     build_server,
 )
@@ -52,7 +53,7 @@ _GRAPHIC_NAMES = {
 
 def _open_footprint(footprint_path: str):
     """Root node of a .kicad_mod, which IS the footprint node. Guard-free."""
-    tree = _cst.parse(Path(footprint_path).read_bytes())
+    tree = _cst.parse(_read_kicad_bytes(footprint_path, "footprint"))
     root = tree.lists[0] if tree.lists else None
     if root is None or root.head != "footprint":
         raise ToolError(f"{footprint_path} is not a KiCad footprint.")

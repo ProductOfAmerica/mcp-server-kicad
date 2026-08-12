@@ -17,6 +17,7 @@ from mcp_server_kicad._shared import (
     SYM_LIB_PATH,
     _atomic_write,
     _check_rotation,
+    _read_kicad_bytes,
     _run_cli,
     build_server,
 )
@@ -162,7 +163,7 @@ _LIB_SYMBOL_TPL = _cst.parse(
 
 def _open_sym_lib(symbol_lib_path: str):
     """(tree, root) for a .kicad_sym file; guard-free, works on any version."""
-    tree = _cst.parse(Path(symbol_lib_path).read_bytes())
+    tree = _cst.parse(_read_kicad_bytes(symbol_lib_path, "symbol library"))
     root = tree.lists[0] if tree.lists else None
     if root is None or root.head != "kicad_symbol_lib":
         raise ToolError(f"{symbol_lib_path} is not a KiCad symbol library.")

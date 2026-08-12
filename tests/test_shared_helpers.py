@@ -9,12 +9,14 @@ from conftest import new_schematic
 from kiutils.footprint import Footprint
 from kiutils.items.common import Position
 from kiutils.items.fpitems import FpCircle, FpLine, FpRect
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import _cst, _shared
 from mcp_server_kicad._shared import (
     _atomic_write,
     _courtyard_bbox_cst,
     _point_in_polygon,
+    _read_kicad_bytes,
     _resolve_hierarchy_path,
     _transform_local_to_board,
 )
@@ -392,3 +394,54 @@ class TestAtomicWrite:
         assert src != str(p), "must not replace the file with itself"
         assert not src.endswith(".kicad_sch"), src
         assert src.endswith(".tmp")
+
+
+class TestReadKicadBytes:
+    """A path that does not exist is the commonest mistake a caller makes.
+
+    Measured 2026-08-12 before this helper existed: 84 of the 105 path-taking
+    tools answered a nonexistent path with a raw FileNotFoundError, which
+    reaches the MCP client as an unhandled exception carrying no remedy. Every
+    tool entry point now reads through here, so it is one behaviour rather than
+    84 checks that have to stay in step.
+    """
+
+    def test_missing_file_is_refused_with_the_path(self, tmp_path):
+        with pytest.raises(ToolError, match="not found") as exc:
+            _read_kicad_bytes(tmp_path / "nope.kicad_sch", "schematic")
+        assert "nope.kicad_sch" in str(exc.value)
+        assert "omit it" in str(exc.value), "the message must name a way out"
+
+    def test_empty_path_names_the_configuration(self):
+        """What a blank host configuration produces, and what a user hit."""
+        with pytest.raises(ToolError, match="none is configured"):
+            _read_kicad_bytes("", "schematic")
+
+    def test_a_directory_is_not_a_file(self, tmp_path):
+        with pytest.raises(ToolError, match="not found"):
+            _read_kicad_bytes(tmp_path, "schematic")
+
+    def test_a_real_file_reads(self, tmp_path):
+        """Bytes straight through, no decode: the helper guards, it does not parse.
+
+        A .kicad_mod on purpose. The autouse output oracle globs .kicad_sch and
+        .kicad_pcb, and a stub body is not a loadable schematic, so naming this
+        one .kicad_sch would fail validation for a reason the test is not about.
+        """
+        p = tmp_path / "x.kicad_mod"
+        p.write_bytes(b'(footprint "X")\r\n')
+        assert _read_kicad_bytes(p, "footprint") == b'(footprint "X")\r\n'
+
+    def test_every_tool_entry_point_refuses_a_missing_path(self, tmp_path):
+        """The 84 collapsed to one behaviour; this is the proof, not the helper."""
+        from mcp_server_kicad import footprint, pcb, schematic, symbol
+
+        missing = str(tmp_path / "absent")
+        for fn, kwargs in (
+            (schematic.list_schematic_components, {"schematic_path": missing}),
+            (pcb.list_pcb_footprints, {"pcb_path": missing}),
+            (symbol.list_lib_symbols, {"symbol_lib_path": missing}),
+            (footprint.get_footprint_info, {"footprint_path": missing}),
+        ):
+            with pytest.raises(ToolError):
+                fn(**kwargs)

@@ -23,6 +23,7 @@ from mcp_server_kicad._shared import (
     _find_root_schematic,
     _gen_uuid,
     _node_uuid,
+    _read_kicad_bytes,
     _resolve_hierarchy_path,
     _resolve_root,
     _run_cli,
@@ -843,6 +844,10 @@ def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
+    # is_root=True meant "no parent sheet references it", which a file that
+    # does not exist also satisfies, so a bogus path used to report itself the
+    # root of a hierarchy. Read it first and let the shared opener refuse.
+    _read_kicad_bytes(schematic_path, "schematic")
     root = _find_root_schematic(schematic_path)
     return RootSchematicResult(
         is_root=root is None,

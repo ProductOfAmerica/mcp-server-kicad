@@ -54,6 +54,7 @@ from mcp_server_kicad._shared import (
     _kicad_root,
     _linearize_arc,
     _point_in_polygon,
+    _read_kicad_bytes,
     _resolve_root,
     _run_cli,
     _transform_local_to_board,
@@ -139,8 +140,9 @@ def _open_pcb_cst(pcb_path: str):
     reinsert, so an exception between mutation and write can never leave a
     poisoned tree cached.
     """
-    if not pcb_path:
-        raise ValueError("No PCB path provided. Pass pcb_path parameter.")
+    # Same refusal as every other opener; os.stat below would otherwise raise a
+    # bare FileNotFoundError straight through to the client.
+    _read_kicad_bytes(pcb_path, "board")
     key = str(Path(pcb_path).resolve())
     st = os.stat(key)
     hit = _BOARD_CACHE.get(key)
@@ -2091,7 +2093,7 @@ def _trace_counts(pcb_path: str) -> tuple[int, int, int]:
     _open_pcb_cst, because the routed file this runs on is written between
     the two calls.
     """
-    root = _cst.parse(Path(pcb_path).read_bytes()).lists[0]
+    root = _cst.parse(_read_kicad_bytes(pcb_path, "board")).lists[0]
     heads = [c.head for c in root.lists]
     return heads.count("segment"), heads.count("via"), _board_version(root)
 
@@ -2143,7 +2145,7 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
     Returns the number of polygons promoted. At zero, *output_path* is not
     written and the caller feeds the original board to the DSN export.
     """
-    tree = _cst.parse(Path(pcb_path).read_bytes())
+    tree = _cst.parse(_read_kicad_bytes(pcb_path, "board"))
     root = tree.lists[0]
     count = 0
 
@@ -2216,7 +2218,7 @@ def _fix_displaced_fp_text(pcb_path: str) -> int:
     Returns the number of texts reset; the file is rewritten only when that
     count is non-zero.
     """
-    tree = _cst.parse(Path(pcb_path).read_bytes())
+    tree = _cst.parse(_read_kicad_bytes(pcb_path, "board"))
     fixed = 0
     for fp in tree.lists[0].find_all("footprint"):
         for text in fp.find_all("fp_text") + fp.find_all("property"):
