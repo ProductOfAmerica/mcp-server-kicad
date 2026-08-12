@@ -441,6 +441,44 @@ def _resolve_net_cst(root, net_name: str) -> int:
     raise ToolError(f"Net {net_name!r} not found. Available nets: {available}")
 
 
+def _board_layers(root) -> list[str]:
+    """Canonical layer names from the board's own stackup table.
+
+    A row is ``(31 "B.Cu" signal)``, optionally with a fourth atom holding a
+    user-facing alias: ``(36 "B.SilkS" user "B.Silkscreen")``. Only ``atoms[1]``
+    is the name items reference in their own ``(layer ...)``, so the alias is
+    deliberately not returned.
+    """
+    layers = root.find("layers")
+    return [layer.atoms[1].text for layer in (layers.lists if layers is not None else ())]
+
+
+def _resolve_layer_cst(root, layer: str, *, copper_only: bool = False) -> str:
+    """*layer* as-is, or ToolError listing what the board actually defines.
+
+    An enum cannot express this: the legal set is per-board and users rename
+    layers, so the truth is the table inside the file being edited. Same shape
+    as _resolve_net_cst, and for the same reason.
+
+    Unvalidated, a typo reached the disk verbatim. Measured 2026-08-12:
+    add_trace(layer="banana") wrote (layer banana) and kicad-cli then refused
+    the board entirely with "Failed to load board".
+
+    copper_only tests the ``.Cu`` suffix rather than the row's type atom,
+    because KiCad writes ``power``, ``mixed`` and ``jumper`` for inner copper
+    and a type test would reject a legal power plane.
+    """
+    available = _board_layers(root)
+    if layer not in available:
+        raise ToolError(
+            f"Layer {layer!r} is not defined on this board. Available layers: {available}"
+        )
+    if copper_only and not layer.endswith(".Cu"):
+        copper = [name for name in available if name.endswith(".Cu")]
+        raise ToolError(f"Layer {layer!r} is not a copper layer. Copper layers: {copper}")
+    return layer
+
+
 def _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max) -> list:
     """CST twin of the retired _filter_segments: segment nodes matching filters."""
     if all(v is None for v in (net_name, layer, x_min, y_min, x_max, y_max)):

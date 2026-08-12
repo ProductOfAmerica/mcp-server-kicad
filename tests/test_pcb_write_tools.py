@@ -348,7 +348,9 @@ class TestAutoroutePreflight:
 _PROPERTY_TEXT_BOARD = """(kicad_pcb (version 20241108) (generator "pcbnew")
   (general (thickness 1.6))
   (paper "A4")
-  (layers (0 "F.Cu" signal) (31 "B.Cu" signal))
+  (layers (0 "F.Cu" signal) (31 "B.Cu" signal)
+    (36 "B.SilkS" user "B.Silkscreen") (37 "F.SilkS" user "F.Silkscreen")
+    (44 "Edge.Cuts" user) (48 "B.Fab" user) (49 "F.Fab" user))
   (setup (pad_to_mask_clearance 0))
   (net 0 "")
   (footprint "Test:U"
