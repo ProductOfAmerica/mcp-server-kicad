@@ -18,6 +18,7 @@ from mcp_server_kicad._shared import (
     _check_rotation,
     _ensure_dir,
     _read_kicad_bytes,
+    _require_kicad_path,
     _run_cli,
     build_server,
 )
@@ -428,6 +429,7 @@ def export_symbol_svg(
         symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.
         output_dir: Output directory. Optional; omit to use the configured default.
     """
+    _require_kicad_path(symbol_lib_path, "symbol library")
     out = output_dir or str(Path(symbol_lib_path).parent)
     _ensure_dir(out)
     _run_cli(["sym", "export", "svg", "--output", out, symbol_lib_path])
@@ -450,6 +452,7 @@ def upgrade_symbol_lib(symbol_lib_path: str) -> str:
     Args:
         symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.
     """
+    _require_kicad_path(symbol_lib_path, "symbol library")
     _run_cli(["sym", "upgrade", symbol_lib_path])
     return f"Successfully upgraded {symbol_lib_path}"
 

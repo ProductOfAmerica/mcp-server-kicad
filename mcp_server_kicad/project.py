@@ -25,6 +25,7 @@ from mcp_server_kicad._shared import (
     _gen_uuid,
     _node_uuid,
     _read_kicad_bytes,
+    _require_kicad_path,
     _resolve_hierarchy_path,
     _resolve_root,
     _run_cli,
@@ -1474,6 +1475,7 @@ def export_hierarchical_netlist(
         output_dir: Directory for netlist output (defaults to schematic directory).
             Optional; omit to use the configured default.
     """
+    _require_kicad_path(schematic_path, "schematic")
     import xml.etree.ElementTree as ET
 
     if not output_dir:
@@ -1565,6 +1567,7 @@ def run_jobset(jobset_path: str) -> str:
     Args:
         jobset_path: Path to .kicad_jobset file
     """
+    _require_kicad_path(jobset_path, "jobset")
     try:
         result = _run_cli(["jobset", "run", jobset_path])
         return f"Jobset completed successfully.\n{result.stdout}"

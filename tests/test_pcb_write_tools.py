@@ -509,21 +509,42 @@ _NETLIST_SUMMARY_JSON = (
 
 
 class TestUpdatePcbFromSchematic:
-    def test_no_pcbnew_returns_error(self, tmp_path):
+    """The schematic must exist; the board must not have to.
+
+    These mock the pcbnew subprocess away, so the schematic used to be a name
+    that was never written and nothing minded. It has to be a real file now,
+    because the tool checks its input before spawning anything. The board stays
+    a bare path on purpose: creating it when it is missing is this tool's
+    documented first use, and the E2E suite starts from exactly that state.
+    """
+
+    def test_no_pcbnew_returns_error(self, scratch_sch, tmp_path):
         with patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=(None, None)):
             with pytest.raises(ToolError, match="pcbnew"):
                 pcb.update_pcb_from_schematic(
-                    schematic_path=str(tmp_path / "a.kicad_sch"),
+                    schematic_path=str(scratch_sch),
                     pcb_path=str(tmp_path / "a.kicad_pcb"),
                 )
 
-    def test_empty_paths_rejected(self):
-        with pytest.raises(ToolError, match="path"):
-            pcb.update_pcb_from_schematic(schematic_path="", pcb_path="x.kicad_pcb")
-        with pytest.raises(ToolError, match="path"):
-            pcb.update_pcb_from_schematic(schematic_path="x.kicad_sch", pcb_path="")
+    def test_a_missing_schematic_is_refused(self, tmp_path):
+        """Named separately from the empty case, which has its own message."""
+        with pytest.raises(ToolError, match="schematic not found"):
+            pcb.update_pcb_from_schematic(
+                schematic_path=str(tmp_path / "absent.kicad_sch"),
+                pcb_path=str(tmp_path / "a.kicad_pcb"),
+            )
 
-    def _run_mocked(self, tmp_path, delete_stale=False, returncode=0, stdout=None, stderr=""):
+    def test_empty_paths_rejected(self, scratch_sch):
+        with pytest.raises(ToolError, match="No schematic path given"):
+            pcb.update_pcb_from_schematic(schematic_path="", pcb_path="x.kicad_pcb")
+        # A real schematic, so this reaches the pcb_path check rather than
+        # stopping at the schematic one and passing for the wrong reason.
+        with pytest.raises(ToolError, match="No PCB path provided"):
+            pcb.update_pcb_from_schematic(schematic_path=str(scratch_sch), pcb_path="")
+
+    def _run_mocked(
+        self, scratch_sch, tmp_path, delete_stale=False, returncode=0, stdout=None, stderr=""
+    ):
         """Run the tool with kicad-cli and the pcbnew subprocess both mocked.
 
         Returns (result_or_exception, pcbnew_argv).
@@ -553,14 +574,14 @@ class TestUpdatePcbFromSchematic:
             patch("subprocess.run", return_value=mock_proc) as sub,
         ):
             result = pcb.update_pcb_from_schematic(
-                schematic_path=str(tmp_path / "a.kicad_sch"),
+                schematic_path=str(scratch_sch),
                 pcb_path=str(tmp_path / "a.kicad_pcb"),
                 delete_stale=delete_stale,
             )
         return result, sub.call_args[0][0]
 
-    def test_success_mocked(self, tmp_path):
-        result, argv = self._run_mocked(tmp_path)
+    def test_success_mocked(self, scratch_sch, tmp_path):
+        result, argv = self._run_mocked(scratch_sch, tmp_path)
         assert result.status == "ok"
         assert result.added == ["R1"]
         assert result.nets_added == 2
@@ -571,19 +592,19 @@ class TestUpdatePcbFromSchematic:
         lib_dirs = [argv[i + 1] for i, a in enumerate(argv) if a == "--lib-dir"]
         assert any(d.endswith("TestLib.pretty") for d in lib_dirs)
 
-    def test_delete_stale_flag_propagates(self, tmp_path):
-        _, argv = self._run_mocked(tmp_path, delete_stale=True)
+    def test_delete_stale_flag_propagates(self, scratch_sch, tmp_path):
+        _, argv = self._run_mocked(scratch_sch, tmp_path, delete_stale=True)
         assert "--delete-stale" in argv
-        _, argv = self._run_mocked(tmp_path, delete_stale=False)
+        _, argv = self._run_mocked(scratch_sch, tmp_path, delete_stale=False)
         assert "--delete-stale" not in argv
 
-    def test_script_failure_raises(self, tmp_path):
+    def test_script_failure_raises(self, scratch_sch, tmp_path):
         with pytest.raises(ToolError, match="boom"):
-            self._run_mocked(tmp_path, returncode=1, stdout="", stderr="boom")
+            self._run_mocked(scratch_sch, tmp_path, returncode=1, stdout="", stderr="boom")
 
-    def test_garbage_stdout_raises(self, tmp_path):
+    def test_garbage_stdout_raises(self, scratch_sch, tmp_path):
         with pytest.raises(ToolError, match="no summary"):
-            self._run_mocked(tmp_path, stdout="not json at all\n")
+            self._run_mocked(scratch_sch, tmp_path, stdout="not json at all\n")
 
 
 class TestSetTraceWidth:

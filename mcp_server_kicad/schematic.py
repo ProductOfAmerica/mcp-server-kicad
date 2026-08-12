@@ -27,6 +27,7 @@ from mcp_server_kicad._shared import (
     _node_uuid,
     _read_kicad_bytes,
     _remove_root_symbol_instance,
+    _require_kicad_path,
     _resolve_hierarchy_path,
     _resolve_root,
     _resolve_system_lib,
@@ -2331,6 +2332,7 @@ def list_unconnected_pins(
         output_dir: Directory for ERC report file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file for explicit root resolution
     """
+    _require_kicad_path(schematic_path, "schematic")
     # Auto-redirect sub-sheets to root for full hierarchy context
     root_path = _resolve_root(schematic_path, project_path)
     erc_target = root_path or schematic_path
@@ -2417,6 +2419,7 @@ def run_erc(
             Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file for explicit root resolution
     """
+    _require_kicad_path(schematic_path, "schematic")
     # Auto-redirect sub-sheets to root for full hierarchy context
     root_path = _resolve_root(schematic_path, project_path)
     erc_target = root_path or schematic_path
@@ -2475,6 +2478,7 @@ def export_schematic(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         output_dir: Directory for output files. Optional; omit to use the configured default.
     """
+    _require_kicad_path(schematic_path, "schematic")
     # See export_pcb: the enum is for the model, this is for direct callers.
     fmt = format.lower()
     if fmt not in ("pdf", "svg", "dxf"):
@@ -2521,6 +2525,7 @@ def export_netlist(
         output_dir: Output directory. Optional; omit to use the configured default.
         format: Netlist format. spice and spicemodel produce simulator input.
     """
+    _require_kicad_path(schematic_path, "schematic")
     out_dir = output_dir or str(Path(schematic_path).parent)
     # kicad-cli writes whatever --output names, so the extension is ours to
     # pick. Measured against kicad-cli 9.0.8, which accepts all eight.
@@ -2539,6 +2544,7 @@ def export_bom(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> 
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         output_dir: Output directory. Optional; omit to use the configured default.
     """
+    _require_kicad_path(schematic_path, "schematic")
     out_dir = output_dir or str(Path(schematic_path).parent)
     out_path = str(Path(out_dir) / (Path(schematic_path).stem + "-bom.csv"))
     _run_cli(["sch", "export", "bom", "--output", out_path, schematic_path])

@@ -56,6 +56,7 @@ from mcp_server_kicad._shared import (
     _linearize_arc,
     _point_in_polygon,
     _read_kicad_bytes,
+    _require_kicad_path,
     _resolve_root,
     _run_cli,
     _transform_local_to_board,
@@ -1249,6 +1250,7 @@ def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
     Args:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
+    _require_kicad_path(pcb_path, "board")
     pcb_path = str(Path(pcb_path).resolve())
     python, env = _find_pcbnew_python()
     if not python:
@@ -1322,8 +1324,14 @@ def update_pcb_from_schematic(
         delete_stale: Remove unlocked board footprints absent from the schematic
         project_path: Path to .kicad_pro for explicit root resolution (sub-sheets)
     """
-    if not schematic_path:
-        raise ToolError("No schematic path provided. Pass schematic_path parameter.")
+    # Before the pcbnew probe below, which spawns a process, so a typo'd path
+    # is answered by us rather than by whatever that subprocess says about it.
+    #
+    # The schematic only. pcb_path is deliberately not required to exist: this
+    # tool creates the board when it is missing (_netlist_import calls NewBoard,
+    # and the whole E2E suite starts from a schematic and no board at all), so
+    # requiring it would refuse the tool's documented first use.
+    _require_kicad_path(schematic_path, "schematic")
     if not pcb_path:
         raise ToolError("No PCB path provided. Pass pcb_path parameter.")
 
@@ -1750,6 +1758,7 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> DrcResult
         output_dir: Directory for report file (default: same as PCB).
             Optional; omit to use the configured default.
     """
+    _require_kicad_path(pcb_path, "board")
     out_dir = output_dir or str(Path(pcb_path).parent)
     out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-drc.json"))
     _run_cli(
@@ -1803,6 +1812,7 @@ def export_pcb(
         use_contours: Use board outline contours (DXF only)
         include_border_title: Include border and title block (DXF only)
     """
+    _require_kicad_path(pcb_path, "board")
     # Literal publishes the enum so a model picks a valid value; this check
     # still matters because Literal is only enforced by pydantic at the MCP
     # boundary, and a direct Python call sails straight past it.
@@ -1884,6 +1894,7 @@ def export_gerbers(
         include_drill: Also export drill files (default: True, ignored in single-layer mode)
         layers: Optional list of layer names. Single layer = single file output.
     """
+    _require_kicad_path(pcb_path, "board")
     # Single-layer mode: one file, like the old export_gerber
     if layers and len(layers) == 1:
         layer = layers[0].strip()
@@ -1976,6 +1987,7 @@ def export_3d(
         side: View side: top, bottom, left, right, front, back (render only)
         quality: Render quality: basic, high (render only)
     """
+    _require_kicad_path(pcb_path, "board")
     # See export_pcb: the enum is for the model, this is for direct callers.
     fmt = format.lower()
     if fmt not in ("step", "stl", "glb", "render"):
@@ -2029,6 +2041,7 @@ def export_positions(
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
         output_dir: Output directory. Optional; omit to use the configured default.
     """
+    _require_kicad_path(pcb_path, "board")
     out_dir = output_dir or str(Path(pcb_path).parent)
     out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-pos.csv"))
     _run_cli(["pcb", "export", "pos", "--format", "csv", "--output", out_path, pcb_path])
@@ -2062,6 +2075,7 @@ def export_ipc2581(
         version: IPC-2581 version (default: "C")
         units: Output units - "mm" or "in"
     """
+    _require_kicad_path(pcb_path, "board")
     out = output or str(Path(OUTPUT_DIR) / (Path(pcb_path).stem + ".xml"))
     args = ["pcb", "export", "ipc2581", pcb_path, "-o", out]
     if precision != 3:
@@ -2278,6 +2292,7 @@ def autoroute_pcb(
         output_dir: Directory for output files (default: same as PCB).
             Optional; omit to use the configured default.
     """
+    _require_kicad_path(pcb_path, "board")
     # Resolve to absolute path for subprocess calls
     pcb_path = str(Path(pcb_path).resolve())
 
