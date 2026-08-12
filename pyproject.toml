@@ -1,6 +1,6 @@
 [project]
 name = "mcp-server-kicad"
-version = "0.15.0"
+version = "0.16.0"
 description = "Byte-preserving MCP servers for KiCad: schematic capture, PCB layout, ERC, DRC, and manufacturing exports"
 readme = "README.md"
 requires-python = ">=3.10"
