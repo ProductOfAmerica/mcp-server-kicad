@@ -235,6 +235,32 @@ def _read_kicad_bytes(path: str | Path, kind: str) -> bytes:
     return p.read_bytes()
 
 
+def _ensure_dir(path: str | Path, kind: str = "output directory") -> Path:
+    """Create a directory, refusing an unreachable root with a ToolError.
+
+    A missing *directory* is not an error here: every caller creates its tree,
+    which is the behaviour a caller naming a fresh export folder expects. A
+    missing *root* is different, because no amount of mkdir reaches it.
+
+    Measured 2026-08-12: mkdir("Z:/nope") raises
+
+        FileNotFoundError: [WinError 3] The system cannot find the path
+        specified: 'Z:\\'
+
+    which names neither the tool nor the parameter, so a typo'd drive letter or
+    a disconnected network share arrived at the client as a bare traceback.
+    """
+    p = Path(path)
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise ToolError(
+            f"Cannot create {kind} {p}: {exc.strerror or exc}."
+            " Check the drive or network share is reachable."
+        ) from exc
+    return p
+
+
 def _atomic_write(path: str | Path, data: bytes) -> None:
     """Write *data* to *path* through a temp file and a replace.
 

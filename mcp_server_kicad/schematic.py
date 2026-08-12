@@ -3,7 +3,6 @@
 import difflib
 import json
 import math
-import os
 import re
 from pathlib import Path
 from typing import Literal
@@ -21,6 +20,7 @@ from mcp_server_kicad._shared import (
     SCH_PATH,
     _atomic_write,
     _check_rotation,
+    _ensure_dir,
     _file_meta,
     _gen_uuid,
     _kicad_root,
@@ -2484,7 +2484,7 @@ def export_schematic(
     stem = Path(schematic_path).stem
 
     if fmt == "svg":
-        os.makedirs(out_dir, exist_ok=True)
+        _ensure_dir(out_dir)
         _run_cli(["sch", "export", "svg", "--output", out_dir, schematic_path])
         svgs = sorted(Path(out_dir).glob("*.svg"))
         return SchematicExportResult(

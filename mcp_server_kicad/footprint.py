@@ -1,6 +1,5 @@
 """KiCad footprint library MCP server."""
 
-import os
 from pathlib import Path
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -14,6 +13,7 @@ from mcp_server_kicad._shared import (
     FP_LIB_PATH,
     OUTPUT_DIR,
     _courtyard_bbox_cst,
+    _ensure_dir,
     _keepout_dict,
     _read_kicad_bytes,
     _run_cli,
@@ -174,7 +174,7 @@ def export_footprint_svg(
     """
     src = Path(footprint_path)
     out = output_dir or str(src.parent)
-    os.makedirs(out, exist_ok=True)
+    _ensure_dir(out)
     # kicad-cli takes the library directory, never the .kicad_mod itself, so a
     # single file means "point at the parent and name the footprint".
     args = ["fp", "export", "svg", "--output", out]

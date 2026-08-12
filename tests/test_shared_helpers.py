@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ from mcp_server_kicad import _cst, _shared
 from mcp_server_kicad._shared import (
     _atomic_write,
     _courtyard_bbox_cst,
+    _ensure_dir,
     _point_in_polygon,
     _read_kicad_bytes,
     _resolve_hierarchy_path,
@@ -445,3 +447,41 @@ class TestReadKicadBytes:
         ):
             with pytest.raises(ToolError):
                 fn(**kwargs)
+
+
+class TestEnsureDir:
+    """A missing directory is created; an unreachable root is refused.
+
+    The distinction is the whole point of the helper. Callers name fresh export
+    folders all the time and expect them to appear, so mkdir(parents=True) is
+    the behaviour to keep; a drive or share that is not there cannot be reached
+    by any amount of mkdir, and used to arrive as a bare WinError 3 naming
+    neither the tool nor the parameter.
+    """
+
+    def test_missing_directories_are_created(self, tmp_path):
+        d = _ensure_dir(tmp_path / "a" / "b" / "c")
+        assert d.is_dir()
+
+    def test_existing_directory_is_fine(self, tmp_path):
+        assert _ensure_dir(tmp_path) == tmp_path
+
+    def test_unreachable_root_is_refused(self, tmp_path):
+        """Refused, not crashed, and the message names a thing to check."""
+        if os.name == "nt":
+            unreachable = "Z:/nope/out"  # a drive letter with nothing mounted
+        else:
+            # A file cannot be a parent directory, so mkdir fails at the root.
+            blocker = tmp_path / "blocker"
+            blocker.write_bytes(b"x")
+            unreachable = str(blocker / "out")
+        with pytest.raises(ToolError) as exc:
+            _ensure_dir(unreachable)
+        assert "Cannot create output directory" in str(exc.value)
+        assert "reachable" in str(exc.value)
+
+    def test_the_kind_reaches_the_message(self, tmp_path):
+        blocker = tmp_path / "f"
+        blocker.write_bytes(b"x")
+        with pytest.raises(ToolError, match="parent directory"):
+            _ensure_dir(blocker / "out", "parent directory")

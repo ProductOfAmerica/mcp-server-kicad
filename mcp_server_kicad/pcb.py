@@ -48,6 +48,7 @@ from mcp_server_kicad._shared import (
     _atomic_write,
     _chain_edge_polygon,
     _courtyard_bbox_cst,
+    _ensure_dir,
     _file_meta,
     _gen_uuid,
     _keepout_dict,
@@ -1889,7 +1890,7 @@ def export_gerbers(
         if not layer:
             raise ToolError("At least one layer must be specified")
         out_dir = output_dir or str(Path(pcb_path).parent)
-        os.makedirs(out_dir, exist_ok=True)
+        _ensure_dir(out_dir)
         out_path = str(Path(out_dir) / f"{Path(pcb_path).stem}-{layer.replace('.', '_')}.gbr")
         # KiCad 10 removed `pcb export gerber` (#8), so plot with the plural
         # into a scratch dir. The plural exits 0 on a bad layer name and always
@@ -1930,7 +1931,7 @@ def export_gerbers(
 
     # Multi-layer mode: directory of files
     out = output_dir or str(Path(pcb_path).parent / "gerbers")
-    os.makedirs(out, exist_ok=True)
+    _ensure_dir(out)
     cmd = ["pcb", "export", "gerbers"]
     if layers:
         cmd += ["--layers", ",".join(layers)]
