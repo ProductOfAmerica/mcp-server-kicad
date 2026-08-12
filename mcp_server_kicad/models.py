@@ -248,6 +248,13 @@ class DrcResult(BaseModel):
 
 
 class ErcResult(BaseModel):
+    """ERC report. ``note`` carries any remarks, space-joined.
+
+    It is deliberately not single-purpose: it began as "ERC was redirected to
+    the root sheet" and now also explains a missing sym-lib-table. Test for the
+    remark you care about rather than for the field being empty.
+    """
+
     source: str
     kicad_version: str
     violation_count: int
