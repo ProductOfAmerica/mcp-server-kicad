@@ -11,14 +11,38 @@ from mcp_server_kicad.schematic import _get_page_size
 
 
 class TestDuplicateReference:
-    def test_duplicate_ref_allowed(self, scratch_sch: Path) -> None:
-        """Placing a second component with the same reference (R1) should succeed.
+    """This used to assert a duplicate reference was fine, on a false premise.
 
-        KiCad flags duplicate references via ERC, not at placement time.
-        """
+    Its docstring read "KiCad flags duplicate references via ERC, not at
+    placement time." Measured 2026-08-12: `kicad-cli sch erc` reports no
+    duplicate-reference violation at all, not even for a resistor and a
+    capacitor both called R1. Nothing downstream catches it, so placement time
+    is the only time it can be caught.
+
+    A user hit this for real: two R1 symbols stacked at the same coordinates,
+    which ERC could not even report as unconnected pins because the coincident
+    pins counted as connected to each other.
+    """
+
+    def test_duplicate_reference_is_refused(self, scratch_sch: Path) -> None:
+        before = scratch_sch.read_bytes()
+        with pytest.raises(ToolError, match="already placed"):
+            schematic.place_component(
+                lib_id="Device:R",
+                reference="R1",  # scratch_sch already has R1
+                value="4.7K",
+                x=200,
+                y=200,
+                schematic_path=str(scratch_sch),
+                project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+            )
+        assert scratch_sch.read_bytes() == before, "a refused placement still wrote"
+
+    def test_a_free_reference_still_places(self, scratch_sch: Path) -> None:
+        """The guard must not block the ordinary case."""
         result = schematic.place_component(
             lib_id="Device:R",
-            reference="R1",
+            reference="R2",
             value="4.7K",
             x=200,
             y=200,
@@ -26,14 +50,9 @@ class TestDuplicateReference:
             project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Placed" in result
-
         sch = reparse(scratch_sch)
-        r1_syms = [
-            s
-            for s in sch.schematicSymbols
-            if any(p.key == "Reference" and p.value == "R1" for p in s.properties)
-        ]
-        assert len(r1_syms) == 2
+        refs = {p.value for s in sch.schematicSymbols for p in s.properties if p.key == "Reference"}
+        assert {"R1", "R2"} <= refs
 
 
 class TestInvalidRotation:

@@ -717,6 +717,22 @@ def place_component(
         raise ToolError(f'Unknown mirror axis: {mirror!r}. Use "x", "y", or "" for none.')
 
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+
+    # A reference designator identifies one component, so a second symbol
+    # carrying it corrupts the netlist, the BOM and any PCB update. Nothing
+    # downstream catches it: measured 2026-08-12, `kicad-cli sch erc` reports no
+    # duplicate-reference violation even for a resistor and a capacitor both
+    # called R1, so this tool is the only place it can be caught. Nothing in the
+    # package produces one legitimately either, since add_power_symbol already
+    # scans for a free #FLG number and this tool has no unit parameter, so it
+    # can never be placing a second unit of a multi-unit part.
+    if any(_sym_property_cst(sym, "Reference") == reference for sym in root.find_all("symbol")):
+        raise ToolError(
+            f"{reference} is already placed in this schematic. Reference designators"
+            " must be unique: use a different one, or move_component to reposition"
+            " the existing symbol."
+        )
+
     _bounds_check(x, y, page_w, page_h, page_name)
 
     # Snap placement to grid
