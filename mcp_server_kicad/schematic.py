@@ -1380,7 +1380,10 @@ def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str =
     if _find_lib_symbol_cst(root, symbol_name) is not None:
         raise ToolError(f"'{symbol_name}' already in lib_symbols.")
     if not _copy_lib_symbol_from_file_cst(root, symbol_lib_path, symbol_name, symbol_name):
-        raise ToolError(f"'{symbol_name}' not found in {symbol_lib_path}.")
+        raise ToolError(
+            f"'{symbol_name}' not found in {symbol_lib_path}."
+            " Use list_lib_symbols to see what the library contains."
+        )
     _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Added '{symbol_name}' to lib_symbols."
 

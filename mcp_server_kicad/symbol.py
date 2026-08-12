@@ -232,7 +232,10 @@ def get_symbol_info(symbol_name: str, symbol_lib_path: str = SYM_LIB_PATH) -> st
                     f"@ ({_numish(at.atoms[1].text)}, {_numish(at.atoms[2].text)}) rot={angle}"
                 )
         return "\n".join(lines)
-    raise ToolError(f"'{symbol_name}' not found in {symbol_lib_path}.")
+    raise ToolError(
+        f"'{symbol_name}' not found in {symbol_lib_path}."
+        " Use list_lib_symbols to see what the library contains."
+    )
 
 
 # ── Symbol authoring ─────────────────────────────────────────────

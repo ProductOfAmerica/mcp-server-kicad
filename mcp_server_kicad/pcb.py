@@ -2286,7 +2286,11 @@ def autoroute_pcb(
     # Pre-flight: ensure Freerouting JAR
     jar_path, jar_err = _ensure_jar()
     if jar_err or not jar_path:
-        raise ToolError(jar_err or "Freerouting JAR not found.")
+        raise ToolError(
+            jar_err
+            or "Freerouting JAR not found. Set FREEROUTING_JAR to a local"
+            " freerouting.jar, or allow the automatic download."
+        )
 
     # Count existing traces/vias for before/after comparison
     traces_before, vias_before, board_version = _trace_counts(pcb_path)

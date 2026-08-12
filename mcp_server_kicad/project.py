@@ -93,7 +93,10 @@ def _find_sheet_cst(root, sheet_uuid: str):
     for sheet in root.find_all("sheet"):
         if _node_uuid(sheet) == sheet_uuid:
             return sheet
-    raise ToolError(f"Sheet with UUID '{sheet_uuid}' not found")
+    raise ToolError(
+        f"Sheet with UUID '{sheet_uuid}' not found."
+        " Use list_schematic_sheets to see the sheets and their UUIDs."
+    )
 
 
 _SHEET_TPL = _cst.parse(
@@ -1174,7 +1177,10 @@ def reorder_sheet_pages(
     sheet_map = {_node_uuid(s): s for s in sheets}
     missing = [u for u in page_order if u not in sheet_map]
     if missing:
-        raise ToolError(f"Sheet UUIDs not found: {missing}")
+        raise ToolError(
+            f"Sheet UUIDs not found: {missing}."
+            " Use list_schematic_sheets to see the sheets and their UUIDs."
+        )
     new_order = [sheet_map[u] for u in page_order]
     new_order += [s for s in sheets if _node_uuid(s) not in page_order]
     # Swap nodes in place, keeping each slot's leading whitespace where it was.
