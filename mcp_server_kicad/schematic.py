@@ -23,6 +23,7 @@ from mcp_server_kicad._shared import (
     _check_rotation,
     _file_meta,
     _gen_uuid,
+    _kicad_root,
     _node_uuid,
     _remove_root_symbol_instance,
     _resolve_hierarchy_path,
@@ -531,7 +532,9 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
 
     target = _find_sym_cst(root, reference)
     if target is None:
-        raise ToolError(f"{reference} not found.")
+        raise ToolError(
+            f"{reference} not found. Use list_schematic_components to see what is placed."
+        )
 
     lib_id = target.find("lib_id").atoms[1].text
     symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
@@ -865,7 +868,9 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
     tree, root, *_ = _open_sch_cst(schematic_path)
     target = _find_sym_cst(root, reference)
     if target is None:
-        raise ToolError(f"Component {reference} not found.")
+        raise ToolError(
+            f"Component {reference} not found. Use list_schematic_components to see what is placed."
+        )
     uuid = _node_uuid(target)
     root.remove_child(target)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -911,7 +916,9 @@ def remove_label(
             root.remove_child(n)
         counts[token] = len(matched)
     if not counts["label"] and not counts["global_label"]:
-        raise ToolError(f"Label '{text}' not found.")
+        raise ToolError(
+            f"Label '{text}' not found. Use list_schematic_labels to see the labels present."
+        )
     _atomic_write(schematic_path, _cst.serialize(tree))
     parts = []
     if counts["label"]:
@@ -965,7 +972,9 @@ def remove_wire(
             root.remove_child(node)
             removed += 1
     if not removed:
-        raise ToolError(f"Wire ({x1},{y1})->({x2},{y2}) not found.")
+        raise ToolError(
+            f"Wire ({x1},{y1})->({x2},{y2}) not found. Use list_schematic_wires for endpoints."
+        )
     _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Removed {removed} wire(s)."
 
@@ -991,7 +1000,9 @@ def remove_junction(
             root.remove_child(node)
             _atomic_write(schematic_path, _cst.serialize(tree))
             return f"Removed junction at ({x}, {y})"
-    raise ToolError(f"Junction at ({x}, {y}) not found.")
+    raise ToolError(
+        f"Junction at ({x}, {y}) not found. Use list_schematic_junctions to see positions."
+    )
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1397,7 +1408,9 @@ def move_component(
     x, y = _snap_grid(x), _snap_grid(y)
     sym = _find_sym_cst(root, reference)
     if sym is None:
-        raise ToolError(f"Component {reference} not found.")
+        raise ToolError(
+            f"Component {reference} not found. Use list_schematic_components to see what is placed."
+        )
     _check_rotation(rotation)
     _fill_at(sym, x, y, rotation)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -1422,7 +1435,9 @@ def set_component_property(
     tree, root, *_ = _open_sch_cst(schematic_path)
     sym = _find_sym_cst(root, reference)
     if sym is None:
-        raise ToolError(f"Component {reference} not found.")
+        raise ToolError(
+            f"Component {reference} not found. Use list_schematic_components to see what is placed."
+        )
     props = sym.find_all("property")
     prop = next((p for p in props if p.atoms[1].text == key), None)
     if prop is not None:
@@ -1618,7 +1633,10 @@ def remove_hierarchical_label(
             target = node
             break
     if target is None:
-        raise ToolError(f"Hierarchical label '{text}' not found")
+        raise ToolError(
+            f"Hierarchical label '{text}' not found. Use"
+            " list_schematic_hierarchical_labels to see what this sheet has."
+        )
     target_text = _node_text(target)
     root.remove_child(target)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -1660,7 +1678,10 @@ def modify_hierarchical_label(
             target = node
             break
     if target is None:
-        raise ToolError(f"Hierarchical label '{text}' not found")
+        raise ToolError(
+            f"Hierarchical label '{text}' not found. Use"
+            " list_schematic_hierarchical_labels to see what this sheet has."
+        )
     changes = []
     if new_text:
         target.atoms[1].set_text(new_text)
@@ -2342,6 +2363,39 @@ def list_unconnected_pins(
     return UnconnectedPinsResult(unconnected_count=len(pins), pins=pins, note=note)
 
 
+def _sym_lib_table_note(violations: list) -> str | None:
+    """Turn KiCad's opaque library warning into something actionable, or None.
+
+    "The current configuration does not include the symbol library 'Device'"
+    names neither the file that is missing nor where it belongs, so a model
+    reading it can only tell the user to "update your sym-lib-table". KiCad
+    copies a stock table into its user config on first run; when that copy did
+    not happen, the warning fires on every ERC of every project forever.
+
+    Measured 2026-08-12 on a Windows install: fp-lib-table had been copied and
+    sym-lib-table had not, so symbols were unresolvable while footprints were
+    fine. Every symbol this server places is embedded in the schematic, which
+    is why placement still works and only ERC complains.
+    """
+    if not any(v.get("type") == "lib_symbol_issues" for v in violations):
+        return None
+    root = _kicad_root()
+    template = root / "share" / "kicad" / "template" / "sym-lib-table" if root else None
+    if template is None or not template.is_file():
+        return (
+            "The library warnings mean KiCad's user configuration has no"
+            " sym-lib-table. Opening KiCad once normally creates it. Placement"
+            " is unaffected: symbols are embedded in the schematic."
+        )
+    return (
+        "The library warnings mean KiCad's user configuration has no"
+        f" sym-lib-table. KiCad ships one at {template} and normally copies it"
+        " into its user config directory on first run; copying it there clears"
+        " these warnings for every project. Placement is unaffected: symbols"
+        " are embedded in the schematic."
+    )
+
+
 @mcp.tool(annotations=_EXPORT)
 def run_erc(
     schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR, project_path: str = ""
@@ -2384,7 +2438,13 @@ def run_erc(
                 continue
         all_violations.extend(sheet.get("violations", []))
 
-    note = "ERC ran from root schematic to include full hierarchy context" if root_path else None
+    notes = []
+    if root_path:
+        notes.append("ERC ran from root schematic to include full hierarchy context")
+    lib_note = _sym_lib_table_note(all_violations)
+    if lib_note:
+        notes.append(lib_note)
+    note = " ".join(notes) or None
     return ErcResult(
         source=report.get("source", ""),
         kicad_version=report.get("kicad_version", ""),
