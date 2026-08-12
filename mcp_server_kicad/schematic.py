@@ -116,6 +116,9 @@ _PAGE_SIZES: dict[str, tuple[float, float]] = {
 
 _VALID_REF_RE = re.compile(r"^#?[A-Z]+[0-9]+[A-Z]*$")
 
+#: Appended to every not-found error whose answer is one list call away.
+_SEE_PLACED = " Use list_schematic_components to see what is placed."
+
 
 def _get_page_size(sch) -> tuple[float, float]:
     """Return (width, height) in mm for the schematic's page setting."""
@@ -532,9 +535,7 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
 
     target = _find_sym_cst(root, reference)
     if target is None:
-        raise ToolError(
-            f"{reference} not found. Use list_schematic_components to see what is placed."
-        )
+        raise ToolError(f"{reference} not found." + _SEE_PLACED)
 
     lib_id = target.find("lib_id").atoms[1].text
     symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
@@ -868,9 +869,7 @@ def remove_component(reference: str, schematic_path: str = SCH_PATH) -> str:
     tree, root, *_ = _open_sch_cst(schematic_path)
     target = _find_sym_cst(root, reference)
     if target is None:
-        raise ToolError(
-            f"Component {reference} not found. Use list_schematic_components to see what is placed."
-        )
+        raise ToolError(f"Component {reference} not found." + _SEE_PLACED)
     uuid = _node_uuid(target)
     root.remove_child(target)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -1408,9 +1407,7 @@ def move_component(
     x, y = _snap_grid(x), _snap_grid(y)
     sym = _find_sym_cst(root, reference)
     if sym is None:
-        raise ToolError(
-            f"Component {reference} not found. Use list_schematic_components to see what is placed."
-        )
+        raise ToolError(f"Component {reference} not found." + _SEE_PLACED)
     _check_rotation(rotation)
     _fill_at(sym, x, y, rotation)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -1435,9 +1432,7 @@ def set_component_property(
     tree, root, *_ = _open_sch_cst(schematic_path)
     sym = _find_sym_cst(root, reference)
     if sym is None:
-        raise ToolError(
-            f"Component {reference} not found. Use list_schematic_components to see what is placed."
-        )
+        raise ToolError(f"Component {reference} not found." + _SEE_PLACED)
     props = sym.find_all("property")
     prop = next((p for p in props if p.atoms[1].text == key), None)
     if prop is not None:
@@ -2381,18 +2376,19 @@ def _sym_lib_table_note(violations: list) -> str | None:
         return None
     root = _kicad_root()
     template = root / "share" / "kicad" / "template" / "sym-lib-table" if root else None
-    if template is None or not template.is_file():
-        return (
-            "The library warnings mean KiCad's user configuration has no"
-            " sym-lib-table. Opening KiCad once normally creates it. Placement"
-            " is unaffected: symbols are embedded in the schematic."
-        )
+    # Named only when it is really there. share/kicad/template sitting under the
+    # binary's grandparent holds on the three platforms CI covers, not on every
+    # packaging layout, and pointing a user at a path that does not exist is
+    # worse than saying nothing about it.
+    where = (
+        f" KiCad ships one at {template}, to be copied there."
+        if template and template.is_file()
+        else ""
+    )
     return (
         "The library warnings mean KiCad's user configuration has no"
-        f" sym-lib-table. KiCad ships one at {template} and normally copies it"
-        " into its user config directory on first run; copying it there clears"
-        " these warnings for every project. Placement is unaffected: symbols"
-        " are embedded in the schematic."
+        f" sym-lib-table; opening KiCad once normally creates it.{where}"
+        " Placement is unaffected: symbols are embedded in the schematic."
     )
 
 
@@ -2438,13 +2434,8 @@ def run_erc(
                 continue
         all_violations.extend(sheet.get("violations", []))
 
-    notes = []
-    if root_path:
-        notes.append("ERC ran from root schematic to include full hierarchy context")
-    lib_note = _sym_lib_table_note(all_violations)
-    if lib_note:
-        notes.append(lib_note)
-    note = " ".join(notes) or None
+    root_note = "ERC ran from root schematic to include full hierarchy context" if root_path else ""
+    note = " ".join(filter(None, [root_note, _sym_lib_table_note(all_violations)])) or None
     return ErcResult(
         source=report.get("source", ""),
         kicad_version=report.get("kicad_version", ""),
