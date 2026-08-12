@@ -16,6 +16,7 @@ from mcp_server_kicad._shared import (
     OUTPUT_DIR,
     SYM_LIB_PATH,
     _atomic_write,
+    _check_rotation,
     _run_cli,
     build_server,
 )
@@ -381,6 +382,12 @@ def add_symbol(
         end.atoms[1].set_text(_num(r["x2"]))
         end.atoms[2].set_text(_num(r["y2"]))
         rect_node.find("fill").find("type").atoms[1].set_text(r.get("fill", "background"))
+
+    # Symbol pin angles are the same closed set as schematic rotations, and
+    # were written verbatim the same way. Validate every pin before mutating
+    # any of them, so a bad one in the middle cannot leave a half-built symbol.
+    for p in pins:
+        _check_rotation(float(p.get("rotation", 0)))
 
     for pin_node, p in zip(_repeat(unit1, unit1.find("pin"), len(pins)), pins):
         pin_node.atoms[1].set_text(p["type"])

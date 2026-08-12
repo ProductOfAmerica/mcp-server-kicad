@@ -12,6 +12,7 @@ from importlib.metadata import version as _dist_version
 from pathlib import Path
 
 from mcp.server import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 import mcp_server_kicad._cst as _cst
@@ -187,6 +188,28 @@ OUTPUT_DIR: str = _cfg["output_dir"]
 # so transiently. About 0.75s total: long enough to outlast a scanner, short
 # enough that a tool call does not feel hung.
 _REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4)
+
+
+#: KiCad's schematic editor offers only these four, and kicad-cli refuses to
+#: load a schematic carrying anything else.
+_VALID_ROTATIONS = (0, 90, 180, 270)
+
+
+def _check_rotation(rotation: float | None) -> None:
+    """Refuse a schematic angle KiCad cannot represent, before touching the file.
+
+    Literal publishes the enum so a model picks a valid value; this check still
+    matters because Literal is only enforced by pydantic at the MCP boundary,
+    and a direct Python call sails straight past it.
+
+    Measured 2026-08-12: the value used to be written verbatim, so rotation=37
+    produced a schematic kicad-cli rejected outright with "Failed to load
+    schematic". PCB rotations are deliberately not routed through here, because
+    footprints and board text rotate to any angle in KiCad.
+    """
+    if rotation is not None and rotation not in _VALID_ROTATIONS:
+        legal = ", ".join(str(r) for r in _VALID_ROTATIONS)
+        raise ToolError(f"Rotation {rotation} is not valid in a schematic. Use one of: {legal}.")
 
 
 def _atomic_write(path: str | Path, data: bytes) -> None:

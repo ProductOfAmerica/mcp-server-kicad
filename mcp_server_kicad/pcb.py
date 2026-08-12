@@ -441,6 +441,44 @@ def _resolve_net_cst(root, net_name: str) -> int:
     raise ToolError(f"Net {net_name!r} not found. Available nets: {available}")
 
 
+def _board_layers(root) -> list[str]:
+    """Canonical layer names from the board's own stackup table.
+
+    A row is ``(31 "B.Cu" signal)``, optionally with a fourth atom holding a
+    user-facing alias: ``(36 "B.SilkS" user "B.Silkscreen")``. Only ``atoms[1]``
+    is the name items reference in their own ``(layer ...)``, so the alias is
+    deliberately not returned.
+    """
+    layers = root.find("layers")
+    return [layer.atoms[1].text for layer in (layers.lists if layers is not None else ())]
+
+
+def _resolve_layer_cst(root, layer: str, *, copper_only: bool = False) -> str:
+    """*layer* as-is, or ToolError listing what the board actually defines.
+
+    An enum cannot express this: the legal set is per-board and users rename
+    layers, so the truth is the table inside the file being edited. Same shape
+    as _resolve_net_cst, and for the same reason.
+
+    Unvalidated, a typo reached the disk verbatim. Measured 2026-08-12:
+    add_trace(layer="banana") wrote (layer banana) and kicad-cli then refused
+    the board entirely with "Failed to load board".
+
+    copper_only tests the ``.Cu`` suffix rather than the row's type atom,
+    because KiCad writes ``power``, ``mixed`` and ``jumper`` for inner copper
+    and a type test would reject a legal power plane.
+    """
+    available = _board_layers(root)
+    if layer not in available:
+        raise ToolError(
+            f"Layer {layer!r} is not defined on this board. Available layers: {available}"
+        )
+    if copper_only and not layer.endswith(".Cu"):
+        copper = [name for name in available if name.endswith(".Cu")]
+        raise ToolError(f"Layer {layer!r} is not a copper layer. Copper layers: {copper}")
+    return layer
+
+
 def _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max) -> list:
     """CST twin of the retired _filter_segments: segment nodes matching filters."""
     if all(v is None for v in (net_name, layer, x_min, y_min, x_max, y_max)):
@@ -449,6 +487,11 @@ def _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max) -> l
     name_to_num = {name: num for num, name in _net_table(root)}
     if net_name is not None:
         net_num = _resolve_net_cst(root, net_name)
+    # Symmetric with the net check above. Unvalidated, a typo'd layer matched
+    # nothing and came back as "removed 0", which reads as "there was nothing
+    # there" rather than "you misspelled it".
+    if layer is not None:
+        _resolve_layer_cst(root, layer)
     result = []
     for item in root.lists:
         if item.head != "segment":
@@ -791,6 +834,8 @@ def place_footprint(
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
+    # Validate before the cache pop, so a refusal leaves the cached tree valid.
+    _resolve_layer_cst(root, layer, copper_only=True)
     _BOARD_CACHE.pop(key, None)
     node = _FOOTPRINT_TPL.copy()
     node.find("layer").atoms[1].set_text(layer)
@@ -824,6 +869,8 @@ def move_footprint(
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
+    if layer:
+        _resolve_layer_cst(root, layer, copper_only=True)
     _BOARD_CACHE.pop(key, None)
     fp = _find_fp_cst(root, reference)
     _fill_at(fp, x, y, rotation)
@@ -918,6 +965,7 @@ def add_trace(
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
+    _resolve_layer_cst(root, layer, copper_only=True)
     _BOARD_CACHE.pop(key, None)
     node = _SEGMENT_TPL.copy()
     start, end = node.find("start"), node.find("end")
@@ -956,6 +1004,9 @@ def add_via(
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
+    via_layers = layers or ["F.Cu", "B.Cu"]
+    for name in via_layers:
+        _resolve_layer_cst(root, name, copper_only=True)
     _BOARD_CACHE.pop(key, None)
     node = _VIA_TPL.copy()
     at = node.find("at")
@@ -966,7 +1017,7 @@ def add_via(
     layers_node = node.find("layers")
     tpl_atom = layers_node.atoms[1]
     del layers_node.children[1:]
-    for name in layers or ["F.Cu", "B.Cu"]:
+    for name in via_layers:
         a = tpl_atom.copy()
         a.sep = b" "
         a.set_text(name)
@@ -998,6 +1049,7 @@ def add_pcb_text(
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
+    _resolve_layer_cst(root, layer)
     _BOARD_CACHE.pop(key, None)
     node = _GR_TEXT_TPL.copy()
     node.atoms[1].set_text(text)
@@ -1031,6 +1083,7 @@ def add_pcb_line(
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
+    _resolve_layer_cst(root, layer)
     _BOARD_CACHE.pop(key, None)
     node = _GR_LINE_TPL.copy()
     start, end = node.find("start"), node.find("end")
@@ -1076,6 +1129,7 @@ def add_copper_zone(
     if len(corners) < 3:
         raise ToolError("At least 3 corners required for a zone polygon.")
     tree, root, key = _open_pcb_cst(pcb_path)
+    _resolve_layer_cst(root, layer, copper_only=True)
     _BOARD_CACHE.pop(key, None)
     net_num = _resolve_net_cst(root, net_name)
     node = _COPPER_ZONE_TPL.copy()
@@ -1132,8 +1186,10 @@ def add_keepout_zone(
     if len(corners) < 3:
         raise ToolError("At least 3 corners required for a zone polygon.")
     tree, root, key = _open_pcb_cst(pcb_path)
-    _BOARD_CACHE.pop(key, None)
     zone_layers = layers or ["F.Cu", "B.Cu"]
+    for name in zone_layers:
+        _resolve_layer_cst(root, name, copper_only=True)
+    _BOARD_CACHE.pop(key, None)
     node = _KEEPOUT_ZONE_TPL.copy()
     layers_node = node.find("layers")
     tpl_atom = layers_node.atoms[1]

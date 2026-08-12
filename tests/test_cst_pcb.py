@@ -37,7 +37,11 @@ _K9_BOARD = """(kicad_pcb (version 20241108) (generator "pcbnew")
   (layers
     (0 "F.Cu" signal)
     (31 "B.Cu" signal)
+    (36 "B.SilkS" user "B.Silkscreen")
+    (37 "F.SilkS" user "F.Silkscreen")
     (44 "Edge.Cuts" user)
+    (48 "B.Fab" user)
+    (49 "F.Fab" user)
   )
 
   (setup
@@ -83,7 +87,11 @@ _K10_BOARD = """(kicad_pcb
 \t(layers
 \t\t(0 "F.Cu" signal)
 \t\t(2 "B.Cu" signal)
+\t\t(36 "B.SilkS" user "B.Silkscreen")
+\t\t(37 "F.SilkS" user "F.Silkscreen")
 \t\t(44 "Edge.Cuts" user)
+\t\t(48 "B.Fab" user)
+\t\t(49 "F.Fab" user)
 \t)
 \t(footprint "Resistor_SMD:R_0603"
 \t\t(layer "F.Cu")
@@ -184,7 +192,7 @@ class TestBoardReadsCst:
         via = traces[1]
         assert (via.x, via.y, via.layers) == (115.0, 100.0, ["F.Cu", "B.Cu"])
         assert [n.name for n in pcb.list_pcb_nets(p)] == ["Net1", "Net2"]
-        assert len(pcb.list_pcb_layers(p)) == 3
+        assert len(pcb.list_pcb_layers(p)) == 7
         assert [g.type for g in pcb.list_pcb_graphic_items(p)] == ["line"]
         info = pcb.get_board_info(p)
         assert "Footprints: 1" in info and "Vias: 1" in info
@@ -791,3 +799,51 @@ class TestGeometryTrioCst:
                 "issues": ["keepout_zone"],
             }
         ]
+
+
+class TestResolveLayer:
+    """The board's own stackup is the only statement of what a layer may be.
+
+    An enum cannot express it: the set is per-board and users rename layers.
+    Unvalidated, a typo reached the disk verbatim, and measured 2026-08-12
+    kicad-cli then refused the whole board with "Failed to load board".
+    """
+
+    def _root(self, text: str = _K9_BOARD):
+        return _cst.parse(text.encode()).lists[0]
+
+    def test_known_layer_passes_through(self):
+        assert pcb._resolve_layer_cst(self._root(), "F.Cu") == "F.Cu"
+
+    def test_unknown_layer_lists_what_the_board_defines(self):
+        with pytest.raises(ToolError, match="not defined on this board") as exc:
+            pcb._resolve_layer_cst(self._root(), "banana")
+        assert "F.Cu" in str(exc.value), "the error must name the legal values"
+
+    def test_display_alias_is_not_a_layer_name(self):
+        """(36 "B.SilkS" user "B.Silkscreen") -- only atoms[1] is referenceable."""
+        root = self._root()
+        assert pcb._resolve_layer_cst(root, "B.SilkS") == "B.SilkS"
+        with pytest.raises(ToolError):
+            pcb._resolve_layer_cst(root, "B.Silkscreen")
+
+    def test_copper_only_rejects_a_technical_layer(self):
+        root = self._root()
+        with pytest.raises(ToolError, match="not a copper layer"):
+            pcb._resolve_layer_cst(root, "F.SilkS", copper_only=True)
+        assert pcb._resolve_layer_cst(root, "B.Cu", copper_only=True) == "B.Cu"
+
+    def test_copper_test_is_the_suffix_not_the_type_atom(self):
+        """KiCad writes power/mixed/jumper for inner copper.
+
+        A `type == "signal"` test would reject a legal power plane, so the
+        suffix is what decides.
+        """
+        text = _K9_BOARD.replace('(31 "B.Cu" signal)', '(31 "B.Cu" signal)\n    (1 "In1.Cu" power)')
+        assert pcb._resolve_layer_cst(self._root(text), "In1.Cu", copper_only=True) == "In1.Cu"
+
+    def test_k10_board_table_reads_the_same(self):
+        root = self._root(_K10_BOARD)
+        assert pcb._resolve_layer_cst(root, "B.Cu") == "B.Cu"
+        with pytest.raises(ToolError):
+            pcb._resolve_layer_cst(root, "banana")

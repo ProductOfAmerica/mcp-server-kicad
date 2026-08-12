@@ -20,6 +20,7 @@ from mcp_server_kicad._shared import (
     OUTPUT_DIR,
     SCH_PATH,
     _atomic_write,
+    _check_rotation,
     _file_meta,
     _gen_uuid,
     _node_uuid,
@@ -679,7 +680,7 @@ def place_component(
     value: str,
     x: float,
     y: float,
-    rotation: float = 0,
+    rotation: Literal[0, 90, 180, 270] = 0,
     symbol_lib_path: str = "",
     mirror: Literal["", "x", "y"] = "",
     schematic_path: str = SCH_PATH,
@@ -754,6 +755,7 @@ def place_component(
     lib_name = lib_sym.atoms[1].text if lib_sym is not None else symbol_name
     node.find("lib_name").atoms[1].set_text(lib_name)
     node.find("lib_id").atoms[1].set_text(lib_id)
+    _check_rotation(rotation)
     _fill_at(node, x, y, rotation)
     if mirror:
         m = _cst.parse(b"(mirror x)").lists[0]
@@ -1291,7 +1293,11 @@ def _copy_system_lib_symbol_cst(root, lib_prefix: str, symbol_name: str) -> bool
 
 @mcp.tool(annotations=_ADDITIVE)
 def add_label(
-    text: str, x: float, y: float, rotation: float = 0, schematic_path: str = SCH_PATH
+    text: str,
+    x: float,
+    y: float,
+    rotation: Literal[0, 90, 180, 270] = 0,
+    schematic_path: str = SCH_PATH,
 ) -> str:
     """Add a net label at a position.
 
@@ -1307,6 +1313,7 @@ def add_label(
     x, y = round(x, 4), round(y, 4)
     node = _LABEL_TPL.copy()
     node.atoms[1].set_text(text)
+    _check_rotation(rotation)
     _fill_at(node, x, y, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "label", node)
@@ -1357,7 +1364,7 @@ def move_component(
     reference: str,
     x: float,
     y: float,
-    rotation: float | None = None,
+    rotation: Literal[0, 90, 180, 270] | None = None,
     schematic_path: str = SCH_PATH,
 ) -> str:
     """Move a placed component to a new position.
@@ -1375,6 +1382,7 @@ def move_component(
     sym = _find_sym_cst(root, reference)
     if sym is None:
         raise ToolError(f"Component {reference} not found.")
+    _check_rotation(rotation)
     _fill_at(sym, x, y, rotation)
     _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Moved {reference} to ({x}, {y})"
@@ -1494,12 +1502,16 @@ def set_page_size(
     return f"Page size set to {size_key} ({w}x{h}mm)"
 
 
+#: KiCad uses one shape vocabulary for global and hierarchical labels.
+_VALID_LABEL_SHAPES = {"input", "output", "bidirectional", "tri_state", "passive"}
+
+
 @mcp.tool(annotations=_ADDITIVE)
 def add_global_label(
     text: str,
     x: float,
     y: float,
-    rotation: float = 0,
+    rotation: Literal[0, 90, 180, 270] = 0,
     shape: str = "input",
     schematic_path: str = SCH_PATH,
 ) -> str:
@@ -1513,20 +1525,23 @@ def add_global_label(
         shape: Label shape: input, output, bidirectional, tri_state, passive
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
+    # add_hierarchical_label has always checked this; add_global_label never
+    # did, so shape="banana" reached the file and kicad-cli then refused to
+    # load the schematic. Found by the hostile-value sweep, 2026-08-12.
+    if shape not in _VALID_LABEL_SHAPES:
+        raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_LABEL_SHAPES))}")
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     _bounds_check(x, y, page_w, page_h, page_name)
     x, y = round(x, 4), round(y, 4)
     node = _GLABEL_TPL.copy()
     node.atoms[1].set_text(text)
     node.find("shape").atoms[1].set_text(shape)
+    _check_rotation(rotation)
     _fill_at(node, x, y, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "global_label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Global label '{text}' ({shape}) at ({x}, {y})"
-
-
-_VALID_HLABEL_SHAPES = {"input", "output", "bidirectional", "tri_state", "passive"}
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1535,7 +1550,7 @@ def add_hierarchical_label(
     shape: str,
     x: float,
     y: float,
-    rotation: float = 0,
+    rotation: Literal[0, 90, 180, 270] = 0,
     schematic_path: str = SCH_PATH,
 ) -> str:
     """Add a hierarchical label to a sub-sheet schematic.
@@ -1548,14 +1563,15 @@ def add_hierarchical_label(
         rotation: Degrees (0, 90, 180, 270)
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
-    if shape not in _VALID_HLABEL_SHAPES:
-        raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}")
+    if shape not in _VALID_LABEL_SHAPES:
+        raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_LABEL_SHAPES))}")
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     _bounds_check(x, y, page_w, page_h, page_name)
     x, y = round(x, 4), round(y, 4)
     node = _HLABEL_TPL.copy()
     node.atoms[1].set_text(text)
     node.find("shape").atoms[1].set_text(shape)
+    _check_rotation(rotation)
     _fill_at(node, x, y, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "hierarchical_label", node)
@@ -1614,9 +1630,9 @@ def modify_hierarchical_label(
         new_y: New Y position (None = keep current)
         uuid: UUID for disambiguation
     """
-    if new_shape and new_shape not in _VALID_HLABEL_SHAPES:
+    if new_shape and new_shape not in _VALID_LABEL_SHAPES:
         raise ToolError(
-            f"invalid shape '{new_shape}'. Use: {', '.join(sorted(_VALID_HLABEL_SHAPES))}"
+            f"invalid shape '{new_shape}'. Use: {', '.join(sorted(_VALID_LABEL_SHAPES))}"
         )
     tree, root, *_ = _open_sch_cst(schematic_path)
     target = None
@@ -1656,7 +1672,7 @@ def add_power_symbol(
     reference: str,
     x: float,
     y: float,
-    rotation: float = 0,
+    rotation: Literal[0, 90, 180, 270] = 0,
     symbol_lib_path: str = "",
     schematic_path: str = SCH_PATH,
     project_path: str = "",
@@ -1738,7 +1754,7 @@ def auto_place_decoupling_cap(
     y: float,
     power_net: str,
     ground_net: str,
-    rotation: float = 0,
+    rotation: Literal[0, 90, 180, 270] = 0,
     symbol_lib_path: str = "",
     schematic_path: str = SCH_PATH,
     project_path: str = "",
@@ -1798,7 +1814,7 @@ def add_text(
     text: str,
     x: float,
     y: float,
-    rotation: float = 0,
+    rotation: Literal[0, 90, 180, 270] = 0,
     schematic_path: str = SCH_PATH,
 ) -> str:
     """Add a text annotation to the schematic.
@@ -1814,6 +1830,7 @@ def add_text(
     _bounds_check(x, y, page_w, page_h, page_name)
     node = _TEXT_TPL.copy()
     node.atoms[1].set_text(text)
+    _check_rotation(rotation)
     _fill_at(node, x, y, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "text", node)

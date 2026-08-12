@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import uuid as _uuid
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -401,6 +402,56 @@ def assert_kicad_parseable(path: str | Path) -> None:
         pytest.fail(f"kicad-cli cannot parse {Path(path).name}: {exc}")
 
 
+#: Highest board format the KiCad 9 line can load. Same boundary pcb.py gates
+#: the numeric-net dialect on, and the same one that decides whether the local
+#: kicad-cli can read a file at all.
+_K9_BOARD_VERSION_MAX = 20241229
+_VERSION_RE = re.compile(rb"\(version\s+(\d+)\)")
+
+
+@lru_cache(maxsize=1)
+def _kicad_cli_major() -> int:
+    """Major version of the resolved kicad-cli, or 0 when it cannot be read."""
+    try:
+        out = _run_cli(["version"], check=False).stdout.strip()
+    except Exception:
+        return 0
+    return int(out.split(".")[0]) if out[:1].isdigit() else 0
+
+
+def _cli_can_load_board(data: bytes) -> bool:
+    """A KiCad 9 kicad-cli cannot open a KiCad 10 board, and that is not a bug.
+
+    Without this the oracle reports 26 false failures on a KiCad 9 machine, all
+    of them the K10 fixtures. The K10 boards still get validated, on the macOS
+    and Windows runners where Chocolatey and the app bundle install KiCad 10.
+    """
+    m = _VERSION_RE.search(data[:400])
+    if m is None or _kicad_cli_major() >= 10:
+        return True
+    return int(m.group(1)) <= _K9_BOARD_VERSION_MAX
+
+
+def assert_kicad_pcb_parseable(path: str | Path) -> None:
+    """The board twin of assert_kicad_parseable.
+
+    Same trick: DRC violations are irrelevant, the signal is whether kicad-cli
+    could load the board at all. A board it refuses produces no report file and
+    prints "Failed to load board".
+    """
+    path = str(path)
+    drc_out = path + ".drc.json"
+    result = _run_cli(
+        ["pcb", "drc", "--format", "json", "--severity-all", "--output", drc_out, path],
+        check=False,
+    )
+    if not os.path.exists(drc_out):
+        pytest.fail(
+            f"kicad-cli cannot parse {Path(path).name} "
+            f"(rc={result.returncode}): {result.stderr.strip()[:400]}"
+        )
+
+
 # ---------------------------------------------------------------------------
 # stdio transport
 # ---------------------------------------------------------------------------
@@ -510,36 +561,51 @@ class StdioClient:
 
 @pytest.fixture(autouse=True)
 def _validate_kicad_output(request, tmp_path: Path):
-    """After each test, validate all .kicad_sch files via kicad-cli.
+    """After each test, validate every generated KiCad file via kicad-cli.
 
     Catches format-level bugs (e.g. kiutils omitting required fields)
     that kiutils round-trip tests miss because kiutils reads back its
     own malformed output without error.
 
+    This is the project's output oracle, and the reason it is worth its runtime
+    is that it turns every valid tool call the suite already makes into a
+    corpus. Boards were outside it until 2026-08-12, which is exactly why
+    add_trace(layer="banana") could write a board kicad-cli refuses to load and
+    nothing in the suite noticed.
+
     Tests that intentionally produce invalid files can opt out with::
 
         @pytest.mark.no_kicad_validation
+
+    Reach for that marker only when the malformed file *is* the subject, as in
+    test_cst.py. Using it to silence a tool writing a bad file is how the
+    45-degree rotation defect survived.
     """
     yield
     if request.node.get_closest_marker("no_kicad_validation"):
         return
     if not HAS_KICAD_CLI:
         return
-    for sch_file in tmp_path.rglob("*.kicad_sch"):
-        data = sch_file.read_bytes()
-        # Skip dummy/empty files and anything that isn't a real KiCad schematic
-        # (e.g. config tests that create placeholder paths).
-        if not data.startswith(b"(kicad_sch"):
-            continue
-        # Fixtures differ only in freshly generated UUIDs, so the same schematic
-        # is otherwise re-validated hundreds of times per run.  A UUID cannot turn
-        # a parseable file unparseable, so normalise them out and validate each
-        # distinct schematic once.  Measured 2026-08-10: 376 spawns -> 186.
-        seen = hashlib.sha256(_UUID_RE.sub(b"U", data)).digest()
-        if seen in _VALIDATED:
-            continue
-        assert_kicad_parseable(sch_file)
-        _VALIDATED.add(seen)
+    for pattern, magic, check, loadable in (
+        ("*.kicad_sch", b"(kicad_sch", assert_kicad_parseable, lambda _: True),
+        ("*.kicad_pcb", b"(kicad_pcb", assert_kicad_pcb_parseable, _cli_can_load_board),
+    ):
+        for out_file in tmp_path.rglob(pattern):
+            data = out_file.read_bytes()
+            # Skip dummy/empty files and anything that isn't a real KiCad file
+            # (e.g. config tests that create placeholder paths).
+            if not data.startswith(magic) or not loadable(data):
+                continue
+            # Fixtures differ only in freshly generated UUIDs, so the same file
+            # is otherwise re-validated hundreds of times per run.  A UUID cannot
+            # turn a parseable file unparseable, so normalise them out and
+            # validate each distinct file once.  Measured 2026-08-10 for
+            # schematics: 376 spawns -> 186.
+            seen = hashlib.sha256(_UUID_RE.sub(b"U", data)).digest()
+            if seen in _VALIDATED:
+                continue
+            check(out_file)
+            _VALIDATED.add(seen)
 
 
 @pytest.fixture()
