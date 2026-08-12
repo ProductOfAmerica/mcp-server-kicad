@@ -36,51 +36,52 @@ class TestDuplicateReference:
         assert len(r1_syms) == 2
 
 
-@pytest.mark.no_kicad_validation
 class TestInvalidRotation:
-    def test_non_standard_rotation_45(self, scratch_sch: Path) -> None:
-        """A 45-degree rotation is non-standard but should not crash."""
+    """These two used to assert the opposite, under no_kicad_validation.
+
+    They placed the symbol, checked the illegal angle had been written, and
+    suppressed the kicad-cli oracle so nothing noticed. Measured 2026-08-12:
+    the resulting schematic makes kicad-cli fail outright with "Failed to load
+    schematic". The oracle was not merely unaimed here, it was switched off so
+    an unloadable file could pass.
+    """
+
+    @pytest.mark.parametrize("rotation", [45, -90, 37, 359])
+    def test_non_orthogonal_rotation_is_refused(self, scratch_sch: Path, rotation) -> None:
+        before = scratch_sch.read_bytes()
+        with pytest.raises(ToolError, match="not valid in a schematic"):
+            schematic.place_component(
+                lib_id="Device:R",
+                reference="R2",
+                value="1K",
+                x=150,
+                y=150,
+                rotation=rotation,  # type: ignore[arg-type]
+                schematic_path=str(scratch_sch),
+                project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+            )
+        assert scratch_sch.read_bytes() == before, "a refused edit still touched the file"
+
+    @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+    def test_the_four_legal_angles_still_place(self, scratch_sch: Path, rotation) -> None:
         result = schematic.place_component(
             lib_id="Device:R",
             reference="R2",
             value="1K",
             x=150,
             y=150,
-            rotation=45,
+            rotation=rotation,
             schematic_path=str(scratch_sch),
             project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
         assert "Placed" in result
-
         sch = reparse(scratch_sch)
         r2 = next(
             s
             for s in sch.schematicSymbols
             if any(p.key == "Reference" and p.value == "R2" for p in s.properties)
         )
-        assert r2.position.angle == 45
-
-    def test_negative_rotation(self, scratch_sch: Path) -> None:
-        """A negative rotation should not crash."""
-        result = schematic.place_component(
-            lib_id="Device:R",
-            reference="R3",
-            value="2.2K",
-            x=160,
-            y=160,
-            rotation=-90,
-            schematic_path=str(scratch_sch),
-            project_path=str(scratch_sch.with_suffix(".kicad_pro")),
-        )
-        assert "Placed" in result
-
-        sch = reparse(scratch_sch)
-        r3 = next(
-            s
-            for s in sch.schematicSymbols
-            if any(p.key == "Reference" and p.value == "R3" for p in s.properties)
-        )
-        assert r3.position.angle == -90
+        assert r2.position.angle == rotation
 
 
 class TestBadPaths:
