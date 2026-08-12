@@ -212,6 +212,30 @@ def _check_rotation(rotation: float | None) -> None:
         raise ToolError(f"Rotation {rotation} is not valid in a schematic. Use one of: {legal}.")
 
 
+def _require_kicad_path(path: str | Path, kind: str, *, allow_dir: bool = False) -> Path:
+    """Refuse a missing or unconfigured path with a ToolError. No read.
+
+    Split out from ``_read_kicad_bytes`` for the tools that never read the file
+    themselves because they hand it to kicad-cli or to pcbnew. Reading a board
+    only to prove it exists would be pure waste, and skipping the check is worse:
+    those tools used to spawn the subprocess first and report its failure, so a
+    typo'd path came back as kicad-cli's diagnostic about a file the caller never
+    asked about, one process later.
+
+    *allow_dir* is for the two library tools whose path is a .pretty directory
+    or a single .kicad_mod inside one.
+    """
+    if not str(path):
+        raise ToolError(
+            f"No {kind} path given and none is configured. Pass the path"
+            " explicitly, or set the default in the host configuration."
+        )
+    p = Path(path)
+    if not (p.exists() if allow_dir else p.is_file()):
+        raise ToolError(f"{kind} not found: {p}. Check the path, or omit it to use the default.")
+    return p
+
+
 def _read_kicad_bytes(path: str | Path, kind: str) -> bytes:
     """Read a KiCad file, refusing a missing or unconfigured one with a ToolError.
 
@@ -224,15 +248,7 @@ def _read_kicad_bytes(path: str | Path, kind: str) -> bytes:
     Every tool entry point reads through here, so the 84 are one behaviour
     rather than 84 checks that have to stay in step.
     """
-    if not str(path):
-        raise ToolError(
-            f"No {kind} path given and none is configured. Pass the path"
-            " explicitly, or set the default in the host configuration."
-        )
-    p = Path(path)
-    if not p.is_file():
-        raise ToolError(f"{kind} not found: {p}. Check the path, or omit it to use the default.")
-    return p.read_bytes()
+    return _require_kicad_path(path, kind).read_bytes()
 
 
 def _ensure_dir(path: str | Path, kind: str = "output directory") -> Path:

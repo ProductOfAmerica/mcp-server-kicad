@@ -16,6 +16,7 @@ from mcp_server_kicad._shared import (
     _ensure_dir,
     _keepout_dict,
     _read_kicad_bytes,
+    _require_kicad_path,
     _run_cli,
     build_server,
 )
@@ -172,6 +173,7 @@ def export_footprint_svg(
             Optional; omit to use the configured default.
         output_dir: Output directory. Optional; omit to use the configured default.
     """
+    _require_kicad_path(footprint_path, "footprint", allow_dir=True)
     src = Path(footprint_path)
     out = output_dir or str(src.parent)
     _ensure_dir(out)
@@ -208,6 +210,7 @@ def upgrade_footprint_lib(footprint_path: str) -> str:
         footprint_path: Path to a .pretty library directory.
             Optional; omit to use the configured default.
     """
+    _require_kicad_path(footprint_path, "footprint", allow_dir=True)
     _run_cli(["fp", "upgrade", footprint_path])
     return f"Successfully upgraded {footprint_path}"
 

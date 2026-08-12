@@ -31,7 +31,9 @@ failure and is tested in ``test_shared_helpers.TestEnsureDir``.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
+import subprocess
 import typing
 from pathlib import Path
 
@@ -97,10 +99,24 @@ def _path_taking_tools():
         for name, tool in mod.mcp._tool_manager._tools.items():
             targets = [p for p in inspect.signature(tool.fn).parameters if p.endswith("_path")]
             if targets:
-                yield pytest.param(name, tool.fn, targets[0], id=name)
+                yield name, tool.fn, targets[0]
 
 
-_TOOLS = list(_path_taking_tools())
+#: Plain tuples, with the pytest.param wrapper derived from them. Both tests
+#: below need the same sweep, and unpacking a param's .values back out is not
+#: typed well enough for pyright to see a callable.
+_SWEEP = list(_path_taking_tools())
+_TOOLS = [pytest.param(name, fn, target, id=name) for name, fn, target in _SWEEP]
+
+
+def _missing_path_kwargs(fn, target: str, tmp_path: Path) -> dict:
+    """Required arguments filled, and *target* pointed at a file that is not there."""
+    kwargs = {}
+    for pname, p in inspect.signature(fn).parameters.items():
+        if p.default is inspect.Parameter.empty or pname == target:
+            kwargs[pname] = _placeholder(tmp_path, pname, p.annotation)
+    kwargs[target] = str(tmp_path / f"absent{_SUFFIX.get(target, '')}")
+    return kwargs
 
 
 def test_the_registry_is_actually_populated():
@@ -110,16 +126,12 @@ def test_the_registry_is_actually_populated():
     reaching into a private ``_tool_manager`` is exactly the kind of thing that
     silently returns empty after an SDK bump.
     """
-    assert len(_TOOLS) >= 100, f"only {len(_TOOLS)} path-taking tools found"
+    assert len(_SWEEP) >= 100, f"only {len(_SWEEP)} path-taking tools found"
 
 
 @pytest.mark.parametrize(("name", "fn", "target"), _TOOLS)
 def test_a_missing_path_is_answered_in_contract(name, fn, target, tmp_path):
-    kwargs = {}
-    for pname, p in inspect.signature(fn).parameters.items():
-        if p.default is inspect.Parameter.empty or pname == target:
-            kwargs[pname] = _placeholder(tmp_path, pname, p.annotation)
-    kwargs[target] = str(tmp_path / f"absent{_SUFFIX.get(target, '')}")
+    kwargs = _missing_path_kwargs(fn, target, tmp_path)
 
     if name in _EXEMPT:
         # Checked in both directions on purpose. An exemption that stops being
@@ -161,3 +173,37 @@ def test_an_unset_default_says_so():
     """
     with pytest.raises(ToolError, match="none is configured"):
         schematic.list_schematic_components(schematic_path="")
+
+
+def test_a_missing_path_costs_no_subprocess(tmp_path, monkeypatch):
+    """The 20 CLI-backed tools check the path before they spawn anything.
+
+    They reached a ToolError either way, because _run_cli raises when kicad-cli
+    fails, so the contract sweep above passes with or without this. What
+    differed was the message and the cost: the caller got kicad-cli's
+    diagnostic about a file it could not open, one process later.
+
+    Measured 2026-08-12 by counting subprocess.run calls across the whole sweep:
+    20 before, 0 after. Nineteen were kicad-cli; the twentieth was java, because
+    autoroute_pcb started the freerouting JVM before looking at the board.
+    """
+    spawns: list[str] = []
+    real = subprocess.run
+
+    def counting_run(*args, **kwargs):
+        spawns.append(str(args[0])[:80] if args else "")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(subprocess, "run", counting_run)
+
+    for name, fn, target in _SWEEP:
+        if name in _EXEMPT:
+            continue
+        with contextlib.suppress(ToolError):
+            fn(**_missing_path_kwargs(fn, target, tmp_path))
+
+    assert spawns == [], (
+        f"{len(spawns)} subprocess(es) spawned for paths that do not exist:\n  "
+        + "\n  ".join(spawns)
+        + "\nCall _require_kicad_path before the spawn."
+    )
