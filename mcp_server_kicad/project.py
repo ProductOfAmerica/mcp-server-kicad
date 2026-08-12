@@ -20,9 +20,11 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     SCH_PATH,
     _atomic_write,
+    _ensure_dir,
     _find_root_schematic,
     _gen_uuid,
     _node_uuid,
+    _read_kicad_bytes,
     _resolve_hierarchy_path,
     _resolve_root,
     _run_cli,
@@ -145,8 +147,7 @@ def create_project(directory: str, name: str) -> str:
         directory: Directory to create the project in (created if missing)
         name: Project name (used for filenames)
     """
-    d = Path(directory)
-    d.mkdir(parents=True, exist_ok=True)
+    d = _ensure_dir(directory, "directory")
 
     pro_path = d / f"{name}.kicad_pro"
     if pro_path.exists():
@@ -181,7 +182,7 @@ def create_schematic(schematic_path: str) -> str:
     if p.exists():
         raise ToolError(f"{p} already exists.")
 
-    p.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(p.parent, "parent directory")
 
     tree = _cst.parse(_EMPTY_SCH_TPL)
     tree.lists[0].find("uuid").atoms[1].set_text(_gen_uuid())
@@ -201,7 +202,7 @@ def create_symbol_library(symbol_lib_path: str) -> str:
     if p.exists():
         raise ToolError(f"{p} already exists.")
 
-    p.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_dir(p.parent, "parent directory")
 
     _atomic_write(p, _SYM_LIB_TPL)
     return f"Created symbol library at {p}"
@@ -218,8 +219,7 @@ def create_sym_lib_table(directory: str, entries: list[LibTableEntry]) -> str:
         directory: Directory to write sym-lib-table in
         entries: List of dicts with 'name' and 'uri' keys
     """
-    d = Path(directory)
-    d.mkdir(parents=True, exist_ok=True)
+    d = _ensure_dir(directory, "directory")
 
     lines = ["(sym_lib_table", "  (version 7)"]
     for entry in entries:
@@ -843,6 +843,10 @@ def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
+    # is_root=True meant "no parent sheet references it", which a file that
+    # does not exist also satisfies, so a bogus path used to report itself the
+    # root of a hierarchy. Read it first and let the shared opener refuse.
+    _read_kicad_bytes(schematic_path, "schematic")
     root = _find_root_schematic(schematic_path)
     return RootSchematicResult(
         is_root=root is None,

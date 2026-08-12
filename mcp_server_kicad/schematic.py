@@ -3,7 +3,6 @@
 import difflib
 import json
 import math
-import os
 import re
 from pathlib import Path
 from typing import Literal
@@ -21,10 +20,12 @@ from mcp_server_kicad._shared import (
     SCH_PATH,
     _atomic_write,
     _check_rotation,
+    _ensure_dir,
     _file_meta,
     _gen_uuid,
     _kicad_root,
     _node_uuid,
+    _read_kicad_bytes,
     _remove_root_symbol_instance,
     _resolve_hierarchy_path,
     _resolve_root,
@@ -1137,7 +1138,7 @@ def _open_sch_cst(schematic_path: str):
     Works on any format KiCad writes (portability measured per token by the
     KiCad 10 e2e tests; see docs/adr-cst-substrate.md).
     """
-    tree = _cst.parse(Path(schematic_path).read_bytes())
+    tree = _cst.parse(_read_kicad_bytes(schematic_path, "schematic"))
     root = tree.lists[0] if tree.lists else None
     if root is None or root.head != "kicad_sch":
         raise ToolError(f"{Path(schematic_path).name} is not a KiCad schematic.")
@@ -2483,7 +2484,7 @@ def export_schematic(
     stem = Path(schematic_path).stem
 
     if fmt == "svg":
-        os.makedirs(out_dir, exist_ok=True)
+        _ensure_dir(out_dir)
         _run_cli(["sch", "export", "svg", "--output", out_dir, schematic_path])
         svgs = sorted(Path(out_dir).glob("*.svg"))
         return SchematicExportResult(

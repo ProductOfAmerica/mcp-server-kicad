@@ -1,7 +1,6 @@
 """KiCad symbol library MCP server."""
 
 import math
-import os
 from pathlib import Path
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -17,6 +16,8 @@ from mcp_server_kicad._shared import (
     SYM_LIB_PATH,
     _atomic_write,
     _check_rotation,
+    _ensure_dir,
+    _read_kicad_bytes,
     _run_cli,
     build_server,
 )
@@ -162,7 +163,7 @@ _LIB_SYMBOL_TPL = _cst.parse(
 
 def _open_sym_lib(symbol_lib_path: str):
     """(tree, root) for a .kicad_sym file; guard-free, works on any version."""
-    tree = _cst.parse(Path(symbol_lib_path).read_bytes())
+    tree = _cst.parse(_read_kicad_bytes(symbol_lib_path, "symbol library"))
     root = tree.lists[0] if tree.lists else None
     if root is None or root.head != "kicad_symbol_lib":
         raise ToolError(f"{symbol_lib_path} is not a KiCad symbol library.")
@@ -344,7 +345,7 @@ def add_symbol(
             if existing.atoms[1].text == name:
                 raise ToolError(f"symbol '{name}' already exists in {symbol_lib_path}.")
     else:
-        lib_path.parent.mkdir(parents=True, exist_ok=True)
+        _ensure_dir(lib_path.parent, "parent directory")
         tree = _cst.parse(_SYM_LIB_TPL)
         root = tree.lists[0]
 
@@ -428,7 +429,7 @@ def export_symbol_svg(
         output_dir: Output directory. Optional; omit to use the configured default.
     """
     out = output_dir or str(Path(symbol_lib_path).parent)
-    os.makedirs(out, exist_ok=True)
+    _ensure_dir(out)
     _run_cli(["sym", "export", "svg", "--output", out, symbol_lib_path])
     svgs = sorted(Path(out).glob("*.svg"))
     return MultiFileExportResult(

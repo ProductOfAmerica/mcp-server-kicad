@@ -1,4 +1,11 @@
-"""Tests for locating the KiCad installation: the CLI, its libraries, its interpreter."""
+"""_run_cli raises ToolError, not RuntimeError.
+
+These assertions pinned RuntimeError until 2026-08-12. _run_cli's errors reach
+the MCP client through whichever tool called it, so ToolError is what the
+client is meant to receive; a RuntimeError arrives as an unhandled exception
+with no remedy in it.
+
+Tests for locating the KiCad installation: the CLI, its libraries, its interpreter."""
 
 import os
 import shutil
@@ -6,6 +13,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+from mcp.server.mcpserver.exceptions import ToolError
 
 import mcp_server_kicad._freerouting as _freerouting
 from mcp_server_kicad._shared import (
@@ -110,7 +118,7 @@ def test_env_var_and_path_win_over_the_windows_probe(tmp_path, monkeypatch):
 def test_missing_cli_raises_actionable_error(monkeypatch):
     """Registering CLI tools unconditionally is only safe if the failure names the fix."""
     monkeypatch.setattr("mcp_server_kicad._shared._find_kicad_cli", lambda: None)
-    with pytest.raises(RuntimeError, match="Install KiCad, or set KICAD_CLI_PATH"):
+    with pytest.raises(ToolError, match="Install KiCad, or set KICAD_CLI_PATH"):
         _run_cli(["version"])
 
 
@@ -128,7 +136,7 @@ def test_failure_without_stderr_reports_exit_code(monkeypatch):
         "run",
         lambda *a, **k: subprocess.CompletedProcess(a[0], 1, stdout="", stderr=""),
     )
-    with pytest.raises(RuntimeError, match="exit code 1"):
+    with pytest.raises(ToolError, match="exit code 1"):
         _run_cli(["version"])
 
 
@@ -199,7 +207,7 @@ def test_an_explicit_documents_home_is_never_overridden(monkeypatch):
     """If the user chose a folder, a crash is theirs to see, not ours to paper over."""
     envs = _queue_cli(monkeypatch, _CRASH)
     monkeypatch.setenv("KICAD_DOCUMENTS_HOME", "/somewhere/the/user/picked")
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ToolError):
         _run_cli(["version"])
     assert len(envs) == 1, "must not retry over an explicit choice"
 
@@ -207,7 +215,7 @@ def test_an_explicit_documents_home_is_never_overridden(monkeypatch):
 def test_unrepairable_crash_names_the_variable(monkeypatch):
     """A locked-down machine can defeat the fallback too; say what to set."""
     _queue_cli(monkeypatch, _CRASH, _CRASH)
-    with pytest.raises(RuntimeError, match="KICAD_DOCUMENTS_HOME"):
+    with pytest.raises(ToolError, match="KICAD_DOCUMENTS_HOME"):
         _run_cli(["version"])
 
 
@@ -218,7 +226,7 @@ def test_startup_crash_raises_even_when_unchecked(monkeypatch):
     this the caller surfaces raw wxWidgets noise instead of the actual problem.
     """
     _queue_cli(monkeypatch, _CRASH, _CRASH)
-    with pytest.raises(RuntimeError, match="KICAD_DOCUMENTS_HOME"):
+    with pytest.raises(ToolError, match="KICAD_DOCUMENTS_HOME"):
         _run_cli(["version"], check=False)
 
 

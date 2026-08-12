@@ -48,12 +48,14 @@ from mcp_server_kicad._shared import (
     _atomic_write,
     _chain_edge_polygon,
     _courtyard_bbox_cst,
+    _ensure_dir,
     _file_meta,
     _gen_uuid,
     _keepout_dict,
     _kicad_root,
     _linearize_arc,
     _point_in_polygon,
+    _read_kicad_bytes,
     _resolve_root,
     _run_cli,
     _transform_local_to_board,
@@ -139,8 +141,9 @@ def _open_pcb_cst(pcb_path: str):
     reinsert, so an exception between mutation and write can never leave a
     poisoned tree cached.
     """
-    if not pcb_path:
-        raise ValueError("No PCB path provided. Pass pcb_path parameter.")
+    # Same refusal as every other opener; os.stat below would otherwise raise a
+    # bare FileNotFoundError straight through to the client.
+    _read_kicad_bytes(pcb_path, "board")
     key = str(Path(pcb_path).resolve())
     st = os.stat(key)
     hit = _BOARD_CACHE.get(key)
@@ -1887,7 +1890,7 @@ def export_gerbers(
         if not layer:
             raise ToolError("At least one layer must be specified")
         out_dir = output_dir or str(Path(pcb_path).parent)
-        os.makedirs(out_dir, exist_ok=True)
+        _ensure_dir(out_dir)
         out_path = str(Path(out_dir) / f"{Path(pcb_path).stem}-{layer.replace('.', '_')}.gbr")
         # KiCad 10 removed `pcb export gerber` (#8), so plot with the plural
         # into a scratch dir. The plural exits 0 on a bad layer name and always
@@ -1928,7 +1931,7 @@ def export_gerbers(
 
     # Multi-layer mode: directory of files
     out = output_dir or str(Path(pcb_path).parent / "gerbers")
-    os.makedirs(out, exist_ok=True)
+    _ensure_dir(out)
     cmd = ["pcb", "export", "gerbers"]
     if layers:
         cmd += ["--layers", ",".join(layers)]
@@ -2091,7 +2094,7 @@ def _trace_counts(pcb_path: str) -> tuple[int, int, int]:
     _open_pcb_cst, because the routed file this runs on is written between
     the two calls.
     """
-    root = _cst.parse(Path(pcb_path).read_bytes()).lists[0]
+    root = _cst.parse(_read_kicad_bytes(pcb_path, "board")).lists[0]
     heads = [c.head for c in root.lists]
     return heads.count("segment"), heads.count("via"), _board_version(root)
 
@@ -2143,7 +2146,7 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
     Returns the number of polygons promoted. At zero, *output_path* is not
     written and the caller feeds the original board to the DSN export.
     """
-    tree = _cst.parse(Path(pcb_path).read_bytes())
+    tree = _cst.parse(_read_kicad_bytes(pcb_path, "board"))
     root = tree.lists[0]
     count = 0
 
@@ -2216,7 +2219,7 @@ def _fix_displaced_fp_text(pcb_path: str) -> int:
     Returns the number of texts reset; the file is rewritten only when that
     count is non-zero.
     """
-    tree = _cst.parse(Path(pcb_path).read_bytes())
+    tree = _cst.parse(_read_kicad_bytes(pcb_path, "board"))
     fixed = 0
     for fp in tree.lists[0].find_all("footprint"):
         for text in fp.find_all("fp_text") + fp.find_all("property"):
