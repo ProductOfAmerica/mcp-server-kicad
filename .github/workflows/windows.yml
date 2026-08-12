@@ -27,8 +27,24 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      # choco exits 0 on "Chocolatey installed 0/0 packages", so a transient
+      # feed outage installs nothing and the job carries on. Observed
+      # 2026-08-12: the community feed returned 504, this step went green, and
+      # the run failed three steps later as "no kicad-cli found; PATH said
+      # None", which reads like the _KICAD_WIN_DIRS probe regressed rather than
+      # like KiCad was never installed. Retry the outage, then prove the binary
+      # exists so a real failure is attributed here.
       - name: Install KiCad
-        run: choco install kicad --no-progress -y
+        shell: pwsh
+        run: |
+          choco install kicad --no-progress -y
+          if (-not (Get-ChildItem 'C:\Program Files\KiCad' -Recurse -Filter kicad-cli.exe -ErrorAction SilentlyContinue)) {
+            Write-Host 'First attempt installed nothing; retrying once.'
+            choco install kicad --no-progress -y --force
+          }
+          $cli = Get-ChildItem 'C:\Program Files\KiCad' -Recurse -Filter kicad-cli.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $cli) { throw 'KiCad did not install: no kicad-cli.exe under C:\Program Files\KiCad.' }
+          Write-Host "installed: $($cli.FullName)"
 
       - uses: astral-sh/setup-uv@v7
       - run: uv sync --frozen --all-extras --dev
