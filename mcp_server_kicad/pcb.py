@@ -911,6 +911,10 @@ def move_footprint(
     return msg
 
 
+# check_placement took a rotation parameter that was accepted and silently
+# ignored until 2026-08-12. It is gone; the docstring explains why an angle
+# could not have changed the answer, which is what a caller needs. The date
+# is for whoever reads the history, not for every user loading the schema.
 @mcp.tool(annotations=_READ_ONLY, title="Check one proposed footprint position")
 def check_placement(
     reference: str,
@@ -924,7 +928,7 @@ def check_placement(
     footprint whose body overlaps a keep-out while its origin does not still
     reports ok. That is also why there is no rotation parameter: rotating about
     the origin cannot move the origin, so an angle could not change either
-    answer. One was accepted and silently ignored until 2026-08-12.
+    answer.
 
     Args:
         reference: Footprint reference designator
