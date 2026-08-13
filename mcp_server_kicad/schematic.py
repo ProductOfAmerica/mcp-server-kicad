@@ -692,7 +692,15 @@ def place_component(
     schematic_path: str = SCH_PATH,
     project_path: str = "",
 ) -> str:
-    """Place a component in the schematic.
+    """Place a schematic symbol: resistor, capacitor, inductor, diode, LED,
+    transistor, crystal, switch, connector, or an IC such as a microcontroller
+    or regulator chip. Any lib_id in a library works.
+
+    The part names above are not a fixed list. They are here because a host
+    that defers tool schemas retrieves on this text, and a user asking to
+    "place a resistor" matched no tool at all until they were (measured in
+    Claude Desktop 2026-08-13: three tool_search calls before this tool
+    surfaced).
 
     Args:
         lib_id: Library identifier (e.g. "Device:R", "Device:C", "MyLib:MyPart")
@@ -1426,7 +1434,15 @@ def set_component_property(
     value: str,
     schematic_path: str = SCH_PATH,
 ) -> str:
-    """Set any property on a placed component. Creates it if missing.
+    """Set any property on a placed component, or rename it. Creates the
+    property if it is missing.
+
+    Reference, Value and Footprint are mirrored into the symbol's own
+    instances and into the root symbol_instances table, so setting
+    key="Reference" is how a component is renamed and both views stay in
+    step. The root table needs the .kicad_pro to resolve the hierarchy
+    path; a loose .kicad_sch with no project beside it keeps the symbol
+    correct and leaves that table alone.
 
     Args:
         reference: Component reference (e.g. "R1")

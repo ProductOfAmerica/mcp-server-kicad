@@ -14,8 +14,10 @@ from mcp_server_kicad import footprint, pcb, project, schematic, server, symbol
 
 _TOOL_MODULES = [footprint, pcb, project, schematic, symbol]
 
-# The unified server registers no tools of its own until main() runs, and names
-# none in its instructions; it is checked so that stays true.
+# The unified server registers no tools of its own until main() runs. It names
+# a dozen entry points in its instructions, so a host that defers tool schemas
+# can fetch one by name instead of searching blind, and this scanner is what
+# stops a rename from leaving a phantom among them.
 _SERVER_MODULES = [*_TOOL_MODULES, server]
 
 # snake_case tokens that are deliberately not tool names: file extensions the
