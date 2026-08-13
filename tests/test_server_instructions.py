@@ -200,3 +200,36 @@ class TestConfiguredDefaultsAreNamed:
         finally:
             monkeypatch.undo()
             importlib.reload(shared)
+
+
+def test_descriptions_do_not_ship_internal_rationale():
+    """A tool description is product surface, not a changelog.
+
+    Every description is loaded into the model's context, and under a host that
+    defers schemas it is also the retrieval key, so a sentence about when a bug
+    was fixed costs the user context and buys them nothing.
+
+    Written after shipping exactly that. v0.17.3 put "measured in Claude Desktop
+    2026-08-13: three tool_search calls before this tool surfaced" into
+    place_component's description, where a user reading the loaded tool saw it:
+    520 chars of summary, 313 of them explaining a decision to the maintainer.
+    The reasoning is worth keeping, so it moved to a comment above the tool.
+
+    Deliberately a narrow marker list. A description that legitimately needs a
+    date can be made to pass, but it has to be a decision rather than a habit.
+    """
+    markers = re.compile(
+        r"20\d\d-\d\d-\d\d|silently ignored|regression|\bslice \d|ponytail|\btest_\w+",
+        re.I,
+    )
+    offenders = {}
+    for mod in _TOOL_MODULES:
+        for name, tool in mod.mcp._tool_manager._tools.items():
+            summary = (tool.fn.__doc__ or "").split("Args:")[0]
+            found = sorted({m.group(0).lower() for m in markers.finditer(summary)})
+            if found:
+                offenders[name] = found
+    assert offenders == {}, (
+        "these descriptions carry maintainer rationale into every user's context;"
+        " move it to a comment above the tool: " + repr(offenders)
+    )

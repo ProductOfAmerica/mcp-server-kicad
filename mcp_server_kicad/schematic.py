@@ -679,6 +679,12 @@ def get_net_connections(
 # ---------------------------------------------------------------------------
 
 
+# The part list in place_component's docstring is not decoration and is not a
+# closed set: under a host that defers tool schemas, the description is the
+# retrieval key, and a user asking to "place a resistor" matched no tool at all
+# until those words were there. Measured in Claude Desktop, 2026-08-13: three
+# tool_search calls before this tool surfaced, then one, ranked first, after.
+# test_retrieval_vocabulary pins the words; keep them if you rewrite the prose.
 @mcp.tool(annotations=_ADDITIVE)
 def place_component(
     lib_id: str,
@@ -695,12 +701,6 @@ def place_component(
     """Place a schematic symbol: resistor, capacitor, inductor, diode, LED,
     transistor, crystal, switch, connector, or an IC such as a microcontroller
     or regulator chip. Any lib_id in a library works.
-
-    The part names above are not a fixed list. They are here because a host
-    that defers tool schemas retrieves on this text, and a user asking to
-    "place a resistor" matched no tool at all until they were (measured in
-    Claude Desktop 2026-08-13: three tool_search calls before this tool
-    surfaced).
 
     Args:
         lib_id: Library identifier (e.g. "Device:R", "Device:C", "MyLib:MyPart")
