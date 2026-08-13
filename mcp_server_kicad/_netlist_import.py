@@ -278,11 +278,23 @@ def _ensure_wx_app() -> None:
     redirect=False matters, because the default sends stdout to a GUI window
     and the caller parses stdout for the summary.
 
-    Failure to create one is not fatal here. A headless box that cannot open a
-    display is exactly where this script already worked, and refusing to run
-    would turn a latent problem into a certain one. The ceiling is that such a
-    host keeps the old behaviour rather than being fixed.
+    Creating one is skipped where there is no display to open, and that check
+    has to come first rather than being left to a try/except. The first version
+    of this did leave it to one, on the assumption that a failure would raise
+    something catchable. It does not: on a headless Linux runner wxPython exits
+    the process with "Unable to access the X Display, is $DISPLAY set
+    properly?", which took eight passing E2E tests red. A latent problem became
+    a certain one, which is exactly what the guard was supposed to prevent.
+
+    So the ceiling is real and is worth stating plainly: a display-less Linux
+    host gets no wxApp and keeps whatever behaviour it had, which is a suite
+    that passes today. Windows and macOS, where the assert has actually been
+    observed, both have a display whenever a user is running this.
     """
+    if sys.platform not in ("win32", "darwin") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        return
     try:
         import wx  # pyright: ignore[reportMissingImports] — ships with KiCad
     except ImportError:
@@ -298,7 +310,9 @@ def _ensure_wx_app() -> None:
         mode = getattr(wx, "APP_ASSERT_LOG", None)
         if mode is not None and hasattr(app, "SetAssertMode"):
             app.SetAssertMode(mode)
-    except Exception as exc:  # noqa: BLE001 - a display-less host stays as it was
+    except Exception as exc:  # noqa: BLE001 - never let this be the thing that fails
+        # Only reachable for a wx that raises rather than exiting. The
+        # display-less case is handled above, because it does not raise.
         print(f"note: no wxApp ({exc}); pcbnew path lookups may assert", file=sys.stderr)
 
 

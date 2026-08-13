@@ -452,3 +452,41 @@ class TestWxAppPrelude:
             elif node.module:
                 names.append(node.module.split(".")[0])
         assert set(names) <= {"__future__", "argparse", "json", "os", "sys", "xml"}, names
+
+    def test_a_display_less_host_never_reaches_wx(self, monkeypatch):
+        """The check that broke Linux, pinned.
+
+        The first version left this to a try/except on the assumption that
+        wx would raise something catchable when it could not open a display.
+        It does not: wxPython exits the process with "Unable to access the X
+        Display, is $DISPLAY set properly?", so nothing catches anything and
+        eight passing E2E tests went red on the Linux runner. The guard has to
+        run before wx is imported at all, which is what this asserts.
+        """
+        import ast
+
+        import mcp_server_kicad
+
+        src = (Path(mcp_server_kicad.__file__).parent / "_netlist_import.py").read_text(
+            encoding="utf-8"
+        )
+        fn = next(
+            n
+            for n in ast.parse(src).body
+            if isinstance(n, ast.FunctionDef) and n.name == "_ensure_wx_app"
+        )
+        body = [n for n in fn.body if not isinstance(n, ast.Expr)]
+        first = body[0]
+        assert isinstance(first, ast.If), "the display check must come first"
+        assert any(isinstance(x, ast.Return) for x in first.body), (
+            "the display check must return, not fall through to importing wx"
+        )
+        names = {n.id for n in ast.walk(first) if isinstance(n, ast.Name)}
+        assert {"sys", "os"} <= names, "it should read sys.platform and the display env"
+        # wx must not be imported before that guard has had its say.
+        imports_before = [
+            n
+            for n in ast.walk(ast.Module(body=body[: body.index(first)], type_ignores=[]))
+            if isinstance(n, (ast.Import, ast.ImportFrom))
+        ]
+        assert imports_before == [], imports_before
