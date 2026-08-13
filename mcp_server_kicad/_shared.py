@@ -46,12 +46,53 @@ _ACCESS = (
     " host application to use them.\n"
     "- NEVER ask the user to connect, add, or grant access to a folder. If you"
     " need a file, call the tool.\n"
-    "- Every path parameter takes an absolute path. Where the user has"
-    " configured a default it is already filled in as the parameter's default"
-    " value, so the tool can be called with no path at all.\n"
-    "- With no path configured and none given, ask the user for the absolute"
-    " path, or offer create_project to make a new project."
+    "- Every path parameter takes an absolute path."
 )
+
+
+def _configured_defaults() -> str:
+    """Name the configured paths in the instructions, not only in the schemas.
+
+    The defaults have always been filled into each tool's inputSchema, and the
+    FILE ACCESS rules above used to just say so. That is invisible to a host
+    that defers tool schemas and hands the model tool *names* first, which is
+    what Claude Desktop does: the model decides whether it needs to ask before
+    it has fetched a single schema.
+
+    Measured in Desktop on 2026-08-13, with all three paths configured and
+    reaching the server (place_component's schema default held the real path):
+    asked to place a resistor and run ERC, the model answered "What's the path
+    to your schematic file?" and offered "/home/claude/my_project/schematic
+    .kicad_sch" as the example, a Linux path invented on a Windows machine. It
+    was guessing because nothing it could see named the file.
+
+    Instructions arrive with initialize, before any schema fetch, so this is the
+    one place a deferred-loading host is guaranteed to read. Paths are listed
+    without any claim about whether they exist: this text is built once at
+    startup, and a board created later in the session would make a
+    "does not exist" note a lie. The tools report that accurately at call time.
+    """
+    rows = (
+        ("schematic", SCH_PATH),
+        ("board", PCB_PATH),
+        ("symbol library", SYM_LIB_PATH),
+        ("footprint library", FP_LIB_PATH),
+        ("export directory", OUTPUT_DIR),
+    )
+    named = [f"- {label}: {path}" for label, path in rows if path]
+    if not named:
+        return (
+            "\n\nCONFIGURED DEFAULTS:\n"
+            "- None. Nothing is configured, so every call must name an absolute"
+            " path. Ask the user for one, or offer create_project."
+        )
+    return (
+        "\n\nCONFIGURED DEFAULTS:\n"
+        + "\n".join(named)
+        + "\n- These are already filled in as the tools' default parameter"
+        " values. Call the tool with no path argument at all. Do NOT ask the"
+        " user for a path listed here, and do NOT guess one."
+    )
 
 
 def build_server(name: str, instructions: str) -> MCPServer:
@@ -62,7 +103,11 @@ def build_server(name: str, instructions: str) -> MCPServer:
 
     Pinned by test_server_reports_package_version.
     """
-    return MCPServer(name, instructions=instructions + _ACCESS, version=SERVER_VERSION)
+    return MCPServer(
+        name,
+        instructions=instructions + _ACCESS + _configured_defaults(),
+        version=SERVER_VERSION,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -7,6 +7,8 @@ tool execution error which carries actionable feedback.
 """
 
 import re
+import tempfile
+from pathlib import Path
 
 from mcp_server_kicad import footprint, pcb, project, schematic, server, symbol
 
@@ -121,3 +123,78 @@ def test_every_server_says_it_needs_no_folder_permission():
         assert "FILE ACCESS:" in text, mod.__name__
         assert "do NOT need" in text, mod.__name__
         assert "NEVER ask the user to connect" in text, mod.__name__
+
+
+class TestConfiguredDefaultsAreNamed:
+    """The configured paths appear in the instructions, not only in the schemas.
+
+    Every path default has always been in each tool's inputSchema. That is
+    invisible to a host that defers tool schemas and gives the model tool names
+    first, which is what Claude Desktop does, so the model decides whether to
+    ask before it has fetched a single schema.
+
+    Measured in Desktop on 2026-08-13 with all three paths configured and
+    reaching the server: asked to place a resistor and run ERC, the model replied
+    "What's the path to your schematic file?" and offered
+    "/home/claude/my_project/schematic.kicad_sch" as the example, a Linux path
+    invented on a Windows machine. Instructions arrive with initialize, before
+    any schema fetch, so they are the one place such a host is sure to read.
+    """
+
+    def test_a_configured_path_is_named(self, monkeypatch):
+        text = self._instructions(monkeypatch, {"KICAD_SCH_PATH": r"D:\proj\thing.kicad_sch"})
+        assert r"D:\proj\thing.kicad_sch" in text
+        assert "no path argument at all" in text
+        assert "do NOT guess" in text
+
+    def test_every_configured_kind_is_named(self, monkeypatch):
+        env = {
+            "KICAD_SCH_PATH": r"D:\p\a.kicad_sch",
+            "KICAD_PCB_PATH": r"D:\p\a.kicad_pcb",
+            "KICAD_SYM_LIB": r"D:\p\a.kicad_sym",
+            "KICAD_FP_LIB": r"D:\p\a.pretty",
+            "KICAD_OUTPUT_DIR": r"D:\p",
+        }
+        text = self._instructions(monkeypatch, env)
+        for path in env.values():
+            assert path in text, f"{path} is configured but never named"
+
+    def test_nothing_configured_says_so_and_says_what_to_do(self, monkeypatch):
+        """The empty case must not read as "no defaults section, so who knows"."""
+        text = self._instructions(monkeypatch, {})
+        assert "Nothing is configured" in text
+        assert "create_project" in text
+
+    def test_an_unset_path_is_not_listed(self, monkeypatch):
+        """A blank field must not appear as an empty bullet."""
+        text = self._instructions(monkeypatch, {"KICAD_SCH_PATH": r"D:\p\a.kicad_sch"})
+        section = text.split("CONFIGURED DEFAULTS:")[1]
+        assert "- board:" not in section
+        assert "- symbol library:" not in section
+
+    @staticmethod
+    def _instructions(monkeypatch, env: dict[str, str]) -> str:
+        """Rebuild a server under *env*, since the paths resolve at import."""
+        import importlib
+
+        import mcp_server_kicad._shared as shared
+
+        for var in (
+            "KICAD_SCH_PATH",
+            "KICAD_PCB_PATH",
+            "KICAD_SYM_LIB",
+            "KICAD_FP_LIB",
+            "KICAD_OUTPUT_DIR",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        # A directory with no *.kicad_pro, so auto-detect cannot add paths the
+        # test never set and make an assertion pass for the wrong reason.
+        monkeypatch.setattr(shared, "_cwd", lambda: Path(tempfile.mkdtemp()))
+        reloaded = importlib.reload(shared)
+        try:
+            return reloaded.build_server("probe", "X").instructions or ""
+        finally:
+            monkeypatch.undo()
+            importlib.reload(shared)
