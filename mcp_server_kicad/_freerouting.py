@@ -148,6 +148,28 @@ def _kicad_python_candidates() -> list[str]:
     return found
 
 
+def wx_app_prelude() -> str:
+    """Statements to prepend to any inline pcbnew script, ending in "; ".
+
+    Every pcbnew subprocess this package spawns runs a GUI library with no GUI
+    and, until 2026-08-13, with no wxApp either. Anything reaching
+    wxStandardPaths::Get() then asserts, and the handler that runs is the raw
+    C++ one, because wxPython installs its own through wxApp. On Windows that
+    is a modal "wxWidgets Debug Alert" on the user's desktop which this
+    subprocess has nobody to dismiss, so the tool call blocks to its timeout; on
+    macOS it kills the process, which is how it was first seen.
+
+    Single-sourced through _netlist_import so the four call sites cannot drift.
+    That module imports only the standard library, so KiCad's interpreter can
+    load it, and it is already on disk next to this one.
+    """
+    pkg_dir = str(Path(__file__).parent)
+    return (
+        f"import sys; sys.path.insert(0, {pkg_dir!r}); "
+        "import _netlist_import as _ni; _ni._ensure_wx_app(); "
+    )
+
+
 def find_pcbnew_python() -> tuple[str | None, dict | None]:
     """Find a Python interpreter that can import pcbnew.
 
@@ -279,7 +301,7 @@ def export_dsn(pcb_path: str, dsn_path: str) -> str | None:
         )
 
     script = (
-        "import pcbnew; "
+        wx_app_prelude() + "import pcbnew; "
         f"b = pcbnew.LoadBoard({pcb_path!r}); "
         f"pcbnew.ExportSpecctraDSN(b, {dsn_path!r})"
     )
@@ -310,7 +332,7 @@ def import_ses(pcb_path: str, ses_path: str, output_path: str) -> str | None:
         )
 
     script = (
-        "import pcbnew; "
+        wx_app_prelude() + "import pcbnew; "
         f"b = pcbnew.LoadBoard({pcb_path!r}); "
         f"pcbnew.ImportSpecctraSES(b, {ses_path!r}); "
         f"pcbnew.SaveBoard({output_path!r}, b)"

@@ -256,7 +256,54 @@ def apply(
     return summary
 
 
+def _ensure_wx_app() -> None:
+    """Give wxWidgets an application object before pcbnew can ask for one.
+
+    pcbnew is a GUI library used here without a GUI. Most of its API never
+    notices, which is why this script ran for months without one, but anything
+    reaching wxStandardPaths::Get() asserts, and on macOS that assert kills the
+    process rather than warning:
+
+        ./src/common/stdpbase.cpp(59): assert "traits" failed in Get():
+        create wxApp before calling this
+
+    Seen twice on the macOS runner, both times on the --delete-stale run of
+    TestUpdatePcbE2E, both times fixed by re-running, which is what made it look
+    like flake. It is not: the process exits non-zero, so the caller's
+    returncode check is right to fail, and the stderr carries no Python
+    traceback because nothing Python raised.
+
+    wx ships inside KiCad's own interpreter, so this adds no dependency
+    (measured: wxPython 4.2.2 / wxWidgets 3.2.8 alongside pcbnew 9.0.8).
+    redirect=False matters, because the default sends stdout to a GUI window
+    and the caller parses stdout for the summary.
+
+    Failure to create one is not fatal here. A headless box that cannot open a
+    display is exactly where this script already worked, and refusing to run
+    would turn a latent problem into a certain one. The ceiling is that such a
+    host keeps the old behaviour rather than being fixed.
+    """
+    try:
+        import wx  # pyright: ignore[reportMissingImports] — ships with KiCad
+    except ImportError:
+        return
+    try:
+        app = wx.App.Get() or wx.App(False)
+        # wxPython installs its assert handler through wxApp, so until one
+        # exists the raw C++ handler runs. On Windows that is a modal "wxWidgets
+        # Debug Alert" dialog on the user's desktop, and this subprocess has
+        # nobody to click it: the tool call blocks until the caller's 120s
+        # timeout. Route any later assert to the log instead, where it reaches
+        # stderr and the caller reports it.
+        mode = getattr(wx, "APP_ASSERT_LOG", None)
+        if mode is not None and hasattr(app, "SetAssertMode"):
+            app.SetAssertMode(mode)
+    except Exception as exc:  # noqa: BLE001 - a display-less host stays as it was
+        print(f"note: no wxApp ({exc}); pcbnew path lookups may assert", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _ensure_wx_app()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("netlist")
     ap.add_argument("pcb")
