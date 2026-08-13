@@ -708,7 +708,12 @@ def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
 
 @mcp.tool(annotations=_READ_ONLY)
 def list_pcb_layers(pcb_path: str = PCB_PATH) -> list[LayerItem]:
-    """List all layers defined in the PCB stackup.
+    """List all layers defined in the PCB stackup: copper, silkscreen,
+    soldermask, solder paste, courtyard, fabrication, and the board outline.
+
+    Which of those a given board actually defines is up to the board. Call
+    this before any tool that takes a layer name, since the valid set is
+    per-board and renamed layers are common.
 
     Args:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
@@ -1129,7 +1134,8 @@ def add_copper_zone(
     priority: int = 0,
     pcb_path: str = PCB_PATH,
 ) -> ZoneResult:
-    """Create an unfilled copper zone. Call fill_zones afterward to compute fills.
+    """Create an unfilled copper zone: a ground plane, power plane, or any
+    filled copper pour. Call fill_zones afterward to compute the fills.
 
     Args:
         net_name: Name of the net to assign to this zone (e.g. "GND")

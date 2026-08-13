@@ -692,7 +692,15 @@ def place_component(
     schematic_path: str = SCH_PATH,
     project_path: str = "",
 ) -> str:
-    """Place a component in the schematic.
+    """Place a schematic symbol: resistor, capacitor, inductor, diode, LED,
+    transistor, crystal, switch, connector, or an IC such as a microcontroller
+    or regulator chip. Any lib_id in a library works.
+
+    The part names above are not a fixed list. They are here because a host
+    that defers tool schemas retrieves on this text, and a user asking to
+    "place a resistor" matched no tool at all until they were (measured in
+    Claude Desktop 2026-08-13: three tool_search calls before this tool
+    surfaced).
 
     Args:
         lib_id: Library identifier (e.g. "Device:R", "Device:C", "MyLib:MyPart")
