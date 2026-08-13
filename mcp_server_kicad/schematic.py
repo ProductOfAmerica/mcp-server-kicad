@@ -1434,7 +1434,15 @@ def set_component_property(
     value: str,
     schematic_path: str = SCH_PATH,
 ) -> str:
-    """Set any property on a placed component. Creates it if missing.
+    """Set any property on a placed component, or rename it. Creates the
+    property if it is missing.
+
+    Reference, Value and Footprint are mirrored into the symbol's own
+    instances and into the root symbol_instances table, so setting
+    key="Reference" is how a component is renamed and both views stay in
+    step. The root table needs the .kicad_pro to resolve the hierarchy
+    path; a loose .kicad_sch with no project beside it keeps the symbol
+    correct and leaves that table alone.
 
     Args:
         reference: Component reference (e.g. "R1")

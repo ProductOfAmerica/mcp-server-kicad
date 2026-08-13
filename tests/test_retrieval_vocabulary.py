@@ -54,6 +54,7 @@ _VOCABULARY = [
     ("footprint", "place_footprint"),
     ("trace", "add_trace"),
     ("via", "add_via"),
+    ("rename", "set_component_property"),
 ]
 
 
