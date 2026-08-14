@@ -15,6 +15,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_server_kicad import _cst, _shared
 from mcp_server_kicad._shared import (
     _atomic_write,
+    _backup_for_external_write,
     _courtyard_bbox_cst,
     _ensure_dir,
     _point_in_polygon,
@@ -485,3 +486,76 @@ class TestEnsureDir:
         blocker.write_bytes(b"x")
         with pytest.raises(ToolError, match="parent directory"):
             _ensure_dir(blocker / "out", "parent directory")
+
+
+class TestBackupForExternalWrite:
+    """The two library upgrades hand a user file to kicad-cli, which rewrites
+    it in place. That is outside both halves of the invariant: not atomic, and
+    not reversible. The ADR calls `fp upgrade` the sharpest of the four
+    subprocess writers because it rewrites every .kicad_mod in a library at once.
+
+    This reverses a decision recorded 2026-08-10, which rejected a pre-write
+    copy as "a backup with no lifecycle owner". Exactly one backup per library,
+    overwritten every run, is what answers that: it cannot accumulate, so there
+    is no lifecycle to own. These tests pin the bounded part, because that is
+    the whole argument.
+    """
+
+    def test_a_file_is_copied_beside_itself(self, tmp_path):
+        src = tmp_path / "lib.kicad_sym"
+        src.write_bytes(b"(kicad_symbol_lib original)\r\n")
+        dest = _backup_for_external_write(src, "symbol library")
+        assert dest == tmp_path / "lib.kicad_sym.bak"
+        # Bytes, not text: a backup that normalises line endings is not a backup.
+        assert dest.read_bytes() == b"(kicad_symbol_lib original)\r\n"
+
+    def test_a_second_run_overwrites_rather_than_accumulates(self, tmp_path):
+        """The bounded-at-one property, which is the answer to the ADR's
+        objection. If this ever fails, the reversal stops being justified."""
+        src = tmp_path / "lib.kicad_sym"
+        for body in (b"first", b"second", b"third"):
+            src.write_bytes(body)
+            _backup_for_external_write(src, "symbol library")
+        baks = sorted(p.name for p in tmp_path.iterdir() if ".bak" in p.name)
+        assert baks == ["lib.kicad_sym.bak"], baks
+        assert (tmp_path / "lib.kicad_sym.bak").read_bytes() == b"third"
+
+    def test_a_pretty_directory_is_copied_whole(self, tmp_path):
+        pretty = tmp_path / "MyLib.pretty"
+        pretty.mkdir()
+        (pretty / "R_0603.kicad_mod").write_bytes(b'(footprint "R_0603")')
+        (pretty / "C_0402.kicad_mod").write_bytes(b'(footprint "C_0402")')
+        dest = _backup_for_external_write(pretty, "footprint library")
+        assert dest == tmp_path / "MyLib.pretty.bak"
+        assert sorted(p.name for p in dest.iterdir()) == ["C_0402.kicad_mod", "R_0603.kicad_mod"]
+        assert (dest / "R_0603.kicad_mod").read_bytes() == b'(footprint "R_0603")'
+
+    def test_a_directory_backup_also_stays_at_one(self, tmp_path):
+        pretty = tmp_path / "MyLib.pretty"
+        pretty.mkdir()
+        (pretty / "a.kicad_mod").write_bytes(b"one")
+        _backup_for_external_write(pretty, "footprint library")
+        (pretty / "a.kicad_mod").write_bytes(b"two")
+        (pretty / "b.kicad_mod").write_bytes(b"new")
+        _backup_for_external_write(pretty, "footprint library")
+        baks = [p.name for p in tmp_path.iterdir() if ".bak" in p.name]
+        assert baks == ["MyLib.pretty.bak"], baks
+        dest = tmp_path / "MyLib.pretty.bak"
+        assert (dest / "a.kicad_mod").read_bytes() == b"two"
+        assert (dest / "b.kicad_mod").exists()
+        # No staging directory left behind.
+        assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+
+    def test_a_failed_backup_refuses_rather_than_proceeding(self, tmp_path, monkeypatch):
+        """Proceeding without a backup is the thing this exists to prevent."""
+        src = tmp_path / "lib.kicad_sym"
+        src.write_bytes(b"x")
+
+        def boom(*a, **k):
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(_shared, "_atomic_write", boom)
+        with pytest.raises(ToolError) as exc:
+            _backup_for_external_write(src, "symbol library")
+        assert "has not been started" in str(exc.value)
+        assert "no undo" in str(exc.value)

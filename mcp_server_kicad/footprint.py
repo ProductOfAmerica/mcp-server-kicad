@@ -12,6 +12,7 @@ from mcp_server_kicad._shared import (
     _READ_ONLY,
     FP_LIB_PATH,
     OUTPUT_DIR,
+    _backup_for_external_write,
     _courtyard_bbox_cst,
     _ensure_dir,
     _keepout_dict,
@@ -202,17 +203,20 @@ def upgrade_footprint_lib(footprint_path: str) -> str:
     directory.  kicad-cli has no per-footprint option here, and a single
     .kicad_mod path is rejected.
 
-    kicad-cli does the writing, in place and with no undo, so this is one of the
-    few paths that cannot go through the server's atomic write. Keep the library
-    in version control before running it.
+    kicad-cli does the writing, in place, so this is one of the few paths that
+    cannot go through the server's atomic write. The whole library is copied to
+    ``<name>.pretty.bak`` first and the result names it. That copy is the undo:
+    there is exactly one, and every run overwrites it. Version control is still
+    the better answer for a library you care about.
 
     Args:
         footprint_path: Path to a .pretty library directory.
             Optional; omit to use the configured default.
     """
     _require_kicad_path(footprint_path, "footprint", allow_dir=True)
+    backup = _backup_for_external_write(footprint_path, "footprint library")
     _run_cli(["fp", "upgrade", footprint_path])
-    return f"Successfully upgraded {footprint_path}"
+    return f"Successfully upgraded {footprint_path}. Previous version saved to {backup}"
 
 
 # ── Entry point ───────────────────────────────────────────────────
