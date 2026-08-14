@@ -874,6 +874,37 @@ def place_footprint(
     return f"Placed {reference} ({value}) at ({x}, {y}) on {layer}"
 
 
+def _require_same_side(fp, layer: str, reference: str) -> None:
+    """Refuse a side change dressed up as a layer change.
+
+    Measured 2026-08-14 on this tool before the guard: asking for layer="B.Cu"
+    on a front-side footprint rewrote the footprint's own (layer ...) atom and
+    nothing else. Its pads stayed on F.Cu, F.Paste and F.Mask and its texts on
+    F.SilkS, so KiCad reads the result as a bottom-side part whose copper is on
+    top. kicad-cli loads that file without complaint, and a board made from it
+    would be wrong.
+
+    Moving a footprint to the other side is a flip: every pad, graphic and text
+    layer mirrors, the geometry mirrors with them, and text gains a mirrored
+    justification. That is a real transform, its surface is wide (arcs, polys,
+    custom pad primitives, embedded zones, 3D model blocks), and this tool has
+    never done it. So it is refused with the file intact, which is what the
+    invariant at the top of docs/adr-cst-substrate.md asks for, rather than
+    half-performed.
+    """
+    current = _fp_layer(fp)
+    if current.split(".")[0] == layer.split(".")[0]:
+        return
+    raise ToolError(
+        f"{reference} is on {current}, and moving it to {layer} is a flip rather"
+        " than a layer change: every pad, graphic and text layer has to mirror"
+        " with it. This tool only moves and rotates, so it would leave the"
+        f" footprint marked {layer} with its copper still on {current}, which"
+        " KiCad loads without complaint and a fabricator would build wrong."
+        " Nothing was changed. Flip it in KiCad, or remove and re-place it."
+    )
+
+
 @mcp.tool(annotations=_ADDITIVE)
 def move_footprint(
     reference: str,
@@ -890,7 +921,9 @@ def move_footprint(
         x: New X position
         y: New Y position
         rotation: New rotation (None = keep current)
-        layer: New layer (empty = keep current)
+        layer: New layer. Only the side the footprint is already on is accepted;
+            moving a footprint to the other side of the board is a flip, not a
+            layer change, and this tool does not do it.
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
@@ -898,6 +931,8 @@ def move_footprint(
         _resolve_layer_cst(root, layer, copper_only=True)
     _BOARD_CACHE.pop(key, None)
     fp = _find_fp_cst(root, reference)
+    if layer:
+        _require_same_side(fp, layer, reference)
     _fill_at(fp, x, y, rotation)
     if layer:
         fp.find("layer").atoms[1].set_text(layer)

@@ -109,7 +109,10 @@ def _pcb_cases(tmp_path) -> list[tuple[Any, dict[str, Any]]]:
         (pcb.add_copper_zone, dict(net_name="N1", layer="F.Cu", corners=corners, pcb_path=p)),
         (pcb.add_keepout_zone, dict(corners=corners, layers=["F.Cu"], pcb_path=p)),
         (pcb.place_footprint, dict(reference="R9", value="1k", x=10, y=10, pcb_path=p)),
-        (pcb.move_footprint, dict(reference="R1", x=20, y=20, layer="B.Cu", pcb_path=p)),
+        # F.Cu, not B.Cu: the other side is a flip and is refused, and a
+        # baseline that raises would make every hostile value below look
+        # "refused" while measuring nothing.
+        (pcb.move_footprint, dict(reference="R1", x=20, y=20, layer="F.Cu", pcb_path=p)),
         (pcb.set_trace_width, dict(width=0.3, layer="F.Cu", pcb_path=p)),
         (pcb.remove_traces, dict(layer="B.Cu", pcb_path=p)),
     ]

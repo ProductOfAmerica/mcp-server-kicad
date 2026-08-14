@@ -352,14 +352,32 @@ class TestFootprintWritersCst:
         assert (r1.x, r1.y) == (42.0, 24.0)
         assert Board.from_file(p).footprints[0].position.X == 42
 
-    def test_move_k10_layer_confined(self, tmp_path):
+    def test_move_k10_same_side_layer_confined(self, tmp_path):
         p = _write_board(tmp_path, _K10_BOARD)
         before = Path(p).read_bytes()
-        pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
+        pcb.move_footprint("R1", 50, 50, layer="F.Cu", pcb_path=p)
         after = Path(p).read_bytes()
         assert _confined(before, after)
         r1 = next(f for f in pcb.list_pcb_footprints(p) if f.reference == "R1")
-        assert (r1.x, r1.y, r1.layer) == (50.0, 50.0, "B.Cu")
+        assert (r1.x, r1.y, r1.layer) == (50.0, 50.0, "F.Cu")
+
+    def test_move_to_the_other_side_is_refused_with_the_file_intact(self, tmp_path):
+        """This test asserted the defect until 2026-08-14.
+
+        It passed layer="B.Cu" to a front-side footprint and asserted the layer
+        atom had changed, which is exactly what the tool did and exactly what is
+        wrong: the pads stayed on F.Cu, F.Paste and F.Mask and the texts on
+        F.SilkS, so KiCad reads a bottom-side part with top-side copper and
+        kicad-cli loads it without complaint. The same shape as the 45-degree
+        rotation this suite blessed once before.
+        """
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        with pytest.raises(ToolError) as exc:
+            pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
+        assert "flip" in str(exc.value)
+        assert "Nothing was changed" in str(exc.value)
+        assert Path(p).read_bytes() == before
 
     def test_move_k10_rotation_appends_atom(self, tmp_path):
         p = _write_board(tmp_path, _K10_BOARD)
