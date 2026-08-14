@@ -500,15 +500,35 @@ class TestFillZones:
             corners=[{"x": 0, "y": 0}, {"x": 50, "y": 0}, {"x": 50, "y": 50}, {"x": 0, "y": 50}],
             pcb_path=str(scratch_pcb),
         )
-        mock_result = type("Result", (), {"returncode": 0, "stdout": "1\n", "stderr": ""})()
-        mock_python = ("/usr/bin/python3", None)
+        # The subprocess returns polygons now rather than saving the board, so
+        # the mock hands back a fill for the zone that was just created.
+        _, root, _ = pcb._open_pcb_cst(str(scratch_pcb))
+        zone_uuid = next(
+            z.find("uuid").atoms[1].text for z in root.find_all("zone") if z.find("keepout") is None
+        )
+        dump = json.dumps(
+            [
+                {
+                    "uuid": zone_uuid,
+                    "layer": "F.Cu",
+                    "outlines": [[[0, 0], [50_000_000, 0], [50_000_000, 50_000_000]]],
+                }
+            ]
+        )
+        mock_result = type(
+            "Result", (), {"returncode": 0, "stdout": "FILLDUMP" + dump, "stderr": ""}
+        )()
         with (
-            patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=mock_python),
+            patch(
+                "mcp_server_kicad.pcb._find_pcbnew_python",
+                return_value=("/usr/bin/python3", None),
+            ),
             patch("subprocess.run", return_value=mock_result),
         ):
             result = pcb.fill_zones(pcb_path=str(scratch_pcb))
         assert result.zones_filled == 1
         assert result.status == "ok"
+        assert b"filled_polygon" in scratch_pcb.read_bytes()
 
 
 _NETLIST_SUMMARY_JSON = (
@@ -1300,15 +1320,17 @@ def _fill_seams(major):
 
 
 def _fake_fill(board: Path, zones: int = 1, upgrade: bool = False):
-    """Stand in for the fill subprocess, optionally bumping the version stamp
-    the way pcbnew's SaveBoard does."""
+    """Stand in for the fill subprocess, which returns polygons rather than
+    saving the board.
+
+    The upgrade flag has nothing left to simulate here: fill_zones no longer
+    lets pcbnew write the file, so it cannot change a format stamp. That path
+    now belongs only to update_pcb_from_schematic, which still hands its board
+    to a subprocess that saves.
+    """
 
     def run(argv, **kwargs):
-        if upgrade:
-            from test_cst_pcb import _bump_version
-
-            _bump_version(board)
-        return type("R", (), {"returncode": 0, "stdout": f"{zones}\n", "stderr": ""})()
+        return type("R", (), {"returncode": 0, "stdout": "FILLDUMP[]", "stderr": ""})()
 
     return run
 
@@ -1341,21 +1363,22 @@ class TestFillZonesPreflight:
         # reaches pcbnew and comes back as a NoneType AttributeError.
         spawned.assert_not_called()
 
-    def test_a_silent_format_upgrade_is_reported(self, scratch_pcb):
-        with _fill_seams(9), patch("subprocess.run", _fake_fill(scratch_pcb, upgrade=True)):
-            result = pcb.fill_zones(pcb_path=str(scratch_pcb))
-        assert result.status == "ok"
-        assert len(result.warnings) == 1
-        note = result.warnings[0]
-        assert "20211014" in note and "20260206" in note
-        assert "version control" in note
-        assert "KiCad 9 install can no longer open" in note
+    def test_the_board_pcbnew_saw_is_the_board_that_stays(self, scratch_pcb):
+        """The format stamp cannot move, because pcbnew no longer writes.
 
-    def test_quiet_when_the_stamp_holds(self, scratch_pcb):
-        """Guards against a guard that always fires."""
+        This replaces a test that asserted fill_zones *reports* an in-place
+        format upgrade. It cannot perform one any more: the subprocess is handed
+        the board read-only and returns polygons, so the only bytes that change
+        are the ones this server writes.
+        """
+        before = scratch_pcb.read_bytes()
         with _fill_seams(9), patch("subprocess.run", _fake_fill(scratch_pcb)):
             result = pcb.fill_zones(pcb_path=str(scratch_pcb))
-        assert result.warnings == []
+        assert result.status == "ok"
+        after = scratch_pcb.read_bytes()
+        assert b"(version 20211014)" in after, "the stamp must be untouched"
+        # An empty dump means no zone matched, so nothing should have moved.
+        assert after == before
 
     def test_an_unknown_major_proceeds(self, scratch_pcb):
         """No answer from the probe means no opinion, as pcbnew_major documents."""

@@ -352,14 +352,32 @@ class TestFootprintWritersCst:
         assert (r1.x, r1.y) == (42.0, 24.0)
         assert Board.from_file(p).footprints[0].position.X == 42
 
-    def test_move_k10_layer_confined(self, tmp_path):
+    def test_move_k10_same_side_layer_confined(self, tmp_path):
         p = _write_board(tmp_path, _K10_BOARD)
         before = Path(p).read_bytes()
-        pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
+        pcb.move_footprint("R1", 50, 50, layer="F.Cu", pcb_path=p)
         after = Path(p).read_bytes()
         assert _confined(before, after)
         r1 = next(f for f in pcb.list_pcb_footprints(p) if f.reference == "R1")
-        assert (r1.x, r1.y, r1.layer) == (50.0, 50.0, "B.Cu")
+        assert (r1.x, r1.y, r1.layer) == (50.0, 50.0, "F.Cu")
+
+    def test_move_to_the_other_side_is_refused_with_the_file_intact(self, tmp_path):
+        """This test asserted the defect until 2026-08-14.
+
+        It passed layer="B.Cu" to a front-side footprint and asserted the layer
+        atom had changed, which is exactly what the tool did and exactly what is
+        wrong: the pads stayed on F.Cu, F.Paste and F.Mask and the texts on
+        F.SilkS, so KiCad reads a bottom-side part with top-side copper and
+        kicad-cli loads it without complaint. The same shape as the 45-degree
+        rotation this suite blessed once before.
+        """
+        p = _write_board(tmp_path, _K10_BOARD)
+        before = Path(p).read_bytes()
+        with pytest.raises(ToolError) as exc:
+            pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
+        assert "flip" in str(exc.value)
+        assert "Nothing was changed" in str(exc.value)
+        assert Path(p).read_bytes() == before
 
     def test_move_k10_rotation_appends_atom(self, tmp_path):
         p = _write_board(tmp_path, _K10_BOARD)
@@ -886,3 +904,99 @@ class TestResolveLayer:
         assert pcb._resolve_layer_cst(root, "B.Cu") == "B.Cu"
         with pytest.raises(ToolError):
             pcb._resolve_layer_cst(root, "banana")
+
+
+class TestZoneFillSplice:
+    """pcbnew computes the fill; this server writes it.
+
+    The old fill_zones handed the board to pcbnew and let it SaveBoard, which
+    rewrote the whole file. Measured on KiCad 9: that took KiCad's own
+    multichannel_mixer-unrouted from version 20241030 to 20241229, dropped 114
+    footprint property UUIDs and renamed user layers, all while reporting
+    success. pcbnew is handed the board read-only now and returns polygons.
+    """
+
+    def test_millimetres_match_kicads_own_formatting(self):
+        # Measured across 4000 coordinates of ecc83-pp: 1 to 6 decimal places,
+        # never a padded six, so trailing zeros are stripped.
+        assert pcb._mm(166963652) == "166.963652"
+        assert pcb._mm(1000000) == "1"
+        assert pcb._mm(0) == "0"
+        assert pcb._mm(-2500000) == "-2.5"
+        assert pcb._mm(1500) == "0.0015"
+
+    def test_the_node_round_trips_through_the_cst(self):
+        raw = pcb._filled_polygon_bytes("B.Cu", [(1, 2), (3, 4), (5, 6)])
+        doc = _cst.parse(raw)
+        assert _cst.serialize(doc) == raw
+        node = doc.lists[0]
+        assert node.head == "filled_polygon"
+        assert node.find("layer").atoms[1].text == "B.Cu"
+        assert len(node.find("pts").find_all("xy")) == 3
+
+    def test_points_are_packed_not_one_per_line(self):
+        """KiCad packs (xy ...) runs to a column limit; one per line would be a
+        different file for the same geometry."""
+        pts = [(i * 1_234_567, i * 987_654) for i in range(40)]
+        text = pcb._filled_polygon_bytes("F.Cu", pts).decode()
+        body = [ln for ln in text.splitlines() if "(xy " in ln]
+        assert max(len(ln.expandtabs(1)) for ln in body) <= pcb._XY_COLUMN_LIMIT
+        assert any(ln.count("(xy ") > 1 for ln in body), "points were not packed"
+
+    def _board_with_zone(self, board):
+        pcb.add_copper_zone(
+            net_name="Net1",
+            layer="F.Cu",
+            corners=[{"x": 10, "y": 10}, {"x": 40, "y": 10}, {"x": 40, "y": 40}],
+            pcb_path=str(board),
+        )
+        _, root, _ = pcb._open_pcb_cst(str(board))
+        uuid_ = next(
+            z.find("uuid").atoms[1].text for z in root.find_all("zone") if z.find("keepout") is None
+        )
+        return board, uuid_
+
+    def test_the_splice_only_touches_the_zone(self, scratch_pcb):
+        board, uuid_ = self._board_with_zone(scratch_pcb)
+        before = board.read_bytes()
+        tree, root, _ = pcb._open_pcb_cst(str(board))
+        n = pcb._splice_fills(
+            root,
+            [{"uuid": uuid_, "layer": "F.Cu", "outlines": [[[0, 0], [10**7, 0], [10**7, 10**7]]]}],
+        )
+        after = _cst.serialize(tree)
+        assert n == 1
+        assert b"filled_polygon" in after
+        assert _pure_insertion(before, after), "the fill must be a single insertion"
+
+    def test_refilling_replaces_rather_than_doubles(self, scratch_pcb):
+        """A zone filled before carries last time's polygons. Appending would
+        double its copper, which no oracle in this suite would catch."""
+        board, uuid_ = self._board_with_zone(scratch_pcb)
+        dump = [
+            {"uuid": uuid_, "layer": "F.Cu", "outlines": [[[0, 0], [10**7, 0], [10**7, 10**7]]]}
+        ]
+        tree, root, _ = pcb._open_pcb_cst(str(board))
+        pcb._splice_fills(root, dump)
+        first = _cst.serialize(tree)
+        pcb._splice_fills(root, dump)
+        assert _cst.serialize(tree) == first
+        assert first.count(b"filled_polygon") == 1
+
+    def test_a_degenerate_outline_is_dropped(self, scratch_pcb):
+        """Two points are a line, not a pour. KiCad would refuse the board."""
+        board, uuid_ = self._board_with_zone(scratch_pcb)
+        tree, root, _ = pcb._open_pcb_cst(str(board))
+        pcb._splice_fills(root, [{"uuid": uuid_, "layer": "F.Cu", "outlines": [[[0, 0], [1, 1]]]}])
+        assert b"filled_polygon" not in _cst.serialize(tree)
+
+    def test_an_unknown_uuid_touches_nothing(self, scratch_pcb):
+        board, _ = self._board_with_zone(scratch_pcb)
+        before = board.read_bytes()
+        tree, root, _ = pcb._open_pcb_cst(str(board))
+        n = pcb._splice_fills(
+            root,
+            [{"uuid": "no-such-zone", "layer": "F.Cu", "outlines": [[[0, 0], [1, 0], [1, 1]]]}],
+        )
+        assert n == 0
+        assert _cst.serialize(tree) == before
