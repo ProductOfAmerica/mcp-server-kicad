@@ -361,22 +361,83 @@ class TestFootprintWritersCst:
         r1 = next(f for f in pcb.list_pcb_footprints(p) if f.reference == "R1")
         assert (r1.x, r1.y, r1.layer) == (50.0, 50.0, "F.Cu")
 
-    def test_move_to_the_other_side_is_refused_with_the_file_intact(self, tmp_path):
-        """This test asserted the defect until 2026-08-14.
+    def test_moving_to_the_other_side_flips_it(self, tmp_path):
+        """The transform is measured, not derived.
 
-        It passed layer="B.Cu" to a front-side footprint and asserted the layer
-        atom had changed, which is exactly what the tool did and exactly what is
-        wrong: the pads stayed on F.Cu, F.Paste and F.Mask and the texts on
-        F.SilkS, so KiCad reads a bottom-side part with top-side copper and
-        kicad-cli loads it without complaint. The same shape as the 45-degree
-        rotation this suite blessed once before.
+        Probed on the macOS runner against a stock Resistor_SMD footprint
+        through pcbnew's own Flip(pos, FLIP_DIRECTION_LEFT_RIGHT). Before the
+        flip existed this tool rewrote the footprint's layer atom and nothing
+        else, so KiCad read a bottom-side part with top-side copper and
+        kicad-cli loaded it without complaint.
         """
         p = _write_board(tmp_path, _K10_BOARD)
+        pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
+        fp = _cst.parse(Path(p).read_bytes()).lists[0].find_all("footprint")[0]
+        assert fp.find("layer").atoms[1].text == "B.Cu"
+        # Nothing may be left on the front: that was the whole defect.
+        raw = _cst.serialize(fp).decode()
+        assert '"F.' not in raw, raw[:400]
+        # Measured: the footprint's own angle becomes (180 - angle) % 360.
+        assert [a.text for a in fp.find("at").atoms[1:]] == ["50", "50", "180"]
+
+    def test_flipping_twice_returns_the_footprint_to_where_it_started(self, tmp_path):
+        """The strongest check available without pcbnew: the transform is its
+        own inverse, so a double flip is the identity on layers and geometry."""
+        p = _write_board(tmp_path, _K10_BOARD)
+        fp0 = _cst.parse(Path(p).read_bytes()).lists[0].find_all("footprint")[0]
+        before = _cst.serialize(fp0)
+        pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
+        pcb.move_footprint("R1", 50, 50, layer="F.Cu", pcb_path=p)
+        fp1 = _cst.parse(Path(p).read_bytes()).lists[0].find_all("footprint")[0]
+        assert fp1.find("layer").atoms[1].text == "F.Cu"
+        # Angle returns: 180 - (180 - 0) == 0.
+        assert [a.text for a in fp1.find("at").atoms[1:]][:2] == ["50", "50"]
+        assert b'"B.' not in _cst.serialize(fp1)
+        assert b"justify" not in _cst.serialize(fp1) or b"justify" in before
+
+    def test_local_geometry_mirrors_in_y(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        fp0 = _cst.parse(Path(p).read_bytes()).lists[0].find_all("footprint")[0]
+        ys_before = [
+            t.find("at").atoms[2].text
+            for t in fp0.find_all("fp_text") + fp0.find_all("property")
+            if t.find("at") is not None
+        ]
+        pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
+        fp1 = _cst.parse(Path(p).read_bytes()).lists[0].find_all("footprint")[0]
+        ys_after = [
+            t.find("at").atoms[2].text
+            for t in fp1.find_all("fp_text") + fp1.find_all("property")
+            if t.find("at") is not None
+        ]
+        assert [float(v) for v in ys_after] == [-float(v) for v in ys_before]
+
+    def test_text_gains_a_mirrored_justification(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
+        fp = _cst.parse(Path(p).read_bytes()).lists[0].find_all("footprint")[0]
+        texts = [
+            t
+            for t in fp.find_all("fp_text") + fp.find_all("property")
+            if t.find("effects") is not None
+        ]
+        assert texts, "fixture carries no text with effects; the check is vacuous"
+        for t in texts:
+            just = t.find("effects").find("justify")
+            assert just is not None and "mirror" in [a.text for a in just.atoms[1:]]
+
+    def test_an_unmeasured_construct_is_refused_with_the_file_intact(self, tmp_path):
+        """A 3D model block's flip has not been measured, so mirroring
+        everything around it and leaving it alone is refused instead."""
+        p = _write_board(tmp_path, _K10_BOARD)
+        tree = _cst.parse(Path(p).read_bytes())
+        fp = tree.lists[0].find_all("footprint")[0]
+        fp.append_child(_cst.parse(b'(model "x.step")').lists[0], b"\n\t\t")
+        Path(p).write_bytes(_cst.serialize(tree))
         before = Path(p).read_bytes()
         with pytest.raises(ToolError) as exc:
             pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
-        assert "flip" in str(exc.value)
-        assert "Nothing was changed" in str(exc.value)
+        assert "model" in str(exc.value) and "Nothing was changed" in str(exc.value)
         assert Path(p).read_bytes() == before
 
     def test_move_k10_rotation_appends_atom(self, tmp_path):

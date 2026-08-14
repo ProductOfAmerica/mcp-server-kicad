@@ -874,8 +874,116 @@ def place_footprint(
     return f"Placed {reference} ({value}) at ({x}, {y}) on {layer}"
 
 
-def _require_same_side(fp, layer: str, reference: str) -> None:
-    """Refuse a side change dressed up as a layer change.
+#: Constructs whose flip has not been measured. A footprint carrying one is
+#: refused rather than half-transformed, which is the same call the invariant
+#: asks for everywhere else. Each needs its own measurement against KiCad's own
+#: Flip() before it can be handled here.
+_UNMEASURED_FOR_FLIP = ("primitives", "zone", "model")
+
+
+def _mirror_layer(name: str) -> str:
+    """F.x becomes B.x and back. Anything else is returned unchanged.
+
+    Measured against KiCad's own Flip(): F.Cu/F.Mask/F.Paste/F.SilkS/F.Fab/
+    F.CrtYd all cross to their B. counterparts. A `*.Cu` pad layer set spans
+    both sides already and must not be touched, and inner copper has no side.
+    """
+    if name.startswith("F."):
+        return "B." + name[2:]
+    if name.startswith("B."):
+        return "F." + name[2:]
+    return name
+
+
+def _flip_footprint_cst(fp) -> None:
+    """Mirror a footprint to the other side of the board, in place.
+
+    The transform is measured, not derived from the format documentation.
+    Probed on the macOS runner against a stock Resistor_SMD footprint through
+    pcbnew's own ``Flip(pos, FLIP_DIRECTION_LEFT_RIGHT)``, at 0 and 90 degrees:
+
+      footprint (layer)   F.Cu -> B.Cu
+      footprint (at)      position unchanged, angle becomes (180 - angle) % 360
+                          (0 -> 180, and 90 -> 90, which is why an earlier probe
+                          run at 90 degrees alone saw no change at all)
+      every layer token   F.x <-> B.x
+      every local Y       negated: pad at, graphic start/end/mid/center, pts,
+                          text at. X is untouched.
+      text effects        gain (justify mirror)
+
+    Local Y rather than X, with the footprint's own angle carrying the rest, is
+    what makes this a left-right flip in board space at any orientation.
+    """
+    layer_node = fp.find("layer")
+    layer_node.atoms[1].set_text(_mirror_layer(layer_node.atoms[1].text))
+
+    at = fp.find("at")
+    angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0.0
+    _fill_at(fp, float(at.atoms[1].text), float(at.atoms[2].text), (180.0 - angle) % 360.0)
+
+    def mirror_points(node) -> None:
+        """Negate the Y of every coordinate pair under *node*."""
+        for key in ("at", "start", "end", "mid", "center"):
+            child = node.find(key)
+            if child is not None and len(child.atoms) > 2:
+                child.atoms[2].set_text(_numish_text(-float(child.atoms[2].text)))
+        pts = node.find("pts")
+        if pts is not None:
+            for xy in pts.find_all("xy"):
+                xy.atoms[2].set_text(_numish_text(-float(xy.atoms[2].text)))
+
+    for child in fp.lists:
+        if child.head in ("at", "layer", "uuid", "tags", "descr", "attr", "property_ids"):
+            continue
+        # The footprint's own (at ...) is handled above; everything below is in
+        # the footprint's local frame.
+        if child.head != "property" or child.find("at") is not None:
+            mirror_points(child)
+        for lay in [child.find("layer")] + ([child.find("layers")] if child.find("layers") else []):
+            if lay is None:
+                continue
+            for atom in lay.atoms[1:]:
+                atom.set_text(_mirror_layer(atom.text))
+        if child.head in ("fp_text", "property"):
+            _toggle_mirror(child)
+
+
+def _toggle_mirror(node) -> None:
+    """Add or remove a text's mirrored justification.
+
+    A toggle rather than an add, because the flip has to be its own inverse:
+    flipping a footprint to the back and straight to the front again must leave
+    the file as it was, and an add-only version leaves every text carrying a
+    justification it did not have. Caught by the double-flip test, which is the
+    strongest check available without pcbnew on this machine.
+    """
+    effects = node.find("effects")
+    if effects is None:
+        return
+    justify = effects.find("justify")
+    if justify is None:
+        effects.append_child(_cst.parse(b"(justify mirror)").lists[0], b" ")
+        return
+    words = [a.text for a in justify.atoms[1:]]
+    words = [w for w in words if w != "mirror"] if "mirror" in words else [*words, "mirror"]
+    effects.remove_child(justify)
+    if words:
+        # Rebuilt rather than mutated: the CST exposes no atom-list edit, and a
+        # reparse keeps the node's own spacing rules.
+        rebuilt = _cst.parse(("(justify %s)" % " ".join(words)).encode()).lists[0]
+        effects.append_child(rebuilt, b" ")
+
+
+def _numish_text(value: float) -> str:
+    """A float in KiCad's own shape: no trailing zeros, no negative zero."""
+    if value == 0:
+        value = 0.0
+    text = ("%.6f" % value).rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _require_same_side(fp, layer: str, reference: str) -> bool:
+    """True when *layer* is the other side and the footprint can be flipped.
 
     Measured 2026-08-14 on this tool before the guard: asking for layer="B.Cu"
     on a front-side footprint rewrote the footprint's own (layer ...) atom and
@@ -884,25 +992,33 @@ def _require_same_side(fp, layer: str, reference: str) -> None:
     top. kicad-cli loads that file without complaint, and a board made from it
     would be wrong.
 
-    Moving a footprint to the other side is a flip: every pad, graphic and text
-    layer mirrors, the geometry mirrors with them, and text gains a mirrored
-    justification. That is a real transform, its surface is wide (arcs, polys,
-    custom pad primitives, embedded zones, 3D model blocks), and this tool has
-    never done it. So it is refused with the file intact, which is what the
-    invariant at the top of docs/adr-cst-substrate.md asks for, rather than
-    half-performed.
+    Moving a footprint to the other side is a flip, which _flip_footprint_cst
+    now performs against a transform measured from KiCad's own Flip(). What is
+    still refused is a footprint carrying a construct whose flip has not been
+    measured: custom pad primitives, an embedded zone, or a 3D model block.
+    Mirroring everything around one of those and leaving it untouched is worse
+    than not moving the footprint at all, so the file is left intact, which is
+    what the invariant at the top of docs/adr-cst-substrate.md asks for.
     """
     current = _fp_layer(fp)
     if current.split(".")[0] == layer.split(".")[0]:
-        return
-    raise ToolError(
-        f"{reference} is on {current}, and moving it to {layer} is a flip rather"
-        " than a layer change: every pad, graphic and text layer has to mirror"
-        " with it. This tool only moves and rotates, so it would leave the"
-        f" footprint marked {layer} with its copper still on {current}, which"
-        " KiCad loads without complaint and a fabricator would build wrong."
-        " Nothing was changed. Flip it in KiCad, or remove and re-place it."
+        return False
+    unmeasured = sorted(
+        {
+            head
+            for head in _UNMEASURED_FOR_FLIP
+            if fp.find(head) is not None or any(p.find(head) for p in fp.find_all("pad"))
+        }
     )
+    if unmeasured:
+        raise ToolError(
+            f"{reference} carries {', '.join(unmeasured)}, and how KiCad's own"
+            " flip transforms those has not been measured here. Moving it to"
+            f" {layer} would mirror everything else and leave those untouched,"
+            " which is worse than not moving it. Nothing was changed. Flip it"
+            " in KiCad instead."
+        )
+    return True
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -921,9 +1037,11 @@ def move_footprint(
         x: New X position
         y: New Y position
         rotation: New rotation (None = keep current)
-        layer: New layer. Only the side the footprint is already on is accepted;
-            moving a footprint to the other side of the board is a flip, not a
-            layer change, and this tool does not do it.
+        layer: New layer. Naming the other side flips the footprint: every pad,
+            graphic and text layer mirrors with it, the local geometry mirrors,
+            and text gains a mirrored justification, which is what KiCad's own
+            flip does. A footprint carrying a construct whose flip has not been
+            measured here is refused rather than half-transformed.
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
@@ -931,8 +1049,11 @@ def move_footprint(
         _resolve_layer_cst(root, layer, copper_only=True)
     _BOARD_CACHE.pop(key, None)
     fp = _find_fp_cst(root, reference)
-    if layer:
-        _require_same_side(fp, layer, reference)
+    flipping = _require_same_side(fp, layer, reference) if layer else False
+    if flipping:
+        # Mirror first, then place: the flip rewrites the footprint's own angle
+        # from the one it had, and _fill_at below applies the caller's.
+        _flip_footprint_cst(fp)
     _fill_at(fp, x, y, rotation)
     if layer:
         fp.find("layer").atoms[1].set_text(layer)
