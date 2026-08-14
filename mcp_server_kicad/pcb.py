@@ -1254,9 +1254,74 @@ def add_keepout_zone(
     )
 
 
+def _require_pcbnew_era(pcb_path: str) -> int:
+    """Refuse a board the running pcbnew cannot load. Returns its format version.
+
+    The same check autoroute_pcb makes, for the same reason and in the same
+    words. pcbnew 9's LoadBoard returns None on a KiCad 10 board, so the script
+    dies at the next attribute access and the caller gets roughly 700 characters
+    of wx image-handler chatter ending in "NoneType object has no attribute
+    Zones", naming no version anywhere. Measured: the file is byte-identical
+    afterward, so this is a diagnostics fix, not a safety one.
+
+    Parsed fresh rather than through _open_pcb_cst, because the subprocess
+    rewrites the file between this read and _format_upgrade_warning's.
+    """
+    board_version = _board_version(_cst.parse(_read_kicad_bytes(pcb_path, "board")).lists[0])
+    major = _pcbnew_major()
+    if major is not None and board_version > _NUMERIC_NET_VERSION_MAX and major < 10:
+        raise ToolError(
+            f"This board is in the KiCad 10 format (version {board_version}), which "
+            f"pcbnew {major} cannot load. Install KiCad 10, or point KICAD_PYTHON at "
+            "the Python of a KiCad 10 install."
+        )
+    return board_version
+
+
+def _format_upgrade_warning(pcb_path: str, before: int) -> list[str]:
+    """Report a format upgrade the pcbnew subprocess performed in place.
+
+    SaveBoard writes the running pcbnew's own format, so a board stamped below
+    it is upgraded with no undo. Measured on KiCad 9 against KiCad's own shipped
+    multichannel_mixer-unrouted: 20241030 -> 20241229, 114 footprint property
+    UUIDs dropped and user layers renamed, returning status ok and raising
+    nothing.
+
+    Measured rather than predicted, because it cannot be predicted. _pcbnew_major
+    reads pcbnew's major version, not the stamp it writes, and the numbers above
+    are both inside the KiCad 9 era, so no comparison of (major, board_version)
+    can see it. Reading the file afterward always can.
+
+    before == 0 means there was no file to compare, which is the create-if-missing
+    path of update_pcb_from_schematic.
+    """
+    # Before the read, not after: on the create-if-missing path there is no
+    # file to read yet and _read_kicad_bytes would refuse.
+    if not before:
+        return []
+    after = _board_version(_cst.parse(_read_kicad_bytes(pcb_path, "board")).lists[0])
+    if after <= before:
+        return []
+    msg = (
+        f"pcbnew rewrote this board from format version {before} to {after}. The "
+        "upgrade happened in place and has no undo: measured, it also drops "
+        "footprint property UUIDs and renames user layers. Restore from version "
+        "control if that was not wanted."
+    )
+    if before <= _NUMERIC_NET_VERSION_MAX < after:
+        msg += " A KiCad 9 install can no longer open this board."
+    return [msg]
+
+
 @mcp.tool(annotations=_ADDITIVE)
 def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
     """Fill all copper zones on the board using pcbnew's zone filler.
+
+    pcbnew does the writing, in place and with no undo, so this is one of the
+    few paths that does not go through the server's byte-preserving write. It
+    also saves in the running pcbnew's own format, so a board stamped below that
+    is upgraded as a side effect, and the result says so when it happens. Keep
+    the board in version control before running it.
 
     Requires KiCad's pcbnew Python bindings to be installed.
 
@@ -1268,6 +1333,9 @@ def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
     python, env = _find_pcbnew_python()
     if not python:
         raise ToolError("pcbnew Python bindings not found. Ensure KiCad is installed.")
+    # After the availability check, matching autoroute_pcb's ordering: whether
+    # pcbnew exists at all beats which era it is.
+    board_version = _require_pcbnew_era(pcb_path)
     script = (
         _wx_app_prelude() + "import pcbnew; "
         f"b = pcbnew.LoadBoard({pcb_path!r}); "
@@ -1286,7 +1354,11 @@ def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
         zone_count = int(result.stdout.strip())
     except ValueError:
         zone_count = 0
-    return FillZonesResult(zones_filled=zone_count, status="ok")
+    return FillZonesResult(
+        zones_filled=zone_count,
+        status="ok",
+        warnings=_format_upgrade_warning(pcb_path, board_version),
+    )
 
 
 def _netlist_lib_dirs(schematic_path: str, pcb_path: str) -> list[str]:
@@ -1330,6 +1402,12 @@ def update_pcb_from_schematic(
 
     Requires kicad-cli and KiCad's pcbnew Python bindings.
 
+    pcbnew does the writing, in place and with no undo, so this is one of
+    the few paths that does not go through the server's byte-preserving
+    write. It also saves in its own format era, so a board stamped below
+    that is upgraded as a side effect, and the result says so when it
+    happens. Keep the board in version control before running it.
+
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         pcb_path: Path to .kicad_pcb file (created if missing).
@@ -1356,6 +1434,13 @@ def update_pcb_from_schematic(
     # connectivity is included (same redirect run_erc does).
     sch_target = _resolve_root(schematic_path, project_path) or schematic_path
     pcb_file = str(Path(pcb_path).resolve())
+
+    # Conditional, because this tool creates the board when it is missing (see
+    # the note above _require_kicad_path). A board pcbnew is about to create is
+    # written in pcbnew's own era by definition, so there is nothing to check
+    # and nothing to compare against afterward. Before the netlist export, so a
+    # refusal costs no kicad-cli run.
+    board_version = _require_pcbnew_era(pcb_file) if Path(pcb_file).is_file() else 0
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         netlist_path = str(Path(tmp_dir) / "netlist.xml")
@@ -1393,6 +1478,10 @@ def update_pcb_from_schematic(
         summary = json.loads(lines[-1])
     except (IndexError, ValueError) as exc:
         raise ToolError(f"Netlist import produced no summary: {proc.stdout!r}") from exc
+    # Appended, not assigned: the importer reports its own warnings too.
+    summary["warnings"] = summary.get("warnings", []) + _format_upgrade_warning(
+        pcb_file, board_version
+    )
     return UpdatePcbResult(**summary)
 
 

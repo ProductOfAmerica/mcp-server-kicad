@@ -354,6 +354,7 @@ class KeepoutZoneResult(BaseModel):
 class FillZonesResult(BaseModel):
     zones_filled: int
     status: str
+    warnings: list[str] = Field(default_factory=list)
 
 
 class TraceWidthResult(BaseModel):

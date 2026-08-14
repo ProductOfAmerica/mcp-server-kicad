@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from conftest import _default_effects
+from conftest import _default_effects, build_test_footprint
 from kiutils.board import Board
 from kiutils.footprint import Footprint, Pad
 from kiutils.items.brditems import Segment, Via
@@ -1249,7 +1249,8 @@ class TestProjectFileEncoding:
         pcb.set_net_class(name="Power", nets=["Net1"], clearance=0.3, pcb_path=str(scratch_pcb))
         raw = pro.read_bytes()
         assert self.AUTHOR.encode("utf-8") in raw
-        assert b"\u00e9" not in raw
+        # Raw: the JSON escape sequence itself, not the character it denotes.
+        assert rb"\u00e9" not in raw
 
     def test_a_file_that_is_not_utf8_is_refused_not_traced(self, scratch_pcb):
         """UnicodeDecodeError is a ValueError, so it used to escape the except.
@@ -1262,3 +1263,137 @@ class TestProjectFileEncoding:
         pro.write_bytes(b'{"meta": {"filename": "x", "version": 1}, "n": "\xff\xfe not utf-8"}')
         with pytest.raises(ToolError, match="Failed to read project file"):
             pcb.set_net_class(name="Power", nets=["Net1"], clearance=0.3, pcb_path=str(scratch_pcb))
+
+
+def scratch_pcb_bytes_source(tmp_path: Path) -> Path:
+    """A freshly built board on disk, for tests that need a second one."""
+    from kiutils.board import Board
+    from kiutils.items.common import Net
+
+    b = Board.create_new()
+    b.generator = "pcbnew"
+    b.nets = [Net(number=0, name=""), Net(number=1, name="Net1")]
+    b.footprints.append(build_test_footprint())
+    out = tmp_path / "_source.kicad_pcb"
+    b.filePath = str(out)
+    b.to_file()
+    return out
+
+
+def _fill_seams(major):
+    """fill_zones' pcbnew seam plus the era probe, in _autoroute_seams' shape."""
+    return patch.multiple(
+        pcb,
+        _find_pcbnew_python=lambda: ("/usr/bin/python3", None),
+        _pcbnew_major=lambda: major,
+    )
+
+
+def _fake_fill(board: Path, zones: int = 1, upgrade: bool = False):
+    """Stand in for the fill subprocess, optionally bumping the version stamp
+    the way pcbnew's SaveBoard does."""
+
+    def run(argv, **kwargs):
+        if upgrade:
+            from test_cst_pcb import _bump_version
+
+            _bump_version(board)
+        return type("R", (), {"returncode": 0, "stdout": f"{zones}\n", "stderr": ""})()
+
+    return run
+
+
+class TestFillZonesPreflight:
+    """fill_zones writes the user's board in place, through pcbnew.
+
+    Two different hazards, handled two different ways because only one of them
+    is predictable. A KiCad 10 board on pcbnew 9 cannot load at all, and that is
+    knowable up front. The format upgrade is not: pcbnew reports its major
+    version, never the stamp it writes, and the corruption measured on KiCad 9
+    (20241030 -> 20241229 on KiCad's own shipped multichannel_mixer-unrouted,
+    dropping 114 footprint property UUIDs) is inside the KiCad 9 era on both
+    sides. No comparison of (major, board_version) can see it. Reading the file
+    afterward always can.
+    """
+
+    def test_k10_board_on_pcbnew9_is_refused_by_name(self, scratch_pcb):
+        from test_cst_pcb import _bump_version
+
+        board = _bump_version(scratch_pcb)
+        spawned = MagicMock()
+        with _fill_seams(9), patch("subprocess.run", spawned):
+            with pytest.raises(ToolError) as exc:
+                pcb.fill_zones(pcb_path=board)
+        assert "20260206" in str(exc.value)
+        assert "pcbnew 9" in str(exc.value)
+        assert "KICAD_PYTHON" in str(exc.value)
+        # Refused before anything was spawned, which is the point: today this
+        # reaches pcbnew and comes back as a NoneType AttributeError.
+        spawned.assert_not_called()
+
+    def test_a_silent_format_upgrade_is_reported(self, scratch_pcb):
+        with _fill_seams(9), patch("subprocess.run", _fake_fill(scratch_pcb, upgrade=True)):
+            result = pcb.fill_zones(pcb_path=str(scratch_pcb))
+        assert result.status == "ok"
+        assert len(result.warnings) == 1
+        note = result.warnings[0]
+        assert "20211014" in note and "20260206" in note
+        assert "version control" in note
+        assert "KiCad 9 install can no longer open" in note
+
+    def test_quiet_when_the_stamp_holds(self, scratch_pcb):
+        """Guards against a guard that always fires."""
+        with _fill_seams(9), patch("subprocess.run", _fake_fill(scratch_pcb)):
+            result = pcb.fill_zones(pcb_path=str(scratch_pcb))
+        assert result.warnings == []
+
+    def test_an_unknown_major_proceeds(self, scratch_pcb):
+        """No answer from the probe means no opinion, as pcbnew_major documents."""
+        from test_cst_pcb import _bump_version
+
+        board = _bump_version(scratch_pcb)
+        with _fill_seams(None), patch("subprocess.run", _fake_fill(Path(board))):
+            assert pcb.fill_zones(pcb_path=board).status == "ok"
+
+
+class TestUpdatePcbPreflight:
+    """Same two hazards as fill_zones, plus one this tool has and that does not.
+
+    update_pcb_from_schematic creates the board when it is missing, which is its
+    documented first use and what the whole E2E suite starts from. Both checks
+    are therefore conditional on the file existing. The first version of this
+    got that wrong in a way the mocked tests caught immediately: the warning
+    helper read the board before testing whether there was one to read.
+    """
+
+    def test_k10_board_on_pcbnew9_is_refused_before_kicad_cli_runs(self, scratch_sch, tmp_path):
+        from test_cst_pcb import _bump_version
+
+        board = tmp_path / "b.kicad_pcb"
+        shutil.copy(scratch_pcb_bytes_source(tmp_path), board)
+        _bump_version(board)
+        cli = MagicMock()
+        with (
+            # The interpreter probe too: the plain CI matrix installs no KiCad,
+            # so without this the tool refuses for the earlier reason and the
+            # test asserts nothing. It passed locally, where KiCad exists.
+            patch.object(pcb, "_find_pcbnew_python", lambda: ("/usr/bin/python3", None)),
+            patch.object(pcb, "_pcbnew_major", lambda: 9),
+            patch.object(pcb, "_run_cli", cli),
+        ):
+            with pytest.raises(ToolError) as exc:
+                pcb.update_pcb_from_schematic(schematic_path=str(scratch_sch), pcb_path=str(board))
+        assert "20260206" in str(exc.value) and "pcbnew 9" in str(exc.value)
+        # The refusal beats the netlist export, so no kicad-cli process ran.
+        cli.assert_not_called()
+
+    def test_a_board_that_does_not_exist_yet_skips_both_checks(self, scratch_sch, tmp_path):
+        """The create-if-missing path. This is the one my first attempt broke."""
+        missing = tmp_path / "not-yet.kicad_pcb"
+        with patch.object(pcb, "_pcbnew_major", lambda: 9):
+            # Reaching the pcbnew probe means neither check refused or read.
+            with patch.object(pcb, "_find_pcbnew_python", lambda: (None, None)):
+                with pytest.raises(ToolError, match="pcbnew Python bindings not found"):
+                    pcb.update_pcb_from_schematic(
+                        schematic_path=str(scratch_sch), pcb_path=str(missing)
+                    )
