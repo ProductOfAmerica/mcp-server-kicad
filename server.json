@@ -3,7 +3,7 @@
   "name": "io.github.ProductOfAmerica/mcp-server-kicad",
   "title": "KiCad",
   "description": "Byte-preserving KiCad automation: 100+ tools for schematics, PCB layout, ERC, DRC, exports",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "websiteUrl": "https://github.com/ProductOfAmerica/mcp-server-kicad",
   "repository": {
     "url": "https://github.com/ProductOfAmerica/mcp-server-kicad",
@@ -14,7 +14,7 @@
     {
       "registryType": "pypi",
       "identifier": "mcp-server-kicad",
-      "version": "0.18.0",
+      "version": "0.19.0",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
