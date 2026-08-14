@@ -340,9 +340,32 @@ class TestUpdatePcbE2E:
         )
         add_thermal_vias("R1", pad_number="2", rows=2, cols=2, pcb_path=pcb_path)
 
+        before = Path(pcb_path).read_bytes()
         result = fill_zones(pcb_path=pcb_path)
         assert result.status == "ok"
-        assert result.zones_filled == 2
+        # One copper zone, not two. The keepout added above is a rule area and
+        # never fills; the old count was "zones handed to the filler", which
+        # included it. This counts zones that actually received copper.
+        assert result.zones_filled == 1
+
+        # The point of the splice: pcbnew computed the fill, this server wrote
+        # it, and everything outside the zones is the caller's own bytes.
+        after = Path(pcb_path).read_bytes()
+        assert b"filled_polygon" in after and b"filled_polygon" not in before
+        import mcp_server_kicad._cst as _cst_mod
+
+        def _without_zones(raw: bytes) -> bytes:
+            tree = _cst_mod.parse(raw)
+            root = tree.lists[0]
+            return b"".join(_cst_mod.serialize(c) for c in root.lists if c.head != "zone")
+
+        assert _without_zones(after) == _without_zones(before), (
+            "filling zones changed something outside a zone"
+        )
+        # And the format stamp is the caller's, because pcbnew never saved.
+        v_before = _cst_mod.parse(before).lists[0].find("version").atoms[1].text
+        v_after = _cst_mod.parse(after).lists[0].find("version").atoms[1].text
+        assert v_after == v_before
 
         zones = list_pcb_zones(pcb_path=pcb_path)
         assert any(z.net_name == "/GND" and not z.is_keepout for z in zones)

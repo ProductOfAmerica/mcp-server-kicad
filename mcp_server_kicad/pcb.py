@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -1327,11 +1328,11 @@ def _format_upgrade_warning(pcb_path: str, before: int) -> list[str]:
 def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
     """Fill all copper zones on the board using pcbnew's zone filler.
 
-    pcbnew does the writing, in place and with no undo, so this is one of the
-    few paths that does not go through the server's byte-preserving write. It
-    also saves in the running pcbnew's own format, so a board stamped below that
-    is upgraded as a side effect, and the result says so when it happens. Keep
-    the board in version control before running it.
+    pcbnew computes the fill; this server writes it. The board is handed to
+    pcbnew read-only and the computed polygons come back as data, so the file
+    that reaches the disk is the original with its zones' fills replaced and
+    every other byte untouched. Nothing else about it changes: not its format
+    version, not its layer names, not the constructs pcbnew does not model.
 
     Requires KiCad's pcbnew Python bindings to be installed.
 
@@ -1345,30 +1346,35 @@ def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
         raise ToolError("pcbnew Python bindings not found. Ensure KiCad is installed.")
     # After the availability check, matching autoroute_pcb's ordering: whether
     # pcbnew exists at all beats which era it is.
-    board_version = _require_pcbnew_era(pcb_path)
-    script = (
-        _wx_app_prelude() + "import pcbnew; "
-        f"b = pcbnew.LoadBoard({pcb_path!r}); "
-        "filler = pcbnew.ZONE_FILLER(b); "
-        "zones = b.Zones(); "
-        "filler.Fill(zones); "
-        f"pcbnew.SaveBoard({pcb_path!r}, b); "
-        "print(len(zones))"
-    )
+    _require_pcbnew_era(pcb_path)
+
+    digest_before = hashlib.sha256(_read_kicad_bytes(pcb_path, "board")).hexdigest()
     result = subprocess.run(
-        [python, "-c", script], capture_output=True, text=True, timeout=120, env=env
+        [python, "-c", _wx_app_prelude() + _FILL_DUMP.format(path=pcb_path)],
+        capture_output=True,
+        text=True,
+        timeout=300,
+        env=env,
     )
     if result.returncode != 0:
-        raise ToolError(f"Zone fill failed: {result.stderr.strip()}")
-    try:
-        zone_count = int(result.stdout.strip())
-    except ValueError:
-        zone_count = 0
-    return FillZonesResult(
-        zones_filled=zone_count,
-        status="ok",
-        warnings=_format_upgrade_warning(pcb_path, board_version),
-    )
+        raise ToolError(f"Zone fill failed: {result.stderr.strip()[:400]}")
+    line = next((ln for ln in result.stdout.splitlines() if ln.startswith("FILLDUMP")), None)
+    if line is None:
+        raise ToolError(f"Zone fill produced no polygons: {result.stdout[:300]!r}")
+    dumps = json.loads(line[len("FILLDUMP") :])
+
+    # The subprocess only read, but it took time, and a board that changed under
+    # us would get another run's copper. Refuse rather than write it.
+    tree, root, key = _open_pcb_cst(pcb_path)
+    if hashlib.sha256(_cst.serialize(tree)).hexdigest() != digest_before:
+        raise ToolError(
+            "The board changed while its zones were being filled. Nothing was"
+            " written; run fill_zones again."
+        )
+    _BOARD_CACHE.pop(key, None)
+    filled = _splice_fills(root, dumps)
+    _atomic_write(pcb_path, _cst.serialize(tree))
+    return FillZonesResult(zones_filled=filled, status="ok")
 
 
 def _netlist_lib_dirs(schematic_path: str, pcb_path: str) -> list[str]:
@@ -1861,6 +1867,107 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
         _atomic_write(key, _cst.serialize(tree))
 
     return DanglingTracksResult(tracks_removed=total_removed, iterations=iterations)
+
+
+# ---------------------------------------------------------------------------
+# Zone fill: pcbnew computes, the CST writes
+# ---------------------------------------------------------------------------
+
+#: KiCad packs (xy ...) runs up to this column before wrapping. Matches
+#: io_utils.cpp's xySpecialCaseColumnLimit and its own shipped boards.
+_XY_COLUMN_LIMIT = 99
+
+
+def _mm(nm: int) -> str:
+    """Nanometres to the millimetre string KiCad writes.
+
+    Trailing zeros are stripped. Measured across 4000 coordinates of KiCad's own
+    ecc83-pp: it emits 1 to 6 decimal places and never a padded six.
+    """
+    text = ("%.6f" % (nm / 1e6)).rstrip("0").rstrip(".")
+    return text or "0"
+
+
+def _filled_polygon_bytes(layer: str, outline: list) -> bytes:
+    """One (filled_polygon ...) node in KiCad's own shape.
+
+    Harvested rather than invented, per the rule in CLAUDE.md. Measured on the
+    shipped demos: one node per outline per layer (a zone on interf_u carries
+    23, all on B.Cu), a single (pts ...) child, and (xy ...) tokens packed to a
+    column limit rather than one per line.
+    """
+    indent = b"\t\t\t\t"
+    head = b'\n\t\t(filled_polygon\n\t\t\t(layer "' + layer.encode() + b'")\n\t\t\t(pts'
+    lines: list[bytes] = []
+    cur = indent
+    for x, y in outline:
+        tok = ("(xy %s %s)" % (_mm(x), _mm(y))).encode()
+        if cur != indent and len(cur) + 1 + len(tok) > _XY_COLUMN_LIMIT:
+            lines.append(cur)
+            cur = indent + tok
+        else:
+            cur = cur + (b" " if cur != indent else b"") + tok
+    lines.append(cur)
+    return head + b"\n" + b"\n".join(lines) + b"\n\t\t\t)\n\t\t)"
+
+
+def _splice_fills(root, dumps: list[dict]) -> int:
+    """Replace each zone's computed fill with *dumps*. Returns zones touched.
+
+    Replacement, not insertion: a zone filled before carries filled_polygon
+    children from last time, and appending would double its copper. Keyed on the
+    zone uuid, which survives the round trip (measured on both CI majors: 1 of 1
+    on every board carrying a zone).
+    """
+    by_uuid: dict[str, list[dict]] = {}
+    for d in dumps:
+        by_uuid.setdefault(d["uuid"], []).append(d)
+    touched = 0
+    for zone in root.find_all("zone"):
+        uuid_node = zone.find("uuid")
+        if uuid_node is None:
+            continue
+        entries = by_uuid.get(uuid_node.atoms[1].text)
+        if entries is None:
+            continue
+        for stale in zone.find_all("filled_polygon"):
+            zone.remove_child(stale)
+        for entry in entries:
+            for outline in entry["outlines"]:
+                if len(outline) < 3:
+                    continue
+                node = _cst.parse(_filled_polygon_bytes(entry["layer"], outline)).lists[0]
+                zone.append_child(node, b"\n\t\t")
+        touched += 1
+    return touched
+
+
+#: Runs inside KiCad's own interpreter. Fills in memory and prints the result;
+#: it never calls SaveBoard, which is the entire point. pcbnew computes, and the
+#: byte-preserving substrate writes.
+_FILL_DUMP = (
+    "import json, pcbnew\n"
+    "b = pcbnew.LoadBoard({path!r})\n"
+    "zones = b.Zones()\n"
+    "pcbnew.ZONE_FILLER(b).Fill(zones)\n"
+    "out = []\n"
+    "for z in zones:\n"
+    "    if z.GetIsRuleArea():\n"
+    "        continue\n"
+    "    for lay in z.GetLayerSet().Seq():\n"
+    # HasFilledPolysForLayer first: GetFilledPolysList asserts and kills the
+    # process on a layer it holds no fill for. Measured on the KiCad 10 runner.
+    "        if not z.HasFilledPolysForLayer(lay):\n"
+    "            continue\n"
+    "        ps = z.GetFilledPolysList(lay)\n"
+    "        outlines = []\n"
+    "        for i in range(ps.OutlineCount()):\n"
+    "            o = ps.Outline(i)\n"
+    "            outlines.append([[o.CPoint(k).x, o.CPoint(k).y] for k in range(o.PointCount())])\n"
+    "        out.append({{'uuid': z.m_Uuid.AsString(), 'layer': b.GetLayerName(lay),\n"
+    "                    'outlines': outlines}})\n"
+    "print('FILLDUMP' + json.dumps(out))\n"
+)
 
 
 # ---------------------------------------------------------------------------
