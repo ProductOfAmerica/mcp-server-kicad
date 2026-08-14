@@ -529,12 +529,22 @@ def _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max) -> l
 # "(connect_pads yes ...)" (measured locally via pcbnew 9, kiutils' "full" is
 # wrong); the KiCad 10 dialect (slice-14 probe) drops net_name and
 # filled_areas_thickness and uses name-only (net "NAME").
+#
+# The bare "yes" after (fill is the pour-enabled flag, and this template omitted
+# it until 2026-08-14. All 20 boards KiCad ships write "(fill yes ...)"; ours
+# wrote "(fill (thermal_gap ...) ...)", which is the same shape KiCad writes for
+# a zone whose pour is switched off. What that costs is NOT established: taking
+# KiCad's own ecc83-pp and stripping the yes changed the exported F.Cu gerber by
+# 2 bytes, because the plot path reads stored filled_polygon data and never
+# consults the flag. Whether ZONE_FILLER and the GUI honour it is unmeasured;
+# the direct probe crashed pcbnew on the Windows box. Fixed regardless, because
+# this repo's rule is that emitted constructs match KiCad's own output.
 _COPPER_ZONE_TPL = _cst.parse(
     b'(zone\n\t\t(net 0)\n\t\t(net_name "x")\n\t\t(layer "F.Cu")\n\t\t(uuid "x")'
     b"\n\t\t(hatch edge 0.5)\n\t\t(priority 0)"
     b"\n\t\t(connect_pads\n\t\t\t(clearance 0.5)\n\t\t)"
     b"\n\t\t(min_thickness 0.25)\n\t\t(filled_areas_thickness no)"
-    b"\n\t\t(fill\n\t\t\t(thermal_gap 0.5)\n\t\t\t(thermal_bridge_width 0.5)\n\t\t)"
+    b"\n\t\t(fill yes\n\t\t\t(thermal_gap 0.5)\n\t\t\t(thermal_bridge_width 0.5)\n\t\t)"
     b"\n\t\t(polygon\n\t\t\t(pts\n\t\t\t\t(xy 0 0)\n\t\t\t)\n\t\t)\n\t)"
 ).lists[0]
 
