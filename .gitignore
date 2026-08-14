@@ -15,3 +15,5 @@ bash.exe.stackdump
 .claude/worktrees
 mcpb/uv.lock
 bundle/
+# Scratch gerber output from local probes; never repo content.
+gout*/
