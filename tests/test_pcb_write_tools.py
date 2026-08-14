@@ -1373,7 +1373,14 @@ class TestUpdatePcbPreflight:
         shutil.copy(scratch_pcb_bytes_source(tmp_path), board)
         _bump_version(board)
         cli = MagicMock()
-        with patch.object(pcb, "_pcbnew_major", lambda: 9), patch.object(pcb, "_run_cli", cli):
+        with (
+            # The interpreter probe too: the plain CI matrix installs no KiCad,
+            # so without this the tool refuses for the earlier reason and the
+            # test asserts nothing. It passed locally, where KiCad exists.
+            patch.object(pcb, "_find_pcbnew_python", lambda: ("/usr/bin/python3", None)),
+            patch.object(pcb, "_pcbnew_major", lambda: 9),
+            patch.object(pcb, "_run_cli", cli),
+        ):
             with pytest.raises(ToolError) as exc:
                 pcb.update_pcb_from_schematic(schematic_path=str(scratch_sch), pcb_path=str(board))
         assert "20260206" in str(exc.value) and "pcbnew 9" in str(exc.value)
