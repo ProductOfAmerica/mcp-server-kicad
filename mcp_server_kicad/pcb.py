@@ -2292,7 +2292,7 @@ _AUTOROUTE = ToolAnnotations(read_only_hint=False, open_world_hint=True)
 def autoroute_pcb(
     pcb_path: str = PCB_PATH,
     max_passes: int = 20,
-    num_threads: int = 4,
+    num_threads: int = 1,
     timeout: int = 600,
     output_dir: str = OUTPUT_DIR,
 ) -> AutorouteResult:
@@ -2309,7 +2309,10 @@ def autoroute_pcb(
     Args:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
         max_passes: Maximum autorouter optimization passes
-        num_threads: Thread count for routing
+        num_threads: Thread count for routing. Defaults to 1 because
+            freerouting prints "Multi-threaded route optimization is broken
+            and it is known to generate clearance violations" on every run.
+            Raise it only if you are willing to DRC the result carefully.
         timeout: Max seconds to wait for routing (default: 600)
         output_dir: Directory for output files (default: same as PCB).
             Optional; omit to use the configured default.
@@ -2318,12 +2321,9 @@ def autoroute_pcb(
     # Resolve to absolute path for subprocess calls
     pcb_path = str(Path(pcb_path).resolve())
 
-    # Pre-flight: check Java
-    java_err = _check_java()
-    if java_err:
-        raise ToolError(java_err)
-
-    # Pre-flight: ensure Freerouting JAR
+    # Pre-flight: the JAR first, because it is what says which Java it needs.
+    # The reverse order asserted a constant 17 while _download_jar fetches
+    # whatever release is current, and the current one needs 25.
     jar_path, jar_err = _ensure_jar()
     if jar_err or not jar_path:
         raise ToolError(
@@ -2331,6 +2331,11 @@ def autoroute_pcb(
             or "Freerouting JAR not found. Set FREEROUTING_JAR to a local"
             " freerouting.jar, or allow the automatic download."
         )
+
+    # Pre-flight: a Java new enough for that JAR specifically.
+    java_err = _check_java(jar_path)
+    if java_err:
+        raise ToolError(java_err)
 
     # Count existing traces/vias for before/after comparison
     traces_before, vias_before, board_version = _trace_counts(pcb_path)

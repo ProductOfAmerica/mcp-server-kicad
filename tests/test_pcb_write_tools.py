@@ -121,7 +121,7 @@ class TestAutoroutePcb:
         def mock_ensure_jar():
             return "/fake/freerouting.jar", None
 
-        def mock_check_java():
+        def mock_check_java(jar_path=None):
             return None
 
         def mock_run_freerouting(**kwargs):
@@ -181,7 +181,7 @@ class TestAutoroutePcb:
         def mock_ensure_jar():
             return "/fake/freerouting.jar", None
 
-        def mock_check_java():
+        def mock_check_java(jar_path=None):
             return None
 
         def mock_run_freerouting(**kwargs):
@@ -256,7 +256,7 @@ class TestAutoroutePcb:
             return None
 
         with (
-            patch("mcp_server_kicad.pcb._check_java", lambda: None),
+            patch("mcp_server_kicad.pcb._check_java", lambda jar_path=None: None),
             patch("mcp_server_kicad.pcb._ensure_jar", lambda: ("/fake/freerouting.jar", None)),
             patch("mcp_server_kicad.pcb._export_dsn", mock_export_dsn),
             patch("mcp_server_kicad.pcb._run_freerouting", mock_run_freerouting),
@@ -291,7 +291,7 @@ def _autoroute_seams(major, export_dsn=None):
 
     return patch.multiple(
         pcb,
-        _check_java=lambda: None,
+        _check_java=lambda jar_path=None: None,
         _ensure_jar=lambda: ("/fake/freerouting.jar", None),
         _export_dsn=export_dsn or touch_dsn,
         _run_freerouting=touch_ses,

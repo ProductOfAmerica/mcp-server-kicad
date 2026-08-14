@@ -22,6 +22,7 @@ from mcp_server_kicad._freerouting import (
     find_jar,
     find_pcbnew_python,
     import_ses,
+    jar_java_requirement,
     pcbnew_major,
     run_freerouting,
 )
@@ -643,3 +644,91 @@ class TestPromoteFootprintKeepouts:
         assert zone.find("net") is None
         assert zone.find("net_name") is None
         assert zone.find("keepout") is not None
+
+
+class TestJarJavaRequirement:
+    """The Java floor has to come from the jar, because the jar floats.
+
+    _download_jar fetches releases/latest with no pin and no record of what it
+    got, so a literal minimum in check_java cannot stay right. Measured
+    2026-08-14 on the cached freerouting.jar (build 2026-08-07): its class files
+    are major 69, which is Java 25, against a check that accepted anything from
+    17 up. Every machine between the two passed the preflight and then died
+    inside the router, with the preflight's blessing.
+    """
+
+    @staticmethod
+    def _jar(tmp_path, major: int, *, mr_major: int | None = None):
+        """A jar carrying one class file at *major*, optionally with a
+        higher-versioned multi-release copy that must be ignored."""
+        import struct
+        import zipfile
+
+        def klass(m: int) -> bytes:
+            return b"\xca\xfe\xba\xbe" + struct.pack(">HH", 0, m) + b"\x00" * 8
+
+        p = tmp_path / "fake.jar"
+        with zipfile.ZipFile(p, "w") as zf:
+            zf.writestr("app/Main.class", klass(major))
+            if mr_major is not None:
+                zf.writestr(f"META-INF/versions/{mr_major - 44}/app/Main.class", klass(mr_major))
+        return str(p)
+
+    def test_reads_the_major_from_the_class_files(self, tmp_path):
+        assert jar_java_requirement(self._jar(tmp_path, 69)) == 25
+        assert jar_java_requirement(self._jar(tmp_path, 61)) == 17
+
+    def test_a_multi_release_copy_does_not_raise_the_floor(self, tmp_path):
+        """Requiring the highest would refuse a Java the jar runs on fine."""
+        assert jar_java_requirement(self._jar(tmp_path, 61, mr_major=69)) == 17
+
+    def test_an_unreadable_jar_is_unknown_not_fatal(self, tmp_path):
+        bad = tmp_path / "not.jar"
+        bad.write_bytes(b"this is not a zip")
+        assert jar_java_requirement(str(bad)) is None
+        assert jar_java_requirement(str(tmp_path / "absent.jar")) is None
+
+    def test_the_real_cached_jar_if_present(self):
+        """Not a fixture: the actual artifact the tool would run."""
+        from mcp_server_kicad._freerouting import find_jar
+
+        jar = find_jar()
+        if jar is None:
+            pytest.skip("no freerouting jar cached on this machine")
+        need = jar_java_requirement(jar)
+        assert need is not None and need >= 17, need
+
+
+class TestCheckJavaAgainstTheJar:
+    def _java(self, version: str):
+        return patch(
+            "subprocess.run",
+            return_value=subprocess.CompletedProcess(
+                args=[], returncode=0, stdout="", stderr=f'openjdk version "{version}" 2026-01-01\n'
+            ),
+        )
+
+    def test_java17_is_refused_for_a_java25_jar(self, tmp_path):
+        jar = TestJarJavaRequirement._jar(tmp_path, 69)
+        with self._java("17.0.9"):
+            msg = check_java(jar)
+        assert msg and "17" in msg and "25" in msg
+        # The remedy must not be Debian-only; this server ships on three OSes.
+        assert "adoptium" in msg
+
+    def test_java25_passes_the_same_jar(self, tmp_path):
+        jar = TestJarJavaRequirement._jar(tmp_path, 69)
+        with self._java("25.0.1"):
+            assert check_java(jar) is None
+
+    def test_no_jar_falls_back_to_the_floor(self):
+        with self._java("17.0.9"):
+            assert check_java() is None
+        with self._java("11.0.2"):
+            assert check_java() is not None
+
+    def test_a_wedged_java_is_reported_not_raised(self):
+        """TimeoutExpired was uncaught, so it propagated as a raw exception."""
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("java", 10)):
+            msg = check_java()
+        assert msg and "did not answer" in msg
