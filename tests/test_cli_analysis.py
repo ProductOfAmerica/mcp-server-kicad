@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from conftest import requires_cli
 
-from mcp_server_kicad import pcb, schematic
+from mcp_server_kicad import _cst, pcb, schematic
 
 
 @requires_cli
@@ -126,3 +126,100 @@ class TestSymLibTableNote:
             assert str(found) in note, "a template that exists must be named"
         else:
             assert "ships one at" not in note, "no path may be named when none was found"
+
+
+_FILLED_POLYGON = (
+    '(filled_polygon (layer "F.Cu") (pts (xy 12 12) (xy 38 12) (xy 38 38) (xy 12 38)))'
+)
+
+
+def _fill_zone(board: Path) -> Path:
+    """Splice a computed fill into the board's copper zone.
+
+    The conftest builders make zone outlines and nothing else, and the only
+    genuinely filled boards in the suite come from real pcbnew under
+    requires_e2e. Same trick _bump_version uses, for the same reason: the test
+    needs one construct present, not a second board builder.
+
+    Through the CST rather than a regex, because the fixture carries a keepout
+    zone as well and its outline comes first in the file: a text splice on the
+    first "(polygon" filled the rule area and left the copper zone exactly as
+    unfilled as before, so the test passed for the wrong reason.
+    """
+    tree = _cst.parse(board.read_bytes())
+    root = tree.lists[0]
+    copper = next(z for z in root.find_all("zone") if z.find("keepout") is None)
+    copper.append_child(_cst.parse(_FILLED_POLYGON.encode()).lists[0], b"\n\t\t")
+    board.write_bytes(_cst.serialize(tree))
+    return board
+
+
+class TestUnfilledZoneNote:
+    """A copper zone stores its outline and its copper separately, and only the
+    copper plots. kicad-cli plots what is stored and never refills, so an
+    unfilled zone ships nothing at all, quietly.
+
+    Measured on KiCad's own ecc83-pp: the F.Cu gerber is 54,448 bytes with the
+    fills and 6,378 with only the (filled_polygon) stripped, both at exit 0 with
+    empty stderr. KiCad's GUI warns about stale fills. The CLI does not, and the
+    string filled_polygon appeared nowhere in this repo before now.
+    """
+
+    def _board(self, tmp_path, **kw):
+        from test_pcb_read_tools import _make_keepout_board
+
+        return _make_keepout_board(tmp_path, **kw)
+
+    def test_a_board_with_no_zones_is_quiet(self, scratch_pcb):
+        assert pcb._unfilled_zone_note(str(scratch_pcb)) is None
+
+    def test_a_keepout_is_not_a_copper_zone(self, tmp_path):
+        """The exclusion most likely to break silently: rule areas never fill."""
+        board = self._board(tmp_path)
+        assert pcb._unfilled_zone_note(str(board)) is None
+
+    def test_an_unfilled_copper_zone_is_reported(self, tmp_path):
+        board = self._board(tmp_path, with_copper_zone=True)
+        note = pcb._unfilled_zone_note(str(board))
+        assert note is not None
+        assert "1 copper zone has" in note
+        assert "fill_zones" in note
+
+    def test_a_filled_zone_is_quiet(self, tmp_path):
+        """Load-bearing. Without it, "warn if any zone exists" passes every
+        other case in this class."""
+        board = _fill_zone(self._board(tmp_path, with_copper_zone=True))
+        assert pcb._unfilled_zone_note(str(board)) is None
+
+    def test_two_unfilled_zones_pluralise(self, tmp_path):
+        board = self._board(tmp_path, with_copper_zone=True)
+        pcb.add_copper_zone(
+            net_name="Net1",
+            layer="B.Cu",
+            corners=[{"x": 5, "y": 5}, {"x": 9, "y": 5}, {"x": 9, "y": 9}],
+            pcb_path=str(board),
+        )
+        note = pcb._unfilled_zone_note(str(board))
+        assert note is not None and "2 copper zones have" in note
+
+    def test_the_drc_message_names_the_phantom_errors(self, tmp_path):
+        """Different harm: the exports lose copper, DRC invents errors."""
+        board = self._board(tmp_path, with_copper_zone=True)
+        note = pcb._unfilled_zone_note(
+            str(board), "DRC reads the stored fill, so it reports connectivity errors."
+        )
+        assert note is not None and "connectivity errors" in note
+        assert "no copper" not in note
+
+    def test_an_unparseable_board_is_silent_not_fatal(self, tmp_path):
+        """Advisory: it must never become a failure mode of its own."""
+        bad = tmp_path / "not-a-board.kicad_pcb"
+        bad.write_bytes(b"(kicad_sch (version 1))")
+        assert pcb._unfilled_zone_note(str(bad)) is None
+
+    @requires_cli
+    def test_export_gerbers_carries_it(self, tmp_path):
+        """One wire-through, proving it reaches the model, rather than six."""
+        board = self._board(tmp_path, with_copper_zone=True)
+        result = pcb.export_gerbers(pcb_path=str(board), output_dir=str(tmp_path / "g"))
+        assert result.note is not None and "fill_zones" in result.note

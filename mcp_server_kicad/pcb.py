@@ -1857,6 +1857,43 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
 # CLI analysis tools (1)
 # ---------------------------------------------------------------------------
 
+_NO_COPPER = "They contribute no copper to this output."
+
+
+def _unfilled_zone_note(pcb_path: str, consequence: str = _NO_COPPER) -> str | None:
+    """Advisory when copper zones carry no computed fill, else None.
+
+    A zone stores its outline and its copper separately: the (polygon ...) child
+    is the boundary someone drew, the (filled_polygon ...) children are what
+    pcbnew's filler produced, and only the second plots. kicad-cli plots what is
+    stored and never refills, so an unfilled zone ships nothing at all, quietly.
+    Measured on KiCad's own ecc83-pp: the F.Cu gerber is 54,448 bytes with the
+    fills and 6,378 without, at exit 0 with empty stderr. KiCad's GUI warns about
+    stale fills; the CLI does not, and neither did we.
+
+    Keyed on filled_polygon presence and nothing else. The (fill yes ...) flag
+    is deliberately not consulted: it means "pour enabled", not "poured", and the
+    question here is only whether copper will appear in the output.
+
+    Advisory, so it never becomes a failure mode of its own: an unparseable board
+    answers None and the export's own error stays the authority.
+    """
+    try:
+        _, root, _ = _open_pcb_cst(pcb_path)
+    except ToolError:
+        return None
+    # find_all is direct children, so footprint-level keepouts are already out of
+    # scope; board-level rule areas are skipped explicitly.
+    unfilled = sum(
+        1
+        for z in root.find_all("zone")
+        if z.find("keepout") is None and not z.find_all("filled_polygon")
+    )
+    if not unfilled:
+        return None
+    plural = "s have" if unfilled > 1 else " has"
+    return f"{unfilled} copper zone{plural} no computed fill. {consequence} Run fill_zones first."
+
 
 @mcp.tool(annotations=_EXPORT)
 def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> DrcResult:
@@ -1890,6 +1927,11 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> DrcResult
         violations=violations,
         unconnected_count=len(unconnected),
         unconnected_items=unconnected,
+        note=_unfilled_zone_note(
+            pcb_path,
+            "DRC reads the stored fill, so it reports connectivity errors the "
+            "design does not have.",
+        ),
     )
 
 
@@ -1956,7 +1998,11 @@ def export_pcb(
             raise ToolError(result.stderr.strip())
         meta = _file_meta(out_path)
         return PcbExportResult(
-            path=meta["path"], size_bytes=meta["size_bytes"], format="dxf", layers=layers
+            path=meta["path"],
+            size_bytes=meta["size_bytes"],
+            format="dxf",
+            layers=layers,
+            note=_unfilled_zone_note(pcb_path),
         )
 
     # PDF / SVG path
@@ -1981,7 +2027,11 @@ def export_pcb(
     )
     meta = _file_meta(out_path)
     return PcbExportResult(
-        path=meta["path"], size_bytes=meta["size_bytes"], format=fmt, layers=layer_list
+        path=meta["path"],
+        size_bytes=meta["size_bytes"],
+        format=fmt,
+        layers=layer_list,
+        note=_unfilled_zone_note(pcb_path),
     )
 
 
@@ -2049,6 +2099,7 @@ def export_gerbers(
             count=1,
             size_bytes=meta["size_bytes"],
             layer=layer,
+            note=_unfilled_zone_note(pcb_path),
         )
 
     # Multi-layer mode: directory of files
@@ -2072,6 +2123,7 @@ def export_gerbers(
         count=len(files),
         drill_files=drill_file_names,
         drill_count=len(drill_file_names),
+        note=_unfilled_zone_note(pcb_path),
     )
 
 
@@ -2201,7 +2253,12 @@ def export_ipc2581(
     if result.returncode != 0:
         raise ToolError(result.stderr.strip())
     meta = _file_meta(out)
-    return ExportResult(path=meta["path"], size_bytes=meta["size_bytes"], format="ipc2581")
+    return ExportResult(
+        path=meta["path"],
+        size_bytes=meta["size_bytes"],
+        format="ipc2581",
+        note=_unfilled_zone_note(pcb_path),
+    )
 
 
 # ---------------------------------------------------------------------------

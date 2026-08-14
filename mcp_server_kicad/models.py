@@ -245,6 +245,7 @@ class DrcResult(BaseModel):
     violations: list[dict]
     unconnected_count: int
     unconnected_items: list[dict]
+    note: str | None = None
 
 
 class ErcResult(BaseModel):
@@ -271,6 +272,8 @@ class ExportResult(BaseModel):
     path: str
     size_bytes: int
     format: str
+    # Non-fatal remark, in ErcResult.note's sense. Today: unfilled copper zones.
+    note: str | None = None
 
 
 class PcbExportResult(ExportResult):
@@ -312,6 +315,7 @@ class GerberExportResult(BaseModel):
     layer: str | None = None
     drill_files: list[str] = []
     drill_count: int = 0
+    note: str | None = None
 
 
 class Model3dExportResult(BaseModel):
