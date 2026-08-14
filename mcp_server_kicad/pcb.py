@@ -1594,10 +1594,12 @@ def set_net_class(
             "A .kicad_pro file must exist alongside the .kicad_pcb file."
         )
 
-    # Read existing project JSON
+    # Read existing project JSON. UnicodeDecodeError is listed because it is a
+    # ValueError, not an OSError, so it used to escape as a raw traceback; it
+    # can still be raised by a file that is genuinely not UTF-8.
     try:
-        pro_data = json.loads(pro_file.read_text())
-    except (json.JSONDecodeError, OSError) as exc:
+        pro_data = json.loads(pro_file.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
         raise ToolError(f"Failed to read project file: {exc}") from exc
 
     # Ensure net_settings structure exists
@@ -1636,9 +1638,16 @@ def set_net_class(
     for net_name in nets:
         ns["netclass_assignments"][net_name] = name
 
-    # Write back
+    # Write back. ensure_ascii=False keeps a net class or path the user wrote in
+    # their own alphabet readable in their own file; the default escapes every
+    # non-ASCII character to \uXXXX, which is valid JSON KiCad reads back fine
+    # but is not what they had. UTF-8 to match the read above and KiCad's own
+    # encoding.
     try:
-        _atomic_write(pro_file, (json.dumps(pro_data, indent=2) + "\n").encode())
+        _atomic_write(
+            pro_file,
+            (json.dumps(pro_data, indent=2, ensure_ascii=False) + "\n").encode("utf-8"),
+        )
     except OSError as exc:
         raise ToolError(f"Failed to write project file: {exc}") from exc
 
@@ -1779,7 +1788,7 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> DrcResult
         check=False,
     )
     try:
-        with open(out_path) as f:
+        with open(out_path, encoding="utf-8") as f:
             report = json.load(f)
     except FileNotFoundError:
         raise ToolError("DRC failed to produce output file")
@@ -2059,7 +2068,7 @@ def export_positions(
     out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-pos.csv"))
     _run_cli(["pcb", "export", "pos", "--format", "csv", "--output", out_path, pcb_path])
     meta = _file_meta(out_path)
-    with open(out_path) as f:
+    with open(out_path, encoding="utf-8") as f:
         component_count = max(0, len(f.readlines()) - 1)
     return PositionExportResult(
         path=meta["path"],
@@ -2402,7 +2411,7 @@ def autoroute_pcb(
             ["pcb", "drc", "--format", "json", "--severity-all", "--output", drc_out, routed_path],
             check=False,
         )
-        with open(drc_out) as f:
+        with open(drc_out, encoding="utf-8") as f:
             drc = json.load(f)
         drc_violations = len(drc.get("violations", []))
         drc_unconnected = len(drc.get("unconnected_items", []))

@@ -543,7 +543,7 @@ def _extract_raw_symbol(lib_path: str, symbol_name: str) -> str | None:
 
     Uses balanced-paren counting.  Skips sub-unit matches like ``PWR_FLAG_0_0``.
     """
-    text = Path(lib_path).read_text()
+    text = Path(lib_path).read_text(encoding="utf-8")
     target = f'(symbol "{symbol_name}"'
     pos = 0
     while True:

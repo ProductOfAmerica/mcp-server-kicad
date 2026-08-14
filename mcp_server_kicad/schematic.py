@@ -2370,7 +2370,7 @@ def list_unconnected_pins(
         check=False,
     )
     try:
-        with open(out_path) as f:
+        with open(out_path, encoding="utf-8") as f:
             report = json.load(f)
     except FileNotFoundError:
         raise ToolError("ERC failed to produce output")
@@ -2448,7 +2448,7 @@ def run_erc(
         check=False,
     )
     try:
-        with open(out_path) as f:
+        with open(out_path, encoding="utf-8") as f:
             report = json.load(f)
     except FileNotFoundError:
         raise ToolError("ERC failed to produce output file")
@@ -2565,7 +2565,7 @@ def export_bom(schematic_path: str = SCH_PATH, output_dir: str = OUTPUT_DIR) -> 
     out_path = str(Path(out_dir) / (Path(schematic_path).stem + "-bom.csv"))
     _run_cli(["sch", "export", "bom", "--output", out_path, schematic_path])
     meta = _file_meta(out_path)
-    with open(out_path) as f:
+    with open(out_path, encoding="utf-8") as f:
         lines = f.readlines()
     component_count = max(0, len(lines) - 1)  # minus header
     return BomExportResult(
