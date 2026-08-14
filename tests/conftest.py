@@ -805,3 +805,32 @@ def scratch_pcb(tmp_path: Path) -> Path:
     board.filePath = str(path)
     board.to_file()
     return path
+
+
+@pytest.fixture(autouse=True)
+def _no_network(monkeypatch, request):
+    """No test reaches the internet. Opt out with @pytest.mark.allow_network.
+
+    _download_jar calls api.github.com, and a test that reaches it is a test
+    that fails when GitHub rate-limits a shared CI address. Measured
+    2026-08-14: reordering autoroute's preflight so the jar resolves before the
+    Java check made test_no_java reach the download, and it failed with "HTTP
+    Error 403: rate limit exceeded" on one Python version of one matrix, hours
+    after the change had gone green everywhere else.
+
+    Blocking it here rather than fixing that one test, because the next such
+    test will be written by someone who does not know this happened. The
+    failure is immediate and names the fixture, instead of arriving later as a
+    rate limit somebody has to trace back.
+    """
+    if request.node.get_closest_marker("allow_network"):
+        return
+    import urllib.request
+
+    def refuse(*args, **kwargs):
+        raise AssertionError(
+            "this test tried to open a network connection; mock the seam, or"
+            " mark it @pytest.mark.allow_network if it genuinely needs one"
+        )
+
+    monkeypatch.setattr(urllib.request, "urlopen", refuse)
