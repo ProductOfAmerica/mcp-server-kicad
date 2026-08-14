@@ -3,6 +3,7 @@
   "manifest_version": "0.4",
   "name": "kicad",
   "display_name": "KiCad",
+  "icon": "icon.png",
   "version": "0.0.0",
   "description": "Byte-preserving KiCad automation: schematics, PCB layout, ERC, DRC, exports",
   "long_description": "109 tools for KiCad schematic capture, PCB layout, symbol and footprint libraries, and project management. Every edit runs on a byte-preserving concrete syntax tree, so bytes you did not ask to change reach the disk unchanged, and an edit that cannot be done correctly is refused with the file intact. KiCad 9 and KiCad 10 files both work.\n\nRequires a local KiCad install for the ERC, DRC, and export tools.",
