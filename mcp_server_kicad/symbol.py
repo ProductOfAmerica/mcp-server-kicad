@@ -15,6 +15,7 @@ from mcp_server_kicad._shared import (
     OUTPUT_DIR,
     SYM_LIB_PATH,
     _atomic_write,
+    _backup_for_external_write,
     _check_rotation,
     _ensure_dir,
     _read_kicad_bytes,
@@ -447,14 +448,17 @@ def upgrade_symbol_lib(symbol_lib_path: str) -> str:
     """Upgrade a symbol library to current KiCad format.
 
     kicad-cli rewrites the file in place, so this does not go through the
-    server's atomic write and has no undo.
+    server's atomic write. A copy is taken beside it first, at
+    ``<name>.kicad_sym.bak``, and the result names it. That copy is the undo:
+    there is exactly one, and every run overwrites it.
 
     Args:
         symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.
     """
     _require_kicad_path(symbol_lib_path, "symbol library")
+    backup = _backup_for_external_write(symbol_lib_path, "symbol library")
     _run_cli(["sym", "upgrade", symbol_lib_path])
-    return f"Successfully upgraded {symbol_lib_path}"
+    return f"Successfully upgraded {symbol_lib_path}. Previous version saved to {backup}"
 
 
 # ── Entry point ───────────────────────────────────────────────────

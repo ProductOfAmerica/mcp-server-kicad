@@ -296,6 +296,51 @@ def _read_kicad_bytes(path: str | Path, kind: str) -> bytes:
     return _require_kicad_path(path, kind).read_bytes()
 
 
+def _backup_for_external_write(path: str | Path, kind: str) -> Path:
+    """Copy *path* to a sibling ``.bak`` before an external process rewrites it.
+
+    For the two library upgrades. kicad-cli's ``sym upgrade`` and ``fp upgrade``
+    rewrite the user's files in place, so they are outside both halves of the
+    invariant: not atomic, and not reversible. The ADR calls ``fp upgrade`` the
+    sharpest of the four subprocess writers for exactly that reason, because it
+    rewrites every .kicad_mod in a library at once.
+
+    This reverses a decision recorded on 2026-08-10, which rejected "a pre-write
+    copy" as "a backup with no lifecycle owner". That objection is answered
+    rather than ignored: there is exactly ONE backup per library, at a
+    deterministic path, overwritten on every run. It cannot accumulate, so there
+    is no lifecycle to own, and the tool result names the path. What was rejected
+    was an unbounded set of timestamped copies, which is a different proposal.
+
+    A failure to back up refuses the operation. Proceeding without one is the
+    thing this exists to prevent, and whatever stopped the copy (a full disk, a
+    read-only parent) would very likely have made the rewrite worse.
+    """
+    src = Path(path)
+    dest = src.with_name(src.name + ".bak")
+    try:
+        if src.is_dir():
+            # A .pretty is a directory of .kicad_mod files. Build the replacement
+            # beside it and swap, so an interrupted copy cannot leave a partial
+            # backup standing where a whole one used to be.
+            staging = src.with_name(src.name + f".bak.{os.getpid()}.tmp")
+            if staging.exists():
+                shutil.rmtree(staging)
+            shutil.copytree(src, staging)
+            if dest.exists():
+                shutil.rmtree(dest)
+            os.replace(staging, dest)
+        else:
+            _atomic_write(dest, src.read_bytes())
+    except OSError as exc:
+        raise ToolError(
+            f"Could not back up the {kind} to {dest.name} before upgrading it:"
+            f" {exc.strerror or exc}. The upgrade rewrites the original in place"
+            " with no undo, so it has not been started."
+        ) from exc
+    return dest
+
+
 def _ensure_dir(path: str | Path, kind: str = "output directory") -> Path:
     """Create a directory, refusing an unreachable root with a ToolError.
 
