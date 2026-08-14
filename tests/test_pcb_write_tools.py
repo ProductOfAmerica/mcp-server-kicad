@@ -1397,3 +1397,60 @@ class TestUpdatePcbPreflight:
                     pcb.update_pcb_from_schematic(
                         schematic_path=str(scratch_sch), pcb_path=str(missing)
                     )
+
+
+class TestCopperZoneMatchesKicadsOwnShape:
+    """Our zone template must emit what KiCad emits.
+
+    The bare "yes" after (fill is the pour-enabled flag. This template omitted
+    it for the life of the tool: all 20 boards KiCad ships write "(fill yes ...)"
+    and ours wrote "(fill (thermal_gap ...) ...)", which is the shape KiCad
+    writes for a zone whose pour is switched off.
+
+    What that cost is deliberately not asserted here, because it is not
+    established. Stripping the yes from KiCad's own ecc83-pp changed the exported
+    F.Cu gerber by 2 bytes: the plot path reads stored filled_polygon data and
+    never consults the flag. Whether ZONE_FILLER and the GUI honour it is
+    unmeasured. This pins the shape, which is the part the repo's own rule covers.
+    """
+
+    def test_the_pour_enabled_flag_is_present(self, scratch_pcb):
+        pcb.add_copper_zone(
+            net_name="Net1",
+            layer="F.Cu",
+            corners=[{"x": 10, "y": 10}, {"x": 40, "y": 10}, {"x": 40, "y": 40}],
+            pcb_path=str(scratch_pcb),
+        )
+        _, root, _ = pcb._open_pcb_cst(str(scratch_pcb))
+        zone = next(z for z in root.find_all("zone") if z.find("keepout") is None)
+        fill = zone.find("fill")
+        assert fill is not None
+        assert [a.text for a in fill.atoms] == ["fill", "yes"], (
+            "KiCad writes (fill yes ...); a bare (fill ...) is a zone with its pour switched off"
+        )
+
+    def test_it_matches_what_kicad_ships(self):
+        """Against KiCad's own boards, not against our own expectation."""
+        from mcp_server_kicad._shared import _kicad_root
+
+        root_dir = _kicad_root()
+        demos = []
+        for sub in ("share/kicad/demos", "SharedSupport/demos"):
+            if root_dir and (root_dir / sub).is_dir():
+                demos = sorted((root_dir / sub).rglob("*.kicad_pcb"))
+                break
+        if not demos:
+            pytest.skip("no KiCad demo boards on this machine")
+        shapes = set()
+        for board in demos[:8]:
+            try:
+                root = _cst.parse(board.read_bytes()).lists[0]
+            except Exception:
+                continue
+            for z in root.find_all("zone"):
+                f = z.find("fill")
+                if z.find("keepout") is None and f is not None:
+                    shapes.add(tuple(a.text for a in f.atoms))
+                    break
+        assert shapes, "no filled zones found in KiCad's demos; check the locator"
+        assert ("fill", "yes") in shapes, shapes
