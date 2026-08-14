@@ -142,7 +142,17 @@ class TestAutoroutePcb:
             assert result.vias_added == 2
 
     def test_no_java(self, scratch_pcb):
+        """The jar seam is mocked because the Java check now runs after it.
+
+        check_java derives its minimum from the jar rather than asserting a
+        constant, so autoroute resolves the jar first. Without this mock the
+        test reaches _download_jar, and on a runner with no cached jar that is a
+        live call to api.github.com: it failed with "HTTP Error 403: rate limit
+        exceeded" and the assertion then matched the download message instead of
+        the Java one. A unit test must not depend on GitHub being reachable.
+        """
         with (
+            patch("mcp_server_kicad.pcb._ensure_jar", lambda: ("/fake/freerouting.jar", None)),
             patch("mcp_server_kicad.pcb._check_java", return_value="Java not found"),
             patch("mcp_server_kicad.pcb._pcbnew_major", return_value=9),
         ):

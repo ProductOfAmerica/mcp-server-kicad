@@ -58,6 +58,7 @@ pythonpath = ["tests"]
 markers = [
     "no_kicad_validation: skip kicad-cli parseability check (for tests that intentionally produce invalid files)",
     "slow: builds a fresh uv environment; deselect with -m 'not slow'",
+    "allow_network: this test genuinely needs the internet (see the _no_network fixture)",
 ]
 
 [tool.ruff]
