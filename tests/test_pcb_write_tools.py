@@ -1,5 +1,6 @@
 """Tests for PCB write tools."""
 
+import json
 import shutil
 import uuid
 from pathlib import Path
@@ -1197,3 +1198,67 @@ class TestRemoveDanglingTracks:
         result = pcb.remove_dangling_tracks(pcb_path=str(scratch_pcb))
         assert result.tracks_removed == 0
         assert result.iterations == 0
+
+
+class TestProjectFileEncoding:
+    """A .kicad_pro is UTF-8. Python's text mode does not assume that.
+
+    With no ``encoding=``, ``read_text`` decodes with
+    ``locale.getpreferredencoding(False)``, the ANSI code page on Windows.
+    Measured on this box before the fix, on a project file carrying a designer
+    name and a units string: both came back mangled, the file was rewritten with
+    the mangled text plus escaped code points, and set_net_class returned a normal
+    NetClassResult. Silent corruption of a file the tool was only meant to add a
+    net class to.
+
+    The whole package had zero ``encoding=`` occurrences at that point, so this
+    reached run_erc, run_drc, list_unconnected_pins, export_bom and
+    export_positions too. Those read reports rather than user files, which is
+    why this test guards the one that writes back.
+    """
+
+    AUTHOR = "Andr\u00e9 Amp\u00e8re"
+    NOTE = "50 \u03a9 / 25 \u00b0C"
+
+    def _project(self, scratch_pcb: Path) -> Path:
+        pro = scratch_pcb.with_suffix(".kicad_pro")
+        body = {
+            "meta": {"filename": pro.name, "version": 1},
+            "text_variables": {"AUTHOR": self.AUTHOR, "NOTE": self.NOTE},
+        }
+        # Bytes, so the fixture cannot itself be re-encoded by the platform.
+        pro.write_bytes(json.dumps(body, indent=2, ensure_ascii=False).encode("utf-8") + b"\n")
+        return pro
+
+    def test_non_ascii_survives_a_net_class_edit(self, scratch_pcb):
+        pro = self._project(scratch_pcb)
+        pcb.set_net_class(name="Power", nets=["Net1"], clearance=0.3, pcb_path=str(scratch_pcb))
+        data = json.loads(pro.read_bytes().decode("utf-8"))
+        assert data["text_variables"]["AUTHOR"] == self.AUTHOR
+        assert data["text_variables"]["NOTE"] == self.NOTE
+        assert data["net_settings"]["classes"][-1]["name"] == "Power"
+
+    def test_it_stays_readable_rather_than_escaped(self, scratch_pcb):
+        """ensure_ascii would keep the text correct but unreadable.
+
+        An escaped code point round-trips through json fine, so the first test
+        passes either
+        way. The user's own file should still contain their own alphabet.
+        """
+        pro = self._project(scratch_pcb)
+        pcb.set_net_class(name="Power", nets=["Net1"], clearance=0.3, pcb_path=str(scratch_pcb))
+        raw = pro.read_bytes()
+        assert self.AUTHOR.encode("utf-8") in raw
+        assert b"\u00e9" not in raw
+
+    def test_a_file_that_is_not_utf8_is_refused_not_traced(self, scratch_pcb):
+        """UnicodeDecodeError is a ValueError, so it used to escape the except.
+
+        json.JSONDecodeError subclasses ValueError but is not its parent, so
+        catching JSONDecodeError never caught this and the client got a raw
+        traceback instead of a message.
+        """
+        pro = scratch_pcb.with_suffix(".kicad_pro")
+        pro.write_bytes(b'{"meta": {"filename": "x", "version": 1}, "n": "\xff\xfe not utf-8"}')
+        with pytest.raises(ToolError, match="Failed to read project file"):
+            pcb.set_net_class(name="Power", nets=["Net1"], clearance=0.3, pcb_path=str(scratch_pcb))
