@@ -65,3 +65,38 @@ def test_versions_are_placeholders():
     assert MANIFEST["version"] == PLACEHOLDER
     pin = f'"mcp-server-kicad=={PLACEHOLDER}"'
     assert pin in (MCPB_DIR / "pyproject.toml").read_text(encoding="utf-8")
+
+
+def test_the_icon_the_manifest_names_is_actually_in_the_bundle_dir():
+    """A missing icon is silent: the manifest still validates and the bundle
+    still packs, and the host just shows a default tile."""
+    icon = MANIFEST.get("icon")
+    assert icon, "manifest declares no icon"
+    assert (MCPB_DIR / icon).is_file(), f"{icon} is named by the manifest but not in mcpb/"
+
+
+def test_the_icon_is_a_square_png():
+    """Hosts render it in a fixed square tile, so a non-square image is
+    letterboxed or cropped rather than rejected."""
+    import struct
+
+    raw = (MCPB_DIR / MANIFEST["icon"]).read_bytes()
+    assert raw[:8] == b"\x89PNG\r\n\x1a\n", "not a PNG"
+    width, height = struct.unpack(">II", raw[16:24])
+    assert width == height, f"{width}x{height} is not square"
+    assert width >= 128, f"{width}px is small for a tile"
+
+
+def test_the_bundle_icon_matches_the_repo_logo():
+    """Two copies of one image drift silently otherwise.
+
+    The bundle needs its own copy, because `mcpb pack` archives one directory
+    and cannot reach outside it. This is what makes updating the logo update
+    the icon too, instead of shipping last year's mark to Desktop users.
+    """
+    logo = REPO_ROOT / ".github" / "assets" / "logo.png"
+    if not logo.is_file():
+        return  # the logo moved; the test above still guards the bundle itself
+    assert (MCPB_DIR / MANIFEST["icon"]).read_bytes() == logo.read_bytes(), (
+        "mcpb/icon.png and .github/assets/logo.png have diverged; copy the logo over"
+    )
