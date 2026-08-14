@@ -7,6 +7,7 @@ kicad-cli and KiCad's Python with pcbnew.
 
 from __future__ import annotations
 
+from pathlib import Path
 from xml.etree.ElementTree import ParseError
 
 import pytest
@@ -384,3 +385,108 @@ class TestUpdatePcbE2E:
         assert via.net == sig2.number
         drc = run_drc(pcb_path=pcb_path)
         assert drc.violation_count >= 0
+
+
+class TestWxAppPrelude:
+    """Every pcbnew subprocess gets a wxApp before it touches the board.
+
+    pcbnew is a GUI library driven here with no GUI. Anything reaching
+    wxStandardPaths::Get() without a wxApp asserts, and the handler that runs is
+    the raw C++ one, because wxPython installs its own through wxApp. That is a
+    modal "wxWidgets Debug Alert" on Windows, on the user's desktop, which the
+    subprocess has nobody to dismiss, so the call blocks to its timeout; on
+    macOS it kills the process.
+
+    Seen first as an intermittent macOS CI failure on the --delete-stale run,
+    twice, both cleared by re-running, which is exactly what made it read as
+    flake. It was not: the process exits non-zero and the stderr carries no
+    Python traceback, because nothing Python raised.
+
+    A scan, not an execution. Reproducing the assert means provoking a modal
+    dialog on whatever machine runs the suite, which is not a thing a test
+    should do to the person running it.
+    """
+
+    def test_every_inline_pcbnew_script_creates_the_app_first(self):
+        """Any new `-c "import pcbnew..."` has to carry the prelude too."""
+        import mcp_server_kicad
+
+        src_dir = Path(mcp_server_kicad.__file__).parent
+        offenders = []
+        for path in sorted(src_dir.glob("*.py")):
+            for n, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+                if '"import pcbnew; "' not in line:
+                    continue
+                if "wx_app_prelude()" not in line:
+                    offenders.append(f"{path.name}:{n}: {line.strip()}")
+        assert offenders == [], (
+            "these run pcbnew with no wxApp, so a path lookup raises a modal"
+            " dialog the subprocess cannot dismiss. Prefix the script with"
+            " _freerouting.wx_app_prelude():\n  " + "\n  ".join(offenders)
+        )
+
+    def test_the_prelude_is_a_valid_prefix(self):
+        """It is concatenated onto a script, so it must end in a separator."""
+        from mcp_server_kicad._freerouting import wx_app_prelude
+
+        prelude = wx_app_prelude()
+        assert prelude.endswith("; "), prelude
+        assert "_ensure_wx_app()" in prelude
+        compile(prelude + "import pcbnew", "<prelude>", "exec")
+
+    def test_the_module_the_prelude_imports_needs_only_the_stdlib(self):
+        """KiCad's interpreter has no site-packages of ours to import from."""
+        import ast
+
+        import mcp_server_kicad
+
+        src = (Path(mcp_server_kicad.__file__).parent / "_netlist_import.py").read_text(
+            encoding="utf-8"
+        )
+        tree = ast.parse(src)
+        top_level = [n for n in tree.body if isinstance(n, (ast.Import, ast.ImportFrom))]
+        names = []
+        for node in top_level:
+            if isinstance(node, ast.Import):
+                names += [a.name.split(".")[0] for a in node.names]
+            elif node.module:
+                names.append(node.module.split(".")[0])
+        assert set(names) <= {"__future__", "argparse", "json", "os", "sys", "xml"}, names
+
+    def test_a_display_less_host_never_reaches_wx(self, monkeypatch):
+        """The check that broke Linux, pinned.
+
+        The first version left this to a try/except on the assumption that
+        wx would raise something catchable when it could not open a display.
+        It does not: wxPython exits the process with "Unable to access the X
+        Display, is $DISPLAY set properly?", so nothing catches anything and
+        eight passing E2E tests went red on the Linux runner. The guard has to
+        run before wx is imported at all, which is what this asserts.
+        """
+        import ast
+
+        import mcp_server_kicad
+
+        src = (Path(mcp_server_kicad.__file__).parent / "_netlist_import.py").read_text(
+            encoding="utf-8"
+        )
+        fn = next(
+            n
+            for n in ast.parse(src).body
+            if isinstance(n, ast.FunctionDef) and n.name == "_ensure_wx_app"
+        )
+        body = [n for n in fn.body if not isinstance(n, ast.Expr)]
+        first = body[0]
+        assert isinstance(first, ast.If), "the display check must come first"
+        assert any(isinstance(x, ast.Return) for x in first.body), (
+            "the display check must return, not fall through to importing wx"
+        )
+        names = {n.id for n in ast.walk(first) if isinstance(n, ast.Name)}
+        assert {"sys", "os"} <= names, "it should read sys.platform and the display env"
+        # wx must not be imported before that guard has had its say.
+        imports_before = [
+            n
+            for n in ast.walk(ast.Module(body=body[: body.index(first)], type_ignores=[]))
+            if isinstance(n, (ast.Import, ast.ImportFrom))
+        ]
+        assert imports_before == [], imports_before

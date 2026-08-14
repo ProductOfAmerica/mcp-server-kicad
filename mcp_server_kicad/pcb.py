@@ -36,6 +36,9 @@ from mcp_server_kicad._freerouting import (
 from mcp_server_kicad._freerouting import (
     run_freerouting as _run_freerouting,
 )
+from mcp_server_kicad._freerouting import (
+    wx_app_prelude as _wx_app_prelude,
+)
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -1266,7 +1269,7 @@ def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
     if not python:
         raise ToolError("pcbnew Python bindings not found. Ensure KiCad is installed.")
     script = (
-        "import pcbnew; "
+        _wx_app_prelude() + "import pcbnew; "
         f"b = pcbnew.LoadBoard({pcb_path!r}); "
         "filler = pcbnew.ZONE_FILLER(b); "
         "zones = b.Zones(); "

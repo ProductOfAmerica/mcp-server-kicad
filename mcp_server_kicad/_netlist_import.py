@@ -256,7 +256,68 @@ def apply(
     return summary
 
 
+def _ensure_wx_app() -> None:
+    """Give wxWidgets an application object before pcbnew can ask for one.
+
+    pcbnew is a GUI library used here without a GUI. Most of its API never
+    notices, which is why this script ran for months without one, but anything
+    reaching wxStandardPaths::Get() asserts, and on macOS that assert kills the
+    process rather than warning:
+
+        ./src/common/stdpbase.cpp(59): assert "traits" failed in Get():
+        create wxApp before calling this
+
+    Seen twice on the macOS runner, both times on the --delete-stale run of
+    TestUpdatePcbE2E, both times fixed by re-running, which is what made it look
+    like flake. It is not: the process exits non-zero, so the caller's
+    returncode check is right to fail, and the stderr carries no Python
+    traceback because nothing Python raised.
+
+    wx ships inside KiCad's own interpreter, so this adds no dependency
+    (measured: wxPython 4.2.2 / wxWidgets 3.2.8 alongside pcbnew 9.0.8).
+    redirect=False matters, because the default sends stdout to a GUI window
+    and the caller parses stdout for the summary.
+
+    Creating one is skipped where there is no display to open, and that check
+    has to come first rather than being left to a try/except. The first version
+    of this did leave it to one, on the assumption that a failure would raise
+    something catchable. It does not: on a headless Linux runner wxPython exits
+    the process with "Unable to access the X Display, is $DISPLAY set
+    properly?", which took eight passing E2E tests red. A latent problem became
+    a certain one, which is exactly what the guard was supposed to prevent.
+
+    So the ceiling is real and is worth stating plainly: a display-less Linux
+    host gets no wxApp and keeps whatever behaviour it had, which is a suite
+    that passes today. Windows and macOS, where the assert has actually been
+    observed, both have a display whenever a user is running this.
+    """
+    if sys.platform not in ("win32", "darwin") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        return
+    try:
+        import wx  # pyright: ignore[reportMissingImports] — ships with KiCad
+    except ImportError:
+        return
+    try:
+        app = wx.App.Get() or wx.App(False)
+        # wxPython installs its assert handler through wxApp, so until one
+        # exists the raw C++ handler runs. On Windows that is a modal "wxWidgets
+        # Debug Alert" dialog on the user's desktop, and this subprocess has
+        # nobody to click it: the tool call blocks until the caller's 120s
+        # timeout. Route any later assert to the log instead, where it reaches
+        # stderr and the caller reports it.
+        mode = getattr(wx, "APP_ASSERT_LOG", None)
+        if mode is not None and hasattr(app, "SetAssertMode"):
+            app.SetAssertMode(mode)
+    except Exception as exc:  # noqa: BLE001 - never let this be the thing that fails
+        # Only reachable for a wx that raises rather than exiting. The
+        # display-less case is handled above, because it does not raise.
+        print(f"note: no wxApp ({exc}); pcbnew path lookups may assert", file=sys.stderr)
+
+
 def main(argv: list[str] | None = None) -> int:
+    _ensure_wx_app()
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("netlist")
     ap.add_argument("pcb")
