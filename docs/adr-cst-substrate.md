@@ -108,3 +108,73 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   The rest is the stroke weight the entry above already recorded as a design decision, because
   the outermost pixel of a hairline lands at partial alpha and reads as absent, while the
   outermost pixel of a solid mark like Gmail's is fully opaque.
+
+- 2026-08-15: the netlist import moves onto the substrate, which leaves no
+  `pcbnew.SaveBoard` writing a user's own board anywhere in the package, and the two
+  library upgrades are recorded as a PERMANENT exception rather than as work not yet
+  done. Three subprocess writers become two, and the two that remain are the two that
+  should. `_netlist_import.apply()` ended in `SaveBoard` on the user's file;
+  `pcb._apply_netlist_cst` does the same work in-process and writes through
+  `_atomic_write`, following `fill_zones`: a subprocess may compute, never write. Its
+  structure mirrors `apply()` pass for pass so the two can be diffed. The only
+  `SaveBoard` left writes autoroute's copy, which is a file the user did not have
+  before. Four parts were genuinely new rather than a translation, each recorded
+  because each is a place to be quietly wrong. A pad copied out of a `.kicad_mod`
+  carries no `(net ...)` child at all, so binding inserts one after `(layers ...)`,
+  where `_set_item_net` only ever mutated an atom that every track and via already
+  has. There was no empty-board template in this package and `pcbnew.NewBoard` was the
+  only way to make a board, so `_EMPTY_PCB_TPL` is 2081 bytes harvested from NewBoard
+  itself and a test asserts the constant still equals that harvest. Net declaration
+  and pruning are version-shaped: KiCad 9 carries a root table that numbers come from,
+  KiCad 10 has none, so on 10 there is nothing to declare or prune and the counts
+  report zero rather than inventing a number. And the placement anchor moves slightly,
+  because pcbnew computed it from a bounding box including graphics and courtyards
+  while a CST scan sees footprint origins; the tool promises a grid cluster and not a
+  coordinate. The prerequisite was the footprint twin of
+  `_copy_lib_symbol_from_file_cst`, whose absence is why this had stayed on pcbnew:
+  `place_footprint` had been emitting a shell with no pads, no silkscreen and no
+  courtyard, and a board of those cannot be routed or manufactured. That transform was
+  harvested, not derived, against KiCad's own `multichannel_mixer-unrouted`, whose
+  `Potentiometer_Alps_RK09K_Single_Vertical` is directly comparable with the stock
+  library file at 17 `fp_line`, 5 `pad` and 1 `fp_circle` on both sides, so the
+  geometry is identical and every remaining difference is the transform: the name atom
+  gains its library prefix, `version`/`generator`/`generator_version` are dropped,
+  `uuid` then `at` are inserted after `layer`, every uuid already in the file is
+  regenerated, and each pad takes the footprint's angle in its own `at`. Two of those
+  would have been wrong by inspection, since library footprints already carry uuids on
+  properties and pads (29 per copy on the potentiometer, 0 on `R_0805`, so a test
+  written against the resistor alone passes vacuously) and a rotated footprint whose
+  pads kept the library angle draws correct copper at the wrong orientation. A third
+  was found only by running it: the inserted root uuid kept the template's literal
+  "x", every placement carried the same one, and kicad-cli loaded a board with two
+  identical uuids at rc 0 without a word. Swept 15,415 stock footprints across 155
+  libraries through the transform. The oracle for the import itself is the eight
+  existing E2E tests, written against the pcbnew implementation and passing unchanged
+  against this one, plus one assertion that could not exist before: a second import
+  that changes nothing leaves the board BYTE-IDENTICAL. That E2E gate also loses its
+  pcbnew term, because the tool no longer uses pcbnew and leaving it in would skip the
+  whole class on a machine able to run every test in it; only `test_zone_fill_acceptance`
+  keeps a pcbnew gate of its own. On the two library upgrades: closing them
+  means reimplementing KiCad's own version-to-version migration in order to avoid
+  letting KiCad perform it, and nothing is being preserved, because rewriting the file
+  IS the operation the caller asked for. Recorded as permanent so it is not
+  re-litigated. What was still open about them is now measured, and it is worse than
+  assumed: both truncate in place rather than replacing. On KiCad 9 locally and on both
+  KiCad 10.0.5 runners, `st_ino` was unchanged across the write and a concurrent reader
+  caught a zero-byte read every time, with Windows catching 8 further partial sizes on
+  `sym upgrade`. That is exactly the torn-write exposure `_atomic_write` exists to
+  close, so the one bounded `.bak` each takes mitigates it and does not remove it. Also
+  measured on that run, and the reason `run_drc` refills on KiCad 10: `pcb drc
+  --refill-zones` without `--save-board` leaves the board byte-identical, with a
+  control on the same board running `--save-board` and watching it gain
+  `filled_polygon`, so the probe could tell "did not save" from "cannot see a save".
+  Method note worth keeping, since it repeats the last probe's lesson: three faults in
+  that probe were caught by running it locally first and all three would have produced
+  confident wrong answers, `add_copper_zone` refusing a net the board does not carry,
+  the stock libraries shipping read-only so a mode-preserving copy made kicad-cli exit
+  2 with its error on STDOUT and stderr empty, and `fp upgrade` no-opping on a current
+  library. A fourth was in the instrument, which counted any size change as a torn read
+  when an upgrade legitimately changes the size. The first CI run then found a fifth,
+  the footprint stamp hardcoded at KiCad 9's 20241229 when KiCad 10 ships 20260206, so
+  the wind-back matched nothing and both platforms answered CANNOT-ANSWER for what read
+  as a property of `fp upgrade`.
