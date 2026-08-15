@@ -251,12 +251,14 @@ install KiCad 10 or point `KICAD_PYTHON` at one. The other direction runs and
 warns, because the routed copy comes back in the KiCad 10 format. Your original
 board is untouched either way, since this one writes a copy.
 
-`upgrade_symbol_lib` and `upgrade_footprint_lib` hand your library to
-`kicad-cli`, which rewrites it in place. That is the point of those two tools:
-changing the format is what you asked for, so they sit outside the invariant
-permanently rather than pending. Both truncate the file in place rather than
-replacing it, measured on KiCad 9 and 10 and on every platform, so each takes one
-backup first at `<name>.bak`, overwritten on every run, and the result names it.
+`upgrade_symbol_lib` and `upgrade_footprint_lib` are the one place KiCad still
+rewrites your file, because changing the format is exactly what you asked for.
+It rewrites a copy: the result is moved into place atomically, so a library
+can never be left half-written, and only files whose content actually changed
+are touched. Each file is atomic; the library as a whole is not a transaction,
+so an interrupted upgrade leaves some footprints migrated and none damaged. A
+backup is still taken at `<name>.bak`, overwritten every run, because that is
+the undo for an upgrade that worked.
 
 `fill_zones` and `update_pcb_from_schematic` used to be listed here and no longer
 are. `fill_zones` still asks `pcbnew` to compute the fills, because nothing else

@@ -178,3 +178,60 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   the footprint stamp hardcoded at KiCad 9's 20241229 when KiCad 10 ships 20260206, so
   the wind-back matched nothing and both platforms answered CANNOT-ANSWER for what read
   as a property of `fp upgrade`.
+
+- 2026-08-15: the two library upgrades stop truncating the user's file, which narrows
+  yesterday's PERMANENT ruling rather than overturning it. That entry was right that
+  closing the BYTE PRESERVATION half would mean reimplementing KiCad's own
+  version-to-version migration to avoid letting KiCad perform it, and that nothing is
+  preserved anyway because rewriting the file is the operation the caller asked for.
+  What it conceded without needing to was the other half. Atomicity is closable
+  without reimplementing anything: `_upgrade_out_of_place` hands kicad-cli a scratch
+  copy to truncate and lands the result through `_atomic_write`, so KiCad still
+  performs the migration and the user's file is replaced whole or not at all. The
+  ruling now reads: outside byte preservation permanently, inside atomicity. The
+  reason this was cheap, and worth writing down because it is the thing that would
+  have made it expensive: `_atomic_write` puts its temp file beside the target, so it
+  can never cross a filesystem, which means nothing needs to be renamed out of the
+  scratch directory at all. Bytes are read out and written through the existing
+  helper. Moving a directory into place instead would have needed an atomic directory
+  rename, which does not exist portably: `os.replace` refuses a non-empty directory on
+  POSIX and will not replace a directory at all on Windows. Three things were measured
+  first, each because it changes the code. An out-of-place upgrade is byte-identical
+  to an in-place one, which the whole approach rests on and which is now pinned by a
+  test rather than assumed. `fp upgrade` touches the mtime of every file in a library
+  but changes the CONTENT of only the stale ones, so the comparison is on bytes and a
+  file kicad-cli rewrote to identical content is not written here at all, which makes
+  this quieter than the in-place version it replaces. And it does not require the
+  directory to end in `.pretty`, though the scratch copy keeps the name anyway. The
+  before and after, same instrument: previously st_ino was unchanged across the write
+  and a concurrent reader caught a zero-byte read every time; now st_ino changes and
+  the reader sees one distinct size and no torn read, on both tools. One Windows
+  finding came out of running that instrument, and it is the designed behaviour rather
+  than a defect: a reader that holds the file open continuously makes `os.replace`
+  lose, because Windows will not replace a file another handle has open, and
+  `_atomic_write` then retries for about 0.75 s and refuses with the file intact. The
+  trade is a torn file for a clean refusal, which is the invariant. The instrument was
+  the thing at fault there, since a real scanner does not read in a tight loop, and a
+  1 ms gap lets the replace win. A no-op upgrade now writes nothing and says so, which
+  matters because `sym upgrade` without `--force` correctly declines a current library
+  and the tool used to report that as success. Three defects were found by reading and
+  by testing the code around this, all fixed here. `_backup_for_external_write` deleted
+  the old backup before installing the new one, leaving a window in which NO backup
+  existed: the copy was complete and safe, but a crash between the delete and the
+  rename took the previous good one with it. It now retires the old backup by rename
+  and removes it after. Its `except OSError` also missed `shutil.Error`, which is not
+  an OSError subclass and is what `copytree` raises when it aggregates per-file
+  failures, so a partly-failed tree copy escaped as a raw traceback naming neither the
+  tool nor the library. And `_atomic_write` copies the destination's mode onto its
+  temp, so a read-only destination produced a read-only temp that Windows refused to
+  unlink, and the cleanup then raised over the top of the real failure with a message
+  naming the TEMP path, which is the one thing that function's own comment says never
+  to do. Note that `test_every_write_goes_through_atomic_write` cannot see any of this:
+  it scans for `.write_bytes` and `.write_text` and is blind to `copytree`, `copy2` and
+  `os.replace`, so this design passes it without an exemption and without being checked
+  by it. The tests gate on st_ino rather than on a torn-read count, because an atomic
+  replace changes the inode and a truncate-and-rewrite does not, which is
+  deterministic, while a torn-read count proves truncation when it fires and proves
+  nothing when it misses. Pointing the helper back at an in-place `_run_cli` turns four
+  red; replacing the two `_atomic_write` calls with a direct `write_bytes` turns the
+  two st_ino tests red.

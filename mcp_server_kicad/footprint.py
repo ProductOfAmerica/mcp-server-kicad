@@ -19,6 +19,7 @@ from mcp_server_kicad._shared import (
     _read_kicad_bytes,
     _require_kicad_path,
     _run_cli,
+    _upgrade_out_of_place,
     build_server,
 )
 from mcp_server_kicad.models import MultiFileExportResult
@@ -203,11 +204,18 @@ def upgrade_footprint_lib(footprint_path: str) -> str:
     directory.  kicad-cli has no per-footprint option here, and a single
     .kicad_mod path is rejected.
 
-    kicad-cli does the writing, in place, so this is one of the few paths that
-    cannot go through the server's atomic write. The whole library is copied to
-    ``<name>.pretty.bak`` first and the result names it. That copy is the undo:
-    there is exactly one, and every run overwrites it. Version control is still
-    the better answer for a library you care about.
+    KiCad performs the migration, as it should, but it performs it on a copy and
+    each result lands through the server's atomic write, so no footprint file can
+    be left truncated. Only files whose content actually changed are written, so
+    an upgrade that touches three footprints leaves the rest of the library
+    alone. The whole library is still copied to ``<name>.pretty.bak`` first and
+    the result names it, because that is the undo for an upgrade that SUCCEEDED.
+    There is exactly one, and every run overwrites it.
+
+    Each file is atomic; the library as a whole is not a transaction. An upgrade
+    interrupted midway leaves some footprints migrated and some not, and no file
+    damaged. Version control is still the better answer for a library you care
+    about.
 
     Args:
         footprint_path: Path to a .pretty library directory.
@@ -215,8 +223,13 @@ def upgrade_footprint_lib(footprint_path: str) -> str:
     """
     _require_kicad_path(footprint_path, "footprint", allow_dir=True)
     backup = _backup_for_external_write(footprint_path, "footprint library")
-    _run_cli(["fp", "upgrade", footprint_path])
-    return f"Successfully upgraded {footprint_path}. Previous version saved to {backup}"
+    changed = _upgrade_out_of_place(footprint_path, "footprint library", ["fp", "upgrade"])
+    if not changed:
+        return f"{footprint_path} is already in the current format; nothing was written."
+    return (
+        f"Successfully upgraded {footprint_path}: {len(changed)} footprint"
+        f"{'s' if len(changed) != 1 else ''} rewritten. Previous version saved to {backup}"
+    )
 
 
 # ── Entry point ───────────────────────────────────────────────────
