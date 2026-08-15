@@ -49,9 +49,8 @@ change on disk.
 Every tool works on the real file. Writes go through a byte-preserving
 substrate, so bytes you did not ask to change reach the disk unchanged, and an
 edit that cannot be done correctly is refused with the file intact. Three tools
-hand your file to KiCad's own `pcbnew` or `kicad-cli` instead, and say so on
-themselves: `fill_zones`, `update_pcb_from_schematic`, and the two library
-upgrades.
+let KiCad's own `pcbnew` or `kicad-cli` do the writing instead, and say so on
+themselves: `update_pcb_from_schematic` and the two library upgrades.
 
 ## Quick start
 
@@ -243,8 +242,8 @@ message naming `KICAD_CLI_PATH`, rather than vanishing from the tool list.
 
 Every tool parses and edits through the byte-preserving substrate, so none of
 them refuses a file on its format version. Most of them also never rewrite bytes
-you did not ask to change; the exceptions are the three tools that hand your file
-to KiCad rather than editing it here, and they are worth knowing about.
+you did not ask to change; the exceptions are the four tools below, which hand
+your file to KiCad rather than editing it here, and they are worth knowing about.
 
 `autoroute_pcb` needs a `pcbnew` whose era matches the board, because it uses one
 for the DSN export and the SES import. It checks before it starts. A KiCad 10
@@ -253,14 +252,19 @@ install KiCad 10 or point `KICAD_PYTHON` at one. The other direction runs and
 warns, because the routed copy comes back in the KiCad 10 format. Your original
 board is untouched either way, since this one writes a copy.
 
-`fill_zones` and `update_pcb_from_schematic` write **in place**, through the same
-`pcbnew`. That has two consequences the substrate cannot protect you from.
-`pcbnew` always saves in its own format, so a board stamped below the `pcbnew`
-running it is upgraded where it sits, with no undo; both tools report it when it
-happens, and the KiCad 10 board on a KiCad 9 `pcbnew` is refused up front as
-above. And `pcbnew` rewrites the whole file, which on some boards drops data it
-does not model. Keep a board you care about in version control before running
-either.
+`update_pcb_from_schematic` writes **in place**, through the same `pcbnew`. That
+has two consequences the substrate cannot protect you from. `pcbnew` always saves
+in its own format, so a board stamped below the `pcbnew` running it is upgraded
+where it sits, with no undo; the tool reports it when it happens, and the KiCad
+10 board on a KiCad 9 `pcbnew` is refused up front as above. And `pcbnew`
+rewrites the whole file, which on some boards drops data it does not model. Keep
+a board you care about in version control before running it.
+
+`fill_zones` used to be in that paragraph and no longer is. It still asks `pcbnew`
+to compute the fills, because nothing else can, but `pcbnew` only reads: the
+computed copper comes back as coordinates and the substrate splices it into your
+board, so everything outside the zones is byte-identical and the format stamp
+does not move.
 
 `upgrade_symbol_lib` and `upgrade_footprint_lib` hand your library to
 `kicad-cli`, which rewrites it in place. Each takes one backup first, at

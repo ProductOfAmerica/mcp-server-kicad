@@ -6,7 +6,6 @@ import hashlib
 import json
 import math
 import os
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Literal
@@ -63,6 +62,7 @@ from mcp_server_kicad._shared import (
     _require_kicad_path,
     _resolve_root,
     _run_cli,
+    _run_pcbnew,
     _transform_local_to_board,
     _xy,
     build_server,
@@ -1505,10 +1505,9 @@ def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
     _require_pcbnew_era(pcb_path)
 
     digest_before = hashlib.sha256(_read_kicad_bytes(pcb_path, "board")).hexdigest()
-    result = subprocess.run(
+    result = _run_pcbnew(
         [python, "-c", _wx_app_prelude() + _FILL_DUMP.format(path=pcb_path)],
-        capture_output=True,
-        text=True,
+        what="filling zones",
         timeout=300,
         env=env,
     )
@@ -1639,7 +1638,7 @@ def update_pcb_from_schematic(
             cmd += ["--lib-dir", lib_dir]
         if delete_stale:
             cmd.append("--delete-stale")
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120, env=env)
+        proc = _run_pcbnew(cmd, what="importing the netlist", timeout=120, env=env)
 
     if proc.returncode != 0:
         detail = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"

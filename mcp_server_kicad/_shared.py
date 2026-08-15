@@ -694,6 +694,27 @@ def _fallback_documents_home() -> str:
     return str(Path(base) / "KiCad")
 
 
+# A process that died rather than exited. POSIX reports a fatal signal as a
+# negative return code; Windows reports an unhandled exception as an NTSTATUS,
+# whose failure codes all sit at or above 0xC0000000. Two codes matter in
+# practice and both fall inside this range: 0xC0000005 is the startup crash
+# above, and 0xC0000409 is what pcbnew exits with on the boards that kill its
+# bindings.
+#
+# Gating on the code rather than the text is the same rule _KICAD_STARTUP_CRASH
+# follows and for the same two reasons: stderr is locale-dependent, and a
+# process that dies this way often writes nothing to it at all. Enumerating
+# individual codes is the thing to avoid, since the set differs per platform.
+_ABNORMAL_EXIT_FLOOR = 0xC0000000
+
+_CLI_TIMEOUT = 120
+
+
+def _died(returncode: int) -> bool:
+    """True when the process was killed rather than choosing to exit."""
+    return returncode < 0 or returncode >= _ABNORMAL_EXIT_FLOOR
+
+
 def _spawn_cli(executable: str, args: list[str]) -> subprocess.CompletedProcess:
     """One kicad-cli invocation.
 
@@ -703,14 +724,20 @@ def _spawn_cli(executable: str, args: list[str]) -> subprocess.CompletedProcess:
     env = None
     if _documents_home is not None:
         env = {**os.environ, "KICAD_DOCUMENTS_HOME": _documents_home}
-    return subprocess.run(
-        [executable] + args,
-        capture_output=True,
-        text=True,
-        errors="replace",
-        timeout=120,
-        env=env,
-    )
+    try:
+        return subprocess.run(
+            [executable] + args,
+            capture_output=True,
+            text=True,
+            errors="replace",
+            timeout=_CLI_TIMEOUT,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        raise ToolError(
+            f"kicad-cli did not finish within {_CLI_TIMEOUT}s running"
+            f" {' '.join(args[:2])!r}. Nothing was written."
+        ) from None
 
 
 def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
@@ -743,9 +770,72 @@ def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess
             f" protected folders, or allow kicad-cli.exe through. Exit code"
             f" {result.returncode}."
         )
+    # Before the *check* branch, and unconditional, for the reason the startup
+    # crash is: a process that died is not a violation count, which is the only
+    # thing check=False exists to let through.
+    if _died(result.returncode):
+        raise ToolError(_crash_message("kicad-cli", f"running {' '.join(args[:2])!r}", result))
     if check and result.returncode != 0:
         detail = result.stderr.strip() or f"no error output, exit code {result.returncode}"
         raise ToolError(f"kicad-cli failed: {detail}")
+    return result
+
+
+def _crash_message(who: str, what: str, result: subprocess.CompletedProcess) -> str:
+    """What to say when a KiCad process was killed instead of exiting.
+
+    Says the process died rather than that the operation failed, because those
+    call for different things from the user, and names the exit code, because
+    without it the message is unsearchable. Whatever output there was is
+    appended: a wx assertion sometimes lands on stdout rather than stderr, and
+    on a hard crash there is often neither.
+    """
+    tail = (result.stderr or "").strip() or (result.stdout or "").strip()
+    return (
+        f"{who} crashed while {what} (exit {result.returncode}). It was killed rather"
+        " than reporting an error, so nothing was written."
+        + (f" Output before it died: {tail[:300]}" if tail else "")
+    )
+
+
+def _run_pcbnew(
+    argv: list[str], *, what: str, timeout: int, env: dict | None = None
+) -> subprocess.CompletedProcess:
+    """Run a script under KiCad's own Python, translating the ways it dies.
+
+    Ordinary non-zero exits pass straight through, so each caller keeps its own
+    wording for the failures it understands. What this intercepts is the two it
+    cannot say anything useful about.
+
+    A crash used to surface as whatever stderr happened to hold, which for
+    ``fill_zones`` was an empty string: the message read "Zone fill failed:" and
+    stopped. Three of the nineteen boards KiCad 10 ships kill pcbnew's bindings
+    on LoadBoard, so this is a real board a user can own rather than a
+    hypothetical, and the message has to separate "your file is bad" from
+    "KiCad's bindings died on a file KiCad itself opens fine". It does not claim
+    which: a genuinely corrupt board crashes pcbnew too, and only opening it in
+    KiCad tells them apart.
+
+    A timeout used to propagate a raw TimeoutExpired out of the tool. The wx
+    prelude converts the hang that caused most of those into a fast crash, but
+    it cannot convert all of them, and a raw traceback names neither the tool
+    nor the limit.
+    """
+    try:
+        result = subprocess.run(
+            argv, capture_output=True, text=True, errors="replace", timeout=timeout, env=env
+        )
+    except subprocess.TimeoutExpired:
+        raise ToolError(
+            f"KiCad's pcbnew Python bindings did not finish {what} within {timeout}s."
+            " Nothing was written."
+        ) from None
+    if _died(result.returncode):
+        raise ToolError(
+            _crash_message("KiCad's pcbnew Python bindings", what, result)
+            + " Some valid boards trigger this, including three of the demo boards KiCad"
+            " itself ships, so open the board in KiCad to see whether KiCad can read it."
+        )
     return result
 
 

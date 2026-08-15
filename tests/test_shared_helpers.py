@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 from conftest import new_schematic
@@ -21,6 +23,7 @@ from mcp_server_kicad._shared import (
     _point_in_polygon,
     _read_kicad_bytes,
     _resolve_hierarchy_path,
+    _run_pcbnew,
     _transform_local_to_board,
 )
 
@@ -559,3 +562,115 @@ class TestBackupForExternalWrite:
             _backup_for_external_write(src, "symbol library")
         assert "has not been started" in str(exc.value)
         assert "no undo" in str(exc.value)
+
+
+def _completed(returncode: int, stdout: str = "", stderr: str = ""):
+    """A subprocess result carrying only what the code under test reads."""
+    return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
+
+
+class TestRunPcbnew:
+    """A process that died has to say so, and say it differently from one that
+    ran and reported a failure.
+
+    Before this, fill_zones raised ``f"Zone fill failed: {stderr.strip()[:400]}"``.
+    A hard crash writes nothing to stderr, so the whole message was "Zone fill
+    failed:" and stopped there: no exit code, no indication of whether the board
+    or KiCad was at fault, nothing to search for. Three of the nineteen boards
+    KiCad 10 ships kill pcbnew's bindings on LoadBoard, so that is a board a user
+    can own rather than a hypothetical.
+
+    The gate is the exit code, never the text. That is this package's existing
+    rule for _KICAD_STARTUP_CRASH, for two reasons that both apply here: stderr
+    is locale-dependent, and a process killed this way often writes none at all.
+    """
+
+    def test_a_posix_signal_reads_as_a_crash(self):
+        """Negative return codes are how POSIX reports a fatal signal."""
+        with patch("subprocess.run", return_value=_completed(-11)):
+            with pytest.raises(ToolError) as exc:
+                _run_pcbnew(["py"], what="filling zones", timeout=5)
+        assert "crashed while filling zones" in str(exc.value)
+        assert "-11" in str(exc.value)
+
+    def test_a_windows_ntstatus_reads_as_a_crash(self):
+        """0xC0000409 is what the boards that kill pcbnew's bindings exit with."""
+        with patch("subprocess.run", return_value=_completed(0xC0000409)):
+            with pytest.raises(ToolError) as exc:
+                _run_pcbnew(["py"], what="filling zones", timeout=5)
+        assert "crashed" in str(exc.value)
+        assert str(0xC0000409) in str(exc.value)
+
+    def test_the_message_does_not_blame_the_file(self):
+        """A corrupt board crashes pcbnew too, so the tool cannot tell the user
+        which it is. It points at the one test that distinguishes them."""
+        with patch("subprocess.run", return_value=_completed(0xC0000409)):
+            with pytest.raises(ToolError) as exc:
+                _run_pcbnew(["py"], what="filling zones", timeout=5)
+        assert "open the board in KiCad" in str(exc.value)
+        assert "nothing was written" in str(exc.value).lower()
+
+    def test_output_is_carried_through_when_there_is_any(self):
+        """A wx assertion sometimes lands on stdout rather than stderr, so both
+        are tried. Measured on kicad-cli 9.0.8, which reports "Unable to save
+        library" on stdout with stderr empty."""
+        with patch("subprocess.run", return_value=_completed(-6, stdout="assert failed")):
+            with pytest.raises(ToolError) as exc:
+                _run_pcbnew(["py"], what="filling zones", timeout=5)
+        assert "assert failed" in str(exc.value)
+
+    def test_an_ordinary_failure_passes_straight_through(self):
+        """Load-bearing. Without it, "raise on any non-zero" passes every other
+        case in this class while stealing every caller's own error wording."""
+        with patch("subprocess.run", return_value=_completed(1, stderr="bad layer")):
+            result = _run_pcbnew(["py"], what="filling zones", timeout=5)
+        assert result.returncode == 1
+        assert result.stderr == "bad layer"
+
+    def test_success_passes_through(self):
+        with patch("subprocess.run", return_value=_completed(0, stdout="FILLDUMP[]")):
+            assert _run_pcbnew(["py"], what="filling zones", timeout=5).stdout == "FILLDUMP[]"
+
+    def test_a_timeout_names_the_operation_and_the_limit(self):
+        """It propagated a raw TimeoutExpired out of the tool before, which names
+        neither."""
+        with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("py", 60)):
+            with pytest.raises(ToolError) as exc:
+                _run_pcbnew(["py"], what="importing the netlist", timeout=60)
+        assert "importing the netlist" in str(exc.value)
+        assert "60s" in str(exc.value)
+
+
+class TestRunCliAbnormalExit:
+    """kicad-cli is the fifth site of the same two defects, in the same file."""
+
+    def _patch(self, monkeypatch, **kw):
+        monkeypatch.setattr(_shared, "_find_kicad_cli", lambda: "/bin/kicad-cli")
+        monkeypatch.setattr(_shared, "_documents_home", None)
+        monkeypatch.delenv("KICAD_DOCUMENTS_HOME", raising=False)
+        monkeypatch.setattr(subprocess, "run", **kw)
+
+    def test_a_crash_raises_even_when_unchecked(self, monkeypatch):
+        """check=False exists for the non-zero exits ERC and DRC report
+        violation counts with. A process that died is not a violation count."""
+        self._patch(monkeypatch, value=lambda *a, **k: _completed(-11))
+        with pytest.raises(ToolError) as exc:
+            _shared._run_cli(["pcb", "drc"], check=False)
+        assert "crashed" in str(exc.value)
+
+    def test_the_startup_crash_keeps_its_own_message(self, monkeypatch):
+        """0xC0000005 is inside the abnormal range, so ordering matters: the
+        branch that knows how to repair it has to run first."""
+        self._patch(monkeypatch, value=lambda *a, **k: _completed(_shared._KICAD_STARTUP_CRASH))
+        with pytest.raises(ToolError) as exc:
+            _shared._run_cli(["version"])
+        assert "Controlled Folder" in str(exc.value)
+
+    def test_a_timeout_names_the_limit(self, monkeypatch):
+        def boom(*a, **k):
+            raise subprocess.TimeoutExpired("kicad-cli", 120)
+
+        self._patch(monkeypatch, value=boom)
+        with pytest.raises(ToolError) as exc:
+            _shared._run_cli(["pcb", "drc"], check=False)
+        assert "120s" in str(exc.value)
