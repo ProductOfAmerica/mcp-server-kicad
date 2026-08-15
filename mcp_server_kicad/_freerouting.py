@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from mcp_server_kicad._shared import _atomic_write, _kicad_root
+from mcp_server_kicad._shared import _atomic_write, _kicad_root, _run_pcbnew
 
 _GITHUB_RELEASES_URL = "https://api.github.com/repos/freerouting/freerouting/releases/latest"
 
@@ -358,13 +358,7 @@ def export_dsn(pcb_path: str, dsn_path: str) -> str | None:
         f"b = pcbnew.LoadBoard({pcb_path!r}); "
         f"pcbnew.ExportSpecctraDSN(b, {dsn_path!r})"
     )
-    result = subprocess.run(
-        [python, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        env=env,
-    )
+    result = _run_pcbnew([python, "-c", script], what="exporting the DSN", timeout=60, env=env)
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
         return f"DSN export failed: {detail}"
@@ -390,12 +384,8 @@ def import_ses(pcb_path: str, ses_path: str, output_path: str) -> str | None:
         f"pcbnew.ImportSpecctraSES(b, {ses_path!r}); "
         f"pcbnew.SaveBoard({output_path!r}, b)"
     )
-    result = subprocess.run(
-        [python, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=60,
-        env=env,
+    result = _run_pcbnew(
+        [python, "-c", script], what="importing the SES route", timeout=60, env=env
     )
     if result.returncode != 0:
         detail = result.stderr.strip() or result.stdout.strip() or f"exit code {result.returncode}"
