@@ -2,7 +2,7 @@
   "$schema": "https://raw.githubusercontent.com/anthropics/mcpb/main/schemas/mcpb-manifest-v0.4.schema.json",
   "manifest_version": "0.4",
   "name": "kicad",
-  "display_name": "KiCad",
+  "display_name": "KiCad Tools",
   "icon": "icon.png",
   "version": "0.0.0",
   "description": "Byte-preserving KiCad automation: schematics, PCB layout, ERC, DRC, exports",
