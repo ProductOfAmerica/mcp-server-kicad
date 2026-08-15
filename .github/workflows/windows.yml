@@ -57,9 +57,16 @@ jobs:
           $size = (Get-Item $exe).Length
           Write-Host "downloaded $size bytes"
           if ($size -lt 500MB) { throw "installer is only $size bytes; the download did not complete." }
-          # NSIS silent install. /S has to be uppercase.
-          $p = Start-Process -FilePath $exe -ArgumentList '/S' -Wait -PassThru
+          # /S is the NSIS silent switch and has to be uppercase; /allusers is
+          # what puts it under Program Files rather than asking for a scope.
+          # Both come from winget's own KiCad manifest, which is the thing that
+          # makes `winget install KiCad.KiCad` work: InstallerType nullsoft
+          # (hence /S) with Custom "/allusers" on the machine-scope entry.
+          # Measured 2026-08-15: /S alone exited 666660 after three seconds,
+          # having installed nothing.
+          $p = Start-Process -FilePath $exe -ArgumentList '/S','/allusers' -Wait -PassThru
           Write-Host "installer exited $($p.ExitCode)"
+          if ($p.ExitCode -ne 0) { throw "the installer exited $($p.ExitCode)." }
           # The guard stays, and it is what attributed both outages above to
           # this step rather than to a probe three steps later.
           $cli = Get-ChildItem 'C:\Program Files\KiCad' -Recurse -Filter kicad-cli.exe -ErrorAction SilentlyContinue | Select-Object -First 1
