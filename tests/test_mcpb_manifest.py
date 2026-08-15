@@ -71,6 +71,22 @@ def test_versions_are_placeholders():
     assert pin in (MCPB_DIR / "pyproject.toml").read_text(encoding="utf-8")
 
 
+def test_the_two_display_names_agree():
+    """One product, two galleries, two files that nothing else links.
+
+    Claude Desktop shows manifest.json's display_name; the MCP Registry shows
+    server.json's title. Both were "KiCad", which reads as the application
+    itself rather than as third-party tooling for it, and no tool on KiCad's
+    own external-tools page takes the bare name. Renaming one file and missing
+    the other is silent: each gallery looks right on its own.
+    """
+    title = json.loads((REPO_ROOT / "server.json").read_text(encoding="utf-8"))["title"]
+    assert MANIFEST["display_name"] == title, (
+        f"manifest says {MANIFEST['display_name']!r}, registry says {title!r}"
+    )
+    assert MANIFEST["display_name"] != "KiCad", "the bare name claims to be the application"
+
+
 def test_the_icon_the_manifest_names_is_actually_in_the_bundle_dir():
     """A missing icon is silent: the manifest still validates and the bundle
     still packs, and the host just shows a default tile."""
