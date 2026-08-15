@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import os
+import re
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
-from conftest import new_schematic
+from conftest import new_schematic, requires_cli
 from kiutils.footprint import Footprint
 from kiutils.items.common import Position
 from kiutils.items.fpitems import FpCircle, FpLine, FpRect
@@ -20,11 +22,15 @@ from mcp_server_kicad._shared import (
     _backup_for_external_write,
     _courtyard_bbox_cst,
     _ensure_dir,
+    _kicad_root,
     _point_in_polygon,
     _read_kicad_bytes,
     _resolve_hierarchy_path,
+    _resolve_system_lib,
+    _run_cli,
     _run_pcbnew,
     _transform_local_to_board,
+    _upgrade_out_of_place,
 )
 
 
@@ -561,7 +567,9 @@ class TestBackupForExternalWrite:
         with pytest.raises(ToolError) as exc:
             _backup_for_external_write(src, "symbol library")
         assert "has not been started" in str(exc.value)
-        assert "no undo" in str(exc.value)
+        # "no undo" was in this message when the upgrade rewrote the original
+        # in place. It does not any more, so promising it would be false.
+        assert "back up" in str(exc.value)
 
 
 def _completed(returncode: int, stdout: str = "", stderr: str = ""):
@@ -674,3 +682,195 @@ class TestRunCliAbnormalExit:
         with pytest.raises(ToolError) as exc:
             _shared._run_cli(["pcb", "drc"], check=False)
         assert "120s" in str(exc.value)
+
+
+class TestUpgradeOutOfPlace:
+    """kicad-cli truncates the file it is given. So it is not given the user's.
+
+    Measured on KiCad 9 locally and on both KiCad 10.0.5 runners before this
+    landed: ``st_ino`` unchanged across ``sym upgrade`` and ``fp upgrade``, and a
+    concurrent reader caught a zero-byte read every time, with Windows catching 8
+    further partial sizes. That is the exposure ``_atomic_write`` exists to close.
+
+    The assertion here is on ``st_ino``, not on a torn-read count. An atomic
+    replace changes the inode and a truncate-and-rewrite does not, which is
+    deterministic; counting torn reads proves truncation when it fires and proves
+    nothing when it misses, because the write can outrun the reader. That belongs
+    in a probe, and it is what the probe measured.
+    """
+
+    def _stale_sym(self, tmp_path):
+        """A copy of a stock symbol library, writable, at a wound-back stamp."""
+        stock = _resolve_system_lib("Device")
+        assert stock, "requires_cli passed but the stock symbol libraries are missing"
+        lib = tmp_path / "Probe.kicad_sym"
+        # copyfile, not copy2: the stock libraries ship read-only and a
+        # mode-preserving copy makes kicad-cli refuse to save.
+        shutil.copyfile(stock, lib)
+        lib.chmod(0o644)
+        return lib
+
+    def _stale_pretty(self, tmp_path, stale=1):
+        """A copy of a stock .pretty with *stale* members wound back."""
+        root = _kicad_root()
+        assert root, "requires_cli passed but the KiCad root did not resolve"
+        src = next(
+            p
+            for sub in ("share/kicad/footprints", "SharedSupport/footprints")
+            if (d := root / sub).is_dir()
+            for p in sorted(d.iterdir())
+            if p.suffix == ".pretty" and len(list(p.glob("*.kicad_mod"))) >= 2
+        )
+        lib = tmp_path / "Probe.pretty"
+        shutil.copytree(src, lib)
+        mods = sorted(lib.glob("*.kicad_mod"))
+        for mod in mods:
+            mod.chmod(0o644)
+        for mod in mods[:stale]:
+            # By pattern, not by literal: KiCad 9 ships 20241229 and KiCad 10
+            # ships 20260206, and hardcoding either makes this a no-op on the
+            # other. That exact mistake made a CI probe answer CANNOT-ANSWER.
+            mod.write_bytes(re.sub(rb"\(version \d+\)", b"(version 20221018)", mod.read_bytes()))
+        return lib, mods
+
+    @requires_cli
+    def test_a_symbol_library_is_replaced_not_truncated(self, tmp_path):
+        lib = self._stale_sym(tmp_path)
+        before = lib.stat().st_ino
+        changed = _upgrade_out_of_place(lib, "symbol library", ["sym", "upgrade", "--force"])
+        assert changed == [lib]
+        assert lib.stat().st_ino != before, (
+            "the inode is unchanged, so the file was truncated and rewritten in place"
+        )
+
+    @requires_cli
+    def test_a_footprint_library_is_replaced_not_truncated(self, tmp_path):
+        lib, mods = self._stale_pretty(tmp_path)
+        before = mods[0].stat().st_ino
+        changed = _upgrade_out_of_place(lib, "footprint library", ["fp", "upgrade"])
+        assert changed == [mods[0]]
+        assert mods[0].stat().st_ino != before
+
+    @requires_cli
+    def test_only_stale_members_are_written(self, tmp_path):
+        """kicad-cli touches the mtime of every file in the library and changes
+        the CONTENT of only the stale ones, measured 2026-08-15. Comparing bytes
+        rather than mtimes means the fresh members are not rewritten at all, so
+        they keep both their inode and their timestamp.
+        """
+        lib, mods = self._stale_pretty(tmp_path, stale=1)
+        fresh = mods[1:]
+        assert fresh, "this library was supposed to have a second footprint"
+        before = {m: (m.stat().st_ino, m.stat().st_mtime_ns) for m in fresh}
+        _upgrade_out_of_place(lib, "footprint library", ["fp", "upgrade"])
+        for m in fresh:
+            assert (m.stat().st_ino, m.stat().st_mtime_ns) == before[m], f"{m.name} was rewritten"
+
+    @requires_cli
+    def test_a_current_library_writes_nothing(self, tmp_path):
+        """fp upgrade no-ops on a current library, prints "Footprint library was
+        not updated" and exits 0. Nothing may reach the disk."""
+        lib, mods = self._stale_pretty(tmp_path, stale=0)
+        before = {m: (m.stat().st_ino, m.stat().st_mtime_ns) for m in mods}
+        assert _upgrade_out_of_place(lib, "footprint library", ["fp", "upgrade"]) == []
+        for m in mods:
+            assert (m.stat().st_ino, m.stat().st_mtime_ns) == before[m]
+
+    @requires_cli
+    def test_the_result_matches_an_in_place_upgrade(self, tmp_path):
+        """The whole approach rests on this: if kicad-cli's output depended on
+        where the file sat, upgrading a copy would produce a different library.
+        Measured before the design was written, and pinned here."""
+        out_of_place = self._stale_sym(tmp_path)
+        in_place = tmp_path / "InPlace.kicad_sym"
+        shutil.copyfile(out_of_place, in_place)
+        in_place.chmod(0o644)
+        _upgrade_out_of_place(out_of_place, "symbol library", ["sym", "upgrade", "--force"])
+        _run_cli(["sym", "upgrade", "--force", str(in_place)])
+        assert out_of_place.read_bytes() == in_place.read_bytes()
+
+    def test_a_changed_file_set_refuses_with_the_library_intact(self, tmp_path, monkeypatch):
+        """If the upgrade adds or drops a footprint, neither carrying the change
+        over nor ignoring it is defensible, so nothing is written at all."""
+        lib = tmp_path / "Probe.pretty"
+        lib.mkdir()
+        (lib / "A.kicad_mod").write_bytes(b'(footprint "A")\n')
+        before = (lib / "A.kicad_mod").read_bytes()
+
+        def sneaky(args, check=True):
+            # Stand in for a kicad-cli that dropped a file, without needing one.
+            (Path(args[-1]) / "B.kicad_mod").write_bytes(b'(footprint "B")\n')
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        monkeypatch.setattr(_shared, "_run_cli", sneaky)
+        with pytest.raises(ToolError) as exc:
+            _upgrade_out_of_place(lib, "footprint library", ["fp", "upgrade"])
+        assert "changed which files" in str(exc.value)
+        assert "B.kicad_mod" in str(exc.value)
+        assert (lib / "A.kicad_mod").read_bytes() == before
+        assert not (lib / "B.kicad_mod").exists()
+
+    def test_a_read_only_source_is_still_upgradable(self, tmp_path, monkeypatch):
+        """The stock libraries ship read-only and copytree preserves mode, which
+        made kicad-cli exit 2 with "Unable to save library" on STDOUT while
+        stderr stayed empty. The scratch copy has to be made writable."""
+        lib = tmp_path / "Probe.kicad_sym"
+        lib.write_bytes(b"(kicad_symbol_lib)\n")
+        lib.chmod(0o444)
+        seen = {}
+
+        def fake(args, check=True):
+            target = Path(args[-1])
+            seen["writable"] = os.access(target, os.W_OK)
+            # The same bytes back. This test is about the copy handed to
+            # kicad-cli being writable; writing to a read-only ORIGINAL is a
+            # separate and correct refusal, pinned in the next test.
+            target.write_bytes(b"(kicad_symbol_lib)\n")
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        monkeypatch.setattr(_shared, "_run_cli", fake)
+        try:
+            assert _upgrade_out_of_place(lib, "symbol library", ["sym", "upgrade"]) == []
+        finally:
+            lib.chmod(0o644)
+        assert seen["writable"], "kicad-cli was handed a read-only copy it cannot write"
+
+    def test_a_read_only_original_is_platform_shaped(self, tmp_path, monkeypatch):
+        """Found by the test above, and it splits by platform, which the first
+        version of this test got wrong by asserting the Windows outcome
+        everywhere and going red on Linux and macOS.
+
+        Replacing a file on POSIX needs write permission on the DIRECTORY, not on
+        the file, so a read-only library upgrades there without complaint. Only
+        Windows refuses. That is also why the defect this pins can only exist on
+        Windows: _atomic_write copies the destination's mode onto its temp, so a
+        read-only destination produced a read-only temp that Windows then refused
+        to unlink, and the cleanup raised over the top of the real failure with a
+        message naming the TEMP path, which is the one thing that function's own
+        comment says never to do.
+        """
+        lib = tmp_path / "Probe.kicad_sym"
+        lib.write_bytes(b"(kicad_symbol_lib)\n")
+        lib.chmod(0o444)
+
+        def fake(args, check=True):
+            Path(args[-1]).write_bytes(b"(kicad_symbol_lib upgraded)\n")
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        monkeypatch.setattr(_shared, "_run_cli", fake)
+        try:
+            if os.name == "nt":
+                with pytest.raises(OSError) as exc:
+                    _upgrade_out_of_place(lib, "symbol library", ["sym", "upgrade"])
+                assert ".tmp" not in str(exc.value), f"names a temp path: {exc.value}"
+                assert "Probe.kicad_sym" in str(exc.value)
+                assert lib.read_bytes() == b"(kicad_symbol_lib)\n", "the original was modified"
+            else:
+                assert _upgrade_out_of_place(lib, "symbol library", ["sym", "upgrade"]) == [lib]
+                assert lib.read_bytes() == b"(kicad_symbol_lib upgraded)\n"
+        finally:
+            lib.chmod(0o644)
+        # Either way, no temp survives: the failure path unlinks it and the
+        # success path renames it, and a leftover would be picked up by the
+        # project scan and the suite's own rglob.
+        assert not list(tmp_path.glob("*.tmp")), "a temp file was left behind"

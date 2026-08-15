@@ -4,6 +4,7 @@ import math
 import os
 import shutil
 import subprocess
+import tempfile
 import time
 import uuid
 from functools import lru_cache
@@ -299,11 +300,12 @@ def _read_kicad_bytes(path: str | Path, kind: str) -> bytes:
 def _backup_for_external_write(path: str | Path, kind: str) -> Path:
     """Copy *path* to a sibling ``.bak`` before an external process rewrites it.
 
-    For the two library upgrades. kicad-cli's ``sym upgrade`` and ``fp upgrade``
-    rewrite the user's files in place, so they are outside both halves of the
-    invariant: not atomic, and not reversible. The ADR calls ``fp upgrade`` the
-    sharpest of the four subprocess writers for exactly that reason, because it
-    rewrites every .kicad_mod in a library at once.
+    For the two library upgrades. This is the undo for a migration that
+    SUCCEEDED, which is a different concern from a write that failed halfway:
+    `_upgrade_out_of_place` handles the second, by never letting kicad-cli touch
+    the user's file at all. Until that landed this copy was also the only thing
+    standing between the user and a truncated library, and it was never able to
+    do that job.
 
     This reverses a decision recorded on 2026-08-10, which rejected "a pre-write
     copy" as "a backup with no lifecycle owner". That objection is answered
@@ -320,25 +322,119 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
     dest = src.with_name(src.name + ".bak")
     try:
         if src.is_dir():
-            # A .pretty is a directory of .kicad_mod files. Build the replacement
-            # beside it and swap, so an interrupted copy cannot leave a partial
-            # backup standing where a whole one used to be.
+            # A .pretty is a directory of .kicad_mod files, and os.replace will
+            # not put one over an existing directory: ENOTEMPTY on POSIX, and
+            # MoveFileEx refuses outright on Windows. So the old backup has to
+            # be moved out of the way rather than replaced in place.
             staging = src.with_name(src.name + f".bak.{os.getpid()}.tmp")
-            if staging.exists():
-                shutil.rmtree(staging)
+            retired = src.with_name(src.name + f".bak.{os.getpid()}.old")
+            for leftover in (staging, retired):
+                if leftover.exists():
+                    shutil.rmtree(leftover)
             shutil.copytree(src, staging)
-            if dest.exists():
-                shutil.rmtree(dest)
+            # Retire the old backup rather than deleting it first. Deleting it
+            # first left a window in which NO backup existed at all: the copy
+            # was complete and safe, but a crash between the delete and the
+            # rename took the previous good one with it.
+            had_old = dest.exists()
+            if had_old:
+                os.replace(dest, retired)
             os.replace(staging, dest)
+            if had_old:
+                shutil.rmtree(retired, ignore_errors=True)
         else:
             _atomic_write(dest, src.read_bytes())
-    except OSError as exc:
+    # shutil.Error is NOT an OSError: copytree aggregates per-file failures into
+    # it, so catching OSError alone let a partly-failed tree copy out as a raw
+    # traceback naming neither the tool nor the library.
+    except (OSError, shutil.Error) as exc:
+        detail = getattr(exc, "strerror", None) or exc
         raise ToolError(
             f"Could not back up the {kind} to {dest.name} before upgrading it:"
-            f" {exc.strerror or exc}. The upgrade rewrites the original in place"
-            " with no undo, so it has not been started."
+            f" {detail}. The upgrade has not been started."
         ) from exc
     return dest
+
+
+def _upgrade_out_of_place(path: str | Path, kind: str, argv: list[str]) -> list[Path]:
+    """Run an in-place kicad-cli rewrite against a copy. Returns what changed.
+
+    ``sym upgrade`` and ``fp upgrade`` truncate the user's file and write it
+    again, which is the exposure `_atomic_write` exists to close. Measured on
+    KiCad 9 locally and on both KiCad 10.0.5 runners: ``st_ino`` unchanged
+    across the write, and a concurrent reader caught a zero-byte read every
+    time, with Windows catching 8 further partial sizes on ``sym upgrade``.
+
+    Nothing here reimplements the migration, which is KiCad's to do and the
+    reason these two tools exist. kicad-cli still performs it; it just performs
+    it on a copy, and the result lands through `_atomic_write`, so the user's
+    file is replaced whole or not at all.
+
+    The scratch directory can be the system temp because nothing is renamed
+    across it: bytes are read out and handed to `_atomic_write`, whose own temp
+    is a sibling of the real target and therefore never crosses a filesystem.
+    That is what makes this cheap. Moving a directory into place instead would
+    have needed an atomic directory rename, which does not exist portably.
+
+    Measured 2026-08-15 before writing this, because each answer changes the
+    code: an out-of-place upgrade is byte-identical to an in-place one (the
+    whole approach rests on that); ``fp upgrade`` touches the mtime of every
+    file in a library but changes the CONTENT only of the stale ones, which is
+    why the comparison below is on bytes and why a file kicad-cli rewrote to
+    the same content keeps its mtime here; and it does not require the
+    directory to end in ``.pretty``, though the copy keeps the name anyway.
+
+    Per-file atomicity, not library-level. A crash midway through a .pretty
+    leaves some footprints upgraded and some not, with no file torn. That is
+    the same boundary the ADR already draws for fan-out writes.
+    """
+    src = Path(path)
+    # ponytail: a .pretty is now copied twice per upgrade, once for the .bak and
+    # once for the scratch. fp upgrade is a rare, explicitly destructive call;
+    # measure before caring.
+    with tempfile.TemporaryDirectory() as tmp:
+        scratch = Path(tmp) / src.name
+        if src.is_dir():
+            shutil.copytree(src, scratch)
+        else:
+            # copyfile, not copy2: the stock libraries ship read-only and a
+            # mode-preserving copy makes kicad-cli exit 2 with "Unable to save
+            # library" on STDOUT while stderr stays empty. Measured, and it read
+            # as the upgrade declining to write rather than as a refusal.
+            shutil.copyfile(src, scratch)
+        for member in [scratch, *scratch.rglob("*")] if src.is_dir() else [scratch]:
+            if member.is_file():
+                member.chmod(0o644)
+
+        _run_cli([*argv, str(scratch)])
+
+        if not src.is_dir():
+            after = scratch.read_bytes()
+            if after == src.read_bytes():
+                return []
+            _atomic_write(src, after)
+            return [src]
+
+        produced = {p.relative_to(scratch) for p in scratch.rglob("*") if p.is_file()}
+        original = {p.relative_to(src) for p in src.rglob("*") if p.is_file()}
+        if produced != original:
+            # Refuse with the library intact rather than guess. Deleting a
+            # footprint because kicad-cli did, or leaving one it added behind,
+            # are both worse than stopping while nothing has been written.
+            gained = sorted(str(p) for p in produced - original)
+            lost = sorted(str(p) for p in original - produced)
+            raise ToolError(
+                f"The {kind} upgrade changed which files the library holds, so nothing was"
+                f" written and the original is untouched. Added: {gained or 'none'}."
+                f" Removed: {lost or 'none'}."
+            )
+        changed = []
+        for rel in sorted(produced):
+            new = (scratch / rel).read_bytes()
+            if new != (src / rel).read_bytes():
+                _atomic_write(src / rel, new)
+                changed.append(src / rel)
+        return changed
 
 
 def _ensure_dir(path: str | Path, kind: str = "output directory") -> Path:
@@ -411,7 +507,16 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
     except BaseException:
         # BaseException, not Exception: a KeyboardInterrupt mid-write would
         # otherwise leave the temp behind.
-        tmp.unlink(missing_ok=True)
+        try:
+            tmp.unlink(missing_ok=True)
+        except PermissionError:
+            # copymode above put the destination's mode on the temp, so a
+            # read-only destination makes a read-only temp that Windows then
+            # refuses to unlink. Without this the cleanup raises over the top of
+            # the real failure, with a message naming the temp path, which is
+            # the one thing this function's own comment says never to do.
+            tmp.chmod(0o600)
+            tmp.unlink(missing_ok=True)
         raise
 
 

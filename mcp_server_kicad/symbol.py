@@ -21,6 +21,7 @@ from mcp_server_kicad._shared import (
     _read_kicad_bytes,
     _require_kicad_path,
     _run_cli,
+    _upgrade_out_of_place,
     build_server,
 )
 from mcp_server_kicad.models import MultiFileExportResult, RectangleSpec, SymbolPinSpec
@@ -447,17 +448,21 @@ def export_symbol_svg(
 def upgrade_symbol_lib(symbol_lib_path: str) -> str:
     """Upgrade a symbol library to current KiCad format.
 
-    kicad-cli rewrites the file in place, so this does not go through the
-    server's atomic write. A copy is taken beside it first, at
-    ``<name>.kicad_sym.bak``, and the result names it. That copy is the undo:
-    there is exactly one, and every run overwrites it.
+    KiCad performs the migration, as it should, but it performs it on a copy:
+    the result lands through the server's atomic write, so your library is
+    replaced whole or not at all and can never be left truncated. A backup is
+    still taken beside it at ``<name>.kicad_sym.bak``, and the result names it,
+    because that is the undo for an upgrade that SUCCEEDED and is not something
+    an atomic write can offer. There is exactly one, and every run overwrites it.
 
     Args:
         symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.
     """
     _require_kicad_path(symbol_lib_path, "symbol library")
     backup = _backup_for_external_write(symbol_lib_path, "symbol library")
-    _run_cli(["sym", "upgrade", symbol_lib_path])
+    changed = _upgrade_out_of_place(symbol_lib_path, "symbol library", ["sym", "upgrade"])
+    if not changed:
+        return f"{symbol_lib_path} is already in the current format; nothing was written."
     return f"Successfully upgraded {symbol_lib_path}. Previous version saved to {backup}"
 
 
