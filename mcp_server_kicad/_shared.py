@@ -839,6 +839,27 @@ def _run_pcbnew(
     return result
 
 
+@lru_cache(maxsize=1)
+def _kicad_cli_major() -> int | None:
+    """Major version of the resolved kicad-cli, or None when it cannot be read.
+
+    None means "no opinion", and every caller must behave exactly as it did
+    before rather than guessing. Same contract as ``pcbnew_major``, for the same
+    reason: a probe that becomes a failure mode of its own is worse than the
+    version check it was added for.
+
+    Reads bare ``kicad-cli version``, which prints "10.0.5". Deliberately not
+    ``--format about``, which the get_version tool uses: that is a multi-line
+    blob meant for a human, and parsing it here would couple this to its layout.
+    """
+    try:
+        out = _run_cli(["version"], check=False).stdout.strip()
+    except Exception:
+        return None
+    head = out.split(".")[0]
+    return int(head) if head.isdigit() else None
+
+
 def _file_meta(path: str) -> dict:
     """Return basic file metadata."""
     p = Path(path)

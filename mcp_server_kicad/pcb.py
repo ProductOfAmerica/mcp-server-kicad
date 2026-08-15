@@ -55,6 +55,7 @@ from mcp_server_kicad._shared import (
     _file_meta,
     _gen_uuid,
     _keepout_dict,
+    _kicad_cli_major,
     _kicad_root,
     _linearize_arc,
     _point_in_polygon,
@@ -2167,6 +2168,37 @@ def _unfilled_zone_note(pcb_path: str, consequence: str = _NO_COPPER) -> str | N
     return f"{unfilled} copper zone{plural} no computed fill. {consequence} Run fill_zones first."
 
 
+#: KiCad 10 can refill zones in memory before it plots, and documents that it
+#: does not save the board afterwards. Measured on both KiCad 10.0.5 runners
+#: 2026-08-15 rather than taken from the docs: `pcb drc --refill-zones` without
+#: --save-board leaves the board byte-identical, and so does
+#: `pcb export gerbers --check-zones`. The control in that probe confirmed the
+#: instrument could see a save at all, by running --save-board on the same board
+#: and watching it gain filled_polygon. KiCad 9 has neither flag and rejects
+#: both as unrecognized arguments.
+_ZONE_REFILL_MIN_MAJOR = 10
+
+
+def _refill_or_note(
+    flag: str, pcb_path: str, consequence: str = _NO_COPPER
+) -> tuple[list[str], str | None]:
+    """Either the flag that fixes the output, or the note that warns about it.
+
+    Returned together because they are mutually exclusive and quietly getting
+    both wrong is easy: pass --check-zones and the zones are filled, so the note
+    saying "they contribute no copper to this output" is not merely redundant,
+    it is false. Emitting the argv fragment and the note from one place makes
+    that unrepresentable rather than a rule to remember at six call sites.
+
+    An unreadable CLI version means no opinion, so the note is kept and the
+    behaviour is exactly what it was before the flag existed.
+    """
+    major = _kicad_cli_major()
+    if major is not None and major >= _ZONE_REFILL_MIN_MAJOR:
+        return [flag], None
+    return [], _unfilled_zone_note(pcb_path, consequence)
+
+
 @mcp.tool(annotations=_EXPORT)
 def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> DrcResult:
     """Run Design Rules Check (DRC) on a PCB.
@@ -2181,8 +2213,18 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> DrcResult
     _require_kicad_path(pcb_path, "board")
     out_dir = output_dir or str(Path(pcb_path).parent)
     out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-drc.json"))
+    # --refill-zones rather than --check-zones: pcb drc does not take the latter,
+    # and the two are not spelled the same for the same job. DRC's failure mode
+    # is also different from an export's, hence its own consequence sentence.
+    refill, note = _refill_or_note(
+        "--refill-zones",
+        pcb_path,
+        "DRC reads the stored fill, so it reports connectivity errors the design does not have.",
+    )
     _run_cli(
-        ["pcb", "drc", "--format", "json", "--severity-all", "--output", out_path, pcb_path],
+        ["pcb", "drc", "--format", "json", "--severity-all", "--output", out_path]
+        + refill
+        + [pcb_path],
         check=False,
     )
     try:
@@ -2199,11 +2241,7 @@ def run_drc(pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR) -> DrcResult
         violations=violations,
         unconnected_count=len(unconnected),
         unconnected_items=unconnected,
-        note=_unfilled_zone_note(
-            pcb_path,
-            "DRC reads the stored fill, so it reports connectivity errors the "
-            "design does not have.",
-        ),
+        note=note,
     )
 
 
@@ -2254,7 +2292,8 @@ def export_pcb(
             raise ToolError("layers parameter is required for DXF export")
         out_dir = output_dir or str(Path(pcb_path).parent)
         out_path = str(Path(out_dir) / (Path(pcb_path).stem + ".dxf"))
-        args = ["pcb", "export", "dxf", pcb_path, "-o", out_path, "-l", ",".join(layers)]
+        refill, note = _refill_or_note("--check-zones", pcb_path)
+        args = ["pcb", "export", "dxf", pcb_path, "-o", out_path, "-l", ",".join(layers)] + refill
         if units != "in":
             args += ["--output-units", units]
         if exclude_refdes:
@@ -2274,7 +2313,7 @@ def export_pcb(
             size_bytes=meta["size_bytes"],
             format="dxf",
             layers=layers,
-            note=_unfilled_zone_note(pcb_path),
+            note=note,
         )
 
     # PDF / SVG path
@@ -2285,17 +2324,11 @@ def export_pcb(
         layer_list = layers or ["F.Cu", "B.Cu"]
     else:
         layer_list = layers or ["F.Cu"]
+    refill, note = _refill_or_note("--check-zones", pcb_path)
     _run_cli(
-        [
-            "pcb",
-            "export",
-            fmt,
-            "--layers",
-            ",".join(layer_list),
-            "--output",
-            out_path,
-            pcb_path,
-        ]
+        ["pcb", "export", fmt, "--layers", ",".join(layer_list), "--output", out_path]
+        + refill
+        + [pcb_path]
     )
     meta = _file_meta(out_path)
     return PcbExportResult(
@@ -2303,7 +2336,7 @@ def export_pcb(
         size_bytes=meta["size_bytes"],
         format=fmt,
         layers=layer_list,
-        note=_unfilled_zone_note(pcb_path),
+        note=note,
     )
 
 
@@ -2342,19 +2375,12 @@ def export_gerbers(
         # "exit 0"; globbing rather than predicting the name also survives
         # user-renamed layers. The scratch dir sits inside out_dir so
         # os.replace never crosses filesystems.
+        refill, note = _refill_or_note("--check-zones", pcb_path)
         with tempfile.TemporaryDirectory(dir=out_dir) as tmp_dir:
             result = _run_cli(
-                [
-                    "pcb",
-                    "export",
-                    "gerbers",
-                    "--layers",
-                    layer,
-                    "--no-protel-ext",
-                    "--output",
-                    tmp_dir,
-                    pcb_path,
-                ]
+                ["pcb", "export", "gerbers", "--layers", layer, "--no-protel-ext"]
+                + refill
+                + ["--output", tmp_dir, pcb_path]
             )
             produced = list(Path(tmp_dir).glob("*.gbr"))
             if len(produced) != 1:
@@ -2371,20 +2397,23 @@ def export_gerbers(
             count=1,
             size_bytes=meta["size_bytes"],
             layer=layer,
-            note=_unfilled_zone_note(pcb_path),
+            note=note,
         )
 
     # Multi-layer mode: directory of files
     out = output_dir or str(Path(pcb_path).parent / "gerbers")
     _ensure_dir(out)
+    refill, note = _refill_or_note("--check-zones", pcb_path)
     cmd = ["pcb", "export", "gerbers"]
     if layers:
         cmd += ["--layers", ",".join(layers)]
-    cmd += ["--output", out, pcb_path]
+    cmd += refill + ["--output", out, pcb_path]
     _run_cli(cmd)
     files = sorted(Path(out).glob("*"))
     drill_file_names: list[str] = []
     if include_drill:
+        # No refill flag here: pcb export drill does not take one, and drilling
+        # does not read zone copper anyway.
         _run_cli(["pcb", "export", "drill", "--output", out, pcb_path])
         drill_files = sorted(Path(out).glob("*.drl")) + sorted(Path(out).glob("*.DRL"))
         drill_file_names = [f.name for f in drill_files]
@@ -2395,7 +2424,7 @@ def export_gerbers(
         count=len(files),
         drill_files=drill_file_names,
         drill_count=len(drill_file_names),
-        note=_unfilled_zone_note(pcb_path),
+        note=note,
     )
 
 
@@ -2529,6 +2558,8 @@ def export_ipc2581(
         path=meta["path"],
         size_bytes=meta["size_bytes"],
         format="ipc2581",
+        # The one export that keeps the note on every KiCad: --check-zones is
+        # not offered on ipc2581, only on dxf, gerbers, pdf, ps and svg.
         note=_unfilled_zone_note(pcb_path),
     )
 
