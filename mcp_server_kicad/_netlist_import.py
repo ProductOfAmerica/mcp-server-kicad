@@ -14,8 +14,6 @@ line of stdout; on abort writes to stderr and exits nonzero.
 
 from __future__ import annotations
 
-import argparse
-import json
 import os
 import sys
 import xml.etree.ElementTree as ET
@@ -72,10 +70,13 @@ def resolve_pretty(lib: str, lib_dirs: list[str]) -> str | None:
     return None
 
 
-def grid_slot(k: int, ax: int, ay: int, pitch: int) -> tuple[int, int]:
+def grid_slot(k: int, ax: float, ay: float, pitch: float) -> tuple[float, float]:
     """Deterministic cluster slot for the k-th newly added footprint.
 
     10 columns, fixed pitch, growing downward (+Y) from anchor (ax, ay).
+
+    Unit-agnostic, and it has to be: it was written for pcbnew, which works
+    in integer nanometres, and the CST import calls it in millimetres.
     """
     # ponytail: fixed 10mm pitch, big footprints may overlap in the cluster;
     # courtyard-aware packing if it ever matters
@@ -101,159 +102,15 @@ def new_summary() -> dict:
     }
 
 
-def apply(
-    netlist_path: str, pcb_path: str, lib_dirs: list[str], delete_stale: bool = False
-) -> dict:
-    """Apply the netlist to the board and save it. Returns the summary dict."""
-    import pcbnew  # pyright: ignore[reportMissingImports] — only KiCad's interpreter has this
-
-    components, nets = parse_netlist(netlist_path)
-    summary = new_summary()
-
-    board = pcbnew.LoadBoard(pcb_path) if os.path.exists(pcb_path) else pcbnew.NewBoard(pcb_path)
-
-    # Anchor for the new-footprint cluster: strictly below all existing
-    # content (+Y is down), computed before anything is added.
-    bbox = board.ComputeBoundingBox(False)
-    pitch = pcbnew.FromMM(10)
-    if bbox.GetWidth() > 0 or bbox.GetHeight() > 0:
-        ax, ay = bbox.GetLeft(), bbox.GetBottom() + pitch
-    else:
-        ax = ay = pcbnew.FromMM(25.4)
-
-    # --- Components, matched by reference (sorted: deterministic layout) ---
-    k = 0
-    for comp in sorted(components, key=lambda c: c["ref"]):
-        ref, value, fpid = comp["ref"], comp["value"], comp["footprint"]
-        existing = board.FindFootprintByReference(ref)
-
-        unchanged = existing is not None and (
-            not fpid or existing.GetFPID().GetUniStringLibId() == fpid
-        )
-        if unchanged:
-            if existing.GetValue() != value:
-                existing.SetValue(value)
-                summary["value_updated"].append(ref)
-            continue
-
-        # New footprint needed (fresh add or FPID swap): load it first.
-        if ":" not in fpid:
-            summary["skipped"].append({"ref": ref, "reason": "no_footprint_assigned"})
-            continue
-        lib, name = fpid.split(":", 1)
-        pretty = resolve_pretty(lib, lib_dirs)
-        if pretty is None:
-            summary["skipped"].append({"ref": ref, "reason": f"footprint_lib_not_found:{lib}"})
-            continue
-        fp = pcbnew.FootprintLoad(pretty, name)
-        if fp is None:
-            summary["skipped"].append({"ref": ref, "reason": f"footprint_not_found:{fpid}"})
-            continue
-
-        # FootprintLoad returns a prefix-less FPID; restore the nickname
-        # or the saved board loses the "Lib:" half.
-        fp.SetFPID(pcbnew.LIB_ID(lib, name))
-        fp.SetReference(ref)
-        fp.SetValue(value)
-        if comp["path"]:
-            try:
-                fp.SetPath(pcbnew.KIID_PATH(comp["path"]))
-            except Exception:
-                pass  # GUI F8 linkage only; never worth failing the import
-
-        if existing is None:
-            x, y = grid_slot(k, ax, ay, pitch)
-            k += 1
-            fp.SetPosition(pcbnew.VECTOR2I(x, y))
-            board.Add(fp)
-            summary["added"].append(ref)
-        else:
-            # Swap preserving placement. SetLayer would not mirror pads or
-            # text; Flip is the only correct way to change sides.
-            pos = existing.GetPosition()
-            orient = existing.GetOrientation()
-            flipped = existing.IsFlipped()
-            locked = existing.IsLocked()
-            board.Remove(existing)
-            fp.SetPosition(pos)
-            fp.SetOrientation(orient)
-            if flipped:
-                fp.Flip(pos, pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
-            fp.SetLocked(locked)
-            board.Add(fp)
-            summary["fpid_changed"].append(ref)
-
-    # --- Nets: add-only. Codes are never renumbered, so existing tracks
-    # keep valid nets without any remapping. ---
-    for net in nets:
-        if board.FindNet(net["name"]) is None:
-            board.Add(pcbnew.NETINFO_ITEM(board, net["name"]))
-            summary["nets_added"] += 1
-
-    # --- Pads: clear-then-rebind, scoped to netlist-matched footprints.
-    # Board-only footprints (mounting holes etc.) are never touched. ---
-    netlist_refs = {c["ref"] for c in components}
-    for ref in netlist_refs:
-        fp = board.FindFootprintByReference(ref)
-        if fp is not None:
-            for pad in fp.Pads():
-                pad.SetNetCode(0)
-    for net in nets:
-        ni = board.FindNet(net["name"])
-        for ref, pin in net["nodes"]:
-            fp = board.FindFootprintByReference(ref)
-            if fp is None:
-                summary["warnings"].append(f"net {net['name']}: {ref}.{pin} not on board")
-                continue
-            hit = False
-            for pad in fp.Pads():
-                if pad.GetNumber() == pin:
-                    pad.SetNet(ni)  # pointer set; SetNetCode can silently no-op
-                    hit = True
-            if hit:
-                summary["pads_bound"] += 1
-            else:
-                summary["warnings"].append(f"{ref}: pad {pin} not on footprint (net {net['name']})")
-
-    # --- Items on nets whose name vanished from the schematic -> net 0 ---
-    live = {n["name"] for n in nets}
-    for item in list(board.Tracks()):
-        if item.GetNetCode() > 0 and item.GetNetname() not in live:
-            item.SetNetCode(0)
-            summary["orphaned_tracks"] += 1
-    for zone in list(board.Zones()):
-        if zone.GetNetCode() > 0 and zone.GetNetname() not in live:
-            zone.SetNetCode(0)
-            summary["orphaned_zones"] += 1
-    for item in list(board.Drawings()):
-        if hasattr(item, "GetNetCode") and item.GetNetCode() > 0:
-            if item.GetNetname() not in live:
-                item.SetNetCode(0)
-                summary["orphaned_tracks"] += 1
-
-    # --- Stale footprints: always reported, removed only on request ---
-    for fp in list(board.GetFootprints()):
-        ref = fp.GetReference()
-        if ref in netlist_refs:
-            continue
-        summary["stale_footprints"].append(ref)
-        if delete_stale and not fp.IsLocked():
-            board.Remove(fp)
-            summary["stale_removed"].append(ref)
-
-    # --- Prune the net table (after rebind/orphan/stale passes) ---
-    before = board.GetNetCount()
-    try:
-        board.RemoveUnusedNets(None)
-    except TypeError:
-        board.RemoveUnusedNets()
-    summary["nets_removed"] = max(0, before - board.GetNetCount())
-
-    if summary["skipped"]:
-        summary["status"] = "incomplete"
-
-    pcbnew.SaveBoard(pcb_path, board)
-    return summary
+# apply() lived here, and its pcbnew.SaveBoard was the last thing writing a
+# user's own board outside the byte-preserving substrate. pcb._apply_netlist_cst
+# does that work now, in-process and through the CST. What is left is what the
+# rest of the package still needs from this module: the pure netlist and layout
+# helpers above, which pcb.py imports directly, and _ensure_wx_app below, which
+# the other pcbnew subprocesses reach by importing this module BY NAME off an
+# injected sys.path (see _freerouting.wx_app_prelude). That is why the module
+# keeps this name and its stdlib-only imports even though nothing here runs
+# under pcbnew any more.
 
 
 def _ensure_wx_app() -> None:
@@ -314,24 +171,3 @@ def _ensure_wx_app() -> None:
         # Only reachable for a wx that raises rather than exiting. The
         # display-less case is handled above, because it does not raise.
         print(f"note: no wxApp ({exc}); pcbnew path lookups may assert", file=sys.stderr)
-
-
-def main(argv: list[str] | None = None) -> int:
-    _ensure_wx_app()
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("netlist")
-    ap.add_argument("pcb")
-    ap.add_argument("--lib-dir", action="append", default=[])
-    ap.add_argument("--delete-stale", action="store_true")
-    args = ap.parse_args(argv)
-    try:
-        summary = apply(args.netlist, args.pcb, args.lib_dir, args.delete_stale)
-    except Exception as exc:
-        print(f"netlist import failed: {exc}", file=sys.stderr)
-        return 1
-    print(json.dumps(summary))
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())

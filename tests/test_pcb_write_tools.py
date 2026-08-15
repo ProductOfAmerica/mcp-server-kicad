@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
-from conftest import _default_effects, build_test_footprint
+from conftest import _confined, _default_effects, build_test_footprint
 from kiutils.board import Board
 from kiutils.footprint import Footprint, Pad
 from kiutils.items.brditems import Segment, Via
@@ -540,102 +540,195 @@ _NETLIST_SUMMARY_JSON = (
 
 
 class TestUpdatePcbFromSchematic:
-    """The schematic must exist; the board must not have to.
+    """The netlist import runs in-process on the CST now, so what used to be a
+    subprocess protocol (argv shape, last-stdout-line JSON, exit codes) is gone
+    and there is nothing left to mock. These exercise the real thing.
 
-    These mock the pcbnew subprocess away, so the schematic used to be a name
-    that was never written and nothing minded. It has to be a real file now,
-    because the tool checks its input before spawning anything. The board stays
-    a bare path on purpose: creating it when it is missing is this tool's
-    documented first use, and the E2E suite starts from exactly that state.
+    _netlist_import.apply() was the last pcbnew.SaveBoard writing a user's own
+    board. docs/adr-cst-substrate.md records what that cost: coincident
+    PCB_SHAPEs de-duplicated at save on both majors, every fp_text carrying
+    (hide yes) destroyed at load on KiCad 9, the format stamp raised in place,
+    and on Windows every line ending rewritten even on a no-op round trip.
     """
 
-    def test_no_pcbnew_returns_error(self, scratch_sch, tmp_path):
-        with patch("mcp_server_kicad.pcb._find_pcbnew_python", return_value=(None, None)):
-            with pytest.raises(ToolError, match="pcbnew"):
-                pcb.update_pcb_from_schematic(
-                    schematic_path=str(scratch_sch),
-                    pcb_path=str(tmp_path / "a.kicad_pcb"),
-                )
-
     def test_a_missing_schematic_is_refused(self, tmp_path):
-        """Named separately from the empty case, which has its own message."""
-        with pytest.raises(ToolError, match="schematic not found"):
+        with pytest.raises(ToolError) as exc:
             pcb.update_pcb_from_schematic(
-                schematic_path=str(tmp_path / "absent.kicad_sch"),
-                pcb_path=str(tmp_path / "a.kicad_pcb"),
+                schematic_path=str(tmp_path / "nope.kicad_sch"),
+                pcb_path=str(tmp_path / "b.kicad_pcb"),
             )
+        assert "not found" in str(exc.value)
 
     def test_empty_paths_rejected(self, scratch_sch):
-        with pytest.raises(ToolError, match="No schematic path given"):
-            pcb.update_pcb_from_schematic(schematic_path="", pcb_path="x.kicad_pcb")
-        # A real schematic, so this reaches the pcb_path check rather than
-        # stopping at the schematic one and passing for the wrong reason.
-        with pytest.raises(ToolError, match="No PCB path provided"):
+        with pytest.raises(ToolError) as exc:
             pcb.update_pcb_from_schematic(schematic_path=str(scratch_sch), pcb_path="")
+        assert "No PCB path" in str(exc.value)
 
-    def _run_mocked(
-        self, scratch_sch, tmp_path, delete_stale=False, returncode=0, stdout=None, stderr=""
-    ):
-        """Run the tool with kicad-cli and the pcbnew subprocess both mocked.
-
-        Returns (result_or_exception, pcbnew_argv).
-        """
-        (tmp_path / "TestLib.pretty").mkdir(exist_ok=True)
-
-        def fake_cli(args, check=True):
-            out = args[args.index("--output") + 1]
-            Path(out).write_text('<export version="E"/>')
-            return type("R", (), {"returncode": 0, "stderr": ""})()
-
-        mock_proc = type(
-            "P",
-            (),
-            {
-                "returncode": returncode,
-                "stdout": _NETLIST_SUMMARY_JSON + "\n" if stdout is None else stdout,
-                "stderr": stderr,
-            },
-        )()
-        with (
-            patch(
-                "mcp_server_kicad.pcb._find_pcbnew_python",
-                return_value=("/usr/bin/python3", None),
-            ),
-            patch("mcp_server_kicad.pcb._run_cli", side_effect=fake_cli),
-            patch("subprocess.run", return_value=mock_proc) as sub,
-        ):
-            result = pcb.update_pcb_from_schematic(
-                schematic_path=str(scratch_sch),
-                pcb_path=str(tmp_path / "a.kicad_pcb"),
-                delete_stale=delete_stale,
+    def test_a_netlist_export_failure_is_named(self, monkeypatch, scratch_sch, tmp_path):
+        monkeypatch.setattr(
+            pcb,
+            "_run_cli",
+            lambda *a, **k: type("R", (), {"returncode": 2, "stderr": "boom", "stdout": ""})(),
+        )
+        with pytest.raises(ToolError) as exc:
+            pcb.update_pcb_from_schematic(
+                schematic_path=str(scratch_sch), pcb_path=str(tmp_path / "b.kicad_pcb")
             )
-        return result, sub.call_args[0][0]
+        assert "Netlist export failed" in str(exc.value) and "boom" in str(exc.value)
 
-    def test_success_mocked(self, scratch_sch, tmp_path):
-        result, argv = self._run_mocked(scratch_sch, tmp_path)
-        assert result.status == "ok"
-        assert result.added == ["R1"]
-        assert result.nets_added == 2
-        # argv: [python, script, netlist, pcb, --lib-dir, ...]
-        assert argv[1].endswith("_netlist_import.py")
-        assert argv[2].endswith("netlist.xml")
-        assert argv[3].endswith("a.kicad_pcb")
-        lib_dirs = [argv[i + 1] for i, a in enumerate(argv) if a == "--lib-dir"]
-        assert any(d.endswith("TestLib.pretty") for d in lib_dirs)
 
-    def test_delete_stale_flag_propagates(self, scratch_sch, tmp_path):
-        _, argv = self._run_mocked(scratch_sch, tmp_path, delete_stale=True)
-        assert "--delete-stale" in argv
-        _, argv = self._run_mocked(scratch_sch, tmp_path, delete_stale=False)
-        assert "--delete-stale" not in argv
+_NETLIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<export version="E">
+  <components>
+    <comp ref="{ref}">
+      <value>{value}</value>
+      <footprint>{fpid}</footprint>
+      <tstamps>/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/</tstamps>
+    </comp>
+  </components>
+  <nets>
+    <net code="1" name="GND">
+      <node ref="{ref}" pin="1"/>
+    </net>
+  </nets>
+</export>
+"""
 
-    def test_script_failure_raises(self, scratch_sch, tmp_path):
-        with pytest.raises(ToolError, match="boom"):
-            self._run_mocked(scratch_sch, tmp_path, returncode=1, stdout="", stderr="boom")
 
-    def test_garbage_stdout_raises(self, scratch_sch, tmp_path):
-        with pytest.raises(ToolError, match="no summary"):
-            self._run_mocked(scratch_sch, tmp_path, stdout="not json at all\n")
+def _netlist(tmp_path, ref="R99", value="10k", fpid="Resistor_SMD:R_0805_2012Metric"):
+    path = tmp_path / "netlist.xml"
+    path.write_text(_NETLIST_XML.format(ref=ref, value=value, fpid=fpid), encoding="utf-8")
+    return str(path)
+
+
+def _stock_lib_dirs():
+    from mcp_server_kicad._shared import _kicad_root
+
+    root = _kicad_root()
+    if root is None:
+        return []
+    return [
+        str(d)
+        for sub in ("share/kicad/footprints", "SharedSupport/footprints")
+        if (d := root / sub).is_dir()
+    ]
+
+
+requires_stock_fp = pytest.mark.skipif(not _stock_lib_dirs(), reason="no stock footprint libraries")
+
+
+@requires_stock_fp
+class TestApplyNetlistCst:
+    """The import itself, driven off a hand-written netlist so it needs no
+    schematic, no kicad-cli and no pcbnew."""
+
+    def _apply(self, board, tmp_path, **kw):
+        return pcb._apply_netlist_cst(
+            _netlist(tmp_path, **{k: v for k, v in kw.items() if k in ("ref", "value", "fpid")}),
+            str(board),
+            _stock_lib_dirs(),
+            kw.get("delete_stale", False),
+        )
+
+    def test_it_creates_the_board_when_there_is_none(self, tmp_path):
+        """The tool's documented first use. pcbnew.NewBoard was the only way to
+        make a board in this package, which is why _EMPTY_PCB_TPL had to be
+        harvested from it."""
+        board = tmp_path / "fresh.kicad_pcb"
+        summary = self._apply(board, tmp_path)
+        assert board.is_file()
+        assert summary["added"] == ["R99"]
+
+    def test_the_added_footprint_has_its_pads_bound(self, tmp_path):
+        board = tmp_path / "b.kicad_pcb"
+        summary = self._apply(board, tmp_path)
+        assert summary["pads_bound"] == 1
+        root = _cst.parse(board.read_bytes()).lists[0]
+        (fp,) = root.find_all("footprint")
+        assert len(fp.find_all("pad")) == 2, "a footprint with no pads cannot be bound to anything"
+        bound = [p for p in fp.find_all("pad") if p.find("net") is not None]
+        assert len(bound) == 1 and pcb._net_name_of(root, bound[0]) == "GND"
+
+    def test_a_second_run_changes_nothing(self, tmp_path):
+        """The proof that could not exist against pcbnew, which rewrote the whole
+        file every time. Byte-identical, so the stamp is untouched, the line
+        endings are untouched, and nothing the tool did not ask to change moved.
+        """
+        board = tmp_path / "b.kicad_pcb"
+        self._apply(board, tmp_path)
+        once = board.read_bytes()
+        self._apply(board, tmp_path)
+        assert board.read_bytes() == once
+
+    def test_a_value_change_is_confined(self, tmp_path):
+        board = tmp_path / "b.kicad_pcb"
+        self._apply(board, tmp_path)
+        before = board.read_bytes()
+        summary = self._apply(board, tmp_path, value="22k")
+        assert summary["value_updated"] == ["R99"]
+        assert _confined(before, board.read_bytes())
+
+    def test_a_stale_footprint_is_reported_but_kept(self, tmp_path):
+        board = tmp_path / "b.kicad_pcb"
+        self._apply(board, tmp_path, ref="R1")
+        summary = self._apply(board, tmp_path, ref="R2")
+        assert "R1" in summary["stale_footprints"]
+        assert summary["stale_removed"] == []
+        assert len(_cst.parse(board.read_bytes()).lists[0].find_all("footprint")) == 2
+
+    def test_delete_stale_removes_it(self, tmp_path):
+        board = tmp_path / "b.kicad_pcb"
+        self._apply(board, tmp_path, ref="R1")
+        summary = self._apply(board, tmp_path, ref="R2", delete_stale=True)
+        assert summary["stale_removed"] == ["R1"]
+        refs = [
+            pcb._fp_prop_cst(f, "Reference")
+            for f in _cst.parse(board.read_bytes()).lists[0].find_all("footprint")
+        ]
+        assert refs == ["R2"]
+
+    def test_an_unassigned_footprint_is_skipped_not_fatal(self, tmp_path):
+        board = tmp_path / "b.kicad_pcb"
+        summary = self._apply(board, tmp_path, fpid="")
+        assert summary["status"] == "incomplete"
+        assert summary["skipped"][0]["reason"] == "no_footprint_assigned"
+
+    def test_a_missing_library_is_skipped_not_fatal(self, tmp_path):
+        board = tmp_path / "b.kicad_pcb"
+        summary = self._apply(board, tmp_path, fpid="NoSuchLib:Whatever")
+        assert summary["skipped"][0]["reason"] == "footprint_lib_not_found:NoSuchLib"
+
+    def test_the_summary_matches_the_model(self, tmp_path):
+        """new_summary's keys are the model's fields; the tool constructs
+        UpdatePcbResult(**summary) and a drifted key is a TypeError at runtime."""
+        from mcp_server_kicad.models import UpdatePcbResult
+
+        summary = self._apply(tmp_path / "b.kicad_pcb", tmp_path)
+        UpdatePcbResult(**summary)
+
+    def test_a_kicad_10_board_is_bound_in_its_own_dialect(self, tmp_path):
+        """ADR-2 guardrail 5. A numeric (net N) in a KiCad 10 board is accepted
+        and silently rebound by load order, measured landing (net 2) on GND, so
+        the wrong dialect here is invisible rather than an error."""
+        board = tmp_path / "b.kicad_pcb"
+        board.write_bytes(pcb._EMPTY_PCB_TPL.replace(b"(version 20241229)", b"(version 20260206)"))
+        self._apply(board, tmp_path)
+        root = _cst.parse(board.read_bytes()).lists[0]
+        (fp,) = root.find_all("footprint")
+        (bound,) = [p for p in fp.find_all("pad") if p.find("net") is not None]
+        net = bound.find("net")
+        assert not net.atoms[1].text.lstrip("-").isdigit(), (
+            f"emitted a numeric net reference into a KiCad 10 board: {net.atoms[1].text!r}"
+        )
+        assert pcb._net_name_of(root, bound) == "GND"
+
+    def test_the_format_stamp_never_moves(self, tmp_path):
+        board = tmp_path / "b.kicad_pcb"
+        self._apply(board, tmp_path)
+        before = _cst.parse(board.read_bytes()).lists[0].find("version").atoms[1].text
+        self._apply(board, tmp_path, value="47k")
+        after = _cst.parse(board.read_bytes()).lists[0].find("version").atoms[1].text
+        assert before == after
 
 
 class TestSetTraceWidth:
@@ -1387,49 +1480,6 @@ class TestFillZonesPreflight:
         board = _bump_version(scratch_pcb)
         with _fill_seams(None), patch("subprocess.run", _fake_fill(Path(board))):
             assert pcb.fill_zones(pcb_path=board).status == "ok"
-
-
-class TestUpdatePcbPreflight:
-    """Same two hazards as fill_zones, plus one this tool has and that does not.
-
-    update_pcb_from_schematic creates the board when it is missing, which is its
-    documented first use and what the whole E2E suite starts from. Both checks
-    are therefore conditional on the file existing. The first version of this
-    got that wrong in a way the mocked tests caught immediately: the warning
-    helper read the board before testing whether there was one to read.
-    """
-
-    def test_k10_board_on_pcbnew9_is_refused_before_kicad_cli_runs(self, scratch_sch, tmp_path):
-        from test_cst_pcb import _bump_version
-
-        board = tmp_path / "b.kicad_pcb"
-        shutil.copy(scratch_pcb_bytes_source(tmp_path), board)
-        _bump_version(board)
-        cli = MagicMock()
-        with (
-            # The interpreter probe too: the plain CI matrix installs no KiCad,
-            # so without this the tool refuses for the earlier reason and the
-            # test asserts nothing. It passed locally, where KiCad exists.
-            patch.object(pcb, "_find_pcbnew_python", lambda: ("/usr/bin/python3", None)),
-            patch.object(pcb, "_pcbnew_major", lambda: 9),
-            patch.object(pcb, "_run_cli", cli),
-        ):
-            with pytest.raises(ToolError) as exc:
-                pcb.update_pcb_from_schematic(schematic_path=str(scratch_sch), pcb_path=str(board))
-        assert "20260206" in str(exc.value) and "pcbnew 9" in str(exc.value)
-        # The refusal beats the netlist export, so no kicad-cli process ran.
-        cli.assert_not_called()
-
-    def test_a_board_that_does_not_exist_yet_skips_both_checks(self, scratch_sch, tmp_path):
-        """The create-if-missing path. This is the one my first attempt broke."""
-        missing = tmp_path / "not-yet.kicad_pcb"
-        with patch.object(pcb, "_pcbnew_major", lambda: 9):
-            # Reaching the pcbnew probe means neither check refused or read.
-            with patch.object(pcb, "_find_pcbnew_python", lambda: (None, None)):
-                with pytest.raises(ToolError, match="pcbnew Python bindings not found"):
-                    pcb.update_pcb_from_schematic(
-                        schematic_path=str(scratch_sch), pcb_path=str(missing)
-                    )
 
 
 class TestCopperZoneMatchesKicadsOwnShape:
