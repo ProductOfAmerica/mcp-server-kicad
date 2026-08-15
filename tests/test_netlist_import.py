@@ -132,14 +132,21 @@ def _stock_footprints_available() -> bool:
     )
 
 
+# pcbnew is deliberately NOT in this gate any more. update_pcb_from_schematic
+# runs on the CST in-process, so it needs kicad-cli for the netlist export and
+# the stock libraries for the footprints, and nothing else. Leaving pcbnew in
+# would skip the whole class on a machine that can run every test in it, which
+# is how coverage quietly disappears.
 HAS_E2E_ENV = (
-    HAS_KICAD_CLI
-    and find_pcbnew_python()[0] is not None
-    and _resolve_system_lib("Device") is not None
-    and _stock_footprints_available()
+    HAS_KICAD_CLI and _resolve_system_lib("Device") is not None and _stock_footprints_available()
 )
 requires_e2e = pytest.mark.skipif(
-    not HAS_E2E_ENV, reason="kicad-cli + pcbnew + stock KiCad libraries required"
+    not HAS_E2E_ENV, reason="kicad-cli + stock KiCad libraries required"
+)
+# fill_zones still asks pcbnew to compute the fills, so the one test that fills
+# a zone keeps its own gate.
+requires_pcbnew = pytest.mark.skipif(
+    find_pcbnew_python()[0] is None, reason="pcbnew Python bindings required"
 )
 
 
@@ -201,7 +208,14 @@ class TestUpdatePcbE2E:
 
         sch, pcb_path = _make_project(tmp_path)
         update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
+        once = Path(pcb_path).read_bytes()
         result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
+        # Byte-identical, not merely equivalent. This assertion could not exist
+        # while pcbnew did the writing: it rewrote the whole file every run, so a
+        # second import moved the format stamp, dropped coincident shapes and,
+        # on Windows, converted every line ending. Nothing is asked to change
+        # here, so nothing may change.
+        assert Path(pcb_path).read_bytes() == once
         assert result.added == []
         assert result.fpid_changed == []
         assert result.nets_added == 0
@@ -312,6 +326,7 @@ class TestUpdatePcbE2E:
         assert placement.status == "ok"
         assert placement.keepout_violations == []
 
+    @requires_pcbnew
     def test_zone_fill_acceptance(self, tmp_path):
         """Copper zone, keepout and thermal vias spliced by the CST writers,
         then pcbnew's ZONE_FILLER loads, fills and rewrites the board: the

@@ -39,6 +39,18 @@ from mcp_server_kicad._freerouting import (
 from mcp_server_kicad._freerouting import (
     wx_app_prelude as _wx_app_prelude,
 )
+from mcp_server_kicad._netlist_import import (
+    grid_slot as _grid_slot,
+)
+from mcp_server_kicad._netlist_import import (
+    new_summary as _new_summary,
+)
+from mcp_server_kicad._netlist_import import (
+    parse_netlist as _parse_netlist,
+)
+from mcp_server_kicad._netlist_import import (
+    resolve_pretty as _resolve_pretty,
+)
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -224,6 +236,28 @@ def _item_net_number(net_node, name_to_num: dict[str, int]) -> int:
     if t.lstrip("-").isdigit():
         return int(t)
     return name_to_num.get(t, 0)
+
+
+def _net_name_of(root, node) -> str:
+    """The net name a (net ...) child refers to, in either dialect.
+
+    KiCad 9 writes (net N "NAME") on pads and (net N) on tracks, so the number
+    has to be looked up in the root table; KiCad 10 writes (net "NAME") and has
+    no table at all. Both answer the same question and callers only ever want
+    the name.
+    """
+    net = node.find("net")
+    if net is None or len(net.atoms) < 2:
+        return ""
+    first = net.atoms[1].text
+    if not first.lstrip("-").isdigit():
+        return first
+    if len(net.atoms) > 2:
+        return net.atoms[2].text
+    for num, name in _net_table(root):
+        if num == int(first):
+            return name
+    return ""
 
 
 # Token head to kiutils class name, so list_pcb_graphic_items output matches
@@ -428,6 +462,98 @@ _PCB_TAIL_HEADS = (
 
 _GRAPHIC_HEADS = ("gr_line", "gr_text") + tuple(_GRAPHIC_CLASS)
 _TRACE_AND_TAIL_HEADS = ("segment", "arc", "via", "zone", "group", "embedded_fonts")
+
+
+#: An empty board, harvested from pcbnew.NewBoard rather than written by hand,
+#: because update_pcb_from_schematic's documented first use creates the board and
+#: nothing in this package could make one. Stamped at the KiCad 9 format it was
+#: harvested at, the same rule project.py's _EMPTY_SCH_TPL follows; editing an
+#: existing board through the CST never touches its stamp, so a KiCad 10 project
+#: stays KiCad 10.
+_EMPTY_PCB_TPL = (
+    b"(kicad_pcb\r\n"
+    b"\t(version 20241229)\r\n"
+    b'\t(generator "pcbnew")\r\n'
+    b'\t(generator_version "9.0")\r\n'
+    b"\t(general\r\n"
+    b"\t\t(thickness 1.6)\r\n"
+    b"\t\t(legacy_teardrops no)\r\n"
+    b"\t)\r\n"
+    b'\t(paper "A4")\r\n'
+    b"\t(layers\r\n"
+    b'\t\t(0 "F.Cu" signal)\r\n'
+    b'\t\t(2 "B.Cu" signal)\r\n'
+    b'\t\t(9 "F.Adhes" user "F.Adhesive")\r\n'
+    b'\t\t(11 "B.Adhes" user "B.Adhesive")\r\n'
+    b'\t\t(13 "F.Paste" user)\r\n'
+    b'\t\t(15 "B.Paste" user)\r\n'
+    b'\t\t(5 "F.SilkS" user "F.Silkscreen")\r\n'
+    b'\t\t(7 "B.SilkS" user "B.Silkscreen")\r\n'
+    b'\t\t(1 "F.Mask" user)\r\n'
+    b'\t\t(3 "B.Mask" user)\r\n'
+    b'\t\t(17 "Dwgs.User" user "User.Drawings")\r\n'
+    b'\t\t(19 "Cmts.User" user "User.Comments")\r\n'
+    b'\t\t(21 "Eco1.User" user "User.Eco1")\r\n'
+    b'\t\t(23 "Eco2.User" user "User.Eco2")\r\n'
+    b'\t\t(25 "Edge.Cuts" user)\r\n'
+    b'\t\t(27 "Margin" user)\r\n'
+    b'\t\t(31 "F.CrtYd" user "F.Courtyard")\r\n'
+    b'\t\t(29 "B.CrtYd" user "B.Courtyard")\r\n'
+    b'\t\t(35 "F.Fab" user)\r\n'
+    b'\t\t(33 "B.Fab" user)\r\n'
+    b'\t\t(39 "User.1" user)\r\n'
+    b'\t\t(41 "User.2" user)\r\n'
+    b'\t\t(43 "User.3" user)\r\n'
+    b'\t\t(45 "User.4" user)\r\n'
+    b"\t)\r\n"
+    b"\t(setup\r\n"
+    b"\t\t(pad_to_mask_clearance 0)\r\n"
+    b"\t\t(allow_soldermask_bridges_in_footprints no)\r\n"
+    b"\t\t(tenting front back)\r\n"
+    b"\t\t(pcbplotparams\r\n"
+    b"\t\t\t(layerselection 0x00000000_00000000_55555555_5755f5ff)\r\n"
+    b"\t\t\t(plot_on_all_layers_selection 0x00000000_00000000_00000000_00000000)\r\n"
+    b"\t\t\t(disableapertmacros no)\r\n"
+    b"\t\t\t(usegerberextensions no)\r\n"
+    b"\t\t\t(usegerberattributes yes)\r\n"
+    b"\t\t\t(usegerberadvancedattributes yes)\r\n"
+    b"\t\t\t(creategerberjobfile yes)\r\n"
+    b"\t\t\t(dashed_line_dash_ratio 12.000000)\r\n"
+    b"\t\t\t(dashed_line_gap_ratio 3.000000)\r\n"
+    b"\t\t\t(svgprecision 4)\r\n"
+    b"\t\t\t(plotframeref no)\r\n"
+    b"\t\t\t(mode 1)\r\n"
+    b"\t\t\t(useauxorigin no)\r\n"
+    b"\t\t\t(hpglpennumber 1)\r\n"
+    b"\t\t\t(hpglpenspeed 20)\r\n"
+    b"\t\t\t(hpglpendiameter 15.000000)\r\n"
+    b"\t\t\t(pdf_front_fp_property_popups yes)\r\n"
+    b"\t\t\t(pdf_back_fp_property_popups yes)\r\n"
+    b"\t\t\t(pdf_metadata yes)\r\n"
+    b"\t\t\t(pdf_single_document no)\r\n"
+    b"\t\t\t(dxfpolygonmode yes)\r\n"
+    b"\t\t\t(dxfimperialunits yes)\r\n"
+    b"\t\t\t(dxfusepcbnewfont yes)\r\n"
+    b"\t\t\t(psnegative no)\r\n"
+    b"\t\t\t(psa4output no)\r\n"
+    b"\t\t\t(plot_black_and_white yes)\r\n"
+    b"\t\t\t(sketchpadsonfab no)\r\n"
+    b"\t\t\t(plotpadnumbers no)\r\n"
+    b"\t\t\t(hidednponfab no)\r\n"
+    b"\t\t\t(sketchdnponfab yes)\r\n"
+    b"\t\t\t(crossoutdnponfab yes)\r\n"
+    b"\t\t\t(subtractmaskfromsilk no)\r\n"
+    b"\t\t\t(outputformat 1)\r\n"
+    b"\t\t\t(mirror no)\r\n"
+    b"\t\t\t(drillshape 1)\r\n"
+    b"\t\t\t(scaleselection 1)\r\n"
+    b'\t\t\t(outputdirectory "")\r\n'
+    b"\t\t)\r\n"
+    b"\t)\r\n"
+    b'\t(net 0 "")\r\n'
+    b"\t(embedded_fonts no)\r\n"
+    b")\r\n"
+)
 
 
 #: Children a library .kicad_mod carries that a placed board footprint never
@@ -1727,18 +1853,16 @@ def update_pcb_from_schematic(
     footprints are matched by reference and keep their position; a
     changed footprint assignment swaps the footprint in place. Stale
     board footprints are reported, and removed only with delete_stale
-    (locked ones are never removed). Zones are NOT refilled — run
+    (locked ones are never removed). Zones are NOT refilled: run
     fill_zones afterward. Net names arrive exactly as KiCad's F8
     produces them (local labels sheet-prefixed, e.g. "/SIG"); read them
     with list_pcb_nets.
 
-    Requires kicad-cli and KiCad's pcbnew Python bindings.
+    Requires kicad-cli. It no longer needs KiCad's pcbnew Python bindings.
 
-    pcbnew does the writing, in place and with no undo, so this is one of
-    the few paths that does not go through the server's byte-preserving
-    write. It also saves in its own format era, so a board stamped below
-    that is upgraded as a side effect, and the result says so when it
-    happens. Keep the board in version control before running it.
+    Every byte this writes goes through the server's byte-preserving write, so
+    a board's format stamp does not move and the parts of it this tool did not
+    touch arrive unchanged.
 
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
@@ -1747,32 +1871,18 @@ def update_pcb_from_schematic(
         delete_stale: Remove unlocked board footprints absent from the schematic
         project_path: Path to .kicad_pro for explicit root resolution (sub-sheets)
     """
-    # Before the pcbnew probe below, which spawns a process, so a typo'd path
-    # is answered by us rather than by whatever that subprocess says about it.
-    #
     # The schematic only. pcb_path is deliberately not required to exist: this
-    # tool creates the board when it is missing (_netlist_import calls NewBoard,
-    # and the whole E2E suite starts from a schematic and no board at all), so
-    # requiring it would refuse the tool's documented first use.
+    # tool creates the board when it is missing, and the whole E2E suite starts
+    # from a schematic and no board at all, so requiring it would refuse the
+    # tool's documented first use.
     _require_kicad_path(schematic_path, "schematic")
     if not pcb_path:
         raise ToolError("No PCB path provided. Pass pcb_path parameter.")
-
-    python, env = _find_pcbnew_python()
-    if not python:
-        raise ToolError("pcbnew Python bindings not found. Ensure KiCad is installed.")
 
     # Netlist must come from the root schematic so the full hierarchy's
     # connectivity is included (same redirect run_erc does).
     sch_target = _resolve_root(schematic_path, project_path) or schematic_path
     pcb_file = str(Path(pcb_path).resolve())
-
-    # Conditional, because this tool creates the board when it is missing (see
-    # the note above _require_kicad_path). A board pcbnew is about to create is
-    # written in pcbnew's own era by definition, so there is nothing to check
-    # and nothing to compare against afterward. Before the netlist export, so a
-    # refusal costs no kicad-cli run.
-    board_version = _require_pcbnew_era(pcb_file) if Path(pcb_file).is_file() else 0
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         netlist_path = str(Path(tmp_dir) / "netlist.xml")
@@ -1792,28 +1902,12 @@ def update_pcb_from_schematic(
         if result.returncode != 0 or not Path(netlist_path).exists():
             detail = result.stderr.strip() or f"exit code {result.returncode}"
             raise ToolError(f"Netlist export failed: {detail}")
-
-        script = str(Path(__file__).with_name("_netlist_import.py"))
-        cmd = [python, script, netlist_path, pcb_file]
-        for lib_dir in _netlist_lib_dirs(schematic_path, pcb_file):
-            cmd += ["--lib-dir", lib_dir]
-        if delete_stale:
-            cmd.append("--delete-stale")
-        proc = _run_pcbnew(cmd, what="importing the netlist", timeout=120, env=env)
-
-    if proc.returncode != 0:
-        detail = proc.stderr.strip() or proc.stdout.strip() or f"exit code {proc.returncode}"
-        raise ToolError(f"Netlist import failed: {detail}")
-    # The summary is the last stdout line; earlier lines may be pcbnew chatter.
-    lines = [ln for ln in proc.stdout.strip().splitlines() if ln.strip()]
-    try:
-        summary = json.loads(lines[-1])
-    except (IndexError, ValueError) as exc:
-        raise ToolError(f"Netlist import produced no summary: {proc.stdout!r}") from exc
-    # Appended, not assigned: the importer reports its own warnings too.
-    summary["warnings"] = summary.get("warnings", []) + _format_upgrade_warning(
-        pcb_file, board_version
-    )
+        summary = _apply_netlist_cst(
+            netlist_path,
+            pcb_file,
+            _netlist_lib_dirs(schematic_path, pcb_file),
+            delete_stale,
+        )
     return UpdatePcbResult(**summary)
 
 
@@ -2284,6 +2378,309 @@ _FILL_DUMP = (
     "                    'outlines': outlines}})\n"
     "print('FILLDUMP' + json.dumps(out))\n"
 )
+
+
+# ---------------------------------------------------------------------------
+# Netlist import, CST-native (docs/adr-cst-substrate.md)
+# ---------------------------------------------------------------------------
+
+
+def _fp_by_reference(root) -> dict:
+    """Reference -> footprint node, for every footprint on the board."""
+    return {_fp_prop_cst(fp, "Reference"): fp for fp in root.find_all("footprint")}
+
+
+def _set_fp_property(fp, key: str, value: str) -> bool:
+    """Set a footprint property, reporting whether it actually changed."""
+    for prop in fp.find_all("property"):
+        if prop.atoms[1].text == key:
+            if prop.atoms[2].text == value:
+                return False
+            prop.atoms[2].set_text(value)
+            return True
+    return False
+
+
+def _set_fp_path(fp, path: str) -> None:
+    """The KIID path that links a board footprint to its schematic symbol.
+
+    Replaced rather than appended, because a swapped footprint carries the old
+    one. GUI linkage only, so a board without it is still correct.
+    """
+    if not path:
+        return
+    node = _cst.parse(f'(path "{path}")'.encode()).lists[0]
+    existing = fp.find("path")
+    if existing is not None:
+        node.sep = existing.sep
+        fp.children[fp.children.index(existing)] = node
+        return
+    at = fp.find("at")
+    fp.insert_after(at, node)
+
+
+def _pad_net_bytes(root, number: int, name: str) -> bytes:
+    """A (net ...) child in this board's own dialect.
+
+    ADR-2 guardrail 5, and the one place a mistake is silent rather than loud:
+    a numeric reference in a KiCad 10 board is accepted and rebound by load
+    order, measured landing (net 2) on GND with no error at all.
+    """
+    if _board_version(root) <= _NUMERIC_NET_VERSION_MAX:
+        escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+        return f'(net {number} "{escaped}")'.encode()
+    escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+    return f'(net "{escaped}")'.encode()
+
+
+def _bind_pad_net(root, pad, number: int, name: str) -> None:
+    """Put *pad* on a net, inserting the child when it has none.
+
+    _set_item_net mutates an existing (net ...) atom, which every track and via
+    already has. A pad copied out of a .kicad_mod has no net child at all, so
+    this inserts one, after (layers ...) where KiCad writes it.
+    """
+    node = _cst.parse(_pad_net_bytes(root, number, name)).lists[0]
+    existing = pad.find("net")
+    if existing is not None:
+        node.sep = existing.sep
+        pad.children[pad.children.index(existing)] = node
+        return
+    anchor = pad.find("layers") or pad.find("drill") or pad.find("size")
+    if anchor is not None:
+        pad.insert_after(anchor, node)
+    else:
+        pad.append_child(node, b"\n\t\t\t")
+
+
+def _clear_pad_net(pad) -> None:
+    for net in pad.find_all("net"):
+        pad.remove_child(net)
+
+
+def _ensure_net_rows(root, names: list[str]) -> int:
+    """Declare any missing nets, returning how many were added.
+
+    KiCad 9 format boards carry a (net N "NAME") table at the root and numbers
+    are assigned from it. KiCad 10 dropped the table entirely: nets exist only
+    as name references on the items that use them, so there is nothing to
+    declare and this reports zero rather than inventing a number.
+    """
+    if _board_version(root) > _NUMERIC_NET_VERSION_MAX:
+        return 0
+    table = _net_table(root)
+    have = {name for _, name in table}
+    nxt = max((num for num, _ in table), default=0) + 1
+    added = 0
+    rows = [c for c in root.find_all("net") if len(c.atoms) > 1]
+    anchor = rows[-1] if rows else None
+    for name in names:
+        if name in have:
+            continue
+        escaped = name.replace("\\", "\\\\").replace('"', '\\"')
+        node = _cst.parse(f'(net {nxt} "{escaped}")'.encode()).lists[0]
+        if anchor is not None:
+            root.insert_after(anchor, node)
+        else:
+            _splice_after(root, node, ("general", "paper", "layers", "setup"), _PCB_TAIL_HEADS)
+        anchor = node
+        have.add(name)
+        nxt += 1
+        added += 1
+    return added
+
+
+def _prune_net_rows(root, used: set) -> int:
+    """Drop declared nets nothing references. KiCad 9 dialect only."""
+    if _board_version(root) > _NUMERIC_NET_VERSION_MAX:
+        return 0
+    removed = 0
+    for row in [c for c in root.find_all("net") if len(c.atoms) > 2]:
+        number, name = int(row.atoms[1].text), row.atoms[2].text
+        if number == 0 or name in used:
+            continue
+        root.remove_child(row)
+        removed += 1
+    return removed
+
+
+def _fp_anchor(root) -> tuple[float, float]:
+    """Where the cluster of newly added footprints starts.
+
+    Below everything already placed, +Y being down. pcbnew computed this from a
+    bounding box that includes graphics and courtyards; a CST scan sees
+    footprint origins only, so new parts land in a slightly different spot than
+    the subprocess put them. The tool promises a grid cluster and not a
+    coordinate, and nothing downstream reads it.
+    """
+    ys = []
+    xs = []
+    for fp in root.find_all("footprint"):
+        at = fp.find("at")
+        if at is not None and len(at.atoms) > 2:
+            xs.append(float(at.atoms[1].text))
+            ys.append(float(at.atoms[2].text))
+    if not xs:
+        return 25.4, 25.4
+    return min(xs), max(ys) + 10.0
+
+
+def _apply_netlist_cst(
+    netlist_path: str, pcb_path: str, lib_dirs: list[str], delete_stale: bool = False
+) -> dict:
+    """Apply a parsed netlist to a board through the substrate. Returns a summary.
+
+    Replaces _netlist_import.apply(), which was the last pcbnew.SaveBoard
+    writing a user's own board. What that cost is measured in
+    docs/adr-cst-substrate.md: coincident PCB_SHAPEs de-duplicated at save on
+    both majors, every fp_text carrying (hide yes) destroyed at load on KiCad 9,
+    the format stamp raised in place, and on Windows every line ending rewritten
+    even on a no-op round trip.
+
+    Structure follows apply() pass for pass, so the two can be diffed: match by
+    reference, add or swap, declare nets, rebind pads, orphan what left the
+    schematic, report or remove stale footprints, prune the table.
+    """
+    components, nets = _parse_netlist(netlist_path)
+    summary = _new_summary()
+
+    if not Path(pcb_path).is_file():
+        _atomic_write(pcb_path, _EMPTY_PCB_TPL)
+    tree, root, key = _open_pcb_cst(pcb_path)
+    _BOARD_CACHE.pop(key, None)
+
+    ax, ay = _fp_anchor(root)
+    by_ref = _fp_by_reference(root)
+    netlist_refs = {c["ref"] for c in components}
+
+    # --- Components, matched by reference (sorted: deterministic layout) ---
+    k = 0
+    for comp in sorted(components, key=lambda c: c["ref"]):
+        ref, value, fpid = comp["ref"], comp["value"], comp["footprint"]
+        existing = by_ref.get(ref)
+
+        if existing is not None and (not fpid or existing.atoms[1].text == fpid):
+            if _set_fp_property(existing, "Value", value):
+                summary["value_updated"].append(ref)
+            _set_fp_path(existing, comp["path"])
+            continue
+
+        if ":" not in fpid:
+            summary["skipped"].append({"ref": ref, "reason": "no_footprint_assigned"})
+            continue
+        lib, name = fpid.split(":", 1)
+        pretty = _resolve_pretty(lib, lib_dirs)
+        if pretty is None:
+            summary["skipped"].append({"ref": ref, "reason": f"footprint_lib_not_found:{lib}"})
+            continue
+        node = _copy_lib_footprint_cst(pretty, name, fpid)
+        if node is None:
+            summary["skipped"].append({"ref": ref, "reason": f"footprint_not_found:{fpid}"})
+            continue
+
+        _set_fp_property(node, "Reference", ref)
+        _set_fp_property(node, "Value", value)
+        _set_fp_path(node, comp["path"])
+
+        if existing is None:
+            x, y = _grid_slot(k, ax, ay, 10.0)
+            k += 1
+            _fill_at(node, x, y, 0)
+            _splice_after(root, node, ("footprint",), _PCB_TAIL_HEADS)
+            by_ref[ref] = node
+            summary["added"].append(ref)
+        else:
+            # Swap in place. Position, orientation, side and lock are the user's
+            # work, not the schematic's, so the new body inherits all four.
+            at = existing.find("at")
+            x = float(at.atoms[1].text)
+            y = float(at.atoms[2].text)
+            rot = float(at.atoms[3].text) if len(at.atoms) > 3 else 0.0
+            was_back = _fp_layer(existing).startswith("B.")
+            locked = existing.find("locked")
+            _fill_at(node, x, y, rot)
+            _place_pads_at_rotation(node, rot)
+            if was_back:
+                # Flip, never SetLayer: the layer atom alone leaves pads, text
+                # and courtyard on the front. _flip_footprint_cst is the same
+                # transform move_footprint uses, measured on CI.
+                _flip_footprint_cst(node)
+            if locked is not None:
+                node.insert_after(node.find("at"), locked.copy())
+            root.children[root.children.index(existing)] = node
+            node.sep = existing.sep
+            by_ref[ref] = node
+            summary["fpid_changed"].append(ref)
+
+    # --- Nets: declare-only, so existing numbers never move under live tracks ---
+    summary["nets_added"] = _ensure_net_rows(root, [n["name"] for n in nets])
+    numbers = {name: num for num, name in _net_table(root)}
+
+    # --- Pads: clear then rebind, scoped to netlist-matched footprints, so
+    # board-only footprints (mounting holes and the like) are never touched ---
+    for ref in netlist_refs:
+        fp = by_ref.get(ref)
+        if fp is not None:
+            for pad in fp.find_all("pad"):
+                _clear_pad_net(pad)
+    for net in nets:
+        name = net["name"]
+        number = numbers.get(name, 0)
+        for ref, pin in net["nodes"]:
+            fp = by_ref.get(ref)
+            if fp is None:
+                summary["warnings"].append(f"net {name}: {ref}.{pin} not on board")
+                continue
+            hit = False
+            for pad in fp.find_all("pad"):
+                if pad.atoms[1].text == pin:
+                    _bind_pad_net(root, pad, number, name)
+                    hit = True
+            if hit:
+                summary["pads_bound"] += 1
+            else:
+                summary["warnings"].append(f"{ref}: pad {pin} not on footprint (net {name})")
+
+    # --- Items on nets whose name left the schematic go back to net 0 ---
+    live = {n["name"] for n in nets}
+    for item in root.lists:
+        if item.head not in ("segment", "arc", "via", "zone"):
+            continue
+        net_node = item.find("net_name") or item.find("net")
+        if net_node is None or len(net_node.atoms) < 2:
+            continue
+        name = _net_name_of(root, item)
+        if not name or name in live:
+            continue
+        _set_item_net(item, root, 0)
+        summary["orphaned_zones" if item.head == "zone" else "orphaned_tracks"] += 1
+
+    # --- Stale footprints: always reported, removed only on request ---
+    for fp in list(root.find_all("footprint")):
+        ref = _fp_prop_cst(fp, "Reference")
+        if ref in netlist_refs:
+            continue
+        summary["stale_footprints"].append(ref)
+        if delete_stale and fp.find("locked") is None:
+            root.remove_child(fp)
+            by_ref.pop(ref, None)
+            summary["stale_removed"].append(ref)
+
+    # --- Prune declared nets nothing references any more ---
+    used = {live_name for live_name in live if live_name}
+    for item in root.lists:
+        if item.head == "footprint":
+            for pad in item.find_all("pad"):
+                used.add(_net_name_of(root, pad))
+        elif item.head in ("segment", "arc", "via", "zone"):
+            used.add(_net_name_of(root, item))
+    summary["nets_removed"] = _prune_net_rows(root, used)
+
+    if summary["skipped"]:
+        summary["status"] = "incomplete"
+
+    _atomic_write(key, _cst.serialize(tree))
+    return summary
 
 
 # ---------------------------------------------------------------------------
