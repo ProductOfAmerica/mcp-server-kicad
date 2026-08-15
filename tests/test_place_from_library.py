@@ -23,16 +23,28 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp_server_kicad import _cst, pcb
 from mcp_server_kicad._shared import _kicad_root
 
-STOCK = next(
-    (
-        d
-        for root in ([_kicad_root()] if _kicad_root() else [])
-        for sub in ("share/kicad/footprints", "SharedSupport/footprints")
-        if (d := root / sub).is_dir()
-    ),
-    None,
-)
+
+def _stock_dir() -> Path | None:
+    root = _kicad_root()
+    if root is None:
+        return None
+    for sub in ("share/kicad/footprints", "SharedSupport/footprints"):
+        cand = root / sub
+        if cand.is_dir():
+            return cand
+    return None
+
+
+STOCK = _stock_dir()
 requires_stock = pytest.mark.skipif(STOCK is None, reason="no stock footprint libraries")
+
+
+def stock() -> Path:
+    """Non-optional accessor. Every caller sits behind requires_stock, but that
+    is a runtime guard and pyright cannot see through it."""
+    assert STOCK is not None
+    return STOCK
+
 
 LIB = "Resistor_SMD"
 FP = "R_0805_2012Metric"
@@ -75,7 +87,7 @@ def _placed(board: Path, reference: str = "R99"):
 @requires_stock
 class TestCopyLibFootprint:
     def _copy(self, name=FP, fpid=f"{LIB}:{FP}"):
-        return pcb._copy_lib_footprint_cst(str(STOCK / f"{LIB}.pretty"), name, fpid)
+        return pcb._copy_lib_footprint_cst(str(stock() / f"{LIB}.pretty"), name, fpid)
 
     def test_the_pads_come_with_it(self):
         """The whole point. The old template had none."""
@@ -113,8 +125,8 @@ class TestCopyLibFootprint:
         Potentiometer rather than the resistor because that file HAS them: 29
         per copy, where R_0805 has none and would pass vacuously."""
         pot = "Potentiometer_Alps_RK09K_Single_Vertical"
-        a = pcb._copy_lib_footprint_cst(str(STOCK / "Potentiometer_THT.pretty"), pot, "L:N")
-        b = pcb._copy_lib_footprint_cst(str(STOCK / "Potentiometer_THT.pretty"), pot, "L:N")
+        a = pcb._copy_lib_footprint_cst(str(stock() / "Potentiometer_THT.pretty"), pot, "L:N")
+        b = pcb._copy_lib_footprint_cst(str(stock() / "Potentiometer_THT.pretty"), pot, "L:N")
         ua, ub = _uuids(a), _uuids(b)
         assert len(ua) > 5, "this library was supposed to carry uuids; pick another"
         assert len(set(ua)) == len(ua), "duplicate uuid inside one copy"
@@ -129,7 +141,7 @@ class TestCopyLibFootprint:
         no board writes: what this catches is a footprint whose structure the
         copy cannot handle, and that is decided before anything reaches a file.
         """
-        files = sorted(STOCK.glob("*.pretty/*.kicad_mod"))
+        files = sorted(stock().glob("*.pretty/*.kicad_mod"))
         assert len(files) > 500, f"only {len(files)} stock footprints; is this a real install?"
         failed = []
         for path in files:
@@ -214,7 +226,7 @@ class TestPlaceFootprintFromLibrary:
 
     def test_a_direct_pretty_path_works(self, scratch_pcb):
         """A library outside the search path is reachable by naming it."""
-        _place(scratch_pcb, library=str(STOCK / f"{LIB}.pretty"), footprint=FP)
+        _place(scratch_pcb, library=str(stock() / f"{LIB}.pretty"), footprint=FP)
         fp = _placed(scratch_pcb)
         assert len(fp.find_all("pad")) == 2
 
