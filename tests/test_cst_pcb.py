@@ -331,7 +331,9 @@ class TestFootprintWritersCst:
         p = str(scratch_pcb)
         before = Path(p).read_bytes()
         result = pcb.place_footprint("R2", "4.7K", 50, 60, rotation=90, layer="B.Cu", pcb_path=p)
-        assert result == "Placed R2 (4.7K) at (50, 60) on B.Cu"
+        # The suffix is not decoration: naming no library places a marker with no
+        # pads, and the result has to say which of the two the caller got.
+        assert result == "Placed R2 (4.7K) at (50, 60) on B.Cu as a pad-less marker"
         assert _pure_insertion(before, Path(p).read_bytes())
         board = Board.from_file(p)
         assert "R2" in [fp.properties.get("Reference") for fp in board.footprints]
