@@ -219,7 +219,125 @@ class TestUnfilledZoneNote:
 
     @requires_cli
     def test_export_gerbers_carries_it(self, tmp_path):
-        """One wire-through, proving it reaches the model, rather than six."""
+        """One wire-through, proving it reaches the model, rather than six.
+
+        Pinned to a KiCad 9 CLI rather than taking whatever the machine has.
+        This test asserted unconditionally until KiCad 10's --check-zones landed,
+        at which point it was correct on a KiCad 9 developer machine and wrong on
+        both KiCad 10 runners, where refilling means there is deliberately no
+        note. The note is the KiCad 9 path now, so the test says which path it is
+        testing instead of inheriting one.
+        """
         board = self._board(tmp_path, with_copper_zone=True)
-        result = pcb.export_gerbers(pcb_path=str(board), output_dir=str(tmp_path / "g"))
+        with patch.object(pcb, "_kicad_cli_major", return_value=9):
+            result = pcb.export_gerbers(pcb_path=str(board), output_dir=str(tmp_path / "g"))
         assert result.note is not None and "fill_zones" in result.note
+
+
+class TestRefillOrNote:
+    """KiCad 10 refills zones in memory before plotting and does not save the
+    board. Measured on both KiCad 10.0.5 runners 2026-08-15 rather than taken
+    from the docs: `pcb drc --refill-zones` without --save-board leaves the board
+    byte-identical, and so does `pcb export gerbers --check-zones`. The probe's
+    control ran --save-board on the same board and watched it gain
+    filled_polygon, so it could tell "did not save" from "cannot see a save".
+
+    The flag and the note are mutually exclusive, and the reason is not
+    tidiness: with the flag passed the zones ARE filled, so a note reading "they
+    contribute no copper to this output" is false rather than redundant. One
+    helper returns exactly one of them.
+    """
+
+    def _board(self, tmp_path):
+        from test_pcb_read_tools import _make_keepout_board
+
+        return _make_keepout_board(tmp_path, with_copper_zone=True)
+
+    def test_kicad_9_gets_the_note_and_no_flag(self, tmp_path):
+        board = self._board(tmp_path)
+        with patch.object(pcb, "_kicad_cli_major", return_value=9):
+            args, note = pcb._refill_or_note("--check-zones", str(board))
+        assert args == []
+        assert note is not None and "fill_zones" in note
+
+    def test_kicad_10_gets_the_flag_and_no_note(self, tmp_path):
+        board = self._board(tmp_path)
+        with patch.object(pcb, "_kicad_cli_major", return_value=10):
+            args, note = pcb._refill_or_note("--check-zones", str(board))
+        assert args == ["--check-zones"]
+        assert note is None, "the zones are refilled, so the note would be false"
+
+    def test_an_unreadable_version_keeps_the_old_behaviour(self, tmp_path):
+        """None means no opinion. Same contract as pcbnew_major: a probe must
+        not become a failure mode of its own."""
+        board = self._board(tmp_path)
+        with patch.object(pcb, "_kicad_cli_major", return_value=None):
+            args, note = pcb._refill_or_note("--check-zones", str(board))
+        assert args == []
+        assert note is not None
+
+    def test_a_filled_board_gets_neither_on_kicad_9(self, tmp_path):
+        """Load-bearing: without it, "always note on 9" passes the cases above."""
+        board = _fill_zone(self._board(tmp_path))
+        with patch.object(pcb, "_kicad_cli_major", return_value=9):
+            args, note = pcb._refill_or_note("--check-zones", str(board))
+        assert args == [] and note is None
+
+
+class TestRefillFlagReachesTheCommandLine:
+    """A helper nobody wires up is worth nothing, and the argv is the only place
+    the wiring shows. Each case captures the real argv through _run_cli.
+    """
+
+    def _capture(self, monkeypatch, major):
+        seen = []
+
+        def fake(args, check=True):
+            seen.append(args)
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        monkeypatch.setattr(pcb, "_run_cli", fake)
+        monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: major)
+        monkeypatch.setattr(pcb, "_file_meta", lambda p: {"path": str(p), "size_bytes": 1})
+        return seen
+
+    def test_drc_passes_refill_zones_on_kicad_10(self, monkeypatch, tmp_path, scratch_pcb):
+        seen = self._capture(monkeypatch, 10)
+        report = tmp_path / (Path(str(scratch_pcb)).stem + "-drc.json")
+        report.write_text(json.dumps({"violations": [], "unconnected_items": []}))
+        pcb.run_drc(str(scratch_pcb), str(tmp_path))
+        assert "--refill-zones" in seen[0]
+        # Not --check-zones: pcb drc does not accept that spelling at all.
+        assert "--check-zones" not in seen[0]
+
+    def test_drc_passes_nothing_on_kicad_9(self, monkeypatch, tmp_path, scratch_pcb):
+        seen = self._capture(monkeypatch, 9)
+        report = tmp_path / (Path(str(scratch_pcb)).stem + "-drc.json")
+        report.write_text(json.dumps({"violations": [], "unconnected_items": []}))
+        pcb.run_drc(str(scratch_pcb), str(tmp_path))
+        assert not [a for a in seen[0] if a.startswith("--refill")]
+
+    def test_gerbers_multi_layer_passes_check_zones_on_kicad_10(
+        self, monkeypatch, tmp_path, scratch_pcb
+    ):
+        seen = self._capture(monkeypatch, 10)
+        pcb.export_gerbers(pcb_path=str(scratch_pcb), output_dir=str(tmp_path), include_drill=True)
+        assert "--check-zones" in seen[0]
+        # The drill call is a second invocation and takes no such flag.
+        assert "drill" in seen[1] and "--check-zones" not in seen[1]
+
+    def test_export_pcb_pdf_passes_check_zones_on_kicad_10(
+        self, monkeypatch, tmp_path, scratch_pcb
+    ):
+        seen = self._capture(monkeypatch, 10)
+        pcb.export_pcb(format="pdf", pcb_path=str(scratch_pcb), output_dir=str(tmp_path))
+        assert "--check-zones" in seen[0]
+
+    def test_ipc2581_never_gets_the_flag(self, monkeypatch, tmp_path, scratch_pcb):
+        """KiCad 10 offers --check-zones on dxf, gerbers, pdf, ps and svg only.
+        Passing it to ipc2581 is an unrecognized argument, so this export keeps
+        the note on every version."""
+        seen = self._capture(monkeypatch, 10)
+        result = pcb.export_ipc2581(pcb_path=str(scratch_pcb), output=str(tmp_path / "board.xml"))
+        assert "--check-zones" not in seen[0]
+        assert result.note is None or "fill_zones" in result.note
