@@ -835,12 +835,20 @@ class TestUpgradeOutOfPlace:
             lib.chmod(0o644)
         assert seen["writable"], "kicad-cli was handed a read-only copy it cannot write"
 
-    def test_a_read_only_original_refuses_naming_the_destination(self, tmp_path, monkeypatch):
-        """Found by the test above. _atomic_write copies the destination's mode
-        onto its temp, so a read-only destination produced a read-only temp that
-        Windows then refused to unlink; the cleanup raised over the top of the
-        real failure with a message naming the TEMP path, which is the one thing
-        that function's own comment says never to do."""
+    def test_a_read_only_original_is_platform_shaped(self, tmp_path, monkeypatch):
+        """Found by the test above, and it splits by platform, which the first
+        version of this test got wrong by asserting the Windows outcome
+        everywhere and going red on Linux and macOS.
+
+        Replacing a file on POSIX needs write permission on the DIRECTORY, not on
+        the file, so a read-only library upgrades there without complaint. Only
+        Windows refuses. That is also why the defect this pins can only exist on
+        Windows: _atomic_write copies the destination's mode onto its temp, so a
+        read-only destination produced a read-only temp that Windows then refused
+        to unlink, and the cleanup raised over the top of the real failure with a
+        message naming the TEMP path, which is the one thing that function's own
+        comment says never to do.
+        """
         lib = tmp_path / "Probe.kicad_sym"
         lib.write_bytes(b"(kicad_symbol_lib)\n")
         lib.chmod(0o444)
@@ -851,11 +859,18 @@ class TestUpgradeOutOfPlace:
 
         monkeypatch.setattr(_shared, "_run_cli", fake)
         try:
-            with pytest.raises(OSError) as exc:
-                _upgrade_out_of_place(lib, "symbol library", ["sym", "upgrade"])
+            if os.name == "nt":
+                with pytest.raises(OSError) as exc:
+                    _upgrade_out_of_place(lib, "symbol library", ["sym", "upgrade"])
+                assert ".tmp" not in str(exc.value), f"names a temp path: {exc.value}"
+                assert "Probe.kicad_sym" in str(exc.value)
+                assert lib.read_bytes() == b"(kicad_symbol_lib)\n", "the original was modified"
+            else:
+                assert _upgrade_out_of_place(lib, "symbol library", ["sym", "upgrade"]) == [lib]
+                assert lib.read_bytes() == b"(kicad_symbol_lib upgraded)\n"
         finally:
             lib.chmod(0o644)
-        assert ".tmp" not in str(exc.value), f"the message names a temp path: {exc.value}"
-        assert "Probe.kicad_sym" in str(exc.value)
-        assert lib.read_bytes() == b"(kicad_symbol_lib)\n", "the original was modified"
+        # Either way, no temp survives: the failure path unlinks it and the
+        # success path renames it, and a leftover would be picked up by the
+        # project scan and the suite's own rglob.
         assert not list(tmp_path.glob("*.tmp")), "a temp file was left behind"
