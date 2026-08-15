@@ -430,6 +430,133 @@ _GRAPHIC_HEADS = ("gr_line", "gr_text") + tuple(_GRAPHIC_CLASS)
 _TRACE_AND_TAIL_HEADS = ("segment", "arc", "via", "zone", "group", "embedded_fonts")
 
 
+#: Children a library .kicad_mod carries that a placed board footprint never
+#: does. KiCad stamps the library file with the format it was written at and the
+#: tool that wrote it; a board carries one stamp for the whole document, so
+#: copying these in would put a second, stale one inside a footprint.
+_LIB_ONLY_FOOTPRINT_HEADS = ("version", "generator", "generator_version")
+
+
+def _regen_uuids(node) -> None:
+    """Give every (uuid ...) in the subtree a fresh value, in place.
+
+    Library footprints already carry uuids, on the root's properties and on
+    every pad, so a straight copy is not merely untidy: placing the same
+    footprint twice would put the same uuid on two different objects, and a uuid
+    is what KiCad matches a board object back to its schematic symbol by.
+    """
+    for child in node.lists:
+        if child.head == "uuid" and len(child.atoms) > 1:
+            child.atoms[1].set_text(_gen_uuid())
+        else:
+            _regen_uuids(child)
+
+
+def _resolve_pretty_dir(library: str, pcb_path: str = "") -> str:
+    """A .pretty directory from a nickname or a path.
+
+    Searched in the order the netlist import already searches, so a footprint
+    placed by hand and the same footprint placed from a schematic resolve to the
+    same file: the project's own .pretty dirs beside the board, then the
+    configured KICAD_FP_LIB, then KiCad's stock footprints.
+    """
+    direct = Path(library)
+    if direct.is_dir():
+        return str(direct)
+    candidates: list[Path] = []
+    if pcb_path:
+        candidates.append(Path(pcb_path).resolve().parent)
+    if FP_LIB_PATH:
+        # KICAD_FP_LIB may name a .pretty itself or a directory holding several.
+        fp_lib = Path(FP_LIB_PATH)
+        candidates += [fp_lib.parent, fp_lib] if fp_lib.suffix == ".pretty" else [fp_lib]
+    root = _kicad_root()
+    if root:
+        candidates += [root / "share/kicad/footprints", root / "SharedSupport/footprints"]
+    for base in candidates:
+        cand = base / f"{library}.pretty"
+        if cand.is_dir():
+            return str(cand)
+    searched = (
+        ", ".join(str(c) for c in candidates) or "nowhere: no board and no libraries configured"
+    )
+    raise ToolError(
+        f"Footprint library {library!r} not found. Looked for {library}.pretty in: {searched}."
+        " Pass a path to a .pretty directory instead of a nickname if it lives elsewhere."
+    )
+
+
+def _copy_lib_footprint_cst(lib_path: str, name: str, fpid: str):
+    """A board-ready footprint node copied out of a .kicad_mod, or None.
+
+    The footprint twin of schematic._copy_lib_symbol_from_file_cst, and the
+    reason it did not exist before is that a board footprint is not the library
+    node with a different name on it. Both sides were measured rather than
+    reasoned about, against KiCad's own multichannel_mixer-unrouted, whose
+    Potentiometer_Alps_RK09K_Single_Vertical is directly comparable with the
+    stock library file (17 fp_line, 5 pad and 1 fp_circle on both sides, so the
+    geometry is identical and every remaining difference is the transform):
+
+    - the name atom goes from "NAME" to "LIB:NAME"
+    - version, generator and generator_version are dropped
+    - (uuid ...) and (at ...) are added after (layer ...), in that order
+    - every uuid already in the file is regenerated
+
+    Two further differences are the caller's, not this function's: a placed
+    footprint gains path/sheetname/sheetfile and the Footprint/ki_fp_filters
+    properties when it came from a schematic, and its pads gain
+    (net ...)/(pinfunction ...)/(pintype ...) when they are bound to a net.
+    A footprint placed directly has none of those, which is exactly what KiCad
+    writes for one placed by hand.
+    """
+    path = Path(lib_path) / f"{name}.kicad_mod"
+    if not path.is_file():
+        return None
+    node = _cst.parse(_read_kicad_bytes(str(path), "footprint")).lists[0]
+    if node.head != "footprint":
+        raise ToolError(f"{path.name} is not a KiCad footprint.")
+    node = node.copy()
+    node.atoms[1].set_text(fpid)
+    for head in _LIB_ONLY_FOOTPRINT_HEADS:
+        for stale in node.find_all(head):
+            node.remove_child(stale)
+    _regen_uuids(node)
+    layer = node.find("layer")
+    if layer is None:
+        raise ToolError(f"{path.name} declares no layer.")
+    # uuid then at, matching the order KiCad writes. The uuid is filled here
+    # rather than by the caller: the template ships the literal "x", every
+    # footprint placed would carry the same one, and nothing complains. kicad-cli
+    # loaded a board with two identical placeholder uuids at rc 0.
+    node.insert_after(layer, _cst.parse(b'(uuid "x")').lists[0])
+    root_uuid = node.find("uuid")
+    root_uuid.atoms[1].set_text(_gen_uuid())
+    node.insert_after(root_uuid, _cst.parse(b"(at 0 0)").lists[0])
+    return node
+
+
+def _place_pads_at_rotation(node, rotation: float) -> None:
+    """Carry the footprint's rotation onto each pad's own (at ...).
+
+    Measured on the same pair: the library pad reads (at 0 0) and the same pad
+    on a footprint placed at 90 degrees reads (at 0 0 90). The pad keeps its
+    local position and takes the footprint's angle, so a rotated footprint whose
+    pads were copied verbatim would have correctly drawn copper sitting at the
+    wrong orientation.
+
+    An unrotated footprint is left alone rather than given an explicit 0,
+    because that is what the library files themselves carry and what KiCad
+    writes back.
+    """
+    if not rotation % 360:
+        return
+    for pad in node.find_all("pad"):
+        at = pad.find("at")
+        if at is None:
+            continue
+        _fill_at(pad, float(at.atoms[1].text), float(at.atoms[2].text), rotation % 360)
+
+
 def _splice_after(root, node, heads, tail_heads) -> None:
     """Insert after the last *heads* child, else before the first *tail_heads*."""
     anchors = [c for c in root.lists if c.head in heads]
@@ -846,9 +973,19 @@ def place_footprint(
     y: float,
     rotation: float = 0,
     layer: str = "F.Cu",
+    library: str = "",
+    footprint: str = "",
     pcb_path: str = PCB_PATH,
 ) -> str:
     """Place a footprint on the PCB.
+
+    Name a library and a footprint to place the real thing: its pads, silkscreen,
+    courtyard and 3D model are copied from the library file exactly as KiCad
+    would place them. Without them you get a marker carrying only the reference
+    and value, which has NO PADS and so cannot be routed or checked; that is the
+    older behaviour and it is kept for callers that only want a placeholder.
+
+    Use list_lib_footprints to see what a library holds.
 
     Args:
         reference: Reference designator (e.g. "R2")
@@ -857,22 +994,45 @@ def place_footprint(
         y: Y position in mm
         rotation: Rotation in degrees
         layer: Layer (F.Cu or B.Cu)
+        library: Footprint library nickname (e.g. "Resistor_SMD"), or a path to a
+            .pretty directory. Optional; omit for a pad-less marker.
+        footprint: Footprint name within that library (e.g. "R_0805_2012Metric").
+            Required when library is given.
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
+    if bool(library) != bool(footprint):
+        raise ToolError(
+            "library and footprint go together: name both to place a real footprint,"
+            " or neither for a pad-less marker."
+        )
     tree, root, key = _open_pcb_cst(pcb_path)
     # Validate before the cache pop, so a refusal leaves the cached tree valid.
     _resolve_layer_cst(root, layer, copper_only=True)
+    node = None
+    if library:
+        pretty = _resolve_pretty_dir(library, pcb_path)
+        node = _copy_lib_footprint_cst(pretty, footprint, f"{Path(pretty).stem}:{footprint}")
+        if node is None:
+            raise ToolError(
+                f"Footprint {footprint!r} not found in {pretty}. Use list_lib_footprints"
+                " to see what the library holds."
+            )
     _BOARD_CACHE.pop(key, None)
-    node = _FOOTPRINT_TPL.copy()
+    if node is None:
+        node = _FOOTPRINT_TPL.copy()
+        node.find("uuid").atoms[1].set_text(_gen_uuid())
+        for prop in node.find_all("property"):
+            prop.find("uuid").atoms[1].set_text(_gen_uuid())
     node.find("layer").atoms[1].set_text(layer)
-    node.find("uuid").atoms[1].set_text(_gen_uuid())
     _fill_at(node, x, y, rotation)
+    _place_pads_at_rotation(node, rotation)
     for prop in node.find_all("property"):
-        prop.atoms[2].set_text(reference if prop.atoms[1].text == "Reference" else value)
-        prop.find("uuid").atoms[1].set_text(_gen_uuid())
+        if prop.atoms[1].text in ("Reference", "Value"):
+            prop.atoms[2].set_text(reference if prop.atoms[1].text == "Reference" else value)
     _splice_after(root, node, ("footprint",), _PCB_TAIL_HEADS)
     _atomic_write(key, _cst.serialize(tree))
-    return f"Placed {reference} ({value}) at ({x}, {y}) on {layer}"
+    what = f"{Path(pretty).stem}:{footprint}" if library else "a pad-less marker"
+    return f"Placed {reference} ({value}) at ({x}, {y}) on {layer} as {what}"
 
 
 #: Constructs whose flip has not been measured. A footprint carrying one is
