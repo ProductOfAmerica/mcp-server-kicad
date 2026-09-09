@@ -19,9 +19,10 @@ from conftest import (
 )
 from kiutils.items.common import Effects, Font, Position, Property
 from kiutils.items.schitems import Connection, LocalLabel, SchematicSymbol
+from kiutils.symbol import Symbol, SymbolPin
 from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_server_kicad import schematic
+from mcp_server_kicad import _cst, schematic
 from mcp_server_kicad.models import (
     NetConnectionsResult,
     SchematicSummary,
@@ -531,3 +532,166 @@ class TestPinPositionPrecision:
         )
         assert x == round(x, 4), f"x={x!r} has FP artifact"
         assert y == round(y, 4), f"y={y!r} has FP artifact"
+
+
+# ---------------------------------------------------------------------------
+# Tests: multi-unit symbols
+# ---------------------------------------------------------------------------
+
+
+def _build_dual_gate_symbol() -> Symbol:
+    """Build a 'DualGate' symbol: two gate units plus shared unit-0 power pins.
+
+    Unit 0: pin 5 "GND" at (0, -7.62) and pin 6 "VCC" at (0, 7.62), which KiCad
+    draws on every unit.  Unit 1: pin 1 "1A" at (-5.08, 0), pin 2 "1Y" at
+    (5.08, 0).  Unit 2: pin 3 "2A" and pin 4 "2Y" at the same body-local
+    coordinates as unit 1's pair, which is exactly what makes a unit mix-up
+    visible: the sibling gate's input lands on top of this gate's input.
+    """
+    sym = Symbol()
+    sym.entryName = "DualGate"
+    sym.pinNamesOffset = 0
+    sym.inBom = True
+    sym.onBoard = True
+
+    def _unit(unit_id: int, pins: list[tuple[str, str, float, float, float]]) -> Symbol:
+        unit = Symbol()
+        unit.entryName = "DualGate"
+        unit.unitId = unit_id
+        unit.styleId = 1
+        unit.pins = [
+            SymbolPin(
+                electricalType="passive",
+                position=Position(X=px, Y=py, angle=angle),
+                length=2.54,
+                name=name,
+                number=number,
+            )
+            for number, name, px, py, angle in pins
+        ]
+        return unit
+
+    sym.units = [
+        _unit(0, [("5", "GND", 0, -7.62, 90), ("6", "VCC", 0, 7.62, 270)]),
+        _unit(1, [("1", "1A", -5.08, 0, 0), ("2", "1Y", 5.08, 0, 180)]),
+        _unit(2, [("3", "2A", -5.08, 0, 0), ("4", "2Y", 5.08, 0, 180)]),
+    ]
+    return sym
+
+
+def _place_dual_gate(x: float, y: float, unit: int, numbers: tuple[str, ...]) -> SchematicSymbol:
+    """Place one unit of U1 at (x, y)."""
+    sym = SchematicSymbol()
+    sym.libId = "Device:DualGate"
+    sym.libName = "DualGate"
+    sym.position = Position(X=x, Y=y, angle=0)
+    sym.uuid = _gen_uuid()
+    sym.unit = unit
+    sym.inBom = True
+    sym.onBoard = True
+    sym.properties = [
+        Property(
+            key="Reference",
+            value="U1",
+            id=0,
+            effects=_default_effects(),
+            position=Position(X=x, Y=y - 10.16, angle=0),
+        ),
+        Property(
+            key="Value",
+            value="DualGate",
+            id=1,
+            effects=_default_effects(),
+            position=Position(X=x, Y=y + 10.16, angle=0),
+        ),
+        Property(
+            key="Footprint",
+            value="",
+            id=2,
+            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+            position=Position(X=x, Y=y, angle=0),
+        ),
+        Property(
+            key="Datasheet",
+            value="~",
+            id=3,
+            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
+            position=Position(X=x, Y=y, angle=0),
+        ),
+    ]
+    sym.pins = {number: _gen_uuid() for number in numbers}
+    return sym
+
+
+def _make_dual_unit_sch(tmp_path: Path) -> str:
+    """Both gates of U1 placed, with a net label on gate 1's input alone.
+
+    Unit 1 sits at (100, 100), so pin 1 is at (94.92, 100); unit 2 sits at
+    (150, 100), so pin 3 is at (144.92, 100).  The label is on pin 1.
+    """
+    sch = new_schematic()
+    sch.libSymbols.append(_build_dual_gate_symbol())
+    sch.schematicSymbols.append(_place_dual_gate(100, 100, unit=1, numbers=("1", "2", "5", "6")))
+    sch.schematicSymbols.append(_place_dual_gate(150, 100, unit=2, numbers=("3", "4", "5", "6")))
+    sch.labels.append(
+        LocalLabel(
+            text="GATE1_IN",
+            position=Position(X=94.92, Y=100, angle=0),
+            effects=_default_effects(),
+            uuid=_gen_uuid(),
+        )
+    )
+    path = tmp_path / "dual_unit.kicad_sch"
+    sch.filePath = str(path)
+    sch.to_file()
+    return str(path)
+
+
+class TestMultiUnitSymbols:
+    def test_net_connections_excludes_a_sibling_units_pin(self, tmp_path: Path) -> None:
+        """A label on gate 1's input must not also report gate 2's input.
+
+        Both gates define their input at the same body-local coordinate, so
+        scanning every unit against one placed instance puts pin 3 on top of
+        pin 1 and the net gains a pin that is not on it.
+        """
+        result = schematic.get_net_connections("GATE1_IN", _make_dual_unit_sch(tmp_path))
+        assert isinstance(result, NetConnectionsResult)
+        pins = {(c["reference"], c["pin"]) for c in result.connections}
+        assert ("U1", "1") in pins
+        assert ("U1", "3") not in pins
+
+    def test_pin_positions_use_each_unit_own_origin(self, tmp_path: Path) -> None:
+        result = schematic.get_pin_positions("U1", _make_dual_unit_sch(tmp_path))
+        pin_lines = [ln for ln in result.splitlines() if ln.strip().startswith("Pin ")]
+        pin1 = [ln for ln in pin_lines if ln.strip().startswith("Pin 1 ")]
+        pin3 = [ln for ln in pin_lines if ln.strip().startswith("Pin 3 ")]
+        assert len(pin1) == 1 and "94.92" in pin1[0]
+        assert len(pin3) == 1 and "144.92" in pin3[0]
+
+    def test_pin_positions_report_every_placed_unit(self, tmp_path: Path) -> None:
+        result = schematic.get_pin_positions("U1", _make_dual_unit_sch(tmp_path))
+        heads = [ln for ln in result.splitlines() if ln.startswith("U1 ")]
+        assert len(heads) == 2
+        assert "unit=1" in heads[0]
+        assert "unit=2" in heads[1]
+
+    def test_unit_zero_pins_are_drawn_on_every_unit(self, tmp_path: Path) -> None:
+        """Unit 0 holds what all units share, so VCC belongs to both instances."""
+        result = schematic.get_pin_positions("U1", _make_dual_unit_sch(tmp_path))
+        vcc = [ln for ln in result.splitlines() if ln.strip().startswith("Pin 6 ")]
+        assert len(vcc) == 2
+        assert any("(100" in ln for ln in vcc)
+        assert any("(150" in ln for ln in vcc)
+
+    def test_single_unit_output_is_unchanged(self, scratch_sch: Path) -> None:
+        """One placed instance means no unit suffix: single-unit parts see no change."""
+        result = schematic.get_pin_positions("R1", str(scratch_sch))
+        assert "unit=" not in result.splitlines()[0]
+
+    def test_lib_unit_id_reads_the_trailing_fields(self) -> None:
+        """Symbol names contain underscores, so the unit is the second-last field."""
+        node = _cst.parse(b'(symbol "SN74LVC2G17_2_1")').lists[0]
+        assert schematic._lib_unit_id(node) == 2
+        node = _cst.parse(b'(symbol "NotAUnitName")').lists[0]
+        assert schematic._lib_unit_id(node) is None

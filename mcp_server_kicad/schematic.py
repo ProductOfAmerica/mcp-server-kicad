@@ -529,50 +529,58 @@ def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
 def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
     """Get absolute pin positions for a placed component (accounts for rotation/mirror).
 
+    A multi-unit part is placed as one symbol per unit and they all share the
+    reference, so every placed unit is listed, each with its own pins plus the
+    unit-0 pins they all share.
+
     Args:
         reference: Component reference (e.g. "U1", "R1")
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
 
-    target = _find_sym_cst(root, reference)
-    if target is None:
+    targets = _find_syms_cst(root, reference)
+    if not targets:
         raise ToolError(f"{reference} not found." + _SEE_PLACED)
 
-    lib_id = target.find("lib_id").atoms[1].text
-    symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-    lib_sym = _find_lib_symbol_cst(root, lib_id)
-    if lib_sym is None:
-        raise ToolError(f"Lib symbol for {reference} not found.")
+    lines: list[str] = []
+    for target in targets:
+        lib_id = target.find("lib_id").atoms[1].text
+        symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
+        lib_sym = _find_lib_symbol_cst(root, lib_id)
+        if lib_sym is None:
+            raise ToolError(f"Lib symbol for {reference} not found.")
 
-    at = target.find("at")
-    cx = _numish(at.atoms[1].text)
-    cy = _numish(at.atoms[2].text)
-    angle_deg = _numish(at.atoms[3].text) if len(at.atoms) > 3 else 0
-    m = target.find("mirror")
-    mir = m.atoms[1].text if m is not None else None
+        at = target.find("at")
+        cx = _numish(at.atoms[1].text)
+        cy = _numish(at.atoms[2].text)
+        angle_deg = _numish(at.atoms[3].text) if len(at.atoms) > 3 else 0
+        m = target.find("mirror")
+        mir = m.atoms[1].text if m is not None else None
+        unit = _sym_unit_cst(target)
 
-    lines = [f"{reference} ({symbol_name}) @ ({cx}, {cy}) rot={angle_deg} mirror={mir}"]
+        head = f"{reference} ({symbol_name}) @ ({cx}, {cy}) rot={angle_deg} mirror={mir}"
+        lines.append(head if len(targets) == 1 else f"{head} unit={unit}")
 
-    for unit in lib_sym.find_all("symbol"):
-        for pin in unit.find_all("pin"):
-            pat = pin.find("at")
-            final_x, final_y, _ = _transform_pin_pos(
-                float(pat.atoms[1].text),
-                float(pat.atoms[2].text),
-                float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0,
-                cx,
-                cy,
-                angle_deg,
-                mir,
-            )
-            number = pin.find("number")
-            name = pin.find("name")
-            lines.append(
-                f"  Pin {number.atoms[1].text if number is not None else ''} "
-                f"({name.atoms[1].text if name is not None else '~'}): "
-                f"({round(final_x, 2)}, {round(final_y, 2)})"
-            )
+        for unit_node in _instance_units(lib_sym, unit):
+            for pin in unit_node.find_all("pin"):
+                pat = pin.find("at")
+                final_x, final_y, _ = _transform_pin_pos(
+                    float(pat.atoms[1].text),
+                    float(pat.atoms[2].text),
+                    float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0,
+                    cx,
+                    cy,
+                    angle_deg,
+                    mir,
+                )
+                number = pin.find("number")
+                name = pin.find("name")
+                lines.append(
+                    f"  Pin {number.atoms[1].text if number is not None else ''} "
+                    f"({name.atoms[1].text if name is not None else '~'}): "
+                    f"({round(final_x, 2)}, {round(final_y, 2)})"
+                )
 
     return "\n".join(lines)
 
@@ -585,7 +593,9 @@ def get_net_connections(
     """Find all component pins connected to a net label.
 
     Scans labels matching the text, traces wires from label positions,
-    and identifies component pins at wire endpoints.
+    and identifies component pins at wire endpoints. Each placed symbol
+    contributes only its own unit's pins, so a multi-unit part does not
+    report a sibling gate's input as sitting on this net.
 
     Args:
         label_text: Net name to search for (e.g. "VCC", "GND")
@@ -642,7 +652,7 @@ def get_net_connections(
         comp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
         m = sym.find("mirror")
         mir = m.atoms[1].text if m is not None else None
-        for unit in lib_sym.find_all("symbol"):
+        for unit in _instance_units(lib_sym, _sym_unit_cst(sym)):
             for pin in unit.find_all("pin"):
                 pat = pin.find("at")
                 px, py, _ = _transform_pin_pos(
@@ -1218,12 +1228,67 @@ def _auto_junctions_cst(root, new_points: list[tuple[float, float]], tol: float 
                 break
 
 
+def _find_syms_cst(root, reference: str):
+    """Every placed symbol whose Reference property matches, in file order.
+
+    A multi-unit part is placed as one symbol node per unit and they all carry
+    the same reference, so this is a list wherever units can be split.
+    """
+    return [s for s in root.find_all("symbol") if _sym_property_cst(s, "Reference") == reference]
+
+
 def _find_sym_cst(root, reference: str):
     """First placed symbol whose Reference property matches, or None."""
-    return next(
-        (s for s in root.find_all("symbol") if _sym_property_cst(s, "Reference") == reference),
-        None,
-    )
+    found = _find_syms_cst(root, reference)
+    return found[0] if found else None
+
+
+def _sym_unit_cst(sym) -> int | None:
+    """Unit number of a placed symbol node, or None when it carries no (unit N)."""
+    node = sym.find("unit")
+    if node is None or len(node.atoms) < 2:
+        return None
+    try:
+        return int(node.atoms[1].text)
+    except ValueError:
+        return None
+
+
+def _lib_unit_id(unit_node) -> int | None:
+    """Unit number a lib sub-symbol's name encodes, or None if it encodes none.
+
+    KiCad names them ``NAME_<unit>_<bodyStyle>``, and NAME itself may contain
+    underscores, so the two trailing fields are the ones to read.
+    """
+    atoms = unit_node.atoms
+    if len(atoms) < 2:
+        return None
+    parts = atoms[1].text.rsplit("_", 2)
+    if len(parts) != 3:
+        return None
+    try:
+        return int(parts[1])
+    except ValueError:
+        return None
+
+
+def _instance_units(lib_sym, unit: int | None):
+    """The lib sub-symbols a placed instance of *unit* actually draws.
+
+    KiCad reserves unit 0 for what every unit shares, so a placed ``(unit 2)``
+    draws units 2 and 0 and nothing else. Scanning all of them instead reports
+    a sibling unit's pins as this instance's own, at coordinates derived from
+    this instance's origin -- pins that are somewhere else on the sheet, or
+    nowhere, if that unit is unplaced.
+
+    Anything that does not name its unit keeps the all-units behaviour: a
+    placed symbol with no ``(unit N)``, or a sub-symbol whose name breaks the
+    convention. Single-unit parts are unaffected either way.
+    """
+    subs = lib_sym.find_all("symbol")
+    if unit is None:
+        return subs
+    return [s for s in subs if _lib_unit_id(s) in (unit, 0, None)]
 
 
 def _find_lib_symbol_cst(root, lib_id: str):
