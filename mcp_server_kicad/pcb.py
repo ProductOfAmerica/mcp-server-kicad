@@ -408,12 +408,11 @@ def _keepout_violations_cst(root, x: float, y: float, layer: str) -> list[dict]:
             continue
         fx, fy = _xy(at)
         angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
-        mirrored = _fp_layer(fp) == "B.Cu"
         source = f"footprint:{_fp_prop_cst(fp, 'Reference')}"
         for zone in fp.find_all("zone"):
             pts = []
             for px, py in _zone_pts(zone):
-                bx, by = _transform_local_to_board(fx, fy, angle, px, py, mirrored=mirrored)
+                bx, by = _transform_local_to_board(fx, fy, angle, px, py)
                 pts.append((round(bx, 3), round(by, 3)))
             candidates.append((source, zone, pts))
 
@@ -1071,14 +1070,27 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
     """
     _, root, _ = _open_pcb_cst(pcb_path)
     fp = _find_fp_cst(root, reference)
-    lines = [f"{reference} pads:"]
+    fp_at = fp.find("at")
+    fp_x, fp_y = _xy(fp_at)
+    fp_angle = float(fp_at.atoms[3].text) if len(fp_at.atoms) > 3 else 0
+    lines = [
+        f"{reference} pads "
+        f"(footprint origin ({_numish(fp_x)}, {_numish(fp_y)}), "
+        f"rotation {_numish(fp_angle)}, layer {_fp_layer(fp)}):"
+    ]
     for pad in fp.find_all("pad"):
         net_name = _pad_net_name(pad.find("net"), "none")
         at, size = pad.find("at"), pad.find("size")
         layers = pad.find("layers")
+        local_x, local_y = _xy(at)
+        # Board coordinates first: a caller routing to this pad needs those, and
+        # reporting only the footprint-local pair invites placing a trace at the
+        # wrong end of the board on any rotated part.
+        board_x, board_y = _transform_local_to_board(fp_x, fp_y, fp_angle, local_x, local_y)
         lines.append(
             f"  Pad {pad.atoms[1].text}: {pad.atoms[2].text} {pad.atoms[3].text} "
-            f"@ ({_numish(at.atoms[1].text)}, {_numish(at.atoms[2].text)}) "
+            f"@ board ({_numish(round(board_x, 6))}, {_numish(round(board_y, 6))}) "
+            f"local ({_numish(local_x)}, {_numish(local_y)}) "
             f"size=({_numish(size.atoms[1].text)}, {_numish(size.atoms[2].text)}) "
             f"layers={[a.text for a in layers.atoms[1:]] if layers is not None else []} "
             f"net={net_name}"
@@ -2038,7 +2050,6 @@ def add_thermal_vias(
         fp_angle,
         float(pad_at.atoms[1].text),
         float(pad_at.atoms[2].text),
-        mirrored=_fp_layer(fp) == "B.Cu",
     )
 
     # Determine net. A netless pad on a KiCad 10 format board resolves to
@@ -2209,7 +2220,6 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
                 continue
             fp_x, fp_y = float(at.atoms[1].text), float(at.atoms[2].text)
             fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
-            mirrored = _fp_layer(fp) == "B.Cu"
             for pad in fp.find_all("pad"):
                 pad_at = pad.find("at")
                 px, py = _transform_local_to_board(
@@ -2218,7 +2228,6 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
                     fp_angle,
                     float(pad_at.atoms[1].text),
                     float(pad_at.atoms[2].text),
-                    mirrored=mirrored,
                 )
                 connection_points.append((round(px, 3), round(py, 3)))
 
@@ -3198,7 +3207,6 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
             continue
         fp_x, fp_y = _xy(at)
         fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
-        mirrored = _fp_layer(fp) == "B.Cu"
 
         for source_zone in fp.find_all("zone"):
             if source_zone.find("keepout") is None:
@@ -3210,9 +3218,7 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
                 for other in polygons[:index] + polygons[index + 1 :]:
                     zone.remove_child(other)
                 for xy in polygons[index].find("pts").find_all("xy"):
-                    bx, by = _transform_local_to_board(
-                        fp_x, fp_y, fp_angle, *_xy(xy), mirrored=mirrored
-                    )
+                    bx, by = _transform_local_to_board(fp_x, fp_y, fp_angle, *_xy(xy))
                     xy.atoms[1].set_text(_num(round(bx, 6)))
                     xy.atoms[2].set_text(_num(round(by, 6)))
                 _replace_child(zone, _HATCH_TPL.copy())
@@ -3468,8 +3474,7 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintB
             (bbox["min_x"], bbox["max_y"]),
         ]
         board_corners = [
-            _transform_local_to_board(fp_x, fp_y, angle, lx, ly, mirrored=layer == "B.Cu")
-            for lx, ly in local_corners
+            _transform_local_to_board(fp_x, fp_y, angle, lx, ly) for lx, ly in local_corners
         ]
         # Recompute axis-aligned bounding box from transformed corners
         xs = [c[0] for c in board_corners]

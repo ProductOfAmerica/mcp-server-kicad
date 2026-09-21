@@ -88,6 +88,18 @@ class TestGetFootprintPads:
         with pytest.raises(ToolError, match="not found"):
             pcb.get_footprint_pads("R999", str(scratch_pcb))
 
+    def test_reports_board_coordinates_for_a_rotated_footprint(self, tmp_path):
+        """Local pad coordinates alone send a caller to the wrong place.
+
+        U1 is at (100, 100) rotated -90, so its pad at local (0, 0) stays put
+        while the footprint origin and rotation are reported alongside.
+        """
+        pcb_path = _make_board_with_courtyard_fp(tmp_path, rotation=-90)
+        result = pcb.get_footprint_pads("U1", pcb_path=str(pcb_path))
+        assert "footprint origin (100, 100), rotation -90" in result
+        assert "board (100, 100)" in result
+        assert "local (0, 0)" in result
+
 
 # ---------------------------------------------------------------------------
 # Helper to build a board with a keepout zone
@@ -173,7 +185,7 @@ class TestListZonesKeepout:
 # ---------------------------------------------------------------------------
 
 
-def _make_board_with_courtyard_fp(tmp_path, *, rotation=0):
+def _make_board_with_courtyard_fp(tmp_path, *, rotation=0, rect=(-5, -5, 5, 5)):
     """Create a board with a single footprint that has a courtyard rect."""
     board = Board.create_new()
     board.nets = [Net(number=0, name=""), Net(number=1, name="Net1")]
@@ -194,12 +206,12 @@ def _make_board_with_courtyard_fp(tmp_path, *, rotation=0):
         ),
     ]
 
-    # Add courtyard rectangle: -5 to 5 in both axes (local coords)
-    rect = FpRect()
-    rect.start = Position(X=-5, Y=-5)
-    rect.end = Position(X=5, Y=5)
-    rect.layer = "F.CrtYd"
-    fp.graphicItems.append(rect)
+    # Courtyard rectangle, in footprint-local coordinates.
+    crtyd = FpRect()
+    crtyd.start = Position(X=rect[0], Y=rect[1])
+    crtyd.end = Position(X=rect[2], Y=rect[3])
+    crtyd.layer = "F.CrtYd"
+    fp.graphicItems.append(crtyd)
 
     pad = Pad()
     pad.number = "1"
@@ -245,6 +257,24 @@ class TestGetFootprintBounds:
         assert cy["max_x"] == pt.approx(105, abs=0.1)
         assert cy["min_y"] == pt.approx(95, abs=0.1)
         assert cy["max_y"] == pt.approx(105, abs=0.1)
+
+    def test_rotated_asymmetric_courtyard_is_not_mirrored(self, tmp_path):
+        """A square courtyard cannot catch a rotation sign error; this one can.
+
+        The footprint sits at (100, 100) rotated -90 with a local courtyard
+        spanning x -6..4 and y -2..2. At -90 KiCad's RotatePoint sends local
+        (x, y) to board offset (-y, x), so the board box is x 98..102,
+        y 94..104. The opposite sign convention gives y 96..106, mirroring the
+        part about its own origin.
+        """
+        pcb_path = _make_board_with_courtyard_fp(tmp_path, rotation=-90, rect=(-6, -2, 4, 2))
+        result = pcb.get_footprint_bounds("U1", pcb_path=str(pcb_path))
+        cy = result.courtyard
+        assert cy is not None
+        assert cy["min_x"] == pytest.approx(98, abs=0.01)
+        assert cy["max_x"] == pytest.approx(102, abs=0.01)
+        assert cy["min_y"] == pytest.approx(94, abs=0.01)
+        assert cy["max_y"] == pytest.approx(104, abs=0.01)
 
     def test_no_courtyard(self, tmp_path):
         """Footprint without courtyard items returns courtyard: null."""

@@ -1248,21 +1248,33 @@ def _transform_local_to_board(
     angle: float,
     local_x: float,
     local_y: float,
-    mirrored: bool = False,
 ) -> tuple[float, float]:
     """Convert footprint-local coordinates to board coordinates.
 
-    Applies rotation by *angle* (degrees) around the footprint origin
-    ``(fp_x, fp_y)``.  When *mirrored* is True (back-side footprint),
-    the local X coordinate is negated before rotation.
+    Matches KiCad's ``RotatePoint`` in ``libs/kimath/src/trigo.cpp``, which is
+    what pcbnew applies to ``m_pos0`` to reach a pad's board position::
+
+        x' =  x*cos(a) + y*sin(a)
+        y' = -x*sin(a) + y*cos(a)
+
+    The signs are the transpose of the textbook rotation because a footprint's
+    stored angle is counter-clockwise **as seen on screen** while the file's Y
+    axis points down.  Using the textbook matrix instead mirrors every rotated
+    footprint about its own origin, which is invisible on a symmetric part and
+    wrong by twice the offset on everything else.
+
+    There is no back-side special case.  KiCad flips a footprint by rewriting
+    its children's local coordinates, so what the file holds for a ``B.Cu``
+    footprint is already in the flipped frame and needs no further mirroring.
+
+    Verified against ``kicad-cli pcb export drill`` for a front footprint and
+    two back footprints; see ``TestTransformLocalToBoard``.
     """
-    if mirrored:
-        local_x = -local_x
     theta = math.radians(angle or 0)
     cos_t = math.cos(theta)
     sin_t = math.sin(theta)
-    board_x = fp_x + (local_x * cos_t - local_y * sin_t)
-    board_y = fp_y + (local_x * sin_t + local_y * cos_t)
+    board_x = fp_x + (local_x * cos_t + local_y * sin_t)
+    board_y = fp_y + (-local_x * sin_t + local_y * cos_t)
     return board_x, board_y
 
 

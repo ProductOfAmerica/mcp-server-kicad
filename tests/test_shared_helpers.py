@@ -184,25 +184,43 @@ class TestTransformLocalToBoard:
 
     def test_90_degrees(self):
         bx, by = _transform_local_to_board(10, 20, 90, 3, 4)
-        # rotation 90: x' = fp_x + (lx*cos90 - ly*sin90) = 10 + (0 - 4) = 6
-        #              y' = fp_y + (lx*sin90 + ly*cos90) = 20 + (3 + 0) = 23
+        # KiCad's RotatePoint: x' = fp_x + ( lx*cos90 + ly*sin90) = 10 + (0 + 4) = 14
+        #                      y' = fp_y + (-lx*sin90 + ly*cos90) = 20 + (-3 + 0) = 17
+        assert bx == pytest.approx(14, abs=0.01)
+        assert by == pytest.approx(17, abs=0.01)
+
+    def test_minus_90_is_the_other_way(self):
+        bx, by = _transform_local_to_board(10, 20, -90, 3, 4)
         assert bx == pytest.approx(6, abs=0.01)
         assert by == pytest.approx(23, abs=0.01)
 
-    def test_mirrored_zero_rotation(self):
-        bx, by = _transform_local_to_board(10, 20, 0, 3, 4, mirrored=True)
-        assert bx == pytest.approx(7)
-        assert by == pytest.approx(24)
+    @pytest.mark.parametrize(
+        ("fp_x", "fp_y", "angle", "expected"),
+        [
+            # Ground truth from `kicad-cli pcb export drill` on a three-footprint
+            # probe board, each with one pad at local (-5, 1):
+            #   F1  F.Cu at (150, 130) rot -90 -> X149.0 Y-125.0
+            #   B1  B.Cu at (160, 140) rot -90 -> X159.0 Y-135.0
+            #   B2  B.Cu at (170, 150) rot   0 -> X165.0 Y-151.0
+            # The back-side rows are the point: KiCad flips a footprint by
+            # rewriting its children's local coordinates, so reading them back
+            # needs no mirroring. Negating local_x here, as this helper used to,
+            # puts B1 at (159, 145) and B2 at (175, 151).
+            (150, 130, -90, (149.0, 125.0)),
+            (160, 140, -90, (159.0, 135.0)),
+            (170, 150, 0, (165.0, 151.0)),
+        ],
+    )
+    def test_matches_kicad_drill_output(self, fp_x, fp_y, angle, expected):
+        bx, by = _transform_local_to_board(fp_x, fp_y, angle, -5, 1)
+        assert (bx, by) == pytest.approx(expected, abs=1e-6)
 
-    def test_mirrored_false_unchanged(self):
-        bx, by = _transform_local_to_board(10, 20, 0, 3, 4, mirrored=False)
-        assert bx == pytest.approx(13)
-        assert by == pytest.approx(24)
-
-    def test_mirrored_with_rotation(self):
-        bx, by = _transform_local_to_board(10, 20, 90, 3, 4, mirrored=True)
-        assert bx == pytest.approx(6, abs=0.01)
-        assert by == pytest.approx(17, abs=0.01)
+    def test_round_trip_through_the_inverse(self):
+        """Rotating by -angle undoes the placement, for any local point."""
+        for angle in (0, 37, 90, -90, 180, 270):
+            bx, by = _transform_local_to_board(10, 20, angle, 3, 4)
+            lx, ly = _transform_local_to_board(0, 0, -angle, bx - 10, by - 20)
+            assert (lx, ly) == pytest.approx((3, 4), abs=1e-9)
 
 
 # ---------------------------------------------------------------------------

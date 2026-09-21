@@ -175,7 +175,7 @@ class TestBoardReadsCst:
         info = pcb.get_board_info(p)
         assert info == "Footprints: 1\nTraces: 1\nVias: 0\nNets: 3\nZones: 0\nThickness: 1.6mm"
         pads = pcb.get_footprint_pads("R1", p)
-        assert "Pad 1: smd rect @ (-0.75, 0) size=(0.7, 0.8)" in pads
+        assert "Pad 1: smd rect @ board (99.25, 100) local (-0.75, 0) size=(0.7, 0.8)" in pads
         assert "net=Net1" in pads and "net=Net2" in pads
 
     def test_unknown_footprint(self, scratch_pcb):
