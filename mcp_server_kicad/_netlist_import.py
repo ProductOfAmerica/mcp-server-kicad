@@ -23,7 +23,11 @@ def parse_netlist(path: str) -> tuple[list[dict], list[dict]]:
     """Parse a kicad-cli XML netlist into (components, nets).
 
     components: [{ref, value, footprint, path}] — footprint "" when unassigned;
-    path is the sheetpath+symbol KIID chain for GUI F8 linkage.
+    path is the sheetpath+symbol KIID chain for GUI F8 linkage. A multi-unit
+    symbol's <tstamps> lists every unit's KIID, space-separated, and the path
+    takes the first one, as KiCad's own update does: a footprint has one
+    identity, and the whole list written as its path was a token with spaces
+    in it that pcbnew read as whichever unit it liked.
     nets: [{name, nodes: [(ref, pin), ...]}] — the netlist @code is ignored;
     net names are the only identity that survives onto the board.
     """
@@ -35,13 +39,14 @@ def parse_netlist(path: str) -> tuple[list[dict], list[dict]]:
     for comp in root.findall("./components/comp"):
         sheetpath = comp.find("sheetpath")
         prefix = sheetpath.get("tstamps", "/") if sheetpath is not None else "/"
-        tstamps = comp.findtext("tstamps") or ""
+        units = (comp.findtext("tstamps") or "").split()
+        tstamp = units[0] if units else ""
         components.append(
             {
                 "ref": comp.get("ref") or "",
                 "value": comp.findtext("value") or "",
                 "footprint": comp.findtext("footprint") or "",
-                "path": (prefix.rstrip("/") + "/" + tstamps) if tstamps else "",
+                "path": (prefix.rstrip("/") + "/" + tstamp) if tstamp else "",
             }
         )
     nets = []

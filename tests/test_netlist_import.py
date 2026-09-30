@@ -45,6 +45,36 @@ NETLIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
 </export>
 """
 
+# Real kicad-cli output (KiCad 10.0.6) for a three-unit SN74LVC2G17 on a child
+# sheet, trimmed to the elements parse_netlist reads: one <comp>, three
+# space-separated KIIDs (the exporter lists the extra units first and the unit
+# it iterated last, so this one reads unit 2, unit 1, unit 3), and a
+# single-unit neighbour on the same sheet.
+MULTI_UNIT_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<export version="E">
+  <components>
+    <comp ref="U1">
+      <value>SN74LVC2G17</value>
+      <footprint>orb_weaver_smd:DRY6</footprint>
+      <sheetpath names="/gpio/" tstamps="/5d835380-29a3-52cb-8ee2-2cc964a09c22/"/>
+      <tstamps>f6b885c6-bea8-4f63-a8bf-ed54c18ce440 e310c8b3-8386-4c71-bde8-59dd025d7495 7b072c8a-4743-483b-985c-6774fd37fcc8</tstamps>
+    </comp>
+    <comp ref="R1">
+      <value>10K</value>
+      <footprint>Resistor_SMD:R_0603_1608Metric</footprint>
+      <sheetpath names="/gpio/" tstamps="/5d835380-29a3-52cb-8ee2-2cc964a09c22/"/>
+      <tstamps>0eab7050-ae9a-4b12-9155-20dceb5716cb</tstamps>
+    </comp>
+  </components>
+  <nets>
+    <net code="1" name="/gpio/IN">
+      <node ref="U1" pin="1"/>
+      <node ref="R1" pin="1"/>
+    </net>
+  </nets>
+</export>
+"""  # noqa: E501 - the <tstamps> line is kicad-cli's, kept as it writes it
+
 
 @pytest.fixture
 def netlist_file(tmp_path):
@@ -70,6 +100,26 @@ class TestParseNetlist:
         components, _ = ni.parse_netlist(netlist_file)
         assert components[0]["path"] == "/aaaa-bbbb"
         assert components[1]["path"] == "/1111-2222/cccc-dddd"
+
+    def test_multi_unit_path_names_the_first_unit(self, tmp_path):
+        """A multi-unit symbol lists every unit in <tstamps>; the path takes the first.
+
+        The footprint's path names one symbol, and KiCad's own update takes
+        the first listed unit (BOARD_NETLIST_UPDATER::updateFootprintParameters
+        pushes GetKIIDs().front()). Writing the whole list produced a path token
+        with spaces in it, which pcbnew parsed into whichever unit it liked,
+        so the same footprint could come back linked to a different unit on
+        every update.
+        """
+        p = tmp_path / "multi.xml"
+        p.write_text(MULTI_UNIT_XML)
+        components, _ = ni.parse_netlist(str(p))
+        assert [c["ref"] for c in components] == ["U1", "R1"]
+        u1, r1 = components
+        sheet = "/5d835380-29a3-52cb-8ee2-2cc964a09c22"
+        assert u1["path"] == sheet + "/f6b885c6-bea8-4f63-a8bf-ed54c18ce440"
+        assert " " not in u1["path"]
+        assert r1["path"] == sheet + "/0eab7050-ae9a-4b12-9155-20dceb5716cb"
 
     def test_nets_ignore_code(self, netlist_file):
         _, nets = ni.parse_netlist(netlist_file)
