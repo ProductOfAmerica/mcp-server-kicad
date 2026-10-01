@@ -157,14 +157,6 @@ def _find_lib_symbol(sch, lib_id: str):
     return None
 
 
-def _find_sym(sch, reference: str):
-    """Return the first placed symbol whose Reference property matches, or None."""
-    for sym in sch.schematicSymbols:
-        if any(p.key == "Reference" and p.value == reference for p in sym.properties):
-            return sym
-    return None
-
-
 def _transform_pin_pos(
     px: float,
     py: float,
@@ -211,33 +203,44 @@ def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, floa
     """Return absolute (x, y, outward_angle_deg) for a placed component's pin.
 
     Matches pin by name (e.g. "IN", "GND") first, then by number (e.g. "1").
-    If multiple pins share a name, returns the first match.
+    If multiple pins share a name, returns the first match. A multi-unit part
+    is several placed symbols with one reference: the first whose unit draws
+    the pin wins, unit 0 being common to all. kiutils keeps no body style on
+    a placed symbol, so style 1 is assumed here; the CST twin reads it.
     Raises ValueError if reference or pin not found.
     """
-    target = _find_sym(sch, reference)
-    if target is None:
+    targets = [
+        s
+        for s in sch.schematicSymbols
+        if any(p.key == "Reference" and p.value == reference for p in s.properties)
+    ]
+    if not targets:
         raise ValueError(f"Component {reference} not found")
 
-    lib_sym = _find_lib_symbol(sch, target.libId)
-    if lib_sym is None:
-        raise ValueError(f"Lib symbol for {reference} not found")
+    for target in targets:
+        lib_sym = _find_lib_symbol(sch, target.libId)
+        if lib_sym is None:
+            raise ValueError(f"Lib symbol for {reference} not found")
 
-    cx, cy = target.position.X, target.position.Y
-    comp_angle = target.position.angle or 0
-    mir = getattr(target, "mirror", None)
+        cx, cy = target.position.X, target.position.Y
+        comp_angle = target.position.angle or 0
+        mir = getattr(target, "mirror", None)
+        placed_unit = target.unit if target.unit is not None else 1
 
-    for unit in lib_sym.units:
-        for pin in unit.pins:
-            if pin.name == pin_name or pin.number == pin_name:
-                return _transform_pin_pos(
-                    pin.position.X,
-                    pin.position.Y,
-                    pin.position.angle or 0,
-                    cx,
-                    cy,
-                    comp_angle,
-                    mir,
-                )
+        for unit in lib_sym.units:
+            if unit.unitId not in (placed_unit, 0, None) or unit.styleId not in (1, 0, None):
+                continue
+            for pin in unit.pins:
+                if pin.name == pin_name or pin.number == pin_name:
+                    return _transform_pin_pos(
+                        pin.position.X,
+                        pin.position.Y,
+                        pin.position.angle or 0,
+                        cx,
+                        cy,
+                        comp_angle,
+                        mir,
+                    )
 
     raise ValueError(f"Pin '{pin_name}' not found on {reference}")
 
@@ -529,50 +532,58 @@ def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
 def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
     """Get absolute pin positions for a placed component (accounts for rotation/mirror).
 
+    A multi-unit part is placed as one symbol per unit and they all share the
+    reference, so every placed unit is listed, each with its own pins plus the
+    unit-0 pins they all share.
+
     Args:
         reference: Component reference (e.g. "U1", "R1")
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
 
-    target = _find_sym_cst(root, reference)
-    if target is None:
+    targets = _find_syms_cst(root, reference)
+    if not targets:
         raise ToolError(f"{reference} not found." + _SEE_PLACED)
 
-    lib_id = target.find("lib_id").atoms[1].text
-    symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-    lib_sym = _find_lib_symbol_cst(root, lib_id)
-    if lib_sym is None:
-        raise ToolError(f"Lib symbol for {reference} not found.")
+    lines: list[str] = []
+    for target in targets:
+        lib_id = target.find("lib_id").atoms[1].text
+        symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
+        lib_sym = _find_lib_symbol_cst(root, lib_id)
+        if lib_sym is None:
+            raise ToolError(f"Lib symbol for {reference} not found.")
 
-    at = target.find("at")
-    cx = _numish(at.atoms[1].text)
-    cy = _numish(at.atoms[2].text)
-    angle_deg = _numish(at.atoms[3].text) if len(at.atoms) > 3 else 0
-    m = target.find("mirror")
-    mir = m.atoms[1].text if m is not None else None
+        at = target.find("at")
+        cx = _numish(at.atoms[1].text)
+        cy = _numish(at.atoms[2].text)
+        angle_deg = _numish(at.atoms[3].text) if len(at.atoms) > 3 else 0
+        m = target.find("mirror")
+        mir = m.atoms[1].text if m is not None else None
+        unit = _sym_unit_cst(target)
 
-    lines = [f"{reference} ({symbol_name}) @ ({cx}, {cy}) rot={angle_deg} mirror={mir}"]
+        head = f"{reference} ({symbol_name}) @ ({cx}, {cy}) rot={angle_deg} mirror={mir}"
+        lines.append(head if len(targets) == 1 else f"{head} unit={unit}")
 
-    for unit in lib_sym.find_all("symbol"):
-        for pin in unit.find_all("pin"):
-            pat = pin.find("at")
-            final_x, final_y, _ = _transform_pin_pos(
-                float(pat.atoms[1].text),
-                float(pat.atoms[2].text),
-                float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0,
-                cx,
-                cy,
-                angle_deg,
-                mir,
-            )
-            number = pin.find("number")
-            name = pin.find("name")
-            lines.append(
-                f"  Pin {number.atoms[1].text if number is not None else ''} "
-                f"({name.atoms[1].text if name is not None else '~'}): "
-                f"({round(final_x, 2)}, {round(final_y, 2)})"
-            )
+        for unit_node in _instance_units(lib_sym, unit, _sym_body_style_cst(target)):
+            for pin in unit_node.find_all("pin"):
+                pat = pin.find("at")
+                final_x, final_y, _ = _transform_pin_pos(
+                    float(pat.atoms[1].text),
+                    float(pat.atoms[2].text),
+                    float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0,
+                    cx,
+                    cy,
+                    angle_deg,
+                    mir,
+                )
+                number = pin.find("number")
+                name = pin.find("name")
+                lines.append(
+                    f"  Pin {number.atoms[1].text if number is not None else ''} "
+                    f"({name.atoms[1].text if name is not None else '~'}): "
+                    f"({round(final_x, 2)}, {round(final_y, 2)})"
+                )
 
     return "\n".join(lines)
 
@@ -585,7 +596,9 @@ def get_net_connections(
     """Find all component pins connected to a net label.
 
     Scans labels matching the text, traces wires from label positions,
-    and identifies component pins at wire endpoints.
+    and identifies component pins at wire endpoints. Each placed symbol
+    contributes only its own unit's pins, so a multi-unit part does not
+    report a sibling gate's input as sitting on this net.
 
     Args:
         label_text: Net name to search for (e.g. "VCC", "GND")
@@ -642,7 +655,7 @@ def get_net_connections(
         comp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
         m = sym.find("mirror")
         mir = m.atoms[1].text if m is not None else None
-        for unit in lib_sym.find_all("symbol"):
+        for unit in _instance_units(lib_sym, _sym_unit_cst(sym), _sym_body_style_cst(sym)):
             for pin in unit.find_all("pin"):
                 pat = pin.find("at")
                 px, py, _ = _transform_pin_pos(
@@ -1218,12 +1231,91 @@ def _auto_junctions_cst(root, new_points: list[tuple[float, float]], tol: float 
                 break
 
 
+def _find_syms_cst(root, reference: str):
+    """Every placed symbol whose Reference property matches, in file order.
+
+    A multi-unit part is placed as one symbol node per unit and they all carry
+    the same reference, so this is a list wherever units can be split.
+    """
+    return [s for s in root.find_all("symbol") if _sym_property_cst(s, "Reference") == reference]
+
+
 def _find_sym_cst(root, reference: str):
     """First placed symbol whose Reference property matches, or None."""
-    return next(
-        (s for s in root.find_all("symbol") if _sym_property_cst(s, "Reference") == reference),
-        None,
-    )
+    found = _find_syms_cst(root, reference)
+    return found[0] if found else None
+
+
+def _sym_unit_cst(sym) -> int:
+    """Unit number of a placed symbol node.
+
+    One when the node carries no ``(unit N)``, which is how KiCad reads it
+    (``SCH_SYMBOL::Init``).
+    """
+    node = sym.find("unit")
+    if node is None or len(node.atoms) < 2:
+        return 1
+    try:
+        return int(node.atoms[1].text)
+    except ValueError:
+        return 1
+
+
+def _sym_body_style_cst(sym) -> int:
+    """Body style of a placed symbol node.
+
+    KiCad 10 writes ``(body_style N)`` on every placed symbol; KiCad 9 writes
+    ``(convert N)``, and only for a De Morgan alternate. Absent means 1.
+    """
+    node = sym.find("body_style")
+    if node is None:
+        node = sym.find("convert")
+    if node is None or len(node.atoms) < 2:
+        return 1
+    try:
+        return int(node.atoms[1].text)
+    except ValueError:
+        return 1
+
+
+def _lib_unit_style(unit_node) -> tuple[int, int] | None:
+    """The (unit, body style) a lib sub-symbol's name encodes, or None if none.
+
+    KiCad names them ``NAME_<unit>_<bodyStyle>``, and NAME itself may contain
+    underscores, so the two trailing fields are the ones to read.
+    """
+    atoms = unit_node.atoms
+    if len(atoms) < 2:
+        return None
+    parts = atoms[1].text.rsplit("_", 2)
+    if len(parts) != 3:
+        return None
+    try:
+        return int(parts[1]), int(parts[2])
+    except ValueError:
+        return None
+
+
+def _instance_units(lib_sym, unit: int, body_style: int = 1):
+    """The lib sub-symbols a placed instance of *unit* in *body_style* draws.
+
+    KiCad's rule (``LIB_SYMBOL::GetPins``): a sub-symbol is drawn when its
+    unit is this one or 0 and its body style is this one or 0, with 0 meaning
+    "common" on both axes. So a placed ``(unit 2)`` draws units 2 and 0 and
+    nothing else, and a De Morgan part placed in its normal style draws
+    ``_1_1`` but not ``_1_2``. Scanning every sub-symbol instead reports a
+    sibling unit's pins as this instance's own, at coordinates derived from
+    this instance's origin, and an alternate style's pins a second time.
+
+    A sub-symbol whose name encodes no unit is kept. KiCad's own parser
+    refuses such a name, so only a hand-built file carries one.
+    """
+    kept = []
+    for sub in lib_sym.find_all("symbol"):
+        ids = _lib_unit_style(sub)
+        if ids is None or (ids[0] in (unit, 0) and ids[1] in (body_style, 0)):
+            kept.append(sub)
+    return kept
 
 
 def _find_lib_symbol_cst(root, lib_id: str):
@@ -1238,16 +1330,21 @@ def _find_lib_symbol_cst(root, lib_id: str):
     return None
 
 
-def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float, float]:
-    """CST twin of _get_pin_pos; same match rules and ValueError strings.
+def _pin_matches_cst(pin, pin_name: str) -> bool:
+    """True when a lib pin node's name or number is *pin_name*."""
+    name = pin.find("name")
+    number = pin.find("number")
+    return (name is not None and name.atoms[1].text == pin_name) or (
+        number is not None and number.atoms[1].text == pin_name
+    )
 
-    Placed symbols are the root-level symbol nodes (find_all never descends
-    into lib_symbols). Pin match is name-OR-number per pin in file order, and
-    every unit is scanned regardless of the placed symbol's (unit N).
+
+def _drawn_pin_pos_cst(root, target, pin_name: str, reference: str):
+    """Absolute (x, y, outward) of *pin_name* if the placed node *target* draws it.
+
+    None when it does not: the pin is on another unit, or on this unit's
+    other body style. Pin match is name-OR-number per pin in file order.
     """
-    target = _find_sym_cst(root, reference)
-    if target is None:
-        raise ValueError(f"Component {reference} not found")
     lib_sym = _find_lib_symbol_cst(root, target.find("lib_id").atoms[1].text)
     if lib_sym is None:
         raise ValueError(f"Lib symbol for {reference} not found")
@@ -1256,18 +1353,78 @@ def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float,
     comp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
     m = target.find("mirror")
     mir = m.atoms[1].text if m is not None else None
-    for unit in lib_sym.find_all("symbol"):
+    for unit in _instance_units(lib_sym, _sym_unit_cst(target), _sym_body_style_cst(target)):
         for pin in unit.find_all("pin"):
-            name = pin.find("name")
-            number = pin.find("number")
-            if (name is not None and name.atoms[1].text == pin_name) or (
-                number is not None and number.atoms[1].text == pin_name
-            ):
+            if _pin_matches_cst(pin, pin_name):
                 pat = pin.find("at")
                 px, py = float(pat.atoms[1].text), float(pat.atoms[2].text)
                 pangle = float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0
                 return _transform_pin_pos(px, py, pangle, cx, cy, comp_angle, mir)
-    raise ValueError(f"Pin '{pin_name}' not found on {reference}")
+    return None
+
+
+def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float, float]:
+    """CST twin of _get_pin_pos; same match rules and ValueError strings.
+
+    Placed symbols are the root-level symbol nodes (find_all never descends
+    into lib_symbols). A multi-unit part is several of them sharing one
+    reference, so this walks them in file order and takes the first whose
+    unit and body style draw the pin, which is KiCad's own rule. A unit-0 pin
+    is the same pad whichever unit draws it, so the first placed unit is right
+    for it. When no placed unit on this sheet draws the pin (its unit is on
+    another sheet, or not placed), the error names the unit that does, or the
+    body style when that is what differs; nothing has been written at that
+    point, so the file is untouched.
+    """
+    targets = _find_syms_cst(root, reference)
+    if not targets:
+        raise ValueError(f"Component {reference} not found")
+    for target in targets:
+        pos = _drawn_pin_pos_cst(root, target, pin_name, reference)
+        if pos is not None:
+            return pos
+    lib_sym = _find_lib_symbol_cst(root, targets[0].find("lib_id").atoms[1].text)
+    subs = lib_sym.find_all("symbol") if lib_sym is not None else []
+    carriers = sorted(
+        {
+            ids
+            for sub in subs
+            if (ids := _lib_unit_style(sub)) is not None
+            and any(_pin_matches_cst(pin, pin_name) for pin in sub.find_all("pin"))
+        }
+    )
+    if not carriers:
+        raise ValueError(f"Pin '{pin_name}' not found on {reference}")
+    # Name the body style only where it is the thing that differs: the unit is
+    # here in its other style, or it is unit 0, which every placed unit draws.
+    # An unplaced unit is named as a unit, and placing it is then the remedy.
+    placed_units = {_sym_unit_cst(t) for t in targets}
+    styles_by_unit: dict[int, set[int]] = {}
+    for u, s in carriers:
+        styles_by_unit.setdefault(u, set()).add(s)
+
+    def _carrier(u: int, styles: set[int]) -> str:
+        style = "body style " + "/".join(map(str, sorted(styles)))
+        if u == 0:
+            return f"{style} (common to all units)"
+        return f"unit {u} {style}" if u in placed_units else f"unit {u}"
+
+    where = ", ".join(_carrier(u, styles) for u, styles in sorted(styles_by_unit.items()))
+    placed = ", ".join(
+        f"unit {_sym_unit_cst(t)}"
+        + (f" body style {_sym_body_style_cst(t)}" if _sym_body_style_cst(t) != 1 else "")
+        for t in targets
+    )
+    if any(u != 0 and u not in placed_units for u in styles_by_unit):
+        raise ValueError(
+            f"Pin '{pin_name}' of {reference} is on {where}, which is not placed on this sheet "
+            f"({reference} here: {placed}). Place that unit, or wire the pin on the sheet "
+            "that holds it."
+        )
+    raise ValueError(
+        f"Pin '{pin_name}' of {reference} is on {where}, which this sheet does not draw "
+        f"({reference} here: {placed}). Switch the placed symbol to that body style in KiCad."
+    )
 
 
 def _pin_electrical_types_cst(lib_sym, pin_name: str) -> list[str]:

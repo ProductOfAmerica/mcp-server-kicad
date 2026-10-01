@@ -21,6 +21,7 @@ import re
 import shutil
 import subprocess
 import uuid as _uuid
+import xml.etree.ElementTree as ET
 from functools import lru_cache
 from pathlib import Path
 
@@ -39,11 +40,18 @@ from kiutils.items.common import (
 )
 from kiutils.items.fpitems import FpText
 from kiutils.items.gritems import GrLine
-from kiutils.items.schitems import Connection, LocalLabel, SchematicSymbol
+from kiutils.items.schitems import (
+    Connection,
+    LocalLabel,
+    SchematicSymbol,
+    SymbolProjectInstance,
+    SymbolProjectPath,
+)
 from kiutils.items.syitems import SyRect
 from kiutils.schematic import Schematic
 from kiutils.symbol import Symbol, SymbolLib, SymbolPin
 
+from mcp_server_kicad import _cst
 from mcp_server_kicad._shared import _find_kicad_cli, _run_cli
 
 HAS_KICAD_CLI = _find_kicad_cli() is not None
@@ -361,6 +369,242 @@ def make_power_sch(tmp_path, pin_type="power_in", ref="#PWR01", value="VCC") -> 
     return path
 
 
+#: A lib pin for the multi-unit builders: (number, name, x, y, angle).
+_PinSpec = tuple[str, str, float, float, float]
+
+
+def _gate_unit(name: str, unit_id: int, style_id: int, pins: list[_PinSpec]) -> Symbol:
+    """One ``<name>_<unit>_<style>`` sub-symbol holding *pins*."""
+    unit = Symbol()
+    unit.entryName = name
+    unit.unitId = unit_id
+    unit.styleId = style_id
+    unit.pins = [
+        SymbolPin(
+            electricalType="passive",
+            position=Position(X=px, Y=py, angle=angle),
+            length=2.54,
+            name=pin_name,
+            number=number,
+        )
+        for number, pin_name, px, py, angle in pins
+    ]
+    return unit
+
+
+def build_dual_gate_symbol() -> Symbol:
+    """Build a 'DualGate' symbol: two gate units plus shared unit-0 power pins.
+
+    Unit 0: pin 5 "GND" at (0, -7.62) and pin 6 "VCC" at (0, 7.62), which KiCad
+    draws on every unit.  Unit 1: pin 1 "1A" at (-5.08, 0), pin 2 "1Y" at
+    (5.08, 0).  Unit 2: pin 3 "2A" and pin 4 "2Y" at the same body-local
+    coordinates as unit 1's pair, which is exactly what makes a unit mix-up
+    visible: the sibling gate's input lands on top of this gate's input.
+    """
+    sym = Symbol()
+    sym.entryName = "DualGate"
+    sym.pinNamesOffset = 0
+    sym.inBom = True
+    sym.onBoard = True
+    sym.units = [
+        _gate_unit("DualGate", 0, 1, [("5", "GND", 0, -7.62, 90), ("6", "VCC", 0, 7.62, 270)]),
+        _gate_unit("DualGate", 1, 1, [("1", "1A", -5.08, 0, 0), ("2", "1Y", 5.08, 0, 180)]),
+        _gate_unit("DualGate", 2, 1, [("3", "2A", -5.08, 0, 0), ("4", "2Y", 5.08, 0, 180)]),
+    ]
+    return sym
+
+
+def build_demorgan_symbol() -> Symbol:
+    """Build a 'NandGate' symbol shaped like the stock 74xx:74LS00, in miniature.
+
+    Unit 1 has two body styles: ``_1_1`` (the gate) and ``_1_2`` (its De Morgan
+    alternate), each carrying pins 1 "A", 2 "B" and 3 "Y".  The alternate
+    places them 2.54 further out than the gate does, so which style a reader
+    picked is visible in the coordinates; a stock symbol draws both at the
+    same place, where the only symptom is every pin reported twice.  Unit 2
+    is the power unit: ``_2_0`` carries pins 7 "GND" and 14 "VCC" in body
+    style 0, which KiCad draws whichever style is placed, and ``_2_1`` is
+    graphics only, like ``74LS00_5_0`` and ``74LS00_5_1``.
+    """
+    sym = Symbol()
+    sym.entryName = "NandGate"
+    sym.pinNamesOffset = 1.016
+    sym.inBom = True
+    sym.onBoard = True
+    gate: list[_PinSpec] = [
+        ("1", "A", -7.62, 2.54, 0),
+        ("2", "B", -7.62, -2.54, 0),
+        ("3", "Y", 7.62, 0, 180),
+    ]
+    alt: list[_PinSpec] = [
+        ("1", "A", -10.16, 5.08, 0),
+        ("2", "B", -10.16, -5.08, 0),
+        ("3", "Y", 10.16, 0, 180),
+    ]
+    power: list[_PinSpec] = [("7", "GND", 0, -7.62, 90), ("14", "VCC", 0, 7.62, 270)]
+    body = _gate_unit("NandGate", 2, 1, [])
+    body.graphicItems = [
+        SyRect(
+            start=Position(X=-2.54, Y=-5.08),
+            end=Position(X=2.54, Y=5.08),
+            stroke=Stroke(width=0.254, type="default"),
+            fill=Fill(type="none"),
+        )
+    ]
+    sym.units = [
+        _gate_unit("NandGate", 1, 1, gate),
+        _gate_unit("NandGate", 1, 2, alt),
+        _gate_unit("NandGate", 2, 0, power),
+        body,
+    ]
+    return sym
+
+
+def place_unit(
+    lib_name: str,
+    x: float,
+    y: float,
+    unit: int,
+    numbers: tuple[str, ...],
+    *,
+    sheet_uuid: str,
+    project: str,
+    reference: str = "U1",
+) -> SchematicSymbol:
+    """Place one unit of a multi-unit part at (x, y) on the root sheet *sheet_uuid*.
+
+    The symbol carries the ``(instances ...)`` block KiCad writes, which the
+    netlist oracle depends on: kicad-cli 9.0.8 leaves every unconnected pin of
+    a symbol without instance data out of the netlist, so a no-connected pin is
+    absent there rather than marked ``+no_connect`` (measured 2026-10-01).
+    """
+    sym = SchematicSymbol()
+    sym.libId = f"Device:{lib_name}"
+    sym.libName = lib_name
+    sym.position = Position(X=x, Y=y, angle=0)
+    sym.uuid = _gen_uuid()
+    sym.unit = unit
+    sym.inBom = True
+    sym.onBoard = True
+    sym.properties = [
+        Property(
+            key="Reference",
+            value=reference,
+            id=0,
+            effects=_default_effects(),
+            position=Position(X=x, Y=y - 10.16, angle=0),
+        ),
+        Property(
+            key="Value",
+            value=lib_name,
+            id=1,
+            effects=_default_effects(),
+            position=Position(X=x, Y=y + 10.16, angle=0),
+        ),
+        Property(
+            key="Footprint",
+            value="",
+            id=2,
+            effects=_default_effects(hide=True),
+            position=Position(X=x, Y=y, angle=0),
+        ),
+        Property(
+            key="Datasheet",
+            value="~",
+            id=3,
+            effects=_default_effects(hide=True),
+            position=Position(X=x, Y=y, angle=0),
+        ),
+    ]
+    sym.pins = {number: _gen_uuid() for number in numbers}
+    sym.instances = [
+        SymbolProjectInstance(
+            name=project,
+            paths=[
+                SymbolProjectPath(
+                    sheetInstancePath=f"/{sheet_uuid}", reference=reference, unit=unit
+                )
+            ],
+        )
+    ]
+    return sym
+
+
+def make_dual_unit_sch(tmp_path, units: tuple[int, ...] = (1, 2)) -> str:
+    """U1 (DualGate) with the given *units* placed, and a label on gate 1's input.
+
+    Unit 1 sits at (100, 100), so pin 1 is at (94.92, 100) and pin 2 at
+    (105.08, 100); unit 2 sits at (150, 100), so pin 3 is at (144.92, 100) and
+    pin 4 at (155.08, 100).  The shared pins 5 and 6 are at (x, 107.62) and
+    (x, 92.38) of every placed unit.  The label GATE1_IN is on pin 1.
+    Returns the path.
+    """
+    path = tmp_path / "dual_unit.kicad_sch"
+    sch = new_schematic()
+    assert sch.uuid is not None  # new_schematic sets it; kiutils types it Optional
+    sheet = {"sheet_uuid": sch.uuid, "project": path.stem}
+    sch.libSymbols.append(build_dual_gate_symbol())
+    if 1 in units:
+        sch.schematicSymbols.append(
+            place_unit("DualGate", 100, 100, 1, ("1", "2", "5", "6"), **sheet)
+        )
+    if 2 in units:
+        sch.schematicSymbols.append(
+            place_unit("DualGate", 150, 100, 2, ("3", "4", "5", "6"), **sheet)
+        )
+    sch.labels.append(
+        LocalLabel(
+            text="GATE1_IN",
+            position=Position(X=94.92, Y=100, angle=0),
+            effects=_default_effects(),
+            uuid=_gen_uuid(),
+        )
+    )
+    sch.filePath = str(path)
+    sch.to_file()
+    return str(path)
+
+
+def make_demorgan_sch(tmp_path, body_style: int = 1) -> str:
+    """U1 (NandGate): unit 1 at (100, 100) in *body_style*, power unit 2 at (150, 100).
+
+    Pin 1 "A" is at (92.38, 97.46) when the gate is drawn in style 1 and at
+    (89.84, 94.92) in style 2.  The label NAND_A is on whichever of the two
+    the placed style draws, and the label PHANTOM is on the other, where
+    nothing is drawn.  Style 2 is written as KiCad 9 writes it, ``(convert 2)``
+    on the placed symbol, which KiCad 10 reads too.  Returns the path.
+    """
+    drawn, other = ((92.38, 97.46), (89.84, 94.92))[:: 1 if body_style == 1 else -1]
+    path = tmp_path / "demorgan.kicad_sch"
+    sch = new_schematic()
+    assert sch.uuid is not None  # new_schematic sets it; kiutils types it Optional
+    sheet = {"sheet_uuid": sch.uuid, "project": path.stem}
+    sch.libSymbols.append(build_demorgan_symbol())
+    sch.schematicSymbols.append(place_unit("NandGate", 100, 100, 1, ("1", "2", "3"), **sheet))
+    sch.schematicSymbols.append(place_unit("NandGate", 150, 100, 2, ("7", "14"), **sheet))
+    for text, (lx, ly) in (("NAND_A", drawn), ("PHANTOM", other)):
+        sch.labels.append(
+            LocalLabel(
+                text=text,
+                position=Position(X=lx, Y=ly, angle=0),
+                effects=_default_effects(),
+                uuid=_gen_uuid(),
+            )
+        )
+    sch.filePath = str(path)
+    sch.to_file()
+    if body_style != 1:
+        # The instance data repeats (unit 1), so edit the placed node itself.
+        tree = _cst.parse(path.read_bytes())
+        gate = next(
+            s for s in tree.lists[0].find_all("symbol") if s.find("unit").atoms[1].text == "1"
+        )
+        convert = _cst.parse(b"(convert %d)" % body_style).lists[0]
+        gate.insert_after(gate.find("unit"), convert, b" ")
+        path.write_bytes(_cst.serialize(tree))
+    return str(path)
+
+
 # ---------------------------------------------------------------------------
 # Helpers (public — importable and used by tests directly)
 # ---------------------------------------------------------------------------
@@ -388,6 +632,35 @@ def run_erc(path: str | Path) -> dict:
         )
     with open(erc_out) as f:
         return json.load(f)
+
+
+def netlist_nodes(path: str | Path) -> dict[str, dict[tuple[str, str], str]]:
+    """Run ``kicad-cli sch export netlist`` and return KiCad's own connectivity.
+
+    ``{net name: {(reference, pin number): pin type}}``.  The export names a
+    root-sheet local label's net ``/NAME``; the leading slash is dropped here.
+    A pin under a no-connect flag carries the ``+no_connect`` suffix on its
+    type.  This is the oracle for anything that decides which placed symbol
+    a pin belongs to.
+    """
+    path = str(path)
+    net_out = path + ".netlist.xml"
+    result = _run_cli(
+        ["sch", "export", "netlist", "--format", "kicadxml", "--output", net_out, path],
+        check=False,
+    )
+    if not os.path.exists(net_out):
+        raise RuntimeError(
+            f"kicad-cli netlist export failed (rc={result.returncode}): {result.stderr.strip()}"
+        )
+    nets: dict[str, dict[tuple[str, str], str]] = {}
+    for net in ET.parse(net_out).getroot().iter("net"):
+        name = net.get("name", "")
+        nets[name[1:] if name.startswith("/") else name] = {
+            (node.get("ref", ""), node.get("pin", "")): node.get("pintype", "")
+            for node in net.findall("node")
+        }
+    return nets
 
 
 def assert_kicad_parseable(path: str | Path) -> None:
