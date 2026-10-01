@@ -14,6 +14,7 @@ from conftest import (
     _pure_insertion,
     _span_preserved,
     build_test_footprint,
+    make_dual_unit_sch,
     reparse,
     requires_cli,
 )
@@ -390,6 +391,21 @@ class TestHybridRoutingPreservation:
             _get_pin_pos_cst(root, "X99", "1")
         with pytest.raises(ValueError, match="Pin 'NOPE' not found on R1"):
             _get_pin_pos_cst(root, "R1", "NOPE")
+
+    def test_pin_pos_twins_agree_on_a_multi_unit_part(self, tmp_path):
+        # Same oracle on a part placed as two symbols sharing one reference,
+        # whose units put their pins at identical body-local coordinates: both
+        # walks must pick the same placed unit for every pin, the shared
+        # unit-0 pins included.
+        from mcp_server_kicad.schematic import _get_pin_pos, _get_pin_pos_cst
+
+        path = Path(make_dual_unit_sch(tmp_path))
+        sch = reparse(path)
+        root = _cst.parse(path.read_bytes()).lists[0]
+        for pin in ("1", "2", "3", "4", "5", "6"):
+            assert _get_pin_pos_cst(root, "U1", pin) == _get_pin_pos(sch, "U1", pin), pin
+        assert _get_pin_pos_cst(root, "U1", "4")[:2] == (155.08, 100.0)
+        assert _get_pin_pos_cst(root, "U1", "6")[:2] == (100.0, 92.38)
 
 
 def _power_in_sch(tmp_path):

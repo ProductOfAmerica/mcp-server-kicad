@@ -7,11 +7,15 @@ from pathlib import Path
 import pytest
 from conftest import (
     HAS_KICAD_CLI,
+    _pure_insertion,
     assert_kicad_parseable,
     build_r_symbol,
+    make_dual_unit_sch,
     make_power_sch,
+    netlist_nodes,
     new_schematic,
     reparse,
+    requires_cli,
 )
 from kiutils.items.schitems import Connection
 from mcp.server.mcpserver.exceptions import ToolError
@@ -1490,3 +1494,95 @@ class TestWirePinsToNetAutoPwrFlag:
             if any(p.key == "Value" and p.value == "PWR_FLAG" for p in s.properties)
         ]
         assert len(pwr_flags) == 1, "PWR_FLAG should be placed when auto_pwr_flag=True (default)"
+
+
+# ---------------------------------------------------------------------------
+# Multi-unit parts: a pin is wired on the placed unit that draws it
+# ---------------------------------------------------------------------------
+
+
+def _wire_ends(sch) -> set[tuple[float, float]]:
+    wires = [g for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"]
+    return {(round(pt.X, 2), round(pt.Y, 2)) for w in wires for pt in (w.points[0], w.points[-1])}
+
+
+class TestMultiUnitWrites:
+    """Every write tool that takes a pin goes through _get_pin_pos_cst.
+
+    Fixture (make_dual_unit_sch): U1 unit 1 at (100, 100) with pins 1 (94.92, 100)
+    and 2 (105.08, 100); unit 2 at (150, 100) with pins 3 (144.92, 100) and 4
+    (155.08, 100).  The two gates place their pins at the same body-local
+    coordinates, so a resolver that scans every unit against the first placed
+    symbol puts pin 4 at (105.08, 100), on top of unit 1's pin 2, and reports
+    success.  Shared pins 5 (GND) and 6 (VCC) are at (x, 107.62) and (x, 92.38)
+    of each unit.
+    """
+
+    def test_wire_pins_to_net_wires_the_placed_unit(self, tmp_path: Path):
+        p = make_dual_unit_sch(tmp_path)
+        result = schematic.wire_pins_to_net(
+            [{"reference": "U1", "pin": "4"}], "TIE_LOW", schematic_path=p
+        )
+        assert result == "Wired 1 pins to 'TIE_LOW'."
+        ends = _wire_ends(reparse(p))
+        assert (155.08, 100.0) in ends
+        assert (105.08, 100.0) not in ends
+
+    def test_no_connect_pin_flags_the_placed_unit(self, tmp_path: Path):
+        p = Path(make_dual_unit_sch(tmp_path))
+        before = p.read_bytes()
+        result = schematic.no_connect_pin("U1", "4", schematic_path=str(p))
+        assert result == "No-connect on U1:4 at (155.08, 100.0)"
+        assert _pure_insertion(before, p.read_bytes())
+        nc = reparse(p).noConnects[0]
+        assert (nc.position.X, nc.position.Y) == (155.08, 100.0)
+        result = schematic.remove_no_connect("U1", "4", schematic_path=str(p))
+        assert result == "Removed 1 no-connect flag(s) from U1:4"
+        assert p.read_bytes() == before
+
+    def test_connect_pins_spans_two_units(self, tmp_path: Path):
+        p = make_dual_unit_sch(tmp_path)
+        result = schematic.connect_pins("U1", "2", "U1", "3", schematic_path=p)
+        assert result == "Connected U1:2 -> U1:3 via 1 wire segment"
+        assert _wire_ends(reparse(p)) == {(105.08, 100.0), (144.92, 100.0)}
+
+    def test_a_shared_pin_resolves_on_the_first_placed_unit(self, tmp_path: Path):
+        """A unit-0 pin is the same pad whichever unit draws it; file order decides."""
+        p = make_dual_unit_sch(tmp_path)
+        assert schematic.no_connect_pin("U1", "6", schematic_path=p) == (
+            "No-connect on U1:6 at (100.0, 92.38)"
+        )
+
+    def test_a_pin_of_an_unplaced_unit_is_refused_with_the_file_intact(self, tmp_path: Path):
+        """Unit 2 is not on this sheet: the refusal names it and nothing is written."""
+        p = Path(make_dual_unit_sch(tmp_path, units=(1,)))
+        before = p.read_bytes()
+        with pytest.raises(ToolError, match=r"Pin '4' of U1 is on unit 2.*U1 here: unit 1"):
+            schematic.wire_pins_to_net(
+                [{"reference": "U1", "pin": "4"}], "TIE_LOW", schematic_path=str(p)
+            )
+        with pytest.raises(ValueError, match=r"on unit 2"):
+            schematic.no_connect_pin("U1", "4", schematic_path=str(p))
+        with pytest.raises(ValueError, match=r"on unit 2"):
+            schematic.connect_pins("U1", "2", "U1", "4", schematic_path=str(p))
+        with pytest.raises(ValueError, match=r"Pin 'NOPE' not found on U1"):
+            schematic.no_connect_pin("U1", "NOPE", schematic_path=str(p))
+        assert p.read_bytes() == before
+        # The shared pins are drawn by the unit that is here.
+        assert "No-connect on U1:5 at (100.0, 107.62)" == schematic.no_connect_pin(
+            "U1", "5", schematic_path=str(p)
+        )
+
+    @requires_cli
+    def test_wired_net_matches_kicad_netlist(self, tmp_path: Path):
+        p = make_dual_unit_sch(tmp_path)
+        schematic.wire_pins_to_net([{"reference": "U1", "pin": "4"}], "TIE_LOW", schematic_path=p)
+        assert set(netlist_nodes(p)["TIE_LOW"]) == {("U1", "4")}
+
+    @requires_cli
+    def test_no_connect_matches_kicad_netlist(self, tmp_path: Path):
+        p = make_dual_unit_sch(tmp_path)
+        schematic.no_connect_pin("U1", "4", schematic_path=p)
+        pintypes = {node: t for nodes in netlist_nodes(p).values() for node, t in nodes.items()}
+        assert pintypes[("U1", "4")].endswith("+no_connect")
+        assert not pintypes[("U1", "2")].endswith("+no_connect")

@@ -14,12 +14,15 @@ from conftest import (
     _default_stroke,
     _gen_uuid,
     build_r_symbol,
+    make_demorgan_sch,
+    make_dual_unit_sch,
+    netlist_nodes,
     new_schematic,
     place_r1,
+    requires_cli,
 )
 from kiutils.items.common import Effects, Font, Position, Property
 from kiutils.items.schitems import Connection, LocalLabel, SchematicSymbol
-from kiutils.symbol import Symbol, SymbolPin
 from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import _cst, schematic
@@ -539,130 +542,24 @@ class TestPinPositionPrecision:
 # ---------------------------------------------------------------------------
 
 
-def _build_dual_gate_symbol() -> Symbol:
-    """Build a 'DualGate' symbol: two gate units plus shared unit-0 power pins.
-
-    Unit 0: pin 5 "GND" at (0, -7.62) and pin 6 "VCC" at (0, 7.62), which KiCad
-    draws on every unit.  Unit 1: pin 1 "1A" at (-5.08, 0), pin 2 "1Y" at
-    (5.08, 0).  Unit 2: pin 3 "2A" and pin 4 "2Y" at the same body-local
-    coordinates as unit 1's pair, which is exactly what makes a unit mix-up
-    visible: the sibling gate's input lands on top of this gate's input.
-    """
-    sym = Symbol()
-    sym.entryName = "DualGate"
-    sym.pinNamesOffset = 0
-    sym.inBom = True
-    sym.onBoard = True
-
-    def _unit(unit_id: int, pins: list[tuple[str, str, float, float, float]]) -> Symbol:
-        unit = Symbol()
-        unit.entryName = "DualGate"
-        unit.unitId = unit_id
-        unit.styleId = 1
-        unit.pins = [
-            SymbolPin(
-                electricalType="passive",
-                position=Position(X=px, Y=py, angle=angle),
-                length=2.54,
-                name=name,
-                number=number,
-            )
-            for number, name, px, py, angle in pins
-        ]
-        return unit
-
-    sym.units = [
-        _unit(0, [("5", "GND", 0, -7.62, 90), ("6", "VCC", 0, 7.62, 270)]),
-        _unit(1, [("1", "1A", -5.08, 0, 0), ("2", "1Y", 5.08, 0, 180)]),
-        _unit(2, [("3", "2A", -5.08, 0, 0), ("4", "2Y", 5.08, 0, 180)]),
-    ]
-    return sym
-
-
-def _place_dual_gate(x: float, y: float, unit: int, numbers: tuple[str, ...]) -> SchematicSymbol:
-    """Place one unit of U1 at (x, y)."""
-    sym = SchematicSymbol()
-    sym.libId = "Device:DualGate"
-    sym.libName = "DualGate"
-    sym.position = Position(X=x, Y=y, angle=0)
-    sym.uuid = _gen_uuid()
-    sym.unit = unit
-    sym.inBom = True
-    sym.onBoard = True
-    sym.properties = [
-        Property(
-            key="Reference",
-            value="U1",
-            id=0,
-            effects=_default_effects(),
-            position=Position(X=x, Y=y - 10.16, angle=0),
-        ),
-        Property(
-            key="Value",
-            value="DualGate",
-            id=1,
-            effects=_default_effects(),
-            position=Position(X=x, Y=y + 10.16, angle=0),
-        ),
-        Property(
-            key="Footprint",
-            value="",
-            id=2,
-            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-            position=Position(X=x, Y=y, angle=0),
-        ),
-        Property(
-            key="Datasheet",
-            value="~",
-            id=3,
-            effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-            position=Position(X=x, Y=y, angle=0),
-        ),
-    ]
-    sym.pins = {number: _gen_uuid() for number in numbers}
-    return sym
-
-
-def _make_dual_unit_sch(tmp_path: Path) -> str:
-    """Both gates of U1 placed, with a net label on gate 1's input alone.
-
-    Unit 1 sits at (100, 100), so pin 1 is at (94.92, 100); unit 2 sits at
-    (150, 100), so pin 3 is at (144.92, 100).  The label is on pin 1.
-    """
-    sch = new_schematic()
-    sch.libSymbols.append(_build_dual_gate_symbol())
-    sch.schematicSymbols.append(_place_dual_gate(100, 100, unit=1, numbers=("1", "2", "5", "6")))
-    sch.schematicSymbols.append(_place_dual_gate(150, 100, unit=2, numbers=("3", "4", "5", "6")))
-    sch.labels.append(
-        LocalLabel(
-            text="GATE1_IN",
-            position=Position(X=94.92, Y=100, angle=0),
-            effects=_default_effects(),
-            uuid=_gen_uuid(),
-        )
-    )
-    path = tmp_path / "dual_unit.kicad_sch"
-    sch.filePath = str(path)
-    sch.to_file()
-    return str(path)
-
-
 class TestMultiUnitSymbols:
-    def test_net_connections_excludes_a_sibling_units_pin(self, tmp_path: Path) -> None:
-        """A label on gate 1's input must not also report gate 2's input.
+    """A placed symbol draws its own unit and body style plus what is common.
 
-        Both gates define their input at the same body-local coordinate, so
-        scanning every unit against one placed instance puts pin 3 on top of
-        pin 1 and the net gains a pin that is not on it.
-        """
-        result = schematic.get_net_connections("GATE1_IN", _make_dual_unit_sch(tmp_path))
+    Fixture (make_dual_unit_sch): U1 unit 1 at (100, 100), unit 2 at (150, 100);
+    both gates put their input at the same body-local coordinate, so a unit
+    mix-up lands pin 3 exactly on top of pin 1 rather than somewhere obviously
+    wrong.  Shared power pins 5 and 6 live in unit 0.
+    """
+
+    def test_net_connections_excludes_a_sibling_units_pin(self, tmp_path: Path) -> None:
+        """A label on gate 1's input must not also report gate 2's input."""
+        result = schematic.get_net_connections("GATE1_IN", make_dual_unit_sch(tmp_path))
         assert isinstance(result, NetConnectionsResult)
-        pins = {(c["reference"], c["pin"]) for c in result.connections}
-        assert ("U1", "1") in pins
-        assert ("U1", "3") not in pins
+        pins = [(c["reference"], c["pin"]) for c in result.connections]
+        assert pins == [("U1", "1")]
 
     def test_pin_positions_use_each_unit_own_origin(self, tmp_path: Path) -> None:
-        result = schematic.get_pin_positions("U1", _make_dual_unit_sch(tmp_path))
+        result = schematic.get_pin_positions("U1", make_dual_unit_sch(tmp_path))
         pin_lines = [ln for ln in result.splitlines() if ln.strip().startswith("Pin ")]
         pin1 = [ln for ln in pin_lines if ln.strip().startswith("Pin 1 ")]
         pin3 = [ln for ln in pin_lines if ln.strip().startswith("Pin 3 ")]
@@ -670,7 +567,7 @@ class TestMultiUnitSymbols:
         assert len(pin3) == 1 and "144.92" in pin3[0]
 
     def test_pin_positions_report_every_placed_unit(self, tmp_path: Path) -> None:
-        result = schematic.get_pin_positions("U1", _make_dual_unit_sch(tmp_path))
+        result = schematic.get_pin_positions("U1", make_dual_unit_sch(tmp_path))
         heads = [ln for ln in result.splitlines() if ln.startswith("U1 ")]
         assert len(heads) == 2
         assert "unit=1" in heads[0]
@@ -678,7 +575,7 @@ class TestMultiUnitSymbols:
 
     def test_unit_zero_pins_are_drawn_on_every_unit(self, tmp_path: Path) -> None:
         """Unit 0 holds what all units share, so VCC belongs to both instances."""
-        result = schematic.get_pin_positions("U1", _make_dual_unit_sch(tmp_path))
+        result = schematic.get_pin_positions("U1", make_dual_unit_sch(tmp_path))
         vcc = [ln for ln in result.splitlines() if ln.strip().startswith("Pin 6 ")]
         assert len(vcc) == 2
         assert any("(100" in ln for ln in vcc)
@@ -689,9 +586,120 @@ class TestMultiUnitSymbols:
         result = schematic.get_pin_positions("R1", str(scratch_sch))
         assert "unit=" not in result.splitlines()[0]
 
-    def test_lib_unit_id_reads_the_trailing_fields(self) -> None:
-        """Symbol names contain underscores, so the unit is the second-last field."""
+    def test_a_placed_symbol_without_a_unit_token_is_unit_one(self, tmp_path: Path) -> None:
+        """KiCad reads a symbol with no (unit N) as unit 1 (SCH_SYMBOL::Init); so do we."""
+        path = Path(make_dual_unit_sch(tmp_path))
+        data = path.read_bytes()
+        assert data.count(b" (unit 1)") == 1
+        path.write_bytes(data.replace(b" (unit 1)", b"", 1))
+        result = schematic.get_pin_positions("U1", str(path))
+        pin_lines = [ln.strip() for ln in result.splitlines() if ln.strip().startswith("Pin ")]
+        assert [ln for ln in pin_lines if ln.startswith("Pin 1 ")] == ["Pin 1 (1A): (94.92, 100.0)"]
+        assert [ln for ln in pin_lines if ln.startswith("Pin 3 ")] == [
+            "Pin 3 (2A): (144.92, 100.0)"
+        ]
+
+    @requires_cli
+    def test_net_connections_match_kicad_netlist(self, tmp_path: Path) -> None:
+        path = make_dual_unit_sch(tmp_path)
+        result = schematic.get_net_connections("GATE1_IN", path)
+        assert isinstance(result, NetConnectionsResult)
+        ours = {(c["reference"], c["pin"]) for c in result.connections}
+        assert ours == set(netlist_nodes(path)["GATE1_IN"]) == {("U1", "1")}
+
+
+class TestBodyStyles:
+    """Body style is the other half of KiCad's rule: ``_1_1`` and ``_1_2`` both
+    say unit 1, and a placed symbol draws only the style it names (1 when it
+    names none), plus style 0, which is common to both.  Stock KiCad 9 ships
+    44 symbols with a De Morgan alternate, 31 of them in 74xx.
+    """
+
+    def test_a_demorgan_part_reports_each_pin_once(self, tmp_path: Path) -> None:
+        result = schematic.get_pin_positions("U1", make_demorgan_sch(tmp_path))
+        pin_lines = [ln.strip() for ln in result.splitlines() if ln.strip().startswith("Pin ")]
+        numbers = sorted(ln.split()[1] for ln in pin_lines)
+        assert numbers == ["1", "14", "2", "3", "7"]
+
+    @pytest.mark.parametrize("body_style", [1, 2])
+    def test_the_placed_style_decides_where_a_pin_is(self, tmp_path: Path, body_style: int) -> None:
+        """The two styles draw pin 1 at different places; the placed one is reported."""
+        result = schematic.get_pin_positions("U1", make_demorgan_sch(tmp_path, body_style))
+        pin1 = [ln.strip() for ln in result.splitlines() if ln.strip().startswith("Pin 1 ")]
+        expected = {1: "Pin 1 (A): (92.38, 97.46)", 2: "Pin 1 (A): (89.84, 94.92)"}
+        assert pin1 == [expected[body_style]]
+
+    @pytest.mark.parametrize("body_style", [1, 2])
+    def test_a_label_on_the_undrawn_style_connects_nothing(
+        self, tmp_path: Path, body_style: int
+    ) -> None:
+        """NAND_A sits on the drawn style's pin 1, PHANTOM on the other style's."""
+        path = make_demorgan_sch(tmp_path, body_style)
+        drawn = schematic.get_net_connections("NAND_A", path)
+        phantom = schematic.get_net_connections("PHANTOM", path)
+        assert isinstance(drawn, NetConnectionsResult)
+        assert isinstance(phantom, NetConnectionsResult)
+        assert [(c["reference"], c["pin"]) for c in drawn.connections] == [("U1", "1")]
+        assert phantom.connections == []
+
+    @pytest.mark.parametrize("body_style", [1, 2])
+    def test_style_zero_power_pins_are_drawn_in_either_style(
+        self, tmp_path: Path, body_style: int
+    ) -> None:
+        """``_2_0`` is the power unit in style 0, drawn whichever style is placed."""
+        result = schematic.get_pin_positions("U1", make_demorgan_sch(tmp_path, body_style))
+        pin_lines = [ln.strip() for ln in result.splitlines() if ln.strip().startswith("Pin ")]
+        assert "Pin 7 (GND): (150.0, 107.62)" in pin_lines
+        assert "Pin 14 (VCC): (150.0, 92.38)" in pin_lines
+
+    @requires_cli
+    @pytest.mark.parametrize("body_style", [1, 2])
+    def test_demorgan_connections_match_kicad_netlist(
+        self, tmp_path: Path, body_style: int
+    ) -> None:
+        path = make_demorgan_sch(tmp_path, body_style)
+        nets = netlist_nodes(path)
+        assert set(nets["NAND_A"]) == {("U1", "1")}
+        assert set(nets.get("PHANTOM", {})) == set()
+        drawn = schematic.get_net_connections("NAND_A", path)
+        assert isinstance(drawn, NetConnectionsResult)
+        assert {(c["reference"], c["pin"]) for c in drawn.connections} == set(nets["NAND_A"])
+
+    def test_placed_symbol_tokens(self) -> None:
+        """KiCad 10 writes (body_style N) always; KiCad 9 writes (convert N) for De Morgan only."""
+        bare = _cst.parse(b'(symbol (lib_id "Device:R") (at 0 0 0))').lists[0]
+        assert schematic._sym_unit_cst(bare) == 1
+        assert schematic._sym_body_style_cst(bare) == 1
+        k10 = _cst.parse(b'(symbol (lib_id "x") (at 0 0 0) (unit 2) (body_style 2))').lists[0]
+        assert (schematic._sym_unit_cst(k10), schematic._sym_body_style_cst(k10)) == (2, 2)
+        k9 = _cst.parse(b'(symbol (lib_id "x") (at 0 0 0) (unit 1) (convert 2))').lists[0]
+        assert (schematic._sym_unit_cst(k9), schematic._sym_body_style_cst(k9)) == (1, 2)
+
+    def test_lib_unit_style_reads_the_trailing_fields(self) -> None:
+        """Symbol names contain underscores, so unit and style are the last two fields."""
         node = _cst.parse(b'(symbol "SN74LVC2G17_2_1")').lists[0]
-        assert schematic._lib_unit_id(node) == 2
+        assert schematic._lib_unit_style(node) == (2, 1)
+        node = _cst.parse(b'(symbol "74LS00_5_0")').lists[0]
+        assert schematic._lib_unit_style(node) == (5, 0)
         node = _cst.parse(b'(symbol "NotAUnitName")').lists[0]
-        assert schematic._lib_unit_id(node) is None
+        assert schematic._lib_unit_style(node) is None
+
+    def test_instance_units_is_kicad_rule(self) -> None:
+        """LIB_SYMBOL::GetPins: unit in (this, 0) and style in (this, 0), both at once.
+
+        0 means common on that axis only: ``X_0_1`` is shared by every unit but
+        belongs to body style 1, so a style-2 placement does not draw it, while
+        ``X_0_0`` is drawn by every placement.
+        """
+        lib = _cst.parse(
+            b'(symbol "X" (symbol "X_0_0") (symbol "X_0_1") (symbol "X_1_1")'
+            b' (symbol "X_1_2") (symbol "X_2_0") (symbol "X_2_1"))'
+        ).lists[0]
+
+        def drawn(unit: int, style: int) -> list[str]:
+            return [s.atoms[1].text for s in schematic._instance_units(lib, unit, style)]
+
+        assert drawn(1, 1) == ["X_0_0", "X_0_1", "X_1_1"]
+        assert drawn(1, 2) == ["X_0_0", "X_1_2"]
+        assert drawn(2, 1) == ["X_0_0", "X_0_1", "X_2_0", "X_2_1"]
+        assert drawn(2, 2) == ["X_0_0", "X_2_0"]
