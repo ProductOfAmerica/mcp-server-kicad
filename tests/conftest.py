@@ -40,11 +40,18 @@ from kiutils.items.common import (
 )
 from kiutils.items.fpitems import FpText
 from kiutils.items.gritems import GrLine
-from kiutils.items.schitems import Connection, LocalLabel, SchematicSymbol
+from kiutils.items.schitems import (
+    Connection,
+    LocalLabel,
+    SchematicSymbol,
+    SymbolProjectInstance,
+    SymbolProjectPath,
+)
 from kiutils.items.syitems import SyRect
 from kiutils.schematic import Schematic
 from kiutils.symbol import Symbol, SymbolLib, SymbolPin
 
+from mcp_server_kicad import _cst
 from mcp_server_kicad._shared import _find_kicad_cli, _run_cli
 
 HAS_KICAD_CLI = _find_kicad_cli() is not None
@@ -454,9 +461,23 @@ def build_demorgan_symbol() -> Symbol:
 
 
 def place_unit(
-    lib_name: str, x: float, y: float, unit: int, numbers: tuple[str, ...], reference: str = "U1"
+    lib_name: str,
+    x: float,
+    y: float,
+    unit: int,
+    numbers: tuple[str, ...],
+    *,
+    sheet_uuid: str,
+    project: str,
+    reference: str = "U1",
 ) -> SchematicSymbol:
-    """Place one unit of a multi-unit part at (x, y)."""
+    """Place one unit of a multi-unit part at (x, y) on the root sheet *sheet_uuid*.
+
+    The symbol carries the ``(instances ...)`` block KiCad writes, which the
+    netlist oracle depends on: kicad-cli 9.0.8 leaves every unconnected pin of
+    a symbol without instance data out of the netlist, so a no-connected pin is
+    absent there rather than marked ``+no_connect`` (measured 2026-10-01).
+    """
     sym = SchematicSymbol()
     sym.libId = f"Device:{lib_name}"
     sym.libName = lib_name
@@ -496,6 +517,16 @@ def place_unit(
         ),
     ]
     sym.pins = {number: _gen_uuid() for number in numbers}
+    sym.instances = [
+        SymbolProjectInstance(
+            name=project,
+            paths=[
+                SymbolProjectPath(
+                    sheetInstancePath=f"/{sheet_uuid}", reference=reference, unit=unit
+                )
+            ],
+        )
+    ]
     return sym
 
 
@@ -508,12 +539,19 @@ def make_dual_unit_sch(tmp_path, units: tuple[int, ...] = (1, 2)) -> str:
     (x, 92.38) of every placed unit.  The label GATE1_IN is on pin 1.
     Returns the path.
     """
+    path = tmp_path / "dual_unit.kicad_sch"
     sch = new_schematic()
+    assert sch.uuid is not None  # new_schematic sets it; kiutils types it Optional
+    sheet = {"sheet_uuid": sch.uuid, "project": path.stem}
     sch.libSymbols.append(build_dual_gate_symbol())
     if 1 in units:
-        sch.schematicSymbols.append(place_unit("DualGate", 100, 100, 1, ("1", "2", "5", "6")))
+        sch.schematicSymbols.append(
+            place_unit("DualGate", 100, 100, 1, ("1", "2", "5", "6"), **sheet)
+        )
     if 2 in units:
-        sch.schematicSymbols.append(place_unit("DualGate", 150, 100, 2, ("3", "4", "5", "6")))
+        sch.schematicSymbols.append(
+            place_unit("DualGate", 150, 100, 2, ("3", "4", "5", "6"), **sheet)
+        )
     sch.labels.append(
         LocalLabel(
             text="GATE1_IN",
@@ -522,7 +560,6 @@ def make_dual_unit_sch(tmp_path, units: tuple[int, ...] = (1, 2)) -> str:
             uuid=_gen_uuid(),
         )
     )
-    path = tmp_path / "dual_unit.kicad_sch"
     sch.filePath = str(path)
     sch.to_file()
     return str(path)
@@ -538,10 +575,13 @@ def make_demorgan_sch(tmp_path, body_style: int = 1) -> str:
     on the placed symbol, which KiCad 10 reads too.  Returns the path.
     """
     drawn, other = ((92.38, 97.46), (89.84, 94.92))[:: 1 if body_style == 1 else -1]
+    path = tmp_path / "demorgan.kicad_sch"
     sch = new_schematic()
+    assert sch.uuid is not None  # new_schematic sets it; kiutils types it Optional
+    sheet = {"sheet_uuid": sch.uuid, "project": path.stem}
     sch.libSymbols.append(build_demorgan_symbol())
-    sch.schematicSymbols.append(place_unit("NandGate", 100, 100, 1, ("1", "2", "3")))
-    sch.schematicSymbols.append(place_unit("NandGate", 150, 100, 2, ("7", "14")))
+    sch.schematicSymbols.append(place_unit("NandGate", 100, 100, 1, ("1", "2", "3"), **sheet))
+    sch.schematicSymbols.append(place_unit("NandGate", 150, 100, 2, ("7", "14"), **sheet))
     for text, (lx, ly) in (("NAND_A", drawn), ("PHANTOM", other)):
         sch.labels.append(
             LocalLabel(
@@ -551,13 +591,17 @@ def make_demorgan_sch(tmp_path, body_style: int = 1) -> str:
                 uuid=_gen_uuid(),
             )
         )
-    path = tmp_path / "demorgan.kicad_sch"
     sch.filePath = str(path)
     sch.to_file()
     if body_style != 1:
-        data = path.read_bytes()
-        assert data.count(b"(unit 1)") == 1
-        path.write_bytes(data.replace(b"(unit 1)", b"(unit 1) (convert %d)" % body_style, 1))
+        # The instance data repeats (unit 1), so edit the placed node itself.
+        tree = _cst.parse(path.read_bytes())
+        gate = next(
+            s for s in tree.lists[0].find_all("symbol") if s.find("unit").atoms[1].text == "1"
+        )
+        convert = _cst.parse(b"(convert %d)" % body_style).lists[0]
+        gate.insert_after(gate.find("unit"), convert, b" ")
+        path.write_bytes(_cst.serialize(tree))
     return str(path)
 
 

@@ -589,9 +589,11 @@ class TestMultiUnitSymbols:
     def test_a_placed_symbol_without_a_unit_token_is_unit_one(self, tmp_path: Path) -> None:
         """KiCad reads a symbol with no (unit N) as unit 1 (SCH_SYMBOL::Init); so do we."""
         path = Path(make_dual_unit_sch(tmp_path))
-        data = path.read_bytes()
-        assert data.count(b" (unit 1)") == 1
-        path.write_bytes(data.replace(b" (unit 1)", b"", 1))
+        # The instance data repeats (unit 1), so remove the placed node's own token.
+        tree = _cst.parse(path.read_bytes())
+        gate1 = next(s for s in tree.lists[0].find_all("symbol") if schematic._sym_unit_cst(s) == 1)
+        gate1.remove_child(gate1.find("unit"))
+        path.write_bytes(_cst.serialize(tree))
         result = schematic.get_pin_positions("U1", str(path))
         pin_lines = [ln.strip() for ln in result.splitlines() if ln.strip().startswith("Pin ")]
         assert [ln for ln in pin_lines if ln.startswith("Pin 1 ")] == ["Pin 1 (1A): (94.92, 100.0)"]
@@ -611,8 +613,9 @@ class TestMultiUnitSymbols:
 class TestBodyStyles:
     """Body style is the other half of KiCad's rule: ``_1_1`` and ``_1_2`` both
     say unit 1, and a placed symbol draws only the style it names (1 when it
-    names none), plus style 0, which is common to both.  Stock KiCad 9 ships
-    44 symbols with a De Morgan alternate, 31 of them in 74xx.
+    names none), plus style 0, which is common to both.  Stock KiCad 9.0.8
+    ships 44 symbols with a De Morgan alternate, 31 of them in 74xx (derived
+    symbols included; counted 2026-10-01).
     """
 
     def test_a_demorgan_part_reports_each_pin_once(self, tmp_path: Path) -> None:
@@ -703,3 +706,25 @@ class TestBodyStyles:
         assert drawn(1, 2) == ["X_0_0", "X_1_2"]
         assert drawn(2, 1) == ["X_0_0", "X_0_1", "X_2_0", "X_2_1"]
         assert drawn(2, 2) == ["X_0_0", "X_2_0"]
+
+    def test_refusal_names_the_body_style_when_that_is_what_differs(self) -> None:
+        """A pin only the unplaced style draws: the remedy is the style, not a unit.
+
+        Unit 0 is drawn by every placed unit, so a unit-0 pin missing from the
+        sheet is missing for its body style as well.
+        """
+        root = _cst.parse(
+            b'(kicad_sch (lib_symbols (symbol "L:Odd"'
+            b' (symbol "Odd_1_1" (pin passive line (at -5.08 0 0) (length 2.54)'
+            b' (name "A") (number "1")))'
+            b' (symbol "Odd_1_2" (pin passive line (at -5.08 0 0) (length 2.54)'
+            b' (name "A") (number "1")) (pin passive line (at 5.08 0 180) (length 2.54)'
+            b' (name "X") (number "9")))'
+            b' (symbol "Odd_0_2" (pin passive line (at 0 5.08 270) (length 2.54)'
+            b' (name "C") (number "7")))))'
+            b' (symbol (lib_id "L:Odd") (at 100 100 0) (unit 1) (property "Reference" "U9")))'
+        ).lists[0]
+        with pytest.raises(ValueError, match=r"on unit 1 body style 2, which this sheet does not"):
+            schematic._get_pin_pos_cst(root, "U9", "9")
+        with pytest.raises(ValueError, match=r"on body style 2 \(common to all units\).*Switch"):
+            schematic._get_pin_pos_cst(root, "U9", "7")

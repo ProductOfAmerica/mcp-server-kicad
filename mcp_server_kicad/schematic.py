@@ -1372,8 +1372,9 @@ def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float,
     unit and body style draw the pin, which is KiCad's own rule. A unit-0 pin
     is the same pad whichever unit draws it, so the first placed unit is right
     for it. When no placed unit on this sheet draws the pin (its unit is on
-    another sheet, or not placed), the error names the unit that does; nothing
-    has been written at that point, so the file is untouched.
+    another sheet, or not placed), the error names the unit that does, or the
+    body style when that is what differs; nothing has been written at that
+    point, so the file is untouched.
     """
     targets = _find_syms_cst(root, reference)
     if not targets:
@@ -1394,26 +1395,35 @@ def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float,
     )
     if not carriers:
         raise ValueError(f"Pin '{pin_name}' not found on {reference}")
-    # Name the body style only where it is the thing that differs: the unit
-    # is here, in its other style. An unplaced unit is named as a unit.
+    # Name the body style only where it is the thing that differs: the unit is
+    # here in its other style, or it is unit 0, which every placed unit draws.
+    # An unplaced unit is named as a unit, and placing it is then the remedy.
     placed_units = {_sym_unit_cst(t) for t in targets}
     styles_by_unit: dict[int, set[int]] = {}
     for u, s in carriers:
         styles_by_unit.setdefault(u, set()).add(s)
-    where = ", ".join(
-        f"unit {u}"
-        + (" body style " + "/".join(map(str, sorted(styles))) if u in placed_units else "")
-        for u, styles in sorted(styles_by_unit.items())
-    )
+
+    def _carrier(u: int, styles: set[int]) -> str:
+        style = "body style " + "/".join(map(str, sorted(styles)))
+        if u == 0:
+            return f"{style} (common to all units)"
+        return f"unit {u} {style}" if u in placed_units else f"unit {u}"
+
+    where = ", ".join(_carrier(u, styles) for u, styles in sorted(styles_by_unit.items()))
     placed = ", ".join(
         f"unit {_sym_unit_cst(t)}"
         + (f" body style {_sym_body_style_cst(t)}" if _sym_body_style_cst(t) != 1 else "")
         for t in targets
     )
+    if any(u != 0 and u not in placed_units for u in styles_by_unit):
+        raise ValueError(
+            f"Pin '{pin_name}' of {reference} is on {where}, which is not placed on this sheet "
+            f"({reference} here: {placed}). Place that unit, or wire the pin on the sheet "
+            "that holds it."
+        )
     raise ValueError(
-        f"Pin '{pin_name}' of {reference} is on {where}, which is not placed on this sheet "
-        f"({reference} here: {placed}). Place that unit, or wire the pin on the sheet "
-        "that holds it."
+        f"Pin '{pin_name}' of {reference} is on {where}, which this sheet does not draw "
+        f"({reference} here: {placed}). Switch the placed symbol to that body style in KiCad."
     )
 
 
