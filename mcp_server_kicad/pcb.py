@@ -1720,8 +1720,8 @@ def add_keepout_zone(
     )
 
 
-def _require_pcbnew_era(pcb_path: str) -> int:
-    """Refuse a board the running pcbnew cannot load. Returns its format version.
+def _require_pcbnew_era(pcb_path: str) -> None:
+    """Refuse a board the running pcbnew cannot load.
 
     The same check autoroute_pcb makes, for the same reason and in the same
     words. pcbnew 9's LoadBoard returns None on a KiCad 10 board, so the script
@@ -1729,9 +1729,6 @@ def _require_pcbnew_era(pcb_path: str) -> int:
     of wx image-handler chatter ending in "NoneType object has no attribute
     Zones", naming no version anywhere. Measured: the file is byte-identical
     afterward, so this is a diagnostics fix, not a safety one.
-
-    Parsed fresh rather than through _open_pcb_cst, because the subprocess
-    rewrites the file between this read and _format_upgrade_warning's.
     """
     board_version = _board_version(_cst.parse(_read_kicad_bytes(pcb_path, "board")).lists[0])
     major = _pcbnew_major()
@@ -1741,42 +1738,6 @@ def _require_pcbnew_era(pcb_path: str) -> int:
             f"pcbnew {major} cannot load. Install KiCad 10, or point KICAD_PYTHON at "
             "the Python of a KiCad 10 install."
         )
-    return board_version
-
-
-def _format_upgrade_warning(pcb_path: str, before: int) -> list[str]:
-    """Report a format upgrade the pcbnew subprocess performed in place.
-
-    SaveBoard writes the running pcbnew's own format, so a board stamped below
-    it is upgraded with no undo. Measured on KiCad 9 against KiCad's own shipped
-    multichannel_mixer-unrouted: 20241030 -> 20241229, 114 footprint property
-    UUIDs dropped and user layers renamed, returning status ok and raising
-    nothing.
-
-    Measured rather than predicted, because it cannot be predicted. _pcbnew_major
-    reads pcbnew's major version, not the stamp it writes, and the numbers above
-    are both inside the KiCad 9 era, so no comparison of (major, board_version)
-    can see it. Reading the file afterward always can.
-
-    before == 0 means there was no file to compare, which is the create-if-missing
-    path of update_pcb_from_schematic.
-    """
-    # Before the read, not after: on the create-if-missing path there is no
-    # file to read yet and _read_kicad_bytes would refuse.
-    if not before:
-        return []
-    after = _board_version(_cst.parse(_read_kicad_bytes(pcb_path, "board")).lists[0])
-    if after <= before:
-        return []
-    msg = (
-        f"pcbnew rewrote this board from format version {before} to {after}. The "
-        "upgrade happened in place and has no undo: measured, it also drops "
-        "footprint property UUIDs and renames user layers. Restore from version "
-        "control if that was not wanted."
-    )
-    if before <= _NUMERIC_NET_VERSION_MAX < after:
-        msg += " A KiCad 9 install can no longer open this board."
-    return [msg]
 
 
 @mcp.tool(annotations=_ADDITIVE)

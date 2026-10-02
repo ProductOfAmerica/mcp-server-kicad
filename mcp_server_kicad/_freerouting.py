@@ -212,7 +212,7 @@ def wx_app_prelude() -> str:
     subprocess has nobody to dismiss, so the tool call blocks to its timeout; on
     macOS it kills the process, which is how it was first seen.
 
-    Single-sourced through _netlist_import so the four call sites cannot drift.
+    Single-sourced through _netlist_import so the call sites cannot drift.
     That module imports only the standard library, so KiCad's interpreter can
     load it, and it is already on disk next to this one.
     """
