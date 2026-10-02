@@ -235,3 +235,15 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   nothing when it misses. Pointing the helper back at an in-place `_run_cli` turns four
   red; replacing the two `_atomic_write` calls with a direct `write_bytes` turns the
   two st_ino tests red.
+
+- 2026-10-02: `wire_pins_to_net` no longer places a PWR_FLAG, so it emits no symbol and
+  copies no lib_symbols entry; its writes are wires, labels and junctions only, and the
+  slice-8 placed template and synthetic lib template are deleted with it. The flag was
+  decided per call, but whether a net needs one depends on every driver on the net, so
+  on a net that already had a flag or a power output it added a second one, which ERC
+  reports as "Pins of type Power output and Power output are connected" (measured on
+  kicad-cli 9.0.8 with two flags on one net). The routing pressure test also measured
+  kicad-cli ERC crashing (0xC0000005) when the auto flag's lib_id `power:PWR_FLAG`, with
+  no lib_name, met an entry `add_power_symbol` had copied under the bare name. Callers
+  place flags with `add_power_symbol`. The verbatim system-library copy that this path
+  used to exercise is still tested, now through `place_component`.

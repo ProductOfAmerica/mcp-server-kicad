@@ -912,13 +912,18 @@ class TestAutoJunctions:
 
 
 # ===========================================================================
-# TestAutoPwrFlag
+# TestNoAutoPwrFlag
 # ===========================================================================
 
 
-class TestAutoPwrFlag:
-    def test_auto_pwr_flag_on_power_in_net(self, tmp_path):
-        """wire_pins_to_net should auto-add PWR_FLAG for power_in nets."""
+class TestNoAutoPwrFlag:
+    def test_power_in_net_gets_no_pwr_flag(self, tmp_path):
+        """wire_pins_to_net places no PWR_FLAG, even on a net with only power_in pins.
+
+        Whether a net needs a flag depends on every driver on the net, which
+        one call cannot see; deciding it per call put a second flag on nets
+        that already had a driver. add_power_symbol places one on purpose.
+        """
         path = _make_power_sch(tmp_path)
         schematic.wire_pins_to_net(
             pins=[{"reference": "#PWR01", "pin": "1"}],
@@ -931,231 +936,8 @@ class TestAutoPwrFlag:
             for sym in sch.schematicSymbols
             if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties)
         ]
-        assert len(pwr_flags) == 1, f"Expected 1 PWR_FLAG, got {len(pwr_flags)}"
-
-    def test_no_duplicate_pwr_flag(self, tmp_path):
-        """Calling wire_pins_to_net twice on the same net should not duplicate PWR_FLAG."""
-        path = _make_power_sch(tmp_path)
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC",
-            schematic_path=path,
-        )
-        # Wire again to same net (e.g. a second power_in symbol)
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC",
-            schematic_path=path,
-        )
-        sch = reparse(path)
-        pwr_flags = [
-            sym
-            for sym in sch.schematicSymbols
-            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties)
-        ]
-        assert len(pwr_flags) == 1, f"Expected 1 PWR_FLAG, got {len(pwr_flags)}"
-
-    def test_no_pwr_flag_on_passive_net(self, scratch_sch):
-        """No PWR_FLAG should be added for passive pin nets."""
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "R1", "pin": "1"}],
-            label_text="NET_A",
-            schematic_path=str(scratch_sch),
-        )
-        sch = reparse(str(scratch_sch))
-        pwr_flags = [
-            sym
-            for sym in sch.schematicSymbols
-            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties)
-        ]
-        assert len(pwr_flags) == 0, f"Expected 0 PWR_FLAG on passive net, got {len(pwr_flags)}"
-
-    def test_auto_pwr_flag_has_instances(self, tmp_path):
-        """Auto-placed PWR_FLAG must have SymbolProjectInstance for KiCad GUI annotation."""
-        path = _make_power_sch(tmp_path)
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC",
-            schematic_path=path,
-        )
-        sch = reparse(path)
-        pwr_flags = [
-            sym
-            for sym in sch.schematicSymbols
-            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties)
-        ]
-        assert len(pwr_flags) == 1
-        flg = pwr_flags[0]
-        # Must have instances block for KiCad 9 annotation
-        assert flg.instances is not None and len(flg.instances) > 0, (
-            "PWR_FLAG missing SymbolProjectInstance — KiCad GUI will show #FLG?"
-        )
-        # The instance must have the correct reference
-        ref_in_instance = flg.instances[0].paths[0].reference
-        assert ref_in_instance.startswith("#FLG"), (
-            f"Instance reference should be #FLGxx, got {ref_in_instance}"
-        )
-
-    def test_no_pwr_flag_when_power_out_present(self, tmp_path):
-        """No PWR_FLAG needed when a power_out pin is wired to the same net."""
-        from conftest import build_power_symbol
-
-        sch = new_schematic()
-        # Add VCC (power_in) and PWR_FLAG (power_out) lib symbols
-        sch.libSymbols.append(build_power_symbol("VCC", "power_in"))
-        sch.libSymbols.append(build_power_symbol("PWR_FLAG", "power_out"))
-
-        # Place VCC symbol
-        vcc_sym = SchematicSymbol()
-        vcc_sym.libId = "power:VCC"
-        vcc_sym.libName = "VCC"
-        vcc_sym.position = Position(X=100, Y=100, angle=0)
-        vcc_sym.uuid = _gen_uuid()
-        vcc_sym.unit = 1
-        vcc_sym.inBom = False
-        vcc_sym.onBoard = True
-        vcc_sym.properties = [
-            Property(
-                key="Reference",
-                value="#PWR01",
-                id=0,
-                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                position=Position(X=100, Y=96.19, angle=0),
-            ),
-            Property(
-                key="Value",
-                value="VCC",
-                id=1,
-                effects=_default_effects(),
-                position=Position(X=100, Y=103.81, angle=0),
-            ),
-            Property(
-                key="Footprint",
-                value="",
-                id=2,
-                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                position=Position(X=100, Y=100, angle=0),
-            ),
-            Property(
-                key="Datasheet",
-                value="~",
-                id=3,
-                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                position=Position(X=100, Y=100, angle=0),
-            ),
-        ]
-        vcc_sym.pins = {"1": _gen_uuid()}
-        sch.schematicSymbols.append(vcc_sym)
-
-        # Place a PWR_FLAG symbol (power_out) already wired to same net
-        flg_sym = SchematicSymbol()
-        flg_sym.libId = "power:PWR_FLAG"
-        flg_sym.libName = "PWR_FLAG"
-        flg_sym.position = Position(X=110, Y=100, angle=0)
-        flg_sym.uuid = _gen_uuid()
-        flg_sym.unit = 1
-        flg_sym.inBom = False
-        flg_sym.onBoard = True
-        flg_sym.properties = [
-            Property(
-                key="Reference",
-                value="#FLG01",
-                id=0,
-                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                position=Position(X=110, Y=96.19, angle=0),
-            ),
-            Property(
-                key="Value",
-                value="PWR_FLAG",
-                id=1,
-                effects=_default_effects(),
-                position=Position(X=110, Y=103.81, angle=0),
-            ),
-            Property(
-                key="Footprint",
-                value="",
-                id=2,
-                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                position=Position(X=110, Y=100, angle=0),
-            ),
-            Property(
-                key="Datasheet",
-                value="~",
-                id=3,
-                effects=Effects(font=Font(height=1.27, width=1.27), hide=True),
-                position=Position(X=110, Y=100, angle=0),
-            ),
-        ]
-        flg_sym.pins = {"1": _gen_uuid()}
-        sch.schematicSymbols.append(flg_sym)
-
-        path = str(tmp_path / "power_out.kicad_sch")
-        sch.filePath = path
-        sch.to_file()
-
-        # Wire both to VCC net
-        schematic.wire_pins_to_net(
-            pins=[
-                {"reference": "#PWR01", "pin": "1"},
-                {"reference": "#FLG01", "pin": "1"},
-            ],
-            label_text="VCC",
-            schematic_path=path,
-        )
-        sch = reparse(path)
-        # Should NOT have added another PWR_FLAG (one already exists as power_out)
-        pwr_flags = [
-            sym
-            for sym in sch.schematicSymbols
-            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in sym.properties)
-        ]
-        assert len(pwr_flags) == 1, f"Expected only the existing PWR_FLAG, got {len(pwr_flags)}"
-
-    @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
-    def test_auto_pwr_flag_matches_system_library(self, tmp_path):
-        """PWR_FLAG lib symbol from wire_pins_to_net should match system library."""
-        from kiutils.symbol import SymbolLib
-
-        from mcp_server_kicad._shared import _resolve_system_lib
-
-        # Ensure system library exists for this test
-        sys_lib_path = _resolve_system_lib("power")
-        assert sys_lib_path is not None, "System power library not found"
-
-        # Load the real PWR_FLAG from system library
-        sys_lib = SymbolLib.from_file(sys_lib_path)
-        sys_pwr_flag = None
-        for s in sys_lib.symbols:
-            if s.entryName == "PWR_FLAG":
-                sys_pwr_flag = s
-                break
-        assert sys_pwr_flag is not None, "PWR_FLAG not found in system library"
-
-        # Create schematic and trigger auto PWR_FLAG via wire_pins_to_net
-        path = _make_power_sch(tmp_path)
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC",
-            schematic_path=path,
-        )
-        sch = reparse(path)
-
-        # Find the embedded PWR_FLAG lib symbol
-        embedded = None
-        for ls in sch.libSymbols:
-            if ls.entryName == "PWR_FLAG":
-                embedded = ls
-                break
-        assert embedded is not None, "PWR_FLAG lib symbol not found in schematic"
-
-        # Key attributes must match the system library version
-        assert embedded.isPower == sys_pwr_flag.isPower, "isPower mismatch"
-        assert embedded.inBom == sys_pwr_flag.inBom, (
-            f"inBom mismatch: embedded={embedded.inBom}, system={sys_pwr_flag.inBom}"
-        )
-        assert len(embedded.units) == len(sys_pwr_flag.units), (
-            f"Unit count mismatch: embedded={len(embedded.units)}, system={len(sys_pwr_flag.units)}"
-        )
+        assert pwr_flags == []
+        assert not any(ls.entryName.endswith("PWR_FLAG") for ls in sch.libSymbols)
 
 
 # ===========================================================================
@@ -1166,11 +948,14 @@ class TestAutoPwrFlag:
 @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
 class TestSystemLibSymbolRoundtrip:
     def test_pwr_flag_raw_tokens_preserved(self, tmp_path):
-        """System library tokens like exclude_from_sim survive kiutils round-trip."""
+        """System library tokens like exclude_from_sim survive the verbatim copy."""
         path = _make_power_sch(tmp_path)
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC",
+        schematic.place_component(
+            lib_id="power:PWR_FLAG",
+            reference="#FLG01",
+            value="PWR_FLAG",
+            x=110,
+            y=100,
             schematic_path=path,
         )
         raw_text = Path(path).read_text()
@@ -1179,13 +964,16 @@ class TestSystemLibSymbolRoundtrip:
         assert "pin_numbers" in raw_text, "pin_numbers was dropped"
 
     def test_system_lib_erc_no_mismatch(self, tmp_path):
-        """ERC should report zero PWR_FLAG 'symbol doesn't match' violations after round-trip."""
+        """ERC should report zero PWR_FLAG 'symbol doesn't match' violations after the copy."""
         from conftest import run_erc
 
         path = _make_power_sch(tmp_path)
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC",
+        schematic.place_component(
+            lib_id="power:PWR_FLAG",
+            reference="#FLG01",
+            value="PWR_FLAG",
+            x=110,
+            y=100,
             schematic_path=path,
         )
         report = run_erc(path)

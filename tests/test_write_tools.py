@@ -11,7 +11,6 @@ from conftest import (
     assert_kicad_parseable,
     build_r_symbol,
     make_dual_unit_sch,
-    make_power_sch,
     netlist_nodes,
     new_schematic,
     reparse,
@@ -1447,53 +1446,6 @@ class TestConnectPinsNetLabel:
         sch = Schematic.from_file(str(scratch_sch))
         auto_labels = [lbl.text for lbl in sch.labels if lbl.text.startswith("Net-(")]
         assert len(auto_labels) == 0, f"Should skip auto-label, got: {auto_labels}"
-
-
-# ---------------------------------------------------------------------------
-# wire_pins_to_net  –  auto_pwr_flag opt-out
-# ---------------------------------------------------------------------------
-
-
-class TestWirePinsToNetAutoPwrFlag:
-    @pytest.mark.no_kicad_validation
-    def test_auto_pwr_flag_false_skips_pwr_flag(self, tmp_path):
-        """wire_pins_to_net with auto_pwr_flag=False should not place PWR_FLAG."""
-        sch_path = Path(make_power_sch(tmp_path))
-
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC_NET",
-            auto_pwr_flag=False,
-            schematic_path=str(sch_path),
-        )
-
-        # Reload and check no PWR_FLAG was placed
-        sch2 = reparse(str(sch_path))
-        pwr_flags = [
-            s
-            for s in sch2.schematicSymbols
-            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in s.properties)
-        ]
-        assert len(pwr_flags) == 0, "PWR_FLAG should not be placed when auto_pwr_flag=False"
-
-    @pytest.mark.no_kicad_validation
-    def test_auto_pwr_flag_true_places_pwr_flag(self, tmp_path):
-        """wire_pins_to_net with auto_pwr_flag=True (default) should place PWR_FLAG for power_in."""
-        sch_path = Path(make_power_sch(tmp_path))
-
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC_NET2",
-            schematic_path=str(sch_path),
-        )
-
-        sch2 = reparse(str(sch_path))
-        pwr_flags = [
-            s
-            for s in sch2.schematicSymbols
-            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in s.properties)
-        ]
-        assert len(pwr_flags) == 1, "PWR_FLAG should be placed when auto_pwr_flag=True (default)"
 
 
 # ---------------------------------------------------------------------------

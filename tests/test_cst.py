@@ -416,8 +416,8 @@ def _power_in_sch(tmp_path):
 
 
 class TestWirePinsToNetPreservation:
-    """Slice 8: wire_pins_to_net on the substrate; PWR_FLAG is the first
-    symbol emission (verbatim system-lib copy + fixed placed template)."""
+    """Slice 8: wire_pins_to_net on the substrate, plus the verbatim
+    system-lib copy its PWR_FLAG used to exercise (now via place_component)."""
 
     def test_stub_and_label_preservation(self, kicad_native_sch):
         p = str(kicad_native_sch)
@@ -438,25 +438,6 @@ class TestWirePinsToNetPreservation:
         lbl = next(lbl for lbl in sch.labels if lbl.text == "NETX")
         assert (lbl.position.X, lbl.position.Y, lbl.position.angle) == (100.0, 93.65, 90)
 
-    def test_auto_pwr_flag_cst(self, tmp_path):
-        path = _power_in_sch(tmp_path)
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC_NET",
-            schematic_path=str(path),
-        )
-        sch = reparse(path)
-        flags = [
-            s
-            for s in sch.schematicSymbols
-            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in s.properties)
-        ]
-        assert len(flags) == 1
-        flag = flags[0]
-        assert any(p.key == "Reference" and p.value == "#FLG01" for p in flag.properties)
-        assert flag.instances, "instances block must be present for annotation"
-        assert any(ls.entryName == "PWR_FLAG" for ls in sch.libSymbols)
-
     def test_pwr_flag_lib_copy_verbatim(self, tmp_path):
         from mcp_server_kicad._shared import _extract_raw_symbol, _resolve_system_lib
 
@@ -464,9 +445,12 @@ class TestWirePinsToNetPreservation:
         if lib_path is None:
             pytest.skip("no KiCad system symbol library on this host")
         path = _power_in_sch(tmp_path)
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC_NET",
+        schematic.place_component(
+            lib_id="power:PWR_FLAG",
+            reference="#FLG01",
+            value="PWR_FLAG",
+            x=110,
+            y=100,
             schematic_path=str(path),
         )
         want = _extract_raw_symbol(lib_path, "PWR_FLAG")
