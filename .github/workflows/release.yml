@@ -15,17 +15,23 @@ permissions:
   id-token: write
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # Pinned to the image this has always released from. Nothing exercises it
+    # short of a real release, so it moves to ubuntu-26.04 after ci.yml has run
+    # clean there, not on GitHub's schedule for ubuntu-latest.
+    runs-on: ubuntu-24.04
     environment: pypi
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
 
-      - uses: astral-sh/setup-uv@v7
-      - uses: actions/setup-python@v6
+      - uses: astral-sh/setup-uv@v10.2.0
         with:
           python-version: "3.10"
+          # No cache in the job that publishes. setup-uv's "auto" turns caching
+          # off for release events but not for workflow_dispatch, which is how
+          # this runs, and a restored cache is input this job did not build.
+          enable-cache: false
 
       - run: uv sync --frozen --all-extras --dev
 

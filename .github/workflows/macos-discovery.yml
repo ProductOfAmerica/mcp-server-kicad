@@ -19,12 +19,12 @@ jobs:
     runs-on: macos-15
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Install KiCad
         run: brew install --cask kicad
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --frozen --all-extras --dev
 
       # Non-fatal. This is the only place we get to look at a real macOS

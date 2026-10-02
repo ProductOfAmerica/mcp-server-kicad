@@ -17,7 +17,10 @@ on:
 
 jobs:
   discovery:
-    runs-on: windows-latest
+    # Pinned for the same reason kicad-suite.yml pins its Ubuntu: a -latest
+    # label moves on GitHub's schedule. windows-2025 is the image that
+    # windows-latest resolved to on 2026-10-01 (windows-2025-vs2026).
+    runs-on: windows-2025
     timeout-minutes: 45
     # Windows runners default to PowerShell, where the heredocs below are a
     # parse error. Git Bash ships on the image.
@@ -25,7 +28,7 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       # Installed from KiCad's own download rather than through Chocolatey.
       #
@@ -47,7 +50,7 @@ jobs:
       - name: Install KiCad
         shell: pwsh
         run: |
-          $version = '10.0.5'
+          $version = '10.0.6'
           $exe = "$env:RUNNER_TEMP\kicad-$version-x86_64.exe"
           $url = "https://downloads.kicad.org/kicad/windows/explore/stable/download/kicad-$version-x86_64.exe"
           Write-Host "downloading $url"
@@ -74,7 +77,7 @@ jobs:
           Write-Host "installed: $($cli.FullName)"
           & $cli.FullName version
 
-      - uses: astral-sh/setup-uv@v7
+      - uses: astral-sh/setup-uv@v10.2.0
       - run: uv sync --frozen --all-extras --dev
 
       # Non-fatal. This is the only place we see a real Windows install, so
