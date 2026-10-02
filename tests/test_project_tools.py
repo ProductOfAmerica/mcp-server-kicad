@@ -1215,8 +1215,12 @@ class TestExportHierarchicalNetlist:
 
 
 class TestParentProjectInstances:
-    def test_add_hierarchical_sheet_creates_parent_instances(self, tmp_path: Path):
+    def test_add_hierarchical_sheet_creates_parent_instances(
+        self, tmp_path: Path, stock_symbol_dir: Path, monkeypatch
+    ):
         """Symbols placed before add_hierarchical_sheet should get parent instances."""
+        # Device:R from the stand-in stock folder, so this does not need KiCad.
+        monkeypatch.setenv("KICAD_SYMBOL_DIR", str(stock_symbol_dir))
         proj_dir = tmp_path / "proj"
         project.create_project(directory=str(proj_dir), name="proj")
         child = proj_dir / "child.kicad_sch"
@@ -1249,8 +1253,12 @@ class TestParentProjectInstances:
         instance_projects = {inst.name for inst in r1.instances}
         assert "proj" in instance_projects, f"Missing parent instance. Got: {instance_projects}"
 
-    def test_place_component_on_subsheet_creates_parent_instance(self, tmp_path: Path):
+    def test_place_component_on_subsheet_creates_parent_instance(
+        self, tmp_path: Path, stock_symbol_dir: Path, monkeypatch
+    ):
         """Components placed after add_hierarchical_sheet should get parent instances."""
+        # Device:R from the stand-in stock folder, so this does not need KiCad.
+        monkeypatch.setenv("KICAD_SYMBOL_DIR", str(stock_symbol_dir))
         proj_dir = tmp_path / "proj"
         project.create_project(directory=str(proj_dir), name="proj")
         child = proj_dir / "child.kicad_sch"

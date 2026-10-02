@@ -4,6 +4,7 @@ Provides:
     - scratch_sch: schematic with a Device:R lib symbol, placed R1, label, and wire
     - empty_sch: minimal valid empty schematic
     - scratch_sym_lib: .kicad_sym with a custom TestPart symbol
+    - stock_symbol_dir: stand-in for KiCad's stock symbol folder (set KICAD_SYMBOL_DIR)
     - reparse: re-read a schematic from disk
     - run_erc: run kicad-cli ERC and return parsed JSON
     - assert_kicad_parseable: assert kicad-cli can parse the file
@@ -972,6 +973,34 @@ def scratch_sym_lib(tmp_path: Path) -> Path:
     lib.filePath = str(path)
     lib.to_file()
     return path
+
+
+@pytest.fixture()
+def stock_symbol_dir(tmp_path: Path) -> Path:
+    """A stand-in for KiCad's stock symbol folder: Device (R) and power (VCC, GND, PWR_FLAG).
+
+    Point KICAD_SYMBOL_DIR at it with monkeypatch.setenv and a lib_id such as
+    "Device:R" resolves here, on any host, because that folder is searched
+    before KiCad's own. A test that places a stock part then no longer depends
+    on KiCad being installed, and the symbol is still copied in under its
+    prefixed name, exactly as it is from a real install.
+
+    Returns the folder.
+    """
+    folder = tmp_path / "stock_symbols"
+    folder.mkdir()
+
+    device = SymbolLib(version=KICAD_SYM_VERSION, generator="kicad_symbol_editor")
+    device.symbols.append(build_r_symbol())
+    device.filePath = str(folder / "Device.kicad_sym")
+    device.to_file()
+
+    power = SymbolLib(version=KICAD_SYM_VERSION, generator="kicad_symbol_editor")
+    for name, pin_type in (("VCC", "power_in"), ("GND", "power_in"), ("PWR_FLAG", "power_out")):
+        power.symbols.append(build_power_symbol(name, pin_type))
+    power.filePath = str(folder / "power.kicad_sym")
+    power.to_file()
+    return folder
 
 
 @pytest.fixture()

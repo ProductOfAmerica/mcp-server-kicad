@@ -92,12 +92,16 @@ def test_bundle_serves_the_whole_tool_surface(bundle):
     assert len(bundle.tools()) == EXPECTED_TOOL_COUNT
 
 
-def test_bundle_round_trips_a_real_edit(bundle):
+def test_bundle_round_trips_a_real_edit(bundle, stock_symbol_dir):
     """Create, write, and read back through the protocol.
 
     The write goes through _atomic_write in the packed environment, so this is
     also the only place that path is exercised as a subprocess rather than an
     import.
+
+    The resistor's definition comes from symbol_lib_path, not KiCad's stock
+    libraries: the bundle's environment drops every KICAD_* variable, so the
+    KICAD_SYMBOL_DIR stand-in the other tests use cannot reach it.
     """
     with tempfile.TemporaryDirectory() as tmp:
         project_dir = Path(tmp) / "bt"
@@ -114,6 +118,7 @@ def test_bundle_round_trips_a_real_edit(bundle):
                 "value": "10k",
                 "x": 100,
                 "y": 100,
+                "symbol_lib_path": str(stock_symbol_dir / "Device.kicad_sym"),
                 "schematic_path": str(sch),
                 "project_path": str(project_dir / "bt.kicad_pro"),
             },

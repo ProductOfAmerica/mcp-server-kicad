@@ -176,8 +176,10 @@ class TestSetPageSize:
                 schematic_path=str(scratch_sch),
             )
 
-    def test_resize_then_place(self, empty_sch: Path) -> None:
+    def test_resize_then_place(self, empty_sch: Path, stock_symbol_dir: Path, monkeypatch) -> None:
         """Placement outside A4 fails, but succeeds after resizing to A3."""
+        # Device:R from the stand-in stock folder, so this does not need KiCad.
+        monkeypatch.setenv("KICAD_SYMBOL_DIR", str(stock_symbol_dir))
         # A4 is 297x210 — (400, 200) is outside
         with pytest.raises(ToolError, match="outside"):
             schematic.place_component(
