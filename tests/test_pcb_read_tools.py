@@ -91,14 +91,17 @@ class TestGetFootprintPads:
     def test_reports_board_coordinates_for_a_rotated_footprint(self, tmp_path):
         """Local pad coordinates alone send a caller to the wrong place.
 
-        U1 is at (100, 100) rotated -90, so its pad at local (0, 0) stays put
-        while the footprint origin and rotation are reported alongside.
+        U1 is at (100, 100) rotated -90 with its pad at local (-5, 1), the
+        placement the drill-verified F1 row in test_shared_helpers pins. At -90
+        KiCad's RotatePoint sends local (x, y) to board offset (-y, x), so the
+        pad is at board (99, 95). The opposite sign convention gives (101, 105),
+        so a pad off the footprint origin is what makes this catch a sign error.
         """
-        pcb_path = _make_board_with_courtyard_fp(tmp_path, rotation=-90)
+        pcb_path = _make_board_with_courtyard_fp(tmp_path, rotation=-90, pad_at=(-5, 1))
         result = pcb.get_footprint_pads("U1", pcb_path=str(pcb_path))
         assert "footprint origin (100, 100), rotation -90" in result
-        assert "board (100, 100)" in result
-        assert "local (0, 0)" in result
+        assert "board (99, 95)" in result
+        assert "local (-5, 1)" in result
 
 
 # ---------------------------------------------------------------------------
@@ -185,7 +188,7 @@ class TestListZonesKeepout:
 # ---------------------------------------------------------------------------
 
 
-def _make_board_with_courtyard_fp(tmp_path, *, rotation=0, rect=(-5, -5, 5, 5)):
+def _make_board_with_courtyard_fp(tmp_path, *, rotation=0, rect=(-5, -5, 5, 5), pad_at=(0, 0)):
     """Create a board with a single footprint that has a courtyard rect."""
     board = Board.create_new()
     board.nets = [Net(number=0, name=""), Net(number=1, name="Net1")]
@@ -217,7 +220,7 @@ def _make_board_with_courtyard_fp(tmp_path, *, rotation=0, rect=(-5, -5, 5, 5)):
     pad.number = "1"
     pad.type = "smd"
     pad.shape = "rect"
-    pad.position = Position(X=0, Y=0)
+    pad.position = Position(X=pad_at[0], Y=pad_at[1])
     pad.size = Position(X=1, Y=1)
     pad.layers = ["F.Cu"]
     pad.net = Net(number=1, name="Net1")
