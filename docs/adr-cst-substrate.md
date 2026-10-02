@@ -235,3 +235,18 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   nothing when it misses. Pointing the helper back at an in-place `_run_cli` turns four
   red; replacing the two `_atomic_write` calls with a direct `write_bytes` turns the
   two st_ino tests red.
+
+- 2026-10-02: `_atomic_write`'s temp gains a random part and an exclusive create. It
+  is now named `<name>.<pid>.<8 hex>.tmp` (`board.kicad_sch.1234.ab12cd34.tmp` where
+  the 2026-08-10 entry shows `board.kicad_sch.1234.tmp`); the suffix still follows the
+  whole name, for the reason that entry gives. The pid alone gave every writer of one
+  file in one process the same temp, and the temp was written with `write_bytes`,
+  which truncates whatever sits at the name. It is now created with `open(tmp, "xb")`
+  outside the cleanup's `try`, so a taken name raises and the file already there is
+  left as it was. The destination's mode moves with `os.fchmod` on the open descriptor
+  on Linux and macOS, where `shutil.copymode` went back through the path. Windows now
+  carries no mode at all: its only one is read-only, and copying that is what made the
+  read-only temp the 2026-08-15 entry describes, so the chmod-and-retry branch that
+  entry added to the cleanup is deleted along with its cause. A read-only destination
+  on Windows still fails the replace and is refused with the file intact, which
+  `test_a_read_only_original_is_platform_shaped` pins.

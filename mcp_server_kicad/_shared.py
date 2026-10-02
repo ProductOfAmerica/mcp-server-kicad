@@ -3,6 +3,7 @@
 import math
 import os
 import shutil
+import stat
 import subprocess
 import tempfile
 import time
@@ -481,13 +482,23 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
     p = Path(path)
     # Suffix after the whole name, never before the extension: a stray
     # ``foo.tmp.kicad_sch`` would be picked up by the project auto-detect scan
-    # and by the test suite's rglob, ``foo.kicad_sch.1234.tmp`` by neither.
-    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    # and by the test suite's rglob, ``foo.kicad_sch.1234.ab12cd34.tmp`` by
+    # neither. The random part is what keeps two writers of one file in one
+    # process apart; with the pid alone they shared a temp.
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    # Exclusive, and before the try: a create that fails, or finds the name
+    # taken, has made nothing of this call's, and the cleanup below would
+    # otherwise delete a file this call did not create.
+    f = open(tmp, "xb")
     try:
-        tmp.write_bytes(data)  # not a user file
-        if p.exists():
-            # Otherwise a group-writable file comes back 0644. No-op on Windows.
-            shutil.copymode(p, tmp)
+        with f:
+            if os.name != "nt" and p.exists():
+                # Otherwise a group-writable file comes back 0644. Set through
+                # the descriptor, so it lands on the file this call created.
+                # Windows is left alone: its only mode is read-only, and a
+                # read-only temp is one Windows then refuses to delete.
+                os.fchmod(f.fileno(), stat.S_IMODE(p.stat().st_mode))
+            f.write(data)
         for delay in _REPLACE_RETRY_DELAYS:
             try:
                 os.replace(tmp, p)
@@ -507,16 +518,7 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
     except BaseException:
         # BaseException, not Exception: a KeyboardInterrupt mid-write would
         # otherwise leave the temp behind.
-        try:
-            tmp.unlink(missing_ok=True)
-        except PermissionError:
-            # copymode above put the destination's mode on the temp, so a
-            # read-only destination makes a read-only temp that Windows then
-            # refuses to unlink. Without this the cleanup raises over the top of
-            # the real failure, with a message naming the temp path, which is
-            # the one thing this function's own comment says never to do.
-            tmp.chmod(0o600)
-            tmp.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
         raise
 
 

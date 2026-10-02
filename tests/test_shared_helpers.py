@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -348,7 +350,7 @@ class TestAtomicWrite:
         assert list(tmp_path.glob("*.tmp")) == []
 
     def test_creates_a_file_that_did_not_exist(self, tmp_path: Path):
-        """copymode must not be attempted against a missing destination."""
+        """The destination's mode is only read when there is a destination."""
         p = tmp_path / "new.bin"
         _atomic_write(p, self.REPLACEMENT)
         assert p.read_bytes() == self.REPLACEMENT
@@ -376,16 +378,18 @@ class TestAtomicWrite:
 
     def test_failed_temp_write_leaves_the_file_intact(self, tmp_path: Path, monkeypatch):
         """Disk full, or the folder itself refusing new files as Controlled
-        Folder Access does. Separate test because the cleanup branch differs."""
+        Folder Access does. It is the temp's exclusive create that fails, so
+        this call has made nothing that needs cleaning up."""
         p = self._target(tmp_path)
-        real = Path.write_bytes
+        real_open = open
 
-        def explode(self, data):
-            if self.name.endswith(".tmp"):
+        def refuse(file, mode="r", *args, **kwargs):
+            if mode == "xb":
                 raise OSError(28, "No space left on device")
-            return real(self, data)
+            return real_open(file, mode, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "write_bytes", explode)
+        # _atomic_write looks open up in its own module before the builtins.
+        monkeypatch.setattr(_shared, "open", refuse, raising=False)
 
         with pytest.raises(OSError):
             _atomic_write(p, self.REPLACEMENT)
@@ -394,14 +398,40 @@ class TestAtomicWrite:
         assert p.read_bytes() == self.ORIGINAL
         assert list(tmp_path.glob("*.tmp")) == [], "temp file left behind"
 
+    def test_a_taken_temp_name_is_refused_and_left_alone(self, tmp_path: Path, monkeypatch):
+        """The create is exclusive and happens before the cleanup is armed, so a
+        name that is already taken raises, and whatever sits there is left
+        exactly as it was rather than truncated or deleted."""
+        p = self._target(tmp_path)
+        fixed = uuid.UUID(int=0)
+        monkeypatch.setattr(_shared.uuid, "uuid4", lambda: fixed)
+        taken = tmp_path / f"{p.name}.{os.getpid()}.{fixed.hex[:8]}.tmp"
+        taken.write_bytes(b"not this call's")
+
+        with pytest.raises(FileExistsError):
+            _atomic_write(p, self.REPLACEMENT)
+
+        assert taken.read_bytes() == b"not this call's"
+        assert p.read_bytes() == self.ORIGINAL
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows has no mode bits beyond read-only")
+    def test_the_destination_mode_survives(self, tmp_path: Path):
+        """Otherwise a group-readable file would come back with the umask's mode."""
+        p = self._target(tmp_path)
+        p.chmod(0o640)
+        _atomic_write(p, self.REPLACEMENT)
+        assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
     @pytest.mark.no_kicad_validation
     def test_replaces_once_from_a_temp_that_is_not_a_kicad_file(self, tmp_path: Path, monkeypatch):
         """Two properties of the same call, so one spy answers both.
 
         Exactly one replace, which is what a future simplification back to
-        p.write_bytes(data) would fail. And a temp named board.kicad_sch.PID.tmp
-        rather than board.tmp.kicad_sch, because the latter is swept up by
-        _resolve_config's *.kicad_pro scan and by the suite's rglob.
+        p.write_bytes(data) would fail. And a temp named
+        board.kicad_sch.<pid>.<8 hex digits>.tmp rather than board.tmp.kicad_sch,
+        because the latter is swept up by _resolve_config's *.kicad_pro scan and
+        by the suite's rglob. The hex digits keep two writers of one file in one
+        process off each other's temp, which the pid alone did not.
 
         The .kicad_sch target is the point, and its contents are not a real
         schematic, hence the marker.
@@ -422,8 +452,9 @@ class TestAtomicWrite:
         src, dst = calls[0]
         assert dst == str(p)
         assert src != str(p), "must not replace the file with itself"
-        assert not src.endswith(".kicad_sch"), src
-        assert src.endswith(".tmp")
+        assert re.fullmatch(
+            rf"board\.kicad_sch\.{os.getpid()}\.[0-9a-f]{{8}}\.tmp", Path(src).name
+        ), src
 
 
 class TestReadKicadBytes:
@@ -860,12 +891,13 @@ class TestUpgradeOutOfPlace:
 
         Replacing a file on POSIX needs write permission on the DIRECTORY, not on
         the file, so a read-only library upgrades there without complaint. Only
-        Windows refuses. That is also why the defect this pins can only exist on
-        Windows: _atomic_write copies the destination's mode onto its temp, so a
-        read-only destination produced a read-only temp that Windows then refused
-        to unlink, and the cleanup raised over the top of the real failure with a
-        message naming the TEMP path, which is the one thing that function's own
-        comment says never to do.
+        Windows refuses. That is also why the defect this pins could only exist on
+        Windows: _atomic_write used to copy the destination's mode onto its temp,
+        so a read-only destination produced a read-only temp that Windows then
+        refused to unlink, and the cleanup raised over the top of the real failure
+        with a message naming the TEMP path, which is the one thing that
+        function's own comment says never to do. It no longer copies a mode on
+        Windows at all, and this keeps the outcome pinned.
         """
         lib = tmp_path / "Probe.kicad_sym"
         lib.write_bytes(b"(kicad_symbol_lib)\n")
