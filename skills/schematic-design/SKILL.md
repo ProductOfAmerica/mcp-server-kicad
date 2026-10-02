@@ -167,8 +167,9 @@ Y < 175mm.
 - Place decoupling capacitors visually adjacent to the IC they serve
 - Add `PWR_FLAG` on every power net that would otherwise trigger
   "power pin not driven" ERC errors
-- `wire_pins_to_net` never places a PWR_FLAG. Place one yourself with
-  `add_power_symbol` (lib_id `power:PWR_FLAG`), once per net that needs it
+- No tool places a PWR_FLAG for you, because only you know which nets have a
+  source ERC cannot see. Place one with `add_power_symbol`
+  (lib_id `power:PWR_FLAG`), once per net that needs it
 - PWR_FLAG is only needed on nets with power_in pins and NO power_out/output pins.
   Do not add one to a net that already has a driver or a flag: ERC then reports
   two power outputs connected

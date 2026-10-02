@@ -1850,8 +1850,9 @@ def add_power_symbol(
     Uses place_component internally. Power symbols are regular symbols
     from the 'power' library with isPower=True.
 
-    Automatically places a PWR_FLAG at the same position so the net
-    satisfies ERC (power pin driven).
+    Places only the symbol asked for. A PWR_FLAG tells ERC the net has a
+    source it cannot see, which only the designer knows, so add one with
+    lib_id="power:PWR_FLAG" on each net that needs it.
 
     Args:
         lib_id: Library ID (e.g. "power:VCC", "power:GND")
@@ -1864,7 +1865,7 @@ def add_power_symbol(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
-    result = place_component(
+    return place_component(
         lib_id=lib_id,
         reference=reference,
         value=lib_id.split(":")[-1],
@@ -1875,42 +1876,6 @@ def add_power_symbol(
         schematic_path=schematic_path,
         project_path=project_path,
     )
-
-    # Don't auto-add PWR_FLAG if we just placed one
-    symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-    if symbol_name == "PWR_FLAG":
-        return result
-
-    # Auto-place PWR_FLAG at the same position for ERC compliance
-    pwr_lib = symbol_lib_path or _resolve_system_lib("power")
-
-    if pwr_lib:
-        _, root, *_ = _open_sch_cst(schematic_path)
-        existing = {
-            r
-            for sym in root.find_all("symbol")
-            for r in [_sym_property_cst(sym, "Reference")]
-            if r is not None and r.startswith("#FLG")
-        }
-        n = 1
-        while f"#FLG{n:02d}" in existing:
-            n += 1
-        flg_ref = f"#FLG{n:02d}"
-
-        place_component(
-            lib_id="power:PWR_FLAG",
-            reference=flg_ref,
-            value="PWR_FLAG",
-            x=x,
-            y=y,
-            rotation=0,
-            symbol_lib_path=pwr_lib,
-            schematic_path=schematic_path,
-            project_path=project_path,
-        )
-        result += f" + {flg_ref}"
-
-    return result
 
 
 @mcp.tool(annotations=_ADDITIVE)

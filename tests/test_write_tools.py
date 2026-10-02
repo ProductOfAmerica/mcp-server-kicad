@@ -889,8 +889,13 @@ class TestAddPowerSymbol:
         assert len(flg_refs) == 1
         assert flg_refs[0] == "#FLG01"
 
-    def test_vcc_gets_auto_pwr_flag(self, empty_sch, scratch_power_lib):
-        """Placing VCC should auto-create a PWR_FLAG."""
+    def test_vcc_and_gnd_get_no_pwr_flag(self, empty_sch, scratch_power_lib):
+        """Placing VCC or GND places only that symbol, never a PWR_FLAG.
+
+        A flag tells ERC the net has a source it cannot see, which only the
+        designer knows. Placing one per power symbol silenced the undriven-net
+        check on every rail and put two flags on a net with two symbols.
+        """
         schematic.add_power_symbol(
             lib_id="power:VCC",
             reference="#PWR01",
@@ -900,13 +905,23 @@ class TestAddPowerSymbol:
             schematic_path=str(empty_sch),
             project_path=str(empty_sch.with_suffix(".kicad_pro")),
         )
+        result = schematic.add_power_symbol(
+            lib_id="power:GND",
+            reference="#PWR02",
+            x=100,
+            y=120,
+            symbol_lib_path=str(scratch_power_lib),
+            schematic_path=str(empty_sch),
+            project_path=str(empty_sch.with_suffix(".kicad_pro")),
+        )
+        assert "#FLG" not in result
         sch = reparse(str(empty_sch))
         refs = [
             next((p.value for p in s.properties if p.key == "Reference"), "")
             for s in sch.schematicSymbols
         ]
-        assert "#PWR01" in refs
-        assert any(r.startswith("#FLG") for r in refs)
+        assert sorted(refs) == ["#PWR01", "#PWR02"]
+        assert not any(ls.entryName.endswith("PWR_FLAG") for ls in sch.libSymbols)
 
 
 class TestSetComponentFootprint:

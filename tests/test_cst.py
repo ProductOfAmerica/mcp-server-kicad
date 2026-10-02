@@ -1161,18 +1161,16 @@ class TestKicad10E2E:
         )
 
     def test_add_power_symbol_on_real_kicad10(self, kicad_native_sch):
-        # Closes the slice-8 deferred measurement: the auto-PWR_FLAG path on a
-        # real KiCad 10 file, both symbols copied from the runner's K10 libs.
+        # A power symbol on a real KiCad 10 file, copied from the runner's K10
+        # power library. add_power_symbol places no PWR_FLAG alongside it.
         self._mint(kicad_native_sch)
         p = str(kicad_native_sch)
         result = schematic.add_power_symbol("power:VCC", "#PWR01", 60, 90, schematic_path=p)
-        assert "#PWR01" in result and "#FLG01" in result
+        assert "#PWR01" in result and "#FLG" not in result
         sch_root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
         lib_names = [s.atoms[1].text for s in sch_root.find("lib_symbols").find_all("symbol")]
         assert "power:VCC" in lib_names  # system copy, prefixed
-        # The PWR_FLAG rides through the explicit symbol_lib_path branch, which
-        # copies bare (today's shape); its lib_name fallback keeps KiCad happy.
-        assert "PWR_FLAG" in lib_names
+        assert not any(name.endswith("PWR_FLAG") for name in lib_names)
 
     def test_hierarchy_on_real_kicad10(self, tmp_path, kicad_native_sch):
         self._mint(kicad_native_sch)

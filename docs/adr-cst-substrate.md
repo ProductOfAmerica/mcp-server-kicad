@@ -244,6 +244,12 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   reports as "Pins of type Power output and Power output are connected" (measured on
   kicad-cli 9.0.8 with two flags on one net). The routing pressure test also measured
   kicad-cli ERC crashing (0xC0000005) when the auto flag's lib_id `power:PWR_FLAG`, with
-  no lib_name, met an entry `add_power_symbol` had copied under the bare name. Callers
-  place flags with `add_power_symbol`. The verbatim system-library copy that this path
-  used to exercise is still tested, now through `place_component`.
+  no lib_name, met an entry `add_power_symbol` had copied under the bare name. The
+  verbatim system-library copy that this path used to exercise is still tested, now
+  through `place_component`. `add_power_symbol` loses its own automatic flag for the
+  same reason, plus a sharper one: a flag tells ERC the net has a source it cannot
+  see, which only the designer knows, so placing one beside every power symbol marked
+  every rail as driven and silenced the undriven-net check it exists to satisfy. It is
+  now one `place_component` call, which also ends its two-write sequence (symbol, then
+  flag) that could leave half the change on disk. Callers place a flag with
+  `add_power_symbol` and lib_id `power:PWR_FLAG`, on the nets that need one.

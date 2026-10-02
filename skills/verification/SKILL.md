@@ -176,9 +176,10 @@ The most common ERC error. A power input pin has no driving source.
 Use `add_power_symbol` to place PWR_FLAG. Connect it to the net with
 `wire_pins_to_net` or `connect_pins`.
 
-**No automatic PWR_FLAG:** `wire_pins_to_net` never inserts one,
-because whether a net needs a flag depends on every driver on it.
-Place each flag yourself, one per net that needs it.
+**No automatic PWR_FLAG:** neither `wire_pins_to_net` nor
+`add_power_symbol` inserts one, because whether a net needs a flag
+depends on its real source, which only the design knows. Place each
+flag yourself, one per net that needs it.
 
 **Where to place PWR_FLAG manually:** On every net that is driven by
 something KiCad does not recognize as a power source — regulator
