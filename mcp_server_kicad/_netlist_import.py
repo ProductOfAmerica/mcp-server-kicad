@@ -26,8 +26,9 @@ def parse_netlist(path: str) -> tuple[list[dict], list[dict]]:
     path is the sheetpath+symbol KIID chain for GUI F8 linkage. A multi-unit
     symbol's <tstamps> lists every unit's KIID, space-separated, and the path
     takes the first one, as KiCad's own update does: a footprint has one
-    identity, and the whole list written as its path was a token with spaces
-    in it that pcbnew read as whichever unit it liked.
+    identity, and the whole list written as its path was a token pcbnew
+    cannot parse, so it gave the footprint a fresh random KIID on every load
+    and the footprint was linked to no unit at all.
     nets: [{name, nodes: [(ref, pin), ...]}] — the netlist @code is ignored;
     net names are the only identity that survives onto the board.
     """

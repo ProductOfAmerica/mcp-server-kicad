@@ -107,9 +107,8 @@ class TestParseNetlist:
         The footprint's path names one symbol, and KiCad's own update takes
         the first listed unit (BOARD_NETLIST_UPDATER::updateFootprintParameters
         pushes GetKIIDs().front()). Writing the whole list produced a path token
-        with spaces in it, which pcbnew parsed into whichever unit it liked,
-        so the same footprint could come back linked to a different unit on
-        every update.
+        with spaces in it, which pcbnew cannot parse: it substituted a fresh
+        random KIID on every load, so the footprint was linked to no unit.
         """
         p = tmp_path / "multi.xml"
         p.write_text(MULTI_UNIT_XML)
