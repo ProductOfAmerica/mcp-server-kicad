@@ -51,7 +51,21 @@ def _prepare_bundle(root: Path) -> list[str]:
     pyproject.write_text(text, encoding="utf-8")
 
     manifest = json.loads((root / "manifest.json").read_text(encoding="utf-8"))
-    return ["uv", "run", "--directory", str(root), manifest["server"]["entry_point"]]
+    # uv rebuilds a local directory dependency only when its pyproject.toml,
+    # setup.py or setup.cfg changes, never for an edited source file, so on a
+    # machine with a warm cache this ran whatever build was cached first.
+    # Measured 2026-10-02: no cached build held the change under test, and the
+    # bundle test passed against the code that change replaced. Forcing the
+    # reinstall is what makes "this tests HEAD" true.
+    return [
+        "uv",
+        "run",
+        "--reinstall-package",
+        "mcp-server-kicad",
+        "--directory",
+        str(root),
+        manifest["server"]["entry_point"],
+    ]
 
 
 @pytest.fixture(scope="module")
