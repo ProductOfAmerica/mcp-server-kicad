@@ -49,8 +49,10 @@ change on disk.
 Every tool works on the real file. Writes go through a byte-preserving
 substrate, so bytes you did not ask to change reach the disk unchanged, and an
 edit that cannot be done correctly is refused with the file intact. That now
-covers every board and schematic this server writes. The two library upgrades
-are the only tools that let KiCad do the writing, and they say so on themselves.
+covers every edit this server makes to a board or schematic. KiCad itself
+writes a design file in only two places: the library upgrades, which say so on
+themselves, and `autoroute_pcb`'s routed copy, a new board that `pcbnew` saves
+while yours stays untouched.
 
 ## Quick start
 
@@ -204,9 +206,13 @@ Highest priority wins:
 ## Requirements
 
 - **Python 3.10+**
-- **KiCad 9.x or 10.x**, for the tools that shell out to `kicad-cli`: ERC, DRC,
-  and every export. The read and write tools parse files directly and need no
-  KiCad install at all.
+- **KiCad 9.x or 10.x**, for the tools that hand work to KiCad. ERC, DRC, every
+  export, jobsets, `get_version`, the library upgrades and
+  `update_pcb_from_schematic` run `kicad-cli`; `fill_zones` and `autoroute_pcb`
+  need KiCad's `pcbnew` Python bindings, and `autoroute_pcb` needs Java too.
+  Placing a part from KiCad's stock symbol or footprint libraries needs those
+  libraries, which come with KiCad. Every other read and write tool parses files
+  directly and needs no KiCad install.
 
 CI runs the full suite on Linux against KiCad 9 and on macOS and Windows against
 KiCad 10, plus a KiCad-free matrix across Python 3.10 through 3.14.
