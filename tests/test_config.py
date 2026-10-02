@@ -208,3 +208,40 @@ class TestResolveSystemLib:
     def test_returns_none_for_empty_string(self):
         """Empty string returns None."""
         assert _resolve_system_lib("") is None
+
+    def test_search_order(self, tmp_path, monkeypatch):
+        """The override, then KiCad's own tree, then the standard folders.
+
+        _resolve_system_lib searches this sequence and place_component's refusal
+        prints it, so the folders a refusal names are the folders searched.
+        """
+        from mcp_server_kicad import _shared
+
+        env, root, std = tmp_path / "env", tmp_path / "kicad", tmp_path / "std"
+        monkeypatch.setenv("KICAD_SYMBOL_DIR", str(env))
+        monkeypatch.setattr(_shared, "_kicad_root", lambda: root)
+        monkeypatch.setattr(_shared, "_SYSTEM_SYM_DIRS", [std])
+        assert list(_shared._system_sym_dirs()) == [
+            env,
+            root / "share/kicad/symbols",
+            root / "SharedSupport/symbols",
+            std,
+        ]
+        # KiCad's own tree wins over a standard folder that has the library too.
+        for folder in (root / "share/kicad/symbols", std):
+            folder.mkdir(parents=True)
+            (folder / "Probe.kicad_sym").write_text("")
+        assert _resolve_system_lib("Probe") == str(root / "share/kicad/symbols" / "Probe.kicad_sym")
+
+    def test_an_override_hit_never_looks_for_kicad_cli(self, tmp_path, monkeypatch):
+        """The kicad-cli lookup behind _kicad_root runs only once the override misses."""
+        from mcp_server_kicad import _shared
+
+        (tmp_path / "Probe.kicad_sym").write_text("")
+        monkeypatch.setenv("KICAD_SYMBOL_DIR", str(tmp_path))
+
+        def no_lookup():
+            raise AssertionError("_kicad_root ran although the override had the library")
+
+        monkeypatch.setattr(_shared, "_kicad_root", no_lookup)
+        assert _resolve_system_lib("Probe") == str(tmp_path / "Probe.kicad_sym")

@@ -1196,7 +1196,8 @@ class TestKicad10E2E:
         lib_names = [s.atoms[1].text for s in sch_root.find("lib_symbols").find_all("symbol")]
         assert "power:VCC" in lib_names  # system copy, prefixed
         # The PWR_FLAG rides through the explicit symbol_lib_path branch, which
-        # copies bare (today's shape); its lib_name fallback keeps KiCad happy.
+        # copies bare (today's shape); its lib_name, that bare stored name,
+        # keeps KiCad happy.
         assert "PWR_FLAG" in lib_names
 
     def test_hierarchy_on_real_kicad10(self, tmp_path, kicad_native_sch):
