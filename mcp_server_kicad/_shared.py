@@ -5,6 +5,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -298,6 +299,51 @@ def _read_kicad_bytes(path: str | Path, kind: str) -> bytes:
     return _require_kicad_path(path, kind).read_bytes()
 
 
+def _require_plain_tree(root: Path, kind: str) -> None:
+    """Refuse a library directory holding anything but files and directories.
+
+    A footprint library is copied twice before kicad-cli sees it, once for the
+    ``.bak`` and once for the scratch copy, and both are ``shutil.copytree``,
+    which follows links. A link to a device copies until the disk is full, and
+    a link out of the library carries whatever it points at into the ``.bak``
+    beside the library. Rather than judge which links are harmless, this walks
+    the tree first, follows nothing, and refuses any link, or anything that is
+    neither a regular file nor a directory, by name.
+
+    The root itself must be a directory and not a link to one. A junction is a
+    link too: Windows reports one as a plain directory unless its reparse tag
+    is read, which is how ``shutil.rmtree`` tells them apart as well.
+    """
+
+    def odd(st: os.stat_result) -> str | None:
+        junction = sys.platform == "win32" and st.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+        if stat.S_ISLNK(st.st_mode) or junction:
+            return "a link"
+        if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+            return "neither a regular file nor a directory"
+        return None
+
+    why = (
+        "The upgrade copies the whole library first and will not follow a link or"
+        " read a special file, so nothing was written."
+    )
+    st = os.lstat(root)
+    what = odd(st) or (None if stat.S_ISDIR(st.st_mode) else "not a directory")
+    if what:
+        raise ToolError(f"The {kind} {root} is {what}. {why}")
+    pending = [root]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                st = entry.stat(follow_symlinks=False)
+                what = odd(st)
+                if what:
+                    rel = Path(entry.path).relative_to(root)
+                    raise ToolError(f"The {kind} {root} contains {rel}, which is {what}. {why}")
+                if stat.S_ISDIR(st.st_mode):
+                    pending.append(Path(entry.path))
+
+
 def _backup_for_external_write(path: str | Path, kind: str) -> Path:
     """Copy *path* to a sibling ``.bak`` before an external process rewrites it.
 
@@ -318,11 +364,16 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
     A failure to back up refuses the operation. Proceeding without one is the
     thing this exists to prevent, and whatever stopped the copy (a full disk, a
     read-only parent) would very likely have made the rewrite worse.
+
+    A library directory goes through _require_plain_tree before anything is
+    copied, and a copy that fails part way is removed rather than left beside
+    the library, where nothing would ever come back for it.
     """
     src = Path(path)
     dest = src.with_name(src.name + ".bak")
     try:
         if src.is_dir():
+            _require_plain_tree(src, kind)
             # A .pretty is a directory of .kicad_mod files, and os.replace will
             # not put one over an existing directory: ENOTEMPTY on POSIX, and
             # MoveFileEx refuses outright on Windows. So the old backup has to
@@ -332,15 +383,19 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
             for leftover in (staging, retired):
                 if leftover.exists():
                     shutil.rmtree(leftover)
-            shutil.copytree(src, staging)
-            # Retire the old backup rather than deleting it first. Deleting it
-            # first left a window in which NO backup existed at all: the copy
-            # was complete and safe, but a crash between the delete and the
-            # rename took the previous good one with it.
             had_old = dest.exists()
-            if had_old:
-                os.replace(dest, retired)
-            os.replace(staging, dest)
+            try:
+                shutil.copytree(src, staging)
+                # Retire the old backup rather than deleting it first. Deleting
+                # it first left a window in which NO backup existed at all: the
+                # copy was complete and safe, but a crash between the delete and
+                # the rename took the previous good one with it.
+                if had_old:
+                    os.replace(dest, retired)
+                os.replace(staging, dest)
+            except BaseException:
+                shutil.rmtree(staging, ignore_errors=True)
+                raise
             if had_old:
                 shutil.rmtree(retired, ignore_errors=True)
         else:
@@ -388,8 +443,13 @@ def _upgrade_out_of_place(path: str | Path, kind: str, argv: list[str]) -> list[
     Per-file atomicity, not library-level. A crash midway through a .pretty
     leaves some footprints upgraded and some not, with no file torn. That is
     the same boundary the ADR already draws for fan-out writes.
+
+    A library directory goes through _require_plain_tree before it is copied,
+    for the reason given there.
     """
     src = Path(path)
+    if src.is_dir():
+        _require_plain_tree(src, kind)
     # ponytail: a .pretty is now copied twice per upgrade, once for the .bak and
     # once for the scratch. fp upgrade is a rare, explicitly destructive call;
     # measure before caring.

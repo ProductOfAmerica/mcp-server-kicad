@@ -250,3 +250,25 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   entry added to the cleanup is deleted along with its cause. A read-only destination
   on Windows still fails the replace and is refused with the file intact, which
   `test_a_read_only_original_is_platform_shaped` pins.
+
+- 2026-10-02: the footprint-library upgrade refuses a library it cannot copy safely.
+  Both copies of a `.pretty`, the `.bak` beside it and the scratch copy kicad-cli
+  upgrades, are `shutil.copytree`, which follows symlinks by default and recurses into
+  Windows junctions on purpose (its own source says so). A link to a device such as
+  `/dev/zero` would copy until the disk filled, and a link out of the library carries
+  whatever it points at into the `.bak`. `_require_plain_tree` now walks the library
+  first, follows nothing, and refuses by name any link, or anything that is neither a
+  regular file nor a directory, before either copy starts; the root itself must be a
+  real directory. Junctions count as links. Measured on Windows with Python 3.10.19, a
+  junction reads as a plain directory to `S_ISLNK` and to `is_symlink()`, and only its
+  reparse tag (`IO_REPARSE_TAG_MOUNT_POINT`) gives it away, which is the same test
+  `shutil._rmtree_islink` applies. Before this change a symlinked footprint, a junction
+  and a symlinked library root were all copied into a `.bak`, and a dangling link escaped the
+  scratch copy as a raw `shutil.Error`. Two smaller fixes ride along. A tree copy that
+  fails part way is now removed, where it used to stay beside the library as
+  `<name>.bak.<pid>.tmp` with nothing to collect it. And `upgrade_footprint_lib`
+  refuses a path that is not a directory before making a backup: given a `.kicad_mod`
+  it used to write the `.bak` and then hand the file to kicad-cli 9.0.8, which answered
+  "Output path must be specified to convert legacy and non-KiCad libraries". What the
+  walk cannot close is a link created between the walk and the copy; the case it
+  closes is a crafted library at rest.

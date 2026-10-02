@@ -621,6 +621,98 @@ class TestBackupForExternalWrite:
         assert "back up" in str(exc.value)
 
 
+class TestPlainLibraryTree:
+    """A footprint library is copied twice before kicad-cli touches it, once for
+    the .bak and once for the scratch copy, and copytree follows links. So a
+    library holding a link or a special file is refused, by name, before either
+    copy starts: a link to a device copies until the disk is full, and a link out
+    of the library carries whatever it points at into the .bak beside it.
+    """
+
+    def _pretty(self, tmp_path: Path) -> Path:
+        pretty = tmp_path / "Lib.pretty"
+        pretty.mkdir()
+        (pretty / "R_0603.kicad_mod").write_bytes(b'(footprint "R_0603")\n')
+        return pretty
+
+    @staticmethod
+    def _symlink(link: Path, target: Path) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=target.is_dir())
+        except OSError as exc:  # Windows without Developer Mode or elevation
+            pytest.skip(f"cannot create a symlink here: {exc}")
+
+    @staticmethod
+    def _beside(tmp_path: Path, pretty: Path) -> list[str]:
+        """Everything named after the library: itself, any .bak, any staging."""
+        return sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(pretty.name))
+
+    def test_a_link_inside_is_refused_by_name(self, tmp_path):
+        pretty = self._pretty(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_bytes(b"not part of the library")
+        self._symlink(pretty / "evil.kicad_mod", outside)
+        with pytest.raises(ToolError, match=r"evil\.kicad_mod.*a link"):
+            _backup_for_external_write(pretty, "footprint library")
+        assert self._beside(tmp_path, pretty) == ["Lib.pretty"], "a backup or staging copy exists"
+
+    def test_the_upgrade_copy_refuses_the_same_tree(self, tmp_path, monkeypatch):
+        pretty = self._pretty(tmp_path)
+        self._symlink(pretty / "evil.kicad_mod", tmp_path / "outside.txt")
+        monkeypatch.setattr(_shared, "_run_cli", lambda *a, **k: pytest.fail("kicad-cli was run"))
+        with pytest.raises(ToolError, match=r"evil\.kicad_mod.*a link"):
+            _upgrade_out_of_place(pretty, "footprint library", ["fp", "upgrade"])
+
+    @pytest.mark.skipif(os.name != "nt", reason="junctions are a Windows construct")
+    def test_a_junction_inside_is_refused(self, tmp_path):
+        """A junction reads as a plain directory to S_ISLNK and to is_symlink();
+        only its reparse tag gives it away."""
+        pretty = self._pretty(tmp_path)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "X.kicad_mod").write_bytes(b'(footprint "X")\n')
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(pretty / "sub"), str(elsewhere)],
+            check=True,
+            capture_output=True,
+        )
+        with pytest.raises(ToolError, match=r"sub.*a link"):
+            _backup_for_external_write(pretty, "footprint library")
+        assert self._beside(tmp_path, pretty) == ["Lib.pretty"]
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a POSIX FIFO")
+    def test_a_fifo_inside_is_refused(self, tmp_path):
+        pretty = self._pretty(tmp_path)
+        os.mkfifo(pretty / "pipe.kicad_mod")  # pyright: ignore[reportAttributeAccessIssue]
+        with pytest.raises(ToolError, match=r"pipe\.kicad_mod.*neither a regular file"):
+            _backup_for_external_write(pretty, "footprint library")
+        assert self._beside(tmp_path, pretty) == ["Lib.pretty"]
+
+    def test_a_linked_library_root_is_refused(self, tmp_path):
+        real = self._pretty(tmp_path)
+        linked = tmp_path / "Linked.pretty"
+        self._symlink(linked, real)
+        with pytest.raises(ToolError, match="is a link"):
+            _backup_for_external_write(linked, "footprint library")
+        assert not (tmp_path / "Linked.pretty.bak").exists()
+
+    def test_a_failed_copy_leaves_no_staging_behind(self, tmp_path, monkeypatch):
+        """A copy that failed part way is not a backup, and nothing else would
+        ever remove it."""
+        pretty = self._pretty(tmp_path)
+        real_copytree = shutil.copytree
+
+        def copy_then_fail(src, dst, *args, **kwargs):
+            real_copytree(src, dst, *args, **kwargs)
+            raise shutil.Error([(str(src), str(dst), "failed after copying")])
+
+        monkeypatch.setattr(_shared.shutil, "copytree", copy_then_fail)
+        with pytest.raises(ToolError, match="has not been started"):
+            _backup_for_external_write(pretty, "footprint library")
+        monkeypatch.undo()
+        assert self._beside(tmp_path, pretty) == ["Lib.pretty"], "the staging copy was left behind"
+
+
 def _completed(returncode: int, stdout: str = "", stderr: str = ""):
     """A subprocess result carrying only what the code under test reads."""
     return subprocess.CompletedProcess(args=[], returncode=returncode, stdout=stdout, stderr=stderr)
