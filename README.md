@@ -49,8 +49,10 @@ change on disk.
 Every tool works on the real file. Writes go through a byte-preserving
 substrate, so bytes you did not ask to change reach the disk unchanged, and an
 edit that cannot be done correctly is refused with the file intact. That now
-covers every board and schematic this server writes. The two library upgrades
-are the only tools that let KiCad do the writing, and they say so on themselves.
+covers every edit this server makes to a board or schematic. KiCad itself
+writes a design file in only two places: the library upgrades, which say so on
+themselves, and `autoroute_pcb`'s routed copy, a new board that `pcbnew` saves
+while yours stays untouched.
 
 ## Quick start
 
@@ -204,12 +206,16 @@ Highest priority wins:
 ## Requirements
 
 - **Python 3.10+**
-- **KiCad 9.x or 10.x**, for the tools that shell out to `kicad-cli`: ERC, DRC,
-  and every export. The read and write tools parse files directly and need no
-  KiCad install at all.
+- **KiCad 9.x or 10.x**, for the tools that hand work to KiCad. ERC, DRC, every
+  export, jobsets, `get_version`, the library upgrades and
+  `update_pcb_from_schematic` run `kicad-cli`; `fill_zones` and `autoroute_pcb`
+  need KiCad's `pcbnew` Python bindings, and `autoroute_pcb` needs Java too.
+  Placing a part from KiCad's stock symbol or footprint libraries needs those
+  libraries, which come with KiCad. Every other read and write tool parses files
+  directly and needs no KiCad install.
 
-CI runs the full suite on Linux against KiCad 9 and on macOS against KiCad 10,
-plus a KiCad-free matrix across Python 3.10 through 3.13.
+CI runs the full suite on Linux against KiCad 9 and on macOS and Windows against
+KiCad 10, plus a KiCad-free matrix across Python 3.10 through 3.14.
 
 ### Finding your KiCad install
 
@@ -240,16 +246,20 @@ message naming `KICAD_CLI_PATH`, rather than vanishing from the tool list.
 | `.kicad_pcb` | Everything, read and write |
 | `.kicad_sym`, `.kicad_mod` | Everything: your own libraries as well as the stock ones |
 
-Every tool parses and edits through the byte-preserving substrate, so none of
-them refuses a file on its format version, and none of them rewrites bytes you
-did not ask to change. Two caveats are worth knowing about.
+Every tool parses and edits through the byte-preserving substrate, so the
+server's own reads and writes refuse no file on its format version, and none of
+them rewrites bytes you did not ask to change. What a tool hands to KiCad
+itself, through `kicad-cli` or `pcbnew`, only works if your install can load the
+file, and a KiCad 9 install cannot load a KiCad 10 board. Two caveats are worth
+knowing about.
 
-`autoroute_pcb` needs a `pcbnew` whose era matches the board, because it uses one
-for the DSN export and the SES import. It checks before it starts. A KiCad 10
-board on a KiCad 9 `pcbnew` is refused with a message naming both versions;
-install KiCad 10 or point `KICAD_PYTHON` at one. The other direction runs and
-warns, because the routed copy comes back in the KiCad 10 format. Your original
-board is untouched either way, since this one writes a copy.
+`autoroute_pcb` and `fill_zones` both need a `pcbnew` that can load the board:
+autoroute uses one for the DSN export and the SES import, and `fill_zones` uses
+one to compute the fills. Both check before they start. A KiCad 10 board on a
+KiCad 9 `pcbnew` is refused with a message naming both versions; install KiCad
+10 or point `KICAD_PYTHON` at one. In the other direction `autoroute_pcb` runs
+and warns, because the routed copy comes back in the KiCad 10 format. Your
+original board is untouched by autoroute either way, since it writes a copy.
 
 `upgrade_symbol_lib` and `upgrade_footprint_lib` are the one place KiCad still
 rewrites your file, because changing the format is exactly what you asked for.
@@ -260,12 +270,13 @@ so an interrupted upgrade leaves some footprints migrated and none damaged. A
 backup is still taken at `<name>.bak`, overwritten every run, because that is
 the undo for an upgrade that worked.
 
-`fill_zones` and `update_pcb_from_schematic` used to be listed here and no longer
-are. `fill_zones` still asks `pcbnew` to compute the fills, because nothing else
-can, but `pcbnew` only reads: the copper comes back as coordinates and the
-substrate splices it in. `update_pcb_from_schematic` no longer uses `pcbnew` at
-all. Both leave everything they were not asked to change byte-identical,
-including the format stamp. The design behind the substrate is written up in
+`fill_zones` and `update_pcb_from_schematic` also used to be listed here for
+letting `pcbnew` rewrite your board, and no longer do. `fill_zones` still asks
+`pcbnew` to compute the fills, because nothing else can, but `pcbnew` only
+reads: the copper comes back as coordinates and the substrate splices it in.
+`update_pcb_from_schematic` no longer uses `pcbnew` at all. Both leave
+everything they were not asked to change byte-identical, including the format
+stamp. The design behind the substrate is written up in
 [docs/adr-cst-substrate.md](docs/adr-cst-substrate.md).
 
 ### Windows: Controlled Folder Access
