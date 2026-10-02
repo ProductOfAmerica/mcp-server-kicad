@@ -232,8 +232,8 @@ def _num(v: float) -> str:
     return str(int(v)) if v == int(v) else str(v)
 
 
-def _numish(s: str) -> float | int:
-    """Numeric text as int when whole, else float: mirrors kiutils' repr in prints."""
+def _numish(s: str | float) -> float | int:
+    """Numeric text (or a number) as int when whole, else float: mirrors kiutils' repr in prints."""
     v = float(s)
     return int(v) if v == int(v) else v
 

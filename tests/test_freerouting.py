@@ -404,7 +404,15 @@ class TestPromoteFootprintKeepouts:
         assert not Path(out_path).exists()
 
     def test_rotated_footprint(self, tmp_path):
-        """FP at 90 degrees; verify coords are correctly rotated."""
+        """FP at 90 degrees; verify coords are correctly rotated.
+
+        KiCad's RotatePoint, which is what pcbnew applies to footprint-local
+        geometry, is ``bx = fp_x + lx*cos(a) + ly*sin(a)`` and
+        ``by = fp_y - lx*sin(a) + ly*cos(a)``. The signs are the transpose of
+        the textbook matrix because the stored angle is counter-clockwise as
+        seen on screen while file Y points down. So local (10, 0) at +90 lands
+        at (100, 90), not (100, 110).
+        """
         pcb_path = _make_board_with_fp_keepout(tmp_path, fp_angle=90, fp_x=100, fp_y=100)
         out_path = str(tmp_path / "out.kicad_pcb")
 
@@ -413,17 +421,15 @@ class TestPromoteFootprintKeepouts:
         assert count == 1
         out_board = Board.from_file(out_path)
         coords = out_board.zones[0].polygons[0].coordinates
-        # At 90 deg, (10, 0) local -> board (100, 110) (Y increases)
-        # Rotation formula: bx = fp_x + lx*cos(a) - ly*sin(a)
-        #                   by = fp_y + lx*sin(a) + ly*cos(a)
-        # (10,0) at 90 deg: bx=100+0-0=100, by=100+10+0=110
         xs = [round(c.X, 3) for c in coords]
         ys = [round(c.Y, 3) for c in coords]
-        # (0,0)->100,100  (10,0)->100,110  (10,10)->90,110  (0,10)->90,100
+        # (0,0)->100,100  (10,0)->100,90  (10,10)->110,90  (0,10)->110,100
         assert xs[0] == pytest.approx(100.0, abs=0.01)
         assert ys[0] == pytest.approx(100.0, abs=0.01)
         assert xs[1] == pytest.approx(100.0, abs=0.01)
-        assert ys[1] == pytest.approx(110.0, abs=0.01)
+        assert ys[1] == pytest.approx(90.0, abs=0.01)
+        assert xs[2] == pytest.approx(110.0, abs=0.01)
+        assert ys[2] == pytest.approx(90.0, abs=0.01)
 
     def test_multiple_polygons(self, tmp_path):
         """Zone with 2 polygons produces count=2 and 2 board-level keepout zones."""
@@ -485,9 +491,14 @@ class TestPromoteFootprintKeepouts:
         assert round(second_coords[0].Y, 3) == 20.0
 
     def test_back_side_footprint_keepout(self, tmp_path):
-        """FP on B.Cu; verify X coords are mirrored.
+        """FP on B.Cu; local coordinates are used as stored, with no mirroring.
 
-        FP at (100,100), vertex (10,0) should become (90,100) due to X negation.
+        KiCad flips a footprint by rewriting its children's local coordinates,
+        so what the file holds for a B.Cu footprint is already in the flipped
+        frame. Mirroring it again here moved every back-side keepout by twice
+        its offset. Confirmed against `kicad-cli pcb export drill`: a B.Cu
+        footprint at (170, 150) rotation 0 with a pad at local (-5, 1) drills
+        at X165.0 Y-151.0, which is the unmirrored position.
         """
         pcb_path = _make_board_with_fp_keepout(
             tmp_path, fp_angle=0, fp_layer="B.Cu", fp_x=100, fp_y=100
@@ -501,10 +512,10 @@ class TestPromoteFootprintKeepouts:
         coords = out_board.zones[0].polygons[0].coordinates
         xs = [round(c.X, 3) for c in coords]
         ys = [round(c.Y, 3) for c in coords]
-        # (0,0)->100,100  (10,0)->90,100 (mirrored X)  (10,10)->90,110  (0,10)->100,110
+        # (0,0)->100,100  (10,0)->110,100  (10,10)->110,110  (0,10)->100,110
         assert xs[0] == pytest.approx(100.0, abs=0.01)
         assert ys[0] == pytest.approx(100.0, abs=0.01)
-        assert xs[1] == pytest.approx(90.0, abs=0.01)
+        assert xs[1] == pytest.approx(110.0, abs=0.01)
         assert ys[1] == pytest.approx(100.0, abs=0.01)
 
     def test_fp_position_none_skipped(self, tmp_path):
