@@ -1,0 +1,28 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+#
+# This file exists so reviews hold changes to this repo's own rules. Those
+# rules live in CLAUDE.md, which CodeRabbit reads as review criteria by
+# default (knowledge_base.code_guidelines), so they are not repeated here.
+#
+# A repository file replaces the dashboard settings wholesale unless
+# inheritance is on; with it, any key not set here comes from the dashboard.
+#
+# CodeRabbit's docs say a PR is reviewed with the copy of this file on the
+# PR's own branch, so a PR that edits it can change how it is itself reviewed.
+inheritance: true
+
+reviews:
+  profile: chill
+  poem: false
+  in_progress_fortune: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+
+chat:
+  art: false
+
+knowledge_base:
+  code_guidelines:
+    enabled: true
