@@ -33,6 +33,15 @@ _JAVA_FLOOR = 17
 #: since, so Java N is 44 + N. Java 17 is 61, Java 25 is 69.
 _CLASS_MAJOR_BASE = 44
 
+#: Leads every inline script handed to a child interpreter, ahead of any import.
+#: ``python -c`` puts "" (the current directory) first on sys.path, and these
+#: children inherit the server's working directory, so a pcbnew.py or wx.py
+#: there would be imported in place of KiCad's own. sys is built in, so
+#: importing it searches nothing. Not -P or PYTHONSAFEPATH, which arrived in
+#: Python 3.11 while KiCad 10's macOS bundle ships 3.9; and not -I, which also
+#: drops PYTHONPATH, the thing the fallback in find_pcbnew_python sets.
+_NO_CWD_IMPORTS = "import sys; sys.path[:] = [p for p in sys.path if p]; "
+
 
 def jar_java_requirement(jar_path: str) -> int | None:
     """Java major version *jar_path* needs, read from its own class files.
@@ -215,10 +224,14 @@ def wx_app_prelude() -> str:
     Single-sourced through _netlist_import so the call sites cannot drift.
     That module imports only the standard library, so KiCad's interpreter can
     load it, and it is already on disk next to this one.
+
+    It opens with _NO_CWD_IMPORTS. Inserting the package directory alone left
+    the working directory one slot behind it, still ahead of everything the
+    interpreter ships with.
     """
     pkg_dir = str(Path(__file__).parent)
     return (
-        f"import sys; sys.path.insert(0, {pkg_dir!r}); "
+        _NO_CWD_IMPORTS + f"sys.path.insert(0, {pkg_dir!r}); "
         "import _netlist_import as _ni; _ni._ensure_wx_app(); "
     )
 
@@ -244,7 +257,7 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
     if kicad_python:
         try:
             result = subprocess.run(
-                [kicad_python, "-c", "import pcbnew"],
+                [kicad_python, "-c", _NO_CWD_IMPORTS + "import pcbnew"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -268,7 +281,7 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
     for py in python_candidates:
         try:
             result = subprocess.run(
-                [py, "-c", "import pcbnew"],
+                [py, "-c", _NO_CWD_IMPORTS + "import pcbnew"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -287,7 +300,7 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
             path_env = {**(env or os.environ), "PYTHONPATH": path}
             try:
                 result = subprocess.run(
-                    [py, "-c", "import pcbnew"],
+                    [py, "-c", _NO_CWD_IMPORTS + "import pcbnew"],
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -320,7 +333,7 @@ def pcbnew_major() -> int | None:
     if python:
         try:
             result = subprocess.run(
-                [python, "-c", "import pcbnew; print(pcbnew.Version())"],
+                [python, "-c", _NO_CWD_IMPORTS + "import pcbnew; print(pcbnew.Version())"],
                 capture_output=True,
                 text=True,
                 timeout=30,

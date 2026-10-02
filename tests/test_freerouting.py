@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,6 +26,7 @@ from mcp_server_kicad._freerouting import (
     jar_java_requirement,
     pcbnew_major,
     run_freerouting,
+    wx_app_prelude,
 )
 from mcp_server_kicad._shared import _keepout_dict, _xy
 from mcp_server_kicad.pcb import _promote_footprint_keepouts, run_drc
@@ -212,6 +214,56 @@ class TestPcbnewMajor:
         major = pcbnew_major()
         assert isinstance(major, int)
         assert major >= 9
+
+
+class TestChildScriptsIgnoreTheCwd:
+    """No pcbnew child interpreter may import a module from the server's cwd.
+
+    ``python -c`` puts ``''``, meaning the current directory, first on sys.path,
+    and every child here is launched without a cwd of its own, so it inherits
+    whichever directory the host started the server in. A pcbnew.py sitting
+    there would run under KiCad's interpreter in place of KiCad's own module.
+
+    These run real interpreters rather than scanning the source. The one used
+    is the suite's own, which has neither pcbnew nor wx installed, so an import
+    of pcbnew can only succeed by finding the planted module, and no wx assert
+    dialog can be provoked.
+    """
+
+    @pytest.fixture
+    def marker(self, tmp_path, monkeypatch):
+        """Chdir into a directory whose pcbnew.py leaves this marker when imported."""
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        marker = tmp_path / "imported-from-cwd"
+        (cwd / "pcbnew.py").write_text(f"open({str(marker)!r}, 'w').close()\n", encoding="utf-8")
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr(_fr_module, "_pcbnew_cache", None)
+        monkeypatch.setattr(_fr_module, "_pcbnew_major_cache", None)
+        return marker
+
+    def test_the_pcbnew_probes(self, marker, tmp_path, monkeypatch):
+        """KICAD_PYTHON, the candidate loop, and the PYTHONPATH fallback loop."""
+        monkeypatch.setenv("KICAD_PYTHON", sys.executable)
+        monkeypatch.setattr(_fr_module, "_kicad_python_candidates", lambda: [sys.executable])
+        # Any existing directory without a pcbnew in it, so the fallback loop runs.
+        monkeypatch.setattr(_fr_module, "_KICAD_PYTHON_PATHS", [str(tmp_path)])
+        find_pcbnew_python()
+        assert not marker.exists(), "a probe imported pcbnew.py from the working directory"
+
+    def test_the_version_probe(self, marker, monkeypatch):
+        monkeypatch.setattr(_fr_module, "find_pcbnew_python", lambda: (sys.executable, None))
+        pcbnew_major()
+        assert not marker.exists(), "pcbnew_major imported pcbnew.py from the working directory"
+
+    def test_the_wx_prelude(self, marker):
+        """export_dsn, import_ses and fill_zones all start their scripts with it."""
+        subprocess.run(
+            [sys.executable, "-c", wx_app_prelude() + "import pcbnew"],
+            capture_output=True,
+            timeout=60,
+        )
+        assert not marker.exists(), "the prelude left the working directory on sys.path"
 
 
 class TestExportDsn:
