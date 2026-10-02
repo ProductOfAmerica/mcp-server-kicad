@@ -69,9 +69,9 @@ jobs:
       # uploads everything in dist/ and would choke on a non-package file.
       #
       # No uv.lock ships with it: the manifest pins the version being released,
-      # which is not live on PyPI until the last step of this job, so a lock
-      # cannot be resolved yet. Users resolve on first launch instead, fenced by
-      # the mcp>=1.10.0,<2.0.0 bound in the package itself.
+      # which is not live on PyPI until the publish step below, so a lock cannot
+      # be resolved yet. Users resolve on first launch instead, fenced by the
+      # mcp bound in the package's own pyproject.toml.
       - name: Pack MCPB bundle
         run: |
           V="${{ steps.bump.outputs.version }}"
