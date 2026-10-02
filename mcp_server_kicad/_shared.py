@@ -380,6 +380,12 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
             # be moved out of the way rather than replaced in place.
             staging = src.with_name(src.name + f".bak.{os.getpid()}.tmp")
             retired = src.with_name(src.name + f".bak.{os.getpid()}.old")
+            # A retired copy with no .bak beside it is a previous refresh that
+            # failed and could not put the old backup back either. It is then
+            # the newest backup there is, so it is recovered, not cleared away.
+            # Beside an existing .bak it is older than that and is cleared.
+            if retired.exists() and not dest.exists():
+                os.replace(retired, dest)
             for leftover in (staging, retired):
                 if leftover.exists():
                     shutil.rmtree(leftover)
@@ -395,6 +401,14 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
                 os.replace(staging, dest)
             except BaseException:
                 shutil.rmtree(staging, ignore_errors=True)
+                if retired.exists() and not dest.exists():
+                    # Back to the name the last result gave. If this fails as
+                    # well, the original error is the one worth reporting, and
+                    # the check at the top recovers it on this process's next run.
+                    try:
+                        os.replace(retired, dest)
+                    except OSError:
+                        pass
                 raise
             if had_old:
                 shutil.rmtree(retired, ignore_errors=True)

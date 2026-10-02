@@ -620,6 +620,59 @@ class TestBackupForExternalWrite:
         # in place. It does not any more, so promising it would be false.
         assert "back up" in str(exc.value)
 
+    @staticmethod
+    def _refuse_install(monkeypatch):
+        """Fail only the move of the fresh copy into place, the step after the
+        previous backup has been moved aside."""
+        real_replace = os.replace
+
+        def replace(src, dst):
+            if str(src).endswith(".tmp"):
+                raise PermissionError(5, "Access is denied")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(_shared.os, "replace", replace)
+
+    def test_a_failed_refresh_puts_the_previous_backup_back(self, tmp_path, monkeypatch):
+        """os.replace will not put a directory over a directory, so the old
+        backup is moved aside before the new one goes in. When the new one then
+        fails to go in, the old one goes back to the name the last result gave,
+        instead of waiting under a retired name for the next run to delete it."""
+        pretty = tmp_path / "MyLib.pretty"
+        pretty.mkdir()
+        (pretty / "a.kicad_mod").write_bytes(b"one")
+        _backup_for_external_write(pretty, "footprint library")
+        (pretty / "a.kicad_mod").write_bytes(b"two")
+
+        self._refuse_install(monkeypatch)
+        with pytest.raises(ToolError, match="has not been started"):
+            _backup_for_external_write(pretty, "footprint library")
+        monkeypatch.undo()
+
+        assert (tmp_path / "MyLib.pretty.bak" / "a.kicad_mod").read_bytes() == b"one"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["MyLib.pretty", "MyLib.pretty.bak"]
+
+    def test_a_stranded_backup_is_recovered_not_deleted(self, tmp_path, monkeypatch):
+        """If putting it back failed too, the next run from this process finds
+        the backup under its retired name with no .bak beside it. With no .bak
+        it is the newest backup there is, so it goes back rather than being
+        cleared away as a leftover. A retired copy beside an existing .bak is
+        older than it and is still cleared."""
+        pretty = tmp_path / "MyLib.pretty"
+        pretty.mkdir()
+        (pretty / "a.kicad_mod").write_bytes(b"two")
+        stranded = tmp_path / f"MyLib.pretty.bak.{os.getpid()}.old"
+        stranded.mkdir()
+        (stranded / "a.kicad_mod").write_bytes(b"one")
+
+        self._refuse_install(monkeypatch)
+        with pytest.raises(ToolError, match="has not been started"):
+            _backup_for_external_write(pretty, "footprint library")
+        monkeypatch.undo()
+
+        assert (tmp_path / "MyLib.pretty.bak" / "a.kicad_mod").read_bytes() == b"one"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["MyLib.pretty", "MyLib.pretty.bak"]
+
 
 class TestPlainLibraryTree:
     """A footprint library is copied twice before kicad-cli touches it, once for
