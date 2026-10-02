@@ -11,26 +11,27 @@ Thank you for your interest in contributing to mcp-server-kicad!
    cd mcp-server-kicad
    ```
 
-2. Create a virtual environment and install dev dependencies:
+2. Install [uv](https://docs.astral.sh/uv/), then the locked environment with the dev extra, which is exactly what CI installs:
 
    ```bash
-   python -m venv .venv
-   source .venv/bin/activate
-   pip install -e ".[dev]"
+   uv sync --frozen --all-extras --dev
    ```
 
 3. Run tests:
 
    ```bash
-   pytest -v
+   uv run pytest -v -n auto
    ```
 
-4. Run lints:
+4. Run lints and the type check:
 
    ```bash
-   ruff check .
-   ruff format --check .
+   uv run ruff check .
+   uv run ruff format --check .
+   uv run pyright
    ```
+
+To run the same ruff on every commit, install [pre-commit](https://pre-commit.com/) 4.4 or newer and run `pre-commit install`. Its hooks call `uv run`, so they use the ruff version `uv.lock` pins.
 
 ## Workflow
 
@@ -40,6 +41,6 @@ Thank you for your interest in contributing to mcp-server-kicad!
 4. Ensure tests and lints pass locally.
 5. Open a pull request against `main`.
 
-## Notes on Export Tests
+## Tests That Need KiCad
 
-Tests for the export server require `kicad-cli`. It is found on your `PATH`, inside `/Applications/KiCad/KiCad.app` on macOS, or in the versioned Windows install folders under `Program Files` and `AppData`; set `KICAD_CLI_PATH` if yours is elsewhere. If `kicad-cli` is not found, those tests are automatically skipped, and so is the autouse fixture that checks every generated `.kicad_sch` is parseable, so it is worth confirming it resolves. The schematic and PCB server tests do not require KiCad.
+Tests that shell out to `kicad-cli` (ERC, DRC, exports) need KiCad installed, and so do the few that drive pcbnew's Python bindings. `kicad-cli` is found through `KICAD_CLI_PATH`, then your `PATH`, then `/Applications/KiCad/KiCad.app` on macOS, then the versioned install folders under `Program Files` and `AppData` on Windows. Without it those tests skip, and so does the autouse fixture that checks every generated schematic and board loads in `kicad-cli`, so a green run proves much less. Confirm it resolves before trusting one.
