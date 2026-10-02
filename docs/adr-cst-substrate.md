@@ -235,3 +235,48 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   nothing when it misses. Pointing the helper back at an in-place `_run_cli` turns four
   red; replacing the two `_atomic_write` calls with a direct `write_bytes` turns the
   two st_ino tests red.
+
+- 2026-10-02: `place_component` refuses a symbol it cannot define, closing a gap that
+  slice 10 carried over from the kiutils version unexamined. A placed symbol is a part
+  only because its definition sits in `lib_symbols` beside it; the instance just points
+  at it. The "not found" check ran only when a library file had been found, because it
+  existed to suggest similar names, so a prefixed lib_id whose stock library was
+  missing, a bare lib_id with no `symbol_lib_path`, and a bare lib_id whose library
+  lacked the symbol all wrote the instance anyway and reported success. Measured with
+  the stock lookup disabled: no definition, no pins, and `kicad-cli sch erc` at rc 0
+  with no violations, because a pinless symbol gives ERC nothing to check. That blind
+  spot is worth recording next to ADR-1's: loading proves only that KiCad could read
+  the file, never that the edit was the one asked for. The second case was worse.
+  12,127 of the stock symbols in a KiCad 9 install are derived, an `(extends "Parent")`
+  plus properties with the pins left in the parent, and the copy took that stub
+  verbatim; kicad-cli 9 then refused to load the whole schematic, and the same file
+  loaded once the `(extends ...)` node was removed. No test had ever placed a derived
+  symbol, so the oracle that would have caught it never saw one. KiCad embeds them
+  flattened: the three KiCad 9 demo schematics that use a derived stock symbol carry
+  the parent's pins and no `(extends ...)`, which is the harvest material ADR-2 asks
+  for once flattening is built. Until then the copy refuses a stub and names the
+  parent, which has the same pins. Refusing rather than building a definition follows
+  ADR-2 directly: the pins exist only in a library, and an invented definition is
+  exactly the hand-written construct it rules out. The check now runs on the result,
+  after every load attempt and in the old position (after the reference and bounds
+  refusals, before any write), and `add_power_symbol` and `auto_place_decoupling_cap`
+  inherit it because they call `place_component` first. `_system_sym_dirs` is the one
+  list both `_resolve_system_lib` and the refusal read, so the folders a refusal names
+  are the folders searched, and both library reads go through `_open_sym_lib`, which
+  turns a missing `symbol_lib_path` (a raw FileNotFoundError before) and a file that
+  is not a library (an IndexError before) into ToolErrors. Seven tests had been passing
+  on the KiCad-free CI legs only by writing orphans, measured by re-running the
+  affected tests with KiCad hidden: six fast ones and the bundle round trip. One of
+  them compared the pin UUIDs of a sheet and its duplicate, which for a pinless R7
+  meant comparing two empty lists. They now take the definition from a stand-in stock
+  folder, the `stock_symbol_dir` fixture behind `KICAD_SYMBOL_DIR`. The bundle test had
+  a problem of its own: uv rebuilds a local directory dependency only when its
+  `pyproject.toml` changes, so on a warm cache it ran a stale build of the package
+  rather than the checkout, and it passed against the code this change replaced until
+  `--reinstall-package` went into its command. Deliberately left out: flattening
+  derived symbols, the next slice; `add_power_symbol` silently skipping its PWR_FLAG
+  when the power library is missing, and writing the power symbol before the flag can
+  fail, which belong to the PWR_FLAG rework; the ValueError `connect_pins` raises for a
+  symbol with no definition, which the MCP SDK wraps exactly as it wraps a ToolError;
+  and resolving a prefix through a project sym-lib-table, which the refusal now states
+  plainly instead.
