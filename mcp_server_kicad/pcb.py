@@ -3152,11 +3152,16 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
 
     pcbnew's ExportSpecctraDSN does not export keepout zones defined inside
     a footprint, so the autorouter would never see them. This parses
-    *pcb_path*, appends one board-level zone per footprint keepout polygon
-    with its points transformed into board coordinates, and writes the
+    *pcb_path*, appends one board-level zone per footprint keepout zone with
+    every polygon's points transformed into board coordinates, and writes the
     result to *output_path*. The source board is never modified.
 
-    Returns the number of polygons promoted. At zero, *output_path* is not
+    A zone's polygons stay together. KiCad's zone parser makes the first one
+    the outline and every later one a hole in it, so promoting each polygon as
+    a zone of its own turned a cutout into a keepout over exactly the area it
+    was cut out to free. A zone with no polygon at all is skipped.
+
+    Returns the number of zones promoted. At zero, *output_path* is not
     written and the caller feeds the original board to the DSN export.
     """
     tree = _cst.parse(_read_kicad_bytes(pcb_path, "board"))
@@ -3171,25 +3176,21 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
         fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
 
         for source_zone in fp.find_all("zone"):
-            if source_zone.find("keepout") is None:
+            if source_zone.find("keepout") is None or source_zone.find("polygon") is None:
                 continue
-            for index in range(len(source_zone.find_all("polygon"))):
-                # One board zone per polygon, as the kiutils twin produced.
-                zone = source_zone.copy()
-                polygons = zone.find_all("polygon")
-                for other in polygons[:index] + polygons[index + 1 :]:
-                    zone.remove_child(other)
-                for xy in polygons[index].find("pts").find_all("xy"):
+            zone = source_zone.copy()
+            for polygon in zone.find_all("polygon"):
+                for xy in polygon.find("pts").find_all("xy"):
                     bx, by = _transform_local_to_board(fp_x, fp_y, fp_angle, *_xy(xy))
                     xy.atoms[1].set_text(_num(round(bx, 6)))
                     xy.atoms[2].set_text(_num(round(by, 6)))
-                _replace_child(zone, _HATCH_TPL.copy())
-                fresh_uuid = _UUID_TPL.copy()
-                fresh_uuid.atoms[1].set_text(_gen_uuid())
-                _replace_child(zone, fresh_uuid)
-                _set_promoted_zone_net(zone, root)
-                _splice_pcb_zone(root, zone)
-                count += 1
+            _replace_child(zone, _HATCH_TPL.copy())
+            fresh_uuid = _UUID_TPL.copy()
+            fresh_uuid.atoms[1].set_text(_gen_uuid())
+            _replace_child(zone, fresh_uuid)
+            _set_promoted_zone_net(zone, root)
+            _splice_pcb_zone(root, zone)
+            count += 1
 
     if count > 0:
         try:

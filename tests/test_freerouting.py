@@ -401,8 +401,15 @@ class TestRunFreerouting:
 # ---------------------------------------------------------------------------
 
 
-def _make_board_with_fp_keepout(tmp_path, fp_angle=0, fp_layer="F.Cu", fp_x=100, fp_y=100):
-    """Create a minimal board with one footprint containing a keepout zone."""
+def _make_board_with_fp_keepout(
+    tmp_path, fp_angle=0, fp_layer="F.Cu", fp_x=100, fp_y=100, holes=()
+):
+    """Create a minimal board with one footprint containing a keepout zone.
+
+    The zone's outline is the local square (0, 0)-(10, 10). Each entry in
+    *holes* is a list of local (x, y) points, written as a further polygon of
+    the same zone, which KiCad reads as a hole in the outline.
+    """
     board = Board.create_new()
     board.nets = [Net(number=0, name="")]
 
@@ -433,6 +440,10 @@ def _make_board_with_fp_keepout(tmp_path, fp_angle=0, fp_layer="F.Cu", fp_x=100,
         Position(X=0, Y=10),
     ]
     keepout_zone.polygons = [poly]
+    for hole in holes:
+        cutout = ZonePolygon()
+        cutout.coordinates = [Position(X=x, Y=y) for x, y in hole]
+        keepout_zone.polygons.append(cutout)
     fp.zones = [keepout_zone]
 
     board.footprints = [fp]
@@ -521,63 +532,36 @@ class TestPromoteFootprintKeepouts:
         assert ys[2] == pytest.approx(90.0, abs=0.01)
 
     def test_multiple_polygons(self, tmp_path):
-        """Zone with 2 polygons produces count=2 and 2 board-level keepout zones."""
-        board = Board.create_new()
-        board.nets = [Net(number=0, name="")]
+        """A zone's later polygons are holes in its first, so it stays one zone.
 
-        fp = Footprint()
-        fp.entryName = "TestPkg:Multi"
-        fp.layer = "F.Cu"
-        fp.position = Position(X=0, Y=0, angle=0)
-        fp.reference = Property(key="Reference", value="U2")
-        fp.value = Property(key="Value", value="Multi")
-
-        keepout_zone = Zone()
-        keepout_zone.net = 0
-        keepout_zone.netName = ""
-        keepout_zone.layers = ["F.Cu"]
-        keepout_zone.hatch = Hatch(style="edge", pitch=0.5)
-        keepout_zone.keepoutSettings = KeepoutSettings(
-            tracks="not_allowed",
-            vias="not_allowed",
-            pads="not_allowed",
-            copperpour="not_allowed",
-            footprints="not_allowed",
+        KiCad's zone parser makes the first polygon the outline and every later
+        one a hole in it. Promoted one polygon per zone, the hole came out as a
+        keepout of its own, covering the very area the cutout exists to free.
+        Off the origin, so an untransformed hole would show.
+        """
+        pcb_path = _make_board_with_fp_keepout(
+            tmp_path, fp_x=100, fp_y=50, holes=[[(2, 2), (4, 2), (4, 4), (2, 4)]]
         )
-        poly1 = ZonePolygon()
-        poly1.coordinates = [
-            Position(X=0, Y=0),
-            Position(X=10, Y=0),
-            Position(X=10, Y=10),
-            Position(X=0, Y=10),
-        ]
-        poly2 = ZonePolygon()
-        poly2.coordinates = [
-            Position(X=20, Y=20),
-            Position(X=30, Y=20),
-            Position(X=30, Y=30),
-        ]
-        keepout_zone.polygons = [poly1, poly2]
-        fp.zones = [keepout_zone]
-        board.footprints = [fp]
-        pcb_path = str(tmp_path / "multi.kicad_pcb")
-        board.filePath = pcb_path
-        board.to_file()
         out_path = str(tmp_path / "out.kicad_pcb")
 
         count = _promote_footprint_keepouts(pcb_path, out_path)
 
-        assert count == 2
+        assert count == 1
         out_board = Board.from_file(out_path)
-        assert len(out_board.zones) == 2
-        # First polygon: (0,0) fp-local -> (0,0) board
-        first_coords = out_board.zones[0].polygons[0].coordinates
-        assert round(first_coords[0].X, 3) == 0.0
-        assert round(first_coords[0].Y, 3) == 0.0
-        # Second polygon: (20,20) fp-local -> (20,20) board
-        second_coords = out_board.zones[1].polygons[0].coordinates
-        assert round(second_coords[0].X, 3) == 20.0
-        assert round(second_coords[0].Y, 3) == 20.0
+        assert len(out_board.zones) == 1
+        outline, hole = out_board.zones[0].polygons
+        assert [(round(c.X, 3), round(c.Y, 3)) for c in outline.coordinates] == [
+            (100, 50),
+            (110, 50),
+            (110, 60),
+            (100, 60),
+        ]
+        assert [(round(c.X, 3), round(c.Y, 3)) for c in hole.coordinates] == [
+            (102, 52),
+            (104, 52),
+            (104, 54),
+            (102, 54),
+        ]
 
     def test_back_side_footprint_keepout(self, tmp_path):
         """FP on B.Cu; local coordinates are used as stored, with no mirroring.
@@ -706,15 +690,23 @@ class TestPromoteFootprintKeepouts:
             _promote_footprint_keepouts(pcb_path, out_path)
 
     @requires_cli
-    def test_kicad_accepts_the_promoted_board(self, tmp_path):
+    @pytest.mark.parametrize(
+        "holes", [(), [[(2, 2), (4, 2), (4, 4), (2, 4)]]], ids=["plain", "cutout"]
+    )
+    def test_kicad_accepts_the_promoted_board(self, tmp_path, holes):
         """The live oracle for the promoted zone: KiCad itself loads the file
         and runs DRC on it, on whichever major the runner has installed. The
         promoted board's only real consumer is pcbnew, so our own parser
-        reading it back proves nothing."""
-        pcb_path = _make_board_with_fp_keepout(tmp_path, fp_angle=45, fp_x=100, fp_y=100)
+        reading it back proves nothing. The cutout case reaches KiCad as one
+        zone carrying both polygons."""
+        pcb_path = _make_board_with_fp_keepout(
+            tmp_path, fp_angle=45, fp_x=100, fp_y=100, holes=holes
+        )
         out_path = str(tmp_path / "out.kicad_pcb")
 
         assert _promote_footprint_keepouts(pcb_path, out_path) == 1
+        zone = _cst.parse(Path(out_path).read_bytes()).lists[0].find("zone")
+        assert len(zone.find_all("polygon")) == 1 + len(holes)
 
         result = run_drc(pcb_path=out_path, output_dir=str(tmp_path))
         assert result.violation_count >= 0
