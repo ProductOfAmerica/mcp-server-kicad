@@ -40,16 +40,25 @@ class TestCheckJava:
             stdout="",
             stderr='openjdk version "21.0.1" 2023-10-17',
         )
-        with patch("subprocess.run", return_value=mock_result):
-            result = check_java()
+        with patch("subprocess.run", return_value=mock_result) as run:
+            result = check_java(java="/fake/java")
             assert result is None
+        # The binary the caller resolved, never a bare name to be searched for.
+        assert run.call_args.args[0][0] == "/fake/java"
 
     def test_java_not_found(self):
         with patch("subprocess.run", side_effect=FileNotFoundError):
-            result = check_java()
+            result = check_java(java="/fake/java")
             assert result is not None
             assert "Java" in result
             assert "apt install" in result
+
+    def test_no_java_on_path_is_reported_without_spawning(self):
+        """None is what the PATH lookup hands over when there is no java at all."""
+        with patch("subprocess.run") as run:
+            result = check_java(java=None)
+        assert result is not None and "Java runtime not found" in result
+        run.assert_not_called()
 
     def test_java_too_old(self):
         mock_result = subprocess.CompletedProcess(
@@ -59,7 +68,7 @@ class TestCheckJava:
             stderr='openjdk version "11.0.2" 2019-01-15',
         )
         with patch("subprocess.run", return_value=mock_result):
-            result = check_java()
+            result = check_java(java="/fake/java")
             assert result is not None
             assert "17" in result
 
@@ -141,11 +150,34 @@ class TestFindPcbnewPython:
         yield
         _fr_module._pcbnew_cache = None
 
-    def test_direct_import_works(self):
+    def test_direct_import_works(self, monkeypatch):
+        monkeypatch.delenv("KICAD_PYTHON", raising=False)
         mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch("subprocess.run", return_value=mock_result):
+        with (
+            patch("mcp_server_kicad._freerouting._kicad_python_candidates", return_value=[]),
+            patch("mcp_server_kicad._freerouting._find_on_path", return_value="/abs/python3"),
+            patch("subprocess.run", return_value=mock_result),
+        ):
             python, env = find_pcbnew_python()
-            assert python is not None
+            assert python == "/abs/python3"
+
+    def test_every_candidate_is_launched_by_absolute_path(self, tmp_path, monkeypatch):
+        """A bare "python3" is searched for in the working directory first on Windows."""
+        on_path = tmp_path / ("python3.exe" if os.name == "nt" else "python3")
+        on_path.write_text("")
+        on_path.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.delenv("KICAD_PYTHON", raising=False)
+        launched = []
+
+        def fail(args, **kwargs):
+            launched.append(args[0])
+            return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fail):
+            assert find_pcbnew_python() == (None, None)
+        assert str(on_path) in launched
+        assert all(os.path.isabs(p) for p in launched), launched
 
     def test_no_pcbnew_available(self):
         with patch("subprocess.run", side_effect=Exception("fail")):
@@ -322,13 +354,16 @@ class TestRunFreerouting:
         mock_result = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="Route complete", stderr=""
         )
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("subprocess.run", return_value=mock_result) as run:
             err = run_freerouting(
                 jar_path="/fake/freerouting.jar",
                 dsn_path=str(dsn),
                 ses_path=str(ses),
+                java="/fake/java",
             )
             assert err is None
+        # The same binary check_java approved, not "java" searched for afresh.
+        assert run.call_args.args[0][0] == "/fake/java"
 
     def test_timeout(self, tmp_path):
         dsn = tmp_path / "board.dsn"
@@ -342,6 +377,7 @@ class TestRunFreerouting:
                 dsn_path=str(dsn),
                 ses_path=str(tmp_path / "board.ses"),
                 timeout=600,
+                java="/fake/java",
             )
             assert err is not None
             assert "timeout" in err.lower() or "timed out" in err.lower()
@@ -355,6 +391,7 @@ class TestRunFreerouting:
                 jar_path="/fake/freerouting.jar",
                 dsn_path=str(dsn),
                 ses_path=str(tmp_path / "board.ses"),
+                java="/fake/java",
             )
             assert err is not None
 
@@ -774,7 +811,7 @@ class TestCheckJavaAgainstTheJar:
     def test_java17_is_refused_for_a_java25_jar(self, tmp_path):
         jar = TestJarJavaRequirement._jar(tmp_path, 69)
         with self._java("17.0.9"):
-            msg = check_java(jar)
+            msg = check_java(jar, java="/fake/java")
         assert msg and "17" in msg and "25" in msg
         # The remedy must not be Debian-only; this server ships on three OSes.
         assert "adoptium" in msg
@@ -782,16 +819,16 @@ class TestCheckJavaAgainstTheJar:
     def test_java25_passes_the_same_jar(self, tmp_path):
         jar = TestJarJavaRequirement._jar(tmp_path, 69)
         with self._java("25.0.1"):
-            assert check_java(jar) is None
+            assert check_java(jar, java="/fake/java") is None
 
     def test_no_jar_falls_back_to_the_floor(self):
         with self._java("17.0.9"):
-            assert check_java() is None
+            assert check_java(java="/fake/java") is None
         with self._java("11.0.2"):
-            assert check_java() is not None
+            assert check_java(java="/fake/java") is not None
 
     def test_a_wedged_java_is_reported_not_raised(self):
         """TimeoutExpired was uncaught, so it propagated as a raw exception."""
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("java", 10)):
-            msg = check_java()
+            msg = check_java(java="/fake/java")
         assert msg and "did not answer" in msg

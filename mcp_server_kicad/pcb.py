@@ -65,6 +65,7 @@ from mcp_server_kicad._shared import (
     _courtyard_bbox_cst,
     _ensure_dir,
     _file_meta,
+    _find_on_path,
     _gen_uuid,
     _keepout_dict,
     _kicad_cli_major,
@@ -3305,10 +3306,13 @@ def autoroute_pcb(
             " freerouting.jar, or allow the automatic download."
         )
 
-    # Pre-flight: a Java new enough for that JAR specifically.
-    java_err = _check_java(jar_path)
-    if java_err:
-        raise ToolError(java_err)
+    # Pre-flight: a Java new enough for that JAR specifically. Looked up once,
+    # here, and the same path goes to the router, so the java that was checked
+    # is the java that runs.
+    java = _find_on_path("java")
+    java_err = _check_java(jar_path, java=java)
+    if java_err or not java:
+        raise ToolError(java_err or "Java runtime not found.")
 
     # Count existing traces/vias for before/after comparison
     traces_before, vias_before, board_version = _trace_counts(pcb_path)
@@ -3361,6 +3365,7 @@ def autoroute_pcb(
             max_passes=max_passes,
             num_threads=num_threads,
             timeout=timeout,
+            java=java,
         )
         if route_err:
             raise ToolError(route_err)

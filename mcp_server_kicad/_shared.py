@@ -729,6 +729,30 @@ _KICAD_WIN_DIRS = (r"C:\Program Files\KiCad",) + (
 )
 
 
+def _find_on_path(name: str) -> str | None:
+    """Absolute path of the program *name* on PATH, or None.
+
+    The one way this package looks a program up by name, in place of
+    ``shutil.which`` and of handing a bare name to subprocess. Both of those
+    search the current directory before PATH on Windows, and an empty or
+    relative PATH entry means the current directory on every platform, so a
+    kicad-cli, java or python3 left in whatever directory the host started the
+    server in would run instead of the real one. Only absolute entries are
+    searched here.
+
+    On Windows only ``<name>.exe`` matches. PATHEXT would also let a .com, .bat
+    or .cmd answer for the name, and the last two run through cmd.exe.
+    """
+    exe = name + ".exe" if os.name == "nt" else name
+    for entry in os.environ.get("PATH", os.defpath).split(os.pathsep):
+        if not os.path.isabs(entry):
+            continue
+        candidate = os.path.join(entry, exe)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 @lru_cache(maxsize=1)
 def _find_kicad_cli() -> str | None:
     """Absolute path to kicad-cli: KICAD_CLI_PATH, PATH, macOS bundle, Windows install.
@@ -736,10 +760,15 @@ def _find_kicad_cli() -> str | None:
     Resolved, not raw.  KiCad finds its stock symbol and footprint libraries at
     ``<exe_dir>/../SharedSupport``, so reaching it through a symlink on PATH
     makes DRC/ERC report bogus "library not found" violations while otherwise
-    appearing to work.  ``shutil.which`` can also return a relative path: on
-    Windows it searches the current directory before PATH.
+    appearing to work.
+
+    Nothing here is relative to the working directory. PATH goes through
+    _find_on_path, and a relative KICAD_CLI_PATH is ignored rather than
+    resolved, because resolving it would anchor it to whichever directory the
+    server happened to start in.
     """
-    found = os.environ.get("KICAD_CLI_PATH") or shutil.which("kicad-cli")
+    override = os.environ.get("KICAD_CLI_PATH", "")
+    found = override if os.path.isabs(override) else _find_on_path("kicad-cli")
     if not found and os.path.isfile(_KICAD_APP):
         found = _KICAD_APP
     if not found:
