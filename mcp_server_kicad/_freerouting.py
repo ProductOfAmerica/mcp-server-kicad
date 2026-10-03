@@ -11,7 +11,7 @@ import zipfile
 from pathlib import Path
 from urllib.request import Request, urlopen
 
-from mcp_server_kicad._shared import _atomic_write, _kicad_root, _run_pcbnew
+from mcp_server_kicad._shared import _atomic_write, _find_on_path, _kicad_root, _run_pcbnew
 
 _GITHUB_RELEASES_URL = "https://api.github.com/repos/freerouting/freerouting/releases/latest"
 
@@ -32,6 +32,15 @@ _JAVA_FLOOR = 17
 #: Class file major 45 is Java 1.1, and it has incremented by one per release
 #: since, so Java N is 44 + N. Java 17 is 61, Java 25 is 69.
 _CLASS_MAJOR_BASE = 44
+
+#: Leads every inline script handed to a child interpreter, ahead of any import.
+#: ``python -c`` puts "" (the current directory) first on sys.path, and these
+#: children inherit the server's working directory, so a pcbnew.py or wx.py
+#: there would be imported in place of KiCad's own. sys is built in, so
+#: importing it searches nothing. Not -P or PYTHONSAFEPATH, which arrived in
+#: Python 3.11 while KiCad 10's macOS bundle ships 3.9; and not -I, which also
+#: drops PYTHONPATH, the thing the fallback in find_pcbnew_python sets.
+_NO_CWD_IMPORTS = "import sys; sys.path[:] = [p for p in sys.path if p]; "
 
 
 def jar_java_requirement(jar_path: str) -> int | None:
@@ -69,8 +78,14 @@ def jar_java_requirement(jar_path: str) -> int | None:
     return max(majors) - _CLASS_MAJOR_BASE
 
 
-def check_java(jar_path: str | None = None) -> str | None:
-    """Check the running Java is new enough for *jar_path*. Message, or None.
+def check_java(jar_path: str | None = None, *, java: str | None) -> str | None:
+    """Check the Java at *java* is new enough for *jar_path*. Message, or None.
+
+    *java* is the absolute path the caller looked up once and hands to
+    run_freerouting as well, so the binary checked here is the binary that
+    routes. None means the lookup found no java at all. Keyword-only, so a call
+    written against the old signature fails loudly instead of passing the jar
+    off as the binary.
 
     The requirement comes from the jar when one is given and readable, and from
     _JAVA_FLOOR otherwise.
@@ -80,15 +95,19 @@ def check_java(jar_path: str | None = None) -> str | None:
         "Install a JRE of at least that version: "
         "https://adoptium.net, `brew install openjdk`, or `apt install default-jre`."
     )
+    missing = f"Java runtime not found. Autorouting needs Java {needed}+. {how}"
+    if java is None:
+        return missing
     try:
         result = subprocess.run(
-            ["java", "-version"],
+            [java, "-version"],
             capture_output=True,
             text=True,
             timeout=10,
         )
     except FileNotFoundError:
-        return f"Java runtime not found. Autorouting needs Java {needed}+. {how}"
+        # Gone between the lookup and the launch.
+        return missing
     except subprocess.TimeoutExpired:
         # Uncaught until 2026-08-14, so a wedged java propagated a raw exception.
         return f"`java -version` did not answer within 10s. Autorouting needs Java {needed}+."
@@ -178,7 +197,7 @@ def ensure_jar() -> tuple[str | None, str | None]:
 def _kicad_python_candidates() -> list[str]:
     """KiCad's own interpreter, which imports pcbnew directly without PYTHONPATH.
 
-    On Windows this is the only one that works out of the box: bare "python3"
+    On Windows this is the only one that works out of the box: python3 on PATH
     resolves to the Microsoft Store alias in WindowsApps.
     """
     root = _kicad_root()
@@ -215,10 +234,14 @@ def wx_app_prelude() -> str:
     Single-sourced through _netlist_import so the call sites cannot drift.
     That module imports only the standard library, so KiCad's interpreter can
     load it, and it is already on disk next to this one.
+
+    It opens with _NO_CWD_IMPORTS. Inserting the package directory alone left
+    the working directory one slot behind it, still ahead of everything the
+    interpreter ships with.
     """
     pkg_dir = str(Path(__file__).parent)
     return (
-        f"import sys; sys.path.insert(0, {pkg_dir!r}); "
+        _NO_CWD_IMPORTS + f"sys.path.insert(0, {pkg_dir!r}); "
         "import _netlist_import as _ni; _ni._ensure_wx_app(); "
     )
 
@@ -244,7 +267,7 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
     if kicad_python:
         try:
             result = subprocess.run(
-                [kicad_python, "-c", "import pcbnew"],
+                [kicad_python, "-c", _NO_CWD_IMPORTS + "import pcbnew"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -256,11 +279,16 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
         except Exception:
             pass
 
-    # Try multiple python binaries — when running inside a uvx/venv environment,
-    # "python3" may resolve to the venv python which can't import pcbnew.
-    # System python (e.g. /usr/bin/python3) typically can, and KiCad's own
-    # bundled interpreter always can, so it goes first.
-    python_candidates = _kicad_python_candidates() + ["python3"]
+    # Try several interpreters. Inside a uvx or venv environment, python3 on
+    # PATH may be the venv's, which cannot import pcbnew. System python (e.g.
+    # /usr/bin/python3) typically can, and KiCad's own bundled interpreter
+    # always can, so it goes first. python3 goes through _find_on_path: handed
+    # to subprocess by bare name, it was searched for in the working directory
+    # before PATH on Windows.
+    python_candidates = _kicad_python_candidates()
+    on_path = _find_on_path("python3")
+    if on_path:
+        python_candidates.append(on_path)
     sys_python = "/usr/bin/python3"
     if Path(sys_python).is_file() and sys_python not in python_candidates:
         python_candidates.append(sys_python)
@@ -268,7 +296,7 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
     for py in python_candidates:
         try:
             result = subprocess.run(
-                [py, "-c", "import pcbnew"],
+                [py, "-c", _NO_CWD_IMPORTS + "import pcbnew"],
                 capture_output=True,
                 text=True,
                 timeout=10,
@@ -287,7 +315,7 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
             path_env = {**(env or os.environ), "PYTHONPATH": path}
             try:
                 result = subprocess.run(
-                    [py, "-c", "import pcbnew"],
+                    [py, "-c", _NO_CWD_IMPORTS + "import pcbnew"],
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -320,7 +348,7 @@ def pcbnew_major() -> int | None:
     if python:
         try:
             result = subprocess.run(
-                [python, "-c", "import pcbnew; print(pcbnew.Version())"],
+                [python, "-c", _NO_CWD_IMPORTS + "import pcbnew; print(pcbnew.Version())"],
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -400,13 +428,17 @@ def run_freerouting(
     max_passes: int = 20,
     num_threads: int = 1,
     timeout: int = 600,
+    *,
+    java: str,
 ) -> str | None:
     """Run Freerouting autorouter on a DSN file.
+
+    *java* is the binary check_java approved, by absolute path.
 
     Returns error message or None on success.
     """
     cmd = [
-        "java",
+        java,
         "-jar",
         jar_path,
         "-de",

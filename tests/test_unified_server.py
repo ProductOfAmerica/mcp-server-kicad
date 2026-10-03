@@ -60,8 +60,8 @@ class TestUnifiedServer:
         assert offenders == [], f"kiutils imported by {offenders}; it is in the dev extra only"
 
     def test_every_write_goes_through_atomic_write(self):
-        """The only write_bytes/write_text in the package is the temp file
-        inside _atomic_write.
+        """There is no write_bytes/write_text anywhere in the package, not even
+        for _atomic_write's own temp, which it creates with an exclusive open.
 
         A plain write opens with O_TRUNC, so a failure part way through leaves
         the user's file truncated, which the invariant at the top of
@@ -78,7 +78,7 @@ class TestUnifiedServer:
         offenders = []
         for p in sorted(src.glob("*.py")):
             for n, line in enumerate(p.read_text(encoding="utf-8").splitlines(), 1):
-                if re.search(r"\.write_(bytes|text)\(", line) and "not a user file" not in line:
+                if re.search(r"\.write_(bytes|text)\(", line):
                     offenders.append(f"{p.name}:{n}: {line.strip()}")
         assert offenders == [], (
             "write directly to disk; use _shared._atomic_write so a failed write"
@@ -111,7 +111,11 @@ class TestUnifiedServer:
                 if not pattern.search(line) or "encoding=" in line:
                     continue
                 # Bytes mode has no encoding to name, which is the CST's whole path.
+                # "xb" is _atomic_write's exclusive create. "wb" stays flagged on
+                # purpose: it truncates, and every write belongs in _atomic_write.
                 if ".read_bytes(" in line or ".write_bytes(" in line or '"rb"' in line:
+                    continue
+                if '"xb"' in line:
                     continue
                 offenders.append(f"{p.name}:{n}: {line.strip()}")
         assert offenders == [], (

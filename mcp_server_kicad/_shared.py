@@ -3,7 +3,9 @@
 import math
 import os
 import shutil
+import stat
 import subprocess
+import sys
 import tempfile
 import time
 import uuid
@@ -298,6 +300,51 @@ def _read_kicad_bytes(path: str | Path, kind: str) -> bytes:
     return _require_kicad_path(path, kind).read_bytes()
 
 
+def _require_plain_tree(root: Path, kind: str) -> None:
+    """Refuse a library directory holding anything but files and directories.
+
+    A footprint library is copied twice before kicad-cli sees it, once for the
+    ``.bak`` and once for the scratch copy, and both are ``shutil.copytree``,
+    which follows links. A link to a device copies until the disk is full, and
+    a link out of the library carries whatever it points at into the ``.bak``
+    beside the library. Rather than judge which links are harmless, this walks
+    the tree first, follows nothing, and refuses any link, or anything that is
+    neither a regular file nor a directory, by name.
+
+    The root itself must be a directory and not a link to one. A junction is a
+    link too: Windows reports one as a plain directory unless its reparse tag
+    is read, which is how ``shutil.rmtree`` tells them apart as well.
+    """
+
+    def odd(st: os.stat_result) -> str | None:
+        junction = sys.platform == "win32" and st.st_reparse_tag == stat.IO_REPARSE_TAG_MOUNT_POINT
+        if stat.S_ISLNK(st.st_mode) or junction:
+            return "a link"
+        if not (stat.S_ISREG(st.st_mode) or stat.S_ISDIR(st.st_mode)):
+            return "neither a regular file nor a directory"
+        return None
+
+    why = (
+        "The upgrade copies the whole library first and will not follow a link or"
+        " read a special file, so nothing was written."
+    )
+    st = os.lstat(root)
+    what = odd(st) or (None if stat.S_ISDIR(st.st_mode) else "not a directory")
+    if what:
+        raise ToolError(f"The {kind} {root} is {what}. {why}")
+    pending = [root]
+    while pending:
+        with os.scandir(pending.pop()) as entries:
+            for entry in entries:
+                st = entry.stat(follow_symlinks=False)
+                what = odd(st)
+                if what:
+                    rel = Path(entry.path).relative_to(root)
+                    raise ToolError(f"The {kind} {root} contains {rel}, which is {what}. {why}")
+                if stat.S_ISDIR(st.st_mode):
+                    pending.append(Path(entry.path))
+
+
 def _backup_for_external_write(path: str | Path, kind: str) -> Path:
     """Copy *path* to a sibling ``.bak`` before an external process rewrites it.
 
@@ -318,29 +365,52 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
     A failure to back up refuses the operation. Proceeding without one is the
     thing this exists to prevent, and whatever stopped the copy (a full disk, a
     read-only parent) would very likely have made the rewrite worse.
+
+    A library directory goes through _require_plain_tree before anything is
+    copied, and a copy that fails part way is removed rather than left beside
+    the library, where nothing would ever come back for it.
     """
     src = Path(path)
     dest = src.with_name(src.name + ".bak")
     try:
         if src.is_dir():
+            _require_plain_tree(src, kind)
             # A .pretty is a directory of .kicad_mod files, and os.replace will
             # not put one over an existing directory: ENOTEMPTY on POSIX, and
             # MoveFileEx refuses outright on Windows. So the old backup has to
             # be moved out of the way rather than replaced in place.
             staging = src.with_name(src.name + f".bak.{os.getpid()}.tmp")
             retired = src.with_name(src.name + f".bak.{os.getpid()}.old")
+            # A retired copy with no .bak beside it is a previous refresh that
+            # failed and could not put the old backup back either. It is then
+            # the newest backup there is, so it is recovered, not cleared away.
+            # Beside an existing .bak it is older than that and is cleared.
+            if retired.exists() and not dest.exists():
+                os.replace(retired, dest)
             for leftover in (staging, retired):
                 if leftover.exists():
                     shutil.rmtree(leftover)
-            shutil.copytree(src, staging)
-            # Retire the old backup rather than deleting it first. Deleting it
-            # first left a window in which NO backup existed at all: the copy
-            # was complete and safe, but a crash between the delete and the
-            # rename took the previous good one with it.
             had_old = dest.exists()
-            if had_old:
-                os.replace(dest, retired)
-            os.replace(staging, dest)
+            try:
+                shutil.copytree(src, staging)
+                # Retire the old backup rather than deleting it first. Deleting
+                # it first left a window in which NO backup existed at all: the
+                # copy was complete and safe, but a crash between the delete and
+                # the rename took the previous good one with it.
+                if had_old:
+                    os.replace(dest, retired)
+                os.replace(staging, dest)
+            except BaseException:
+                shutil.rmtree(staging, ignore_errors=True)
+                if retired.exists() and not dest.exists():
+                    # Back to the name the last result gave. If this fails as
+                    # well, the original error is the one worth reporting, and
+                    # the check at the top recovers it on this process's next run.
+                    try:
+                        os.replace(retired, dest)
+                    except OSError:
+                        pass
+                raise
             if had_old:
                 shutil.rmtree(retired, ignore_errors=True)
         else:
@@ -388,8 +458,13 @@ def _upgrade_out_of_place(path: str | Path, kind: str, argv: list[str]) -> list[
     Per-file atomicity, not library-level. A crash midway through a .pretty
     leaves some footprints upgraded and some not, with no file torn. That is
     the same boundary the ADR already draws for fan-out writes.
+
+    A library directory goes through _require_plain_tree before it is copied,
+    for the reason given there.
     """
     src = Path(path)
+    if src.is_dir():
+        _require_plain_tree(src, kind)
     # ponytail: a .pretty is now copied twice per upgrade, once for the .bak and
     # once for the scratch. fp upgrade is a rare, explicitly destructive call;
     # measure before caring.
@@ -482,13 +557,23 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
     p = Path(path)
     # Suffix after the whole name, never before the extension: a stray
     # ``foo.tmp.kicad_sch`` would be picked up by the project auto-detect scan
-    # and by the test suite's rglob, ``foo.kicad_sch.1234.tmp`` by neither.
-    tmp = p.with_name(f"{p.name}.{os.getpid()}.tmp")
+    # and by the test suite's rglob, ``foo.kicad_sch.1234.ab12cd34.tmp`` by
+    # neither. The random part is what keeps two writers of one file in one
+    # process apart; with the pid alone they shared a temp.
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    # Exclusive, and before the try: a create that fails, or finds the name
+    # taken, has made nothing of this call's, and the cleanup below would
+    # otherwise delete a file this call did not create.
+    f = open(tmp, "xb")
     try:
-        tmp.write_bytes(data)  # not a user file
-        if p.exists():
-            # Otherwise a group-writable file comes back 0644. No-op on Windows.
-            shutil.copymode(p, tmp)
+        with f:
+            if os.name != "nt" and p.exists():
+                # Otherwise a group-writable file comes back 0644. Set through
+                # the descriptor, so it lands on the file this call created.
+                # Windows is left alone: its only mode is read-only, and a
+                # read-only temp is one Windows then refuses to delete.
+                os.fchmod(f.fileno(), stat.S_IMODE(p.stat().st_mode))
+            f.write(data)
         for delay in _REPLACE_RETRY_DELAYS:
             try:
                 os.replace(tmp, p)
@@ -508,16 +593,7 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
     except BaseException:
         # BaseException, not Exception: a KeyboardInterrupt mid-write would
         # otherwise leave the temp behind.
-        try:
-            tmp.unlink(missing_ok=True)
-        except PermissionError:
-            # copymode above put the destination's mode on the temp, so a
-            # read-only destination makes a read-only temp that Windows then
-            # refuses to unlink. Without this the cleanup raises over the top of
-            # the real failure, with a message naming the temp path, which is
-            # the one thing this function's own comment says never to do.
-            tmp.chmod(0o600)
-            tmp.unlink(missing_ok=True)
+        tmp.unlink(missing_ok=True)
         raise
 
 
@@ -740,6 +816,30 @@ _KICAD_WIN_DIRS = (r"C:\Program Files\KiCad",) + (
 )
 
 
+def _find_on_path(name: str) -> str | None:
+    """Absolute path of the program *name* on PATH, or None.
+
+    The one way this package looks a program up by name, in place of
+    ``shutil.which`` and of handing a bare name to subprocess. Both of those
+    search the current directory before PATH on Windows, and an empty or
+    relative PATH entry means the current directory on every platform, so a
+    kicad-cli, java or python3 left in whatever directory the host started the
+    server in would run instead of the real one. Only absolute entries are
+    searched here.
+
+    On Windows only ``<name>.exe`` matches. PATHEXT would also let a .com, .bat
+    or .cmd answer for the name, and the last two run through cmd.exe.
+    """
+    exe = name + ".exe" if os.name == "nt" else name
+    for entry in os.environ.get("PATH", os.defpath).split(os.pathsep):
+        if not os.path.isabs(entry):
+            continue
+        candidate = os.path.join(entry, exe)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 @lru_cache(maxsize=1)
 def _find_kicad_cli() -> str | None:
     """Absolute path to kicad-cli: KICAD_CLI_PATH, PATH, macOS bundle, Windows install.
@@ -747,10 +847,15 @@ def _find_kicad_cli() -> str | None:
     Resolved, not raw.  KiCad finds its stock symbol and footprint libraries at
     ``<exe_dir>/../SharedSupport``, so reaching it through a symlink on PATH
     makes DRC/ERC report bogus "library not found" violations while otherwise
-    appearing to work.  ``shutil.which`` can also return a relative path: on
-    Windows it searches the current directory before PATH.
+    appearing to work.
+
+    Nothing here is relative to the working directory. PATH goes through
+    _find_on_path, and a relative KICAD_CLI_PATH is ignored rather than
+    resolved, because resolving it would anchor it to whichever directory the
+    server happened to start in.
     """
-    found = os.environ.get("KICAD_CLI_PATH") or shutil.which("kicad-cli")
+    override = os.environ.get("KICAD_CLI_PATH", "")
+    found = override if os.path.isabs(override) else _find_on_path("kicad-cli")
     if not found and os.path.isfile(_KICAD_APP):
         found = _KICAD_APP
     if not found:

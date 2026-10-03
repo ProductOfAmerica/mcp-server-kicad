@@ -2,6 +2,7 @@
 
 import os
 import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -25,6 +26,7 @@ from mcp_server_kicad._freerouting import (
     jar_java_requirement,
     pcbnew_major,
     run_freerouting,
+    wx_app_prelude,
 )
 from mcp_server_kicad._shared import _keepout_dict, _xy
 from mcp_server_kicad.pcb import _promote_footprint_keepouts, run_drc
@@ -38,16 +40,25 @@ class TestCheckJava:
             stdout="",
             stderr='openjdk version "21.0.1" 2023-10-17',
         )
-        with patch("subprocess.run", return_value=mock_result):
-            result = check_java()
+        with patch("subprocess.run", return_value=mock_result) as run:
+            result = check_java(java="/fake/java")
             assert result is None
+        # The binary the caller resolved, never a bare name to be searched for.
+        assert run.call_args.args[0][0] == "/fake/java"
 
     def test_java_not_found(self):
         with patch("subprocess.run", side_effect=FileNotFoundError):
-            result = check_java()
+            result = check_java(java="/fake/java")
             assert result is not None
             assert "Java" in result
             assert "apt install" in result
+
+    def test_no_java_on_path_is_reported_without_spawning(self):
+        """None is what the PATH lookup hands over when there is no java at all."""
+        with patch("subprocess.run") as run:
+            result = check_java(java=None)
+        assert result is not None and "Java runtime not found" in result
+        run.assert_not_called()
 
     def test_java_too_old(self):
         mock_result = subprocess.CompletedProcess(
@@ -57,7 +68,7 @@ class TestCheckJava:
             stderr='openjdk version "11.0.2" 2019-01-15',
         )
         with patch("subprocess.run", return_value=mock_result):
-            result = check_java()
+            result = check_java(java="/fake/java")
             assert result is not None
             assert "17" in result
 
@@ -139,11 +150,34 @@ class TestFindPcbnewPython:
         yield
         _fr_module._pcbnew_cache = None
 
-    def test_direct_import_works(self):
+    def test_direct_import_works(self, monkeypatch):
+        monkeypatch.delenv("KICAD_PYTHON", raising=False)
         mock_result = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
-        with patch("subprocess.run", return_value=mock_result):
+        with (
+            patch("mcp_server_kicad._freerouting._kicad_python_candidates", return_value=[]),
+            patch("mcp_server_kicad._freerouting._find_on_path", return_value="/abs/python3"),
+            patch("subprocess.run", return_value=mock_result),
+        ):
             python, env = find_pcbnew_python()
-            assert python is not None
+            assert python == "/abs/python3"
+
+    def test_every_candidate_is_launched_by_absolute_path(self, tmp_path, monkeypatch):
+        """A bare "python3" is searched for in the working directory first on Windows."""
+        on_path = tmp_path / ("python3.exe" if os.name == "nt" else "python3")
+        on_path.write_text("")
+        on_path.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.delenv("KICAD_PYTHON", raising=False)
+        launched = []
+
+        def fail(args, **kwargs):
+            launched.append(args[0])
+            return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fail):
+            assert find_pcbnew_python() == (None, None)
+        assert str(on_path) in launched
+        assert all(os.path.isabs(p) for p in launched), launched
 
     def test_no_pcbnew_available(self):
         with patch("subprocess.run", side_effect=Exception("fail")):
@@ -214,6 +248,56 @@ class TestPcbnewMajor:
         assert major >= 9
 
 
+class TestChildScriptsIgnoreTheCwd:
+    """No pcbnew child interpreter may import a module from the server's cwd.
+
+    ``python -c`` puts ``''``, meaning the current directory, first on sys.path,
+    and every child here is launched without a cwd of its own, so it inherits
+    whichever directory the host started the server in. A pcbnew.py sitting
+    there would run under KiCad's interpreter in place of KiCad's own module.
+
+    These run real interpreters rather than scanning the source. The one used
+    is the suite's own, which has neither pcbnew nor wx installed, so an import
+    of pcbnew can only succeed by finding the planted module, and no wx assert
+    dialog can be provoked.
+    """
+
+    @pytest.fixture
+    def marker(self, tmp_path, monkeypatch):
+        """Chdir into a directory whose pcbnew.py leaves this marker when imported."""
+        cwd = tmp_path / "cwd"
+        cwd.mkdir()
+        marker = tmp_path / "imported-from-cwd"
+        (cwd / "pcbnew.py").write_text(f"open({str(marker)!r}, 'w').close()\n", encoding="utf-8")
+        monkeypatch.chdir(cwd)
+        monkeypatch.setattr(_fr_module, "_pcbnew_cache", None)
+        monkeypatch.setattr(_fr_module, "_pcbnew_major_cache", None)
+        return marker
+
+    def test_the_pcbnew_probes(self, marker, tmp_path, monkeypatch):
+        """KICAD_PYTHON, the candidate loop, and the PYTHONPATH fallback loop."""
+        monkeypatch.setenv("KICAD_PYTHON", sys.executable)
+        monkeypatch.setattr(_fr_module, "_kicad_python_candidates", lambda: [sys.executable])
+        # Any existing directory without a pcbnew in it, so the fallback loop runs.
+        monkeypatch.setattr(_fr_module, "_KICAD_PYTHON_PATHS", [str(tmp_path)])
+        find_pcbnew_python()
+        assert not marker.exists(), "a probe imported pcbnew.py from the working directory"
+
+    def test_the_version_probe(self, marker, monkeypatch):
+        monkeypatch.setattr(_fr_module, "find_pcbnew_python", lambda: (sys.executable, None))
+        pcbnew_major()
+        assert not marker.exists(), "pcbnew_major imported pcbnew.py from the working directory"
+
+    def test_the_wx_prelude(self, marker):
+        """export_dsn, import_ses and fill_zones all start their scripts with it."""
+        subprocess.run(
+            [sys.executable, "-c", wx_app_prelude() + "import pcbnew"],
+            capture_output=True,
+            timeout=60,
+        )
+        assert not marker.exists(), "the prelude left the working directory on sys.path"
+
+
 class TestExportDsn:
     def test_success(self, tmp_path):
         pcb_path = str(tmp_path / "board.kicad_pcb")
@@ -270,13 +354,16 @@ class TestRunFreerouting:
         mock_result = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="Route complete", stderr=""
         )
-        with patch("subprocess.run", return_value=mock_result):
+        with patch("subprocess.run", return_value=mock_result) as run:
             err = run_freerouting(
                 jar_path="/fake/freerouting.jar",
                 dsn_path=str(dsn),
                 ses_path=str(ses),
+                java="/fake/java",
             )
             assert err is None
+        # The same binary check_java approved, not "java" searched for afresh.
+        assert run.call_args.args[0][0] == "/fake/java"
 
     def test_timeout(self, tmp_path):
         dsn = tmp_path / "board.dsn"
@@ -290,6 +377,7 @@ class TestRunFreerouting:
                 dsn_path=str(dsn),
                 ses_path=str(tmp_path / "board.ses"),
                 timeout=600,
+                java="/fake/java",
             )
             assert err is not None
             assert "timeout" in err.lower() or "timed out" in err.lower()
@@ -303,6 +391,7 @@ class TestRunFreerouting:
                 jar_path="/fake/freerouting.jar",
                 dsn_path=str(dsn),
                 ses_path=str(tmp_path / "board.ses"),
+                java="/fake/java",
             )
             assert err is not None
 
@@ -312,8 +401,15 @@ class TestRunFreerouting:
 # ---------------------------------------------------------------------------
 
 
-def _make_board_with_fp_keepout(tmp_path, fp_angle=0, fp_layer="F.Cu", fp_x=100, fp_y=100):
-    """Create a minimal board with one footprint containing a keepout zone."""
+def _make_board_with_fp_keepout(
+    tmp_path, fp_angle=0, fp_layer="F.Cu", fp_x=100, fp_y=100, holes=()
+):
+    """Create a minimal board with one footprint containing a keepout zone.
+
+    The zone's outline is the local square (0, 0)-(10, 10). Each entry in
+    *holes* is a list of local (x, y) points, written as a further polygon of
+    the same zone, which KiCad reads as a hole in the outline.
+    """
     board = Board.create_new()
     board.nets = [Net(number=0, name="")]
 
@@ -344,6 +440,10 @@ def _make_board_with_fp_keepout(tmp_path, fp_angle=0, fp_layer="F.Cu", fp_x=100,
         Position(X=0, Y=10),
     ]
     keepout_zone.polygons = [poly]
+    for hole in holes:
+        cutout = ZonePolygon()
+        cutout.coordinates = [Position(X=x, Y=y) for x, y in hole]
+        keepout_zone.polygons.append(cutout)
     fp.zones = [keepout_zone]
 
     board.footprints = [fp]
@@ -432,63 +532,36 @@ class TestPromoteFootprintKeepouts:
         assert ys[2] == pytest.approx(90.0, abs=0.01)
 
     def test_multiple_polygons(self, tmp_path):
-        """Zone with 2 polygons produces count=2 and 2 board-level keepout zones."""
-        board = Board.create_new()
-        board.nets = [Net(number=0, name="")]
+        """A zone's later polygons are holes in its first, so it stays one zone.
 
-        fp = Footprint()
-        fp.entryName = "TestPkg:Multi"
-        fp.layer = "F.Cu"
-        fp.position = Position(X=0, Y=0, angle=0)
-        fp.reference = Property(key="Reference", value="U2")
-        fp.value = Property(key="Value", value="Multi")
-
-        keepout_zone = Zone()
-        keepout_zone.net = 0
-        keepout_zone.netName = ""
-        keepout_zone.layers = ["F.Cu"]
-        keepout_zone.hatch = Hatch(style="edge", pitch=0.5)
-        keepout_zone.keepoutSettings = KeepoutSettings(
-            tracks="not_allowed",
-            vias="not_allowed",
-            pads="not_allowed",
-            copperpour="not_allowed",
-            footprints="not_allowed",
+        KiCad's zone parser makes the first polygon the outline and every later
+        one a hole in it. Promoted one polygon per zone, the hole came out as a
+        keepout of its own, covering the very area the cutout exists to free.
+        Off the origin, so an untransformed hole would show.
+        """
+        pcb_path = _make_board_with_fp_keepout(
+            tmp_path, fp_x=100, fp_y=50, holes=[[(2, 2), (4, 2), (4, 4), (2, 4)]]
         )
-        poly1 = ZonePolygon()
-        poly1.coordinates = [
-            Position(X=0, Y=0),
-            Position(X=10, Y=0),
-            Position(X=10, Y=10),
-            Position(X=0, Y=10),
-        ]
-        poly2 = ZonePolygon()
-        poly2.coordinates = [
-            Position(X=20, Y=20),
-            Position(X=30, Y=20),
-            Position(X=30, Y=30),
-        ]
-        keepout_zone.polygons = [poly1, poly2]
-        fp.zones = [keepout_zone]
-        board.footprints = [fp]
-        pcb_path = str(tmp_path / "multi.kicad_pcb")
-        board.filePath = pcb_path
-        board.to_file()
         out_path = str(tmp_path / "out.kicad_pcb")
 
         count = _promote_footprint_keepouts(pcb_path, out_path)
 
-        assert count == 2
+        assert count == 1
         out_board = Board.from_file(out_path)
-        assert len(out_board.zones) == 2
-        # First polygon: (0,0) fp-local -> (0,0) board
-        first_coords = out_board.zones[0].polygons[0].coordinates
-        assert round(first_coords[0].X, 3) == 0.0
-        assert round(first_coords[0].Y, 3) == 0.0
-        # Second polygon: (20,20) fp-local -> (20,20) board
-        second_coords = out_board.zones[1].polygons[0].coordinates
-        assert round(second_coords[0].X, 3) == 20.0
-        assert round(second_coords[0].Y, 3) == 20.0
+        assert len(out_board.zones) == 1
+        outline, hole = out_board.zones[0].polygons
+        assert [(round(c.X, 3), round(c.Y, 3)) for c in outline.coordinates] == [
+            (100, 50),
+            (110, 50),
+            (110, 60),
+            (100, 60),
+        ]
+        assert [(round(c.X, 3), round(c.Y, 3)) for c in hole.coordinates] == [
+            (102, 52),
+            (104, 52),
+            (104, 54),
+            (102, 54),
+        ]
 
     def test_back_side_footprint_keepout(self, tmp_path):
         """FP on B.Cu; local coordinates are used as stored, with no mirroring.
@@ -617,15 +690,23 @@ class TestPromoteFootprintKeepouts:
             _promote_footprint_keepouts(pcb_path, out_path)
 
     @requires_cli
-    def test_kicad_accepts_the_promoted_board(self, tmp_path):
+    @pytest.mark.parametrize(
+        "holes", [(), [[(2, 2), (4, 2), (4, 4), (2, 4)]]], ids=["plain", "cutout"]
+    )
+    def test_kicad_accepts_the_promoted_board(self, tmp_path, holes):
         """The live oracle for the promoted zone: KiCad itself loads the file
         and runs DRC on it, on whichever major the runner has installed. The
         promoted board's only real consumer is pcbnew, so our own parser
-        reading it back proves nothing."""
-        pcb_path = _make_board_with_fp_keepout(tmp_path, fp_angle=45, fp_x=100, fp_y=100)
+        reading it back proves nothing. The cutout case reaches KiCad as one
+        zone carrying both polygons."""
+        pcb_path = _make_board_with_fp_keepout(
+            tmp_path, fp_angle=45, fp_x=100, fp_y=100, holes=holes
+        )
         out_path = str(tmp_path / "out.kicad_pcb")
 
         assert _promote_footprint_keepouts(pcb_path, out_path) == 1
+        zone = _cst.parse(Path(out_path).read_bytes()).lists[0].find("zone")
+        assert len(zone.find_all("polygon")) == 1 + len(holes)
 
         result = run_drc(pcb_path=out_path, output_dir=str(tmp_path))
         assert result.violation_count >= 0
@@ -722,7 +803,7 @@ class TestCheckJavaAgainstTheJar:
     def test_java17_is_refused_for_a_java25_jar(self, tmp_path):
         jar = TestJarJavaRequirement._jar(tmp_path, 69)
         with self._java("17.0.9"):
-            msg = check_java(jar)
+            msg = check_java(jar, java="/fake/java")
         assert msg and "17" in msg and "25" in msg
         # The remedy must not be Debian-only; this server ships on three OSes.
         assert "adoptium" in msg
@@ -730,16 +811,16 @@ class TestCheckJavaAgainstTheJar:
     def test_java25_passes_the_same_jar(self, tmp_path):
         jar = TestJarJavaRequirement._jar(tmp_path, 69)
         with self._java("25.0.1"):
-            assert check_java(jar) is None
+            assert check_java(jar, java="/fake/java") is None
 
     def test_no_jar_falls_back_to_the_floor(self):
         with self._java("17.0.9"):
-            assert check_java() is None
+            assert check_java(java="/fake/java") is None
         with self._java("11.0.2"):
-            assert check_java() is not None
+            assert check_java(java="/fake/java") is not None
 
     def test_a_wedged_java_is_reported_not_raised(self):
         """TimeoutExpired was uncaught, so it propagated as a raw exception."""
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("java", 10)):
-            msg = check_java()
+            msg = check_java(java="/fake/java")
         assert msg and "did not answer" in msg

@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import re
 import shutil
+import stat
 import subprocess
+import uuid
 from pathlib import Path
 from unittest.mock import patch
 
@@ -348,7 +350,7 @@ class TestAtomicWrite:
         assert list(tmp_path.glob("*.tmp")) == []
 
     def test_creates_a_file_that_did_not_exist(self, tmp_path: Path):
-        """copymode must not be attempted against a missing destination."""
+        """The destination's mode is only read when there is a destination."""
         p = tmp_path / "new.bin"
         _atomic_write(p, self.REPLACEMENT)
         assert p.read_bytes() == self.REPLACEMENT
@@ -376,16 +378,18 @@ class TestAtomicWrite:
 
     def test_failed_temp_write_leaves_the_file_intact(self, tmp_path: Path, monkeypatch):
         """Disk full, or the folder itself refusing new files as Controlled
-        Folder Access does. Separate test because the cleanup branch differs."""
+        Folder Access does. It is the temp's exclusive create that fails, so
+        this call has made nothing that needs cleaning up."""
         p = self._target(tmp_path)
-        real = Path.write_bytes
+        real_open = open
 
-        def explode(self, data):
-            if self.name.endswith(".tmp"):
+        def refuse(file, mode="r", *args, **kwargs):
+            if mode == "xb":
                 raise OSError(28, "No space left on device")
-            return real(self, data)
+            return real_open(file, mode, *args, **kwargs)
 
-        monkeypatch.setattr(Path, "write_bytes", explode)
+        # _atomic_write looks open up in its own module before the builtins.
+        monkeypatch.setattr(_shared, "open", refuse, raising=False)
 
         with pytest.raises(OSError):
             _atomic_write(p, self.REPLACEMENT)
@@ -394,14 +398,40 @@ class TestAtomicWrite:
         assert p.read_bytes() == self.ORIGINAL
         assert list(tmp_path.glob("*.tmp")) == [], "temp file left behind"
 
+    def test_a_taken_temp_name_is_refused_and_left_alone(self, tmp_path: Path, monkeypatch):
+        """The create is exclusive and happens before the cleanup is armed, so a
+        name that is already taken raises, and whatever sits there is left
+        exactly as it was rather than truncated or deleted."""
+        p = self._target(tmp_path)
+        fixed = uuid.UUID(int=0)
+        monkeypatch.setattr(_shared.uuid, "uuid4", lambda: fixed)
+        taken = tmp_path / f"{p.name}.{os.getpid()}.{fixed.hex[:8]}.tmp"
+        taken.write_bytes(b"not this call's")
+
+        with pytest.raises(FileExistsError):
+            _atomic_write(p, self.REPLACEMENT)
+
+        assert taken.read_bytes() == b"not this call's"
+        assert p.read_bytes() == self.ORIGINAL
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows has no mode bits beyond read-only")
+    def test_the_destination_mode_survives(self, tmp_path: Path):
+        """Otherwise a group-readable file would come back with the umask's mode."""
+        p = self._target(tmp_path)
+        p.chmod(0o640)
+        _atomic_write(p, self.REPLACEMENT)
+        assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
     @pytest.mark.no_kicad_validation
     def test_replaces_once_from_a_temp_that_is_not_a_kicad_file(self, tmp_path: Path, monkeypatch):
         """Two properties of the same call, so one spy answers both.
 
         Exactly one replace, which is what a future simplification back to
-        p.write_bytes(data) would fail. And a temp named board.kicad_sch.PID.tmp
-        rather than board.tmp.kicad_sch, because the latter is swept up by
-        _resolve_config's *.kicad_pro scan and by the suite's rglob.
+        p.write_bytes(data) would fail. And a temp named
+        board.kicad_sch.<pid>.<8 hex digits>.tmp rather than board.tmp.kicad_sch,
+        because the latter is swept up by _resolve_config's *.kicad_pro scan and
+        by the suite's rglob. The hex digits keep two writers of one file in one
+        process off each other's temp, which the pid alone did not.
 
         The .kicad_sch target is the point, and its contents are not a real
         schematic, hence the marker.
@@ -422,8 +452,9 @@ class TestAtomicWrite:
         src, dst = calls[0]
         assert dst == str(p)
         assert src != str(p), "must not replace the file with itself"
-        assert not src.endswith(".kicad_sch"), src
-        assert src.endswith(".tmp")
+        assert re.fullmatch(
+            rf"board\.kicad_sch\.{os.getpid()}\.[0-9a-f]{{8}}\.tmp", Path(src).name
+        ), src
 
 
 class TestReadKicadBytes:
@@ -588,6 +619,151 @@ class TestBackupForExternalWrite:
         # "no undo" was in this message when the upgrade rewrote the original
         # in place. It does not any more, so promising it would be false.
         assert "back up" in str(exc.value)
+
+    @staticmethod
+    def _refuse_install(monkeypatch):
+        """Fail only the move of the fresh copy into place, the step after the
+        previous backup has been moved aside."""
+        real_replace = os.replace
+
+        def replace(src, dst):
+            if str(src).endswith(".tmp"):
+                raise PermissionError(5, "Access is denied")
+            return real_replace(src, dst)
+
+        monkeypatch.setattr(_shared.os, "replace", replace)
+
+    def test_a_failed_refresh_puts_the_previous_backup_back(self, tmp_path, monkeypatch):
+        """os.replace will not put a directory over a directory, so the old
+        backup is moved aside before the new one goes in. When the new one then
+        fails to go in, the old one goes back to the name the last result gave,
+        instead of waiting under a retired name for the next run to delete it."""
+        pretty = tmp_path / "MyLib.pretty"
+        pretty.mkdir()
+        (pretty / "a.kicad_mod").write_bytes(b"one")
+        _backup_for_external_write(pretty, "footprint library")
+        (pretty / "a.kicad_mod").write_bytes(b"two")
+
+        self._refuse_install(monkeypatch)
+        with pytest.raises(ToolError, match="has not been started"):
+            _backup_for_external_write(pretty, "footprint library")
+        monkeypatch.undo()
+
+        assert (tmp_path / "MyLib.pretty.bak" / "a.kicad_mod").read_bytes() == b"one"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["MyLib.pretty", "MyLib.pretty.bak"]
+
+    def test_a_stranded_backup_is_recovered_not_deleted(self, tmp_path, monkeypatch):
+        """If putting it back failed too, the next run from this process finds
+        the backup under its retired name with no .bak beside it. With no .bak
+        it is the newest backup there is, so it goes back rather than being
+        cleared away as a leftover. A retired copy beside an existing .bak is
+        older than it and is still cleared."""
+        pretty = tmp_path / "MyLib.pretty"
+        pretty.mkdir()
+        (pretty / "a.kicad_mod").write_bytes(b"two")
+        stranded = tmp_path / f"MyLib.pretty.bak.{os.getpid()}.old"
+        stranded.mkdir()
+        (stranded / "a.kicad_mod").write_bytes(b"one")
+
+        self._refuse_install(monkeypatch)
+        with pytest.raises(ToolError, match="has not been started"):
+            _backup_for_external_write(pretty, "footprint library")
+        monkeypatch.undo()
+
+        assert (tmp_path / "MyLib.pretty.bak" / "a.kicad_mod").read_bytes() == b"one"
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["MyLib.pretty", "MyLib.pretty.bak"]
+
+
+class TestPlainLibraryTree:
+    """A footprint library is copied twice before kicad-cli touches it, once for
+    the .bak and once for the scratch copy, and copytree follows links. So a
+    library holding a link or a special file is refused, by name, before either
+    copy starts: a link to a device copies until the disk is full, and a link out
+    of the library carries whatever it points at into the .bak beside it.
+    """
+
+    def _pretty(self, tmp_path: Path) -> Path:
+        pretty = tmp_path / "Lib.pretty"
+        pretty.mkdir()
+        (pretty / "R_0603.kicad_mod").write_bytes(b'(footprint "R_0603")\n')
+        return pretty
+
+    @staticmethod
+    def _symlink(link: Path, target: Path) -> None:
+        try:
+            link.symlink_to(target, target_is_directory=target.is_dir())
+        except OSError as exc:  # Windows without Developer Mode or elevation
+            pytest.skip(f"cannot create a symlink here: {exc}")
+
+    @staticmethod
+    def _beside(tmp_path: Path, pretty: Path) -> list[str]:
+        """Everything named after the library: itself, any .bak, any staging."""
+        return sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(pretty.name))
+
+    def test_a_link_inside_is_refused_by_name(self, tmp_path):
+        pretty = self._pretty(tmp_path)
+        outside = tmp_path / "outside.txt"
+        outside.write_bytes(b"not part of the library")
+        self._symlink(pretty / "evil.kicad_mod", outside)
+        with pytest.raises(ToolError, match=r"evil\.kicad_mod.*a link"):
+            _backup_for_external_write(pretty, "footprint library")
+        assert self._beside(tmp_path, pretty) == ["Lib.pretty"], "a backup or staging copy exists"
+
+    def test_the_upgrade_copy_refuses_the_same_tree(self, tmp_path, monkeypatch):
+        pretty = self._pretty(tmp_path)
+        self._symlink(pretty / "evil.kicad_mod", tmp_path / "outside.txt")
+        monkeypatch.setattr(_shared, "_run_cli", lambda *a, **k: pytest.fail("kicad-cli was run"))
+        with pytest.raises(ToolError, match=r"evil\.kicad_mod.*a link"):
+            _upgrade_out_of_place(pretty, "footprint library", ["fp", "upgrade"])
+
+    @pytest.mark.skipif(os.name != "nt", reason="junctions are a Windows construct")
+    def test_a_junction_inside_is_refused(self, tmp_path):
+        """A junction reads as a plain directory to S_ISLNK and to is_symlink();
+        only its reparse tag gives it away."""
+        pretty = self._pretty(tmp_path)
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        (elsewhere / "X.kicad_mod").write_bytes(b'(footprint "X")\n')
+        subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(pretty / "sub"), str(elsewhere)],
+            check=True,
+            capture_output=True,
+        )
+        with pytest.raises(ToolError, match=r"sub.*a link"):
+            _backup_for_external_write(pretty, "footprint library")
+        assert self._beside(tmp_path, pretty) == ["Lib.pretty"]
+
+    @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="needs a POSIX FIFO")
+    def test_a_fifo_inside_is_refused(self, tmp_path):
+        pretty = self._pretty(tmp_path)
+        os.mkfifo(pretty / "pipe.kicad_mod")  # pyright: ignore[reportAttributeAccessIssue]
+        with pytest.raises(ToolError, match=r"pipe\.kicad_mod.*neither a regular file"):
+            _backup_for_external_write(pretty, "footprint library")
+        assert self._beside(tmp_path, pretty) == ["Lib.pretty"]
+
+    def test_a_linked_library_root_is_refused(self, tmp_path):
+        real = self._pretty(tmp_path)
+        linked = tmp_path / "Linked.pretty"
+        self._symlink(linked, real)
+        with pytest.raises(ToolError, match="is a link"):
+            _backup_for_external_write(linked, "footprint library")
+        assert not (tmp_path / "Linked.pretty.bak").exists()
+
+    def test_a_failed_copy_leaves_no_staging_behind(self, tmp_path, monkeypatch):
+        """A copy that failed part way is not a backup, and nothing else would
+        ever remove it."""
+        pretty = self._pretty(tmp_path)
+        real_copytree = shutil.copytree
+
+        def copy_then_fail(src, dst, *args, **kwargs):
+            real_copytree(src, dst, *args, **kwargs)
+            raise shutil.Error([(str(src), str(dst), "failed after copying")])
+
+        monkeypatch.setattr(_shared.shutil, "copytree", copy_then_fail)
+        with pytest.raises(ToolError, match="has not been started"):
+            _backup_for_external_write(pretty, "footprint library")
+        monkeypatch.undo()
+        assert self._beside(tmp_path, pretty) == ["Lib.pretty"], "the staging copy was left behind"
 
 
 def _completed(returncode: int, stdout: str = "", stderr: str = ""):
@@ -860,12 +1036,13 @@ class TestUpgradeOutOfPlace:
 
         Replacing a file on POSIX needs write permission on the DIRECTORY, not on
         the file, so a read-only library upgrades there without complaint. Only
-        Windows refuses. That is also why the defect this pins can only exist on
-        Windows: _atomic_write copies the destination's mode onto its temp, so a
-        read-only destination produced a read-only temp that Windows then refused
-        to unlink, and the cleanup raised over the top of the real failure with a
-        message naming the TEMP path, which is the one thing that function's own
-        comment says never to do.
+        Windows refuses. That is also why the defect this pins could only exist on
+        Windows: _atomic_write used to copy the destination's mode onto its temp,
+        so a read-only destination produced a read-only temp that Windows then
+        refused to unlink, and the cleanup raised over the top of the real failure
+        with a message naming the TEMP path, which is the one thing that
+        function's own comment says never to do. It no longer copies a mode on
+        Windows at all, and this keeps the outcome pinned.
         """
         lib = tmp_path / "Probe.kicad_sym"
         lib.write_bytes(b"(kicad_symbol_lib)\n")
