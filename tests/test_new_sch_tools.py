@@ -98,7 +98,9 @@ class TestListGlobalLabels:
 
 
 class TestAddPowerSymbol:
-    def test_basic(self, scratch_sch):
+    def test_basic(self, scratch_sch, stock_symbol_dir, monkeypatch):
+        # power:VCC from the stand-in stock folder, so this does not need KiCad.
+        monkeypatch.setenv("KICAD_SYMBOL_DIR", str(stock_symbol_dir))
         result = schematic.add_power_symbol(
             "power:VCC",
             "VCC1",

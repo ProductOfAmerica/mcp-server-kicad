@@ -9,6 +9,7 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Iterator
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as _dist_version
@@ -727,41 +728,51 @@ _SYSTEM_SYM_DIRS: list[Path] = [
 ]
 
 
-def _resolve_system_lib(lib_prefix: str) -> str | None:
-    """Resolve a KiCad library prefix to its system .kicad_sym path.
+def _system_sym_dirs() -> Iterator[Path]:
+    """The directories searched for KiCad's stock symbol libraries, in order.
 
-    Checks KICAD_SYMBOL_DIR env var first, then the install tree belonging to
-    the resolved kicad-cli, then standard install locations.
-    Returns the full path string, or None if not found.
+    KICAD_SYMBOL_DIR first, then the install tree belonging to the resolved
+    kicad-cli, then the standard install locations. A generator, so the
+    kicad-cli lookup behind _kicad_root only runs once the override has missed.
+
+    _resolve_system_lib searches exactly this sequence and place_component's
+    refusal prints it, so the folders a refusal names are the ones searched.
     """
-    if not lib_prefix:
-        return None
-    filename = f"{lib_prefix}.kicad_sym"
-
-    # Check env var override first
     env_dir = os.environ.get("KICAD_SYMBOL_DIR")
     if env_dir:
-        candidate = Path(env_dir) / filename
-        if candidate.exists():
-            return str(candidate)
+        yield Path(env_dir)
 
-    # Then KiCad's own tree. A Unix prefix and a Windows install both use
+    # KiCad's own tree. A Unix prefix and a Windows install both use
     # share/kicad; the macOS .app bundle uses SharedSupport.
     root = _kicad_root()
     if root:
-        for sub in ("share/kicad/symbols", "SharedSupport/symbols"):
-            candidate = root / sub / filename
-            if candidate.exists():
-                return str(candidate)
+        yield root / "share/kicad/symbols"
+        yield root / "SharedSupport/symbols"
 
     # Finally the standard locations, which still cover a symbols-only install
     # (Debian ships kicad-symbols separately from kicad).
-    for d in _SYSTEM_SYM_DIRS:
+    yield from _SYSTEM_SYM_DIRS
+
+
+def _resolve_system_lib(lib_prefix: str) -> str | None:
+    """The stock .kicad_sym for a library prefix, or None if no folder has one."""
+    if not lib_prefix:
+        return None
+    filename = f"{lib_prefix}.kicad_sym"
+    for d in _system_sym_dirs():
         candidate = d / filename
         if candidate.exists():
             return str(candidate)
-
     return None
+
+
+def _open_sym_lib(symbol_lib_path: str):
+    """(tree, root) for a .kicad_sym file; guard-free, works on any version."""
+    tree = _cst.parse(_read_kicad_bytes(symbol_lib_path, "symbol library"))
+    root = tree.lists[0] if tree.lists else None
+    if root is None or root.head != "kicad_symbol_lib":
+        raise ToolError(f"{symbol_lib_path} is not a KiCad symbol library.")
+    return tree, root
 
 
 def _extract_raw_symbol(lib_path: str, symbol_name: str) -> str | None:

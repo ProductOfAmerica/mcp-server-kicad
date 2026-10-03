@@ -18,7 +18,7 @@ from mcp_server_kicad._shared import (
     _backup_for_external_write,
     _check_rotation,
     _ensure_dir,
-    _read_kicad_bytes,
+    _open_sym_lib,
     _require_kicad_path,
     _run_cli,
     _upgrade_out_of_place,
@@ -162,15 +162,6 @@ _LIB_SYMBOL_TPL = _cst.parse(
     b"\t\t(embedded_fonts no)\n"
     b"\t)"
 ).lists[0]
-
-
-def _open_sym_lib(symbol_lib_path: str):
-    """(tree, root) for a .kicad_sym file; guard-free, works on any version."""
-    tree = _cst.parse(_read_kicad_bytes(symbol_lib_path, "symbol library"))
-    root = tree.lists[0] if tree.lists else None
-    if root is None or root.head != "kicad_symbol_lib":
-        raise ToolError(f"{symbol_lib_path} is not a KiCad symbol library.")
-    return tree, root
 
 
 def _child_text(node, name: str) -> str:
