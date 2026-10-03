@@ -121,7 +121,7 @@ class TestAutoroutePcb:
         def mock_ensure_jar():
             return "/fake/freerouting.jar", None
 
-        def mock_check_java(jar_path=None):
+        def mock_check_java(jar_path=None, *, java=None):
             return None
 
         def mock_run_freerouting(**kwargs):
@@ -129,6 +129,7 @@ class TestAutoroutePcb:
             return None
 
         with (
+            patch("mcp_server_kicad.pcb._find_on_path", return_value="/fake/java"),
             patch("mcp_server_kicad.pcb._check_java", mock_check_java),
             patch("mcp_server_kicad.pcb._ensure_jar", mock_ensure_jar),
             patch("mcp_server_kicad.pcb._export_dsn", mock_export_dsn),
@@ -191,7 +192,7 @@ class TestAutoroutePcb:
         def mock_ensure_jar():
             return "/fake/freerouting.jar", None
 
-        def mock_check_java(jar_path=None):
+        def mock_check_java(jar_path=None, *, java=None):
             return None
 
         def mock_run_freerouting(**kwargs):
@@ -199,6 +200,7 @@ class TestAutoroutePcb:
             return None
 
         with (
+            patch("mcp_server_kicad.pcb._find_on_path", return_value="/fake/java"),
             patch("mcp_server_kicad.pcb._check_java", mock_check_java),
             patch("mcp_server_kicad.pcb._ensure_jar", mock_ensure_jar),
             patch("mcp_server_kicad.pcb._export_dsn", mock_export_dsn),
@@ -266,7 +268,8 @@ class TestAutoroutePcb:
             return None
 
         with (
-            patch("mcp_server_kicad.pcb._check_java", lambda jar_path=None: None),
+            patch("mcp_server_kicad.pcb._find_on_path", return_value="/fake/java"),
+            patch("mcp_server_kicad.pcb._check_java", lambda jar_path=None, *, java=None: None),
             patch("mcp_server_kicad.pcb._ensure_jar", lambda: ("/fake/freerouting.jar", None)),
             patch("mcp_server_kicad.pcb._export_dsn", mock_export_dsn),
             patch("mcp_server_kicad.pcb._run_freerouting", mock_run_freerouting),
@@ -301,7 +304,8 @@ def _autoroute_seams(major, export_dsn=None):
 
     return patch.multiple(
         pcb,
-        _check_java=lambda jar_path=None: None,
+        _find_on_path=lambda name: "/fake/java",
+        _check_java=lambda jar_path=None, *, java=None: None,
         _ensure_jar=lambda: ("/fake/freerouting.jar", None),
         _export_dsn=export_dsn or touch_dsn,
         _run_freerouting=touch_ses,
@@ -354,6 +358,27 @@ class TestAutoroutePreflight:
             result = pcb.autoroute_pcb(pcb_path=self._k10(scratch_pcb))
         assert Path(result.routed_path).exists()
         assert result.warnings == []
+
+    def test_the_java_that_was_checked_is_the_java_that_routes(self, scratch_pcb):
+        """Both used to launch "java" by bare name, each free to find a different
+        binary, the working directory's included."""
+        lookup = MagicMock(return_value="/abs/java")
+        seen = {}
+
+        def check(jar_path=None, *, java):
+            seen["checked"] = java
+
+        def route(**kwargs):
+            seen["routed"] = kwargs["java"]
+            Path(kwargs["ses_path"]).touch()
+
+        with (
+            _autoroute_seams(9),
+            patch.multiple(pcb, _find_on_path=lookup, _check_java=check, _run_freerouting=route),
+        ):
+            pcb.autoroute_pcb(pcb_path=str(scratch_pcb))
+        lookup.assert_called_once_with("java")
+        assert seen == {"checked": "/abs/java", "routed": "/abs/java"}
 
 
 _PROPERTY_TEXT_BOARD = """(kicad_pcb (version 20241108) (generator "pcbnew")

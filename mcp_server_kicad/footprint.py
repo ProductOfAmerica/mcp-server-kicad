@@ -202,7 +202,8 @@ def upgrade_footprint_lib(footprint_path: str) -> str:
 
     Rewrites every footprint in the library, so this takes the library
     directory.  kicad-cli has no per-footprint option here, and a single
-    .kicad_mod path is rejected.
+    .kicad_mod path is rejected. So is a library that is, or holds, a link or
+    anything other than plain files and folders, before anything is copied.
 
     KiCad performs the migration, as it should, but it performs it on a copy and
     each result lands through the server's atomic write, so no footprint file can
@@ -222,6 +223,13 @@ def upgrade_footprint_lib(footprint_path: str) -> str:
             Optional; omit to use the configured default.
     """
     _require_kicad_path(footprint_path, "footprint", allow_dir=True)
+    # Before the backup, or a .kicad_mod gains a .bak for an upgrade that
+    # kicad-cli then refuses.
+    if not Path(footprint_path).is_dir():
+        raise ToolError(
+            f"'{footprint_path}' is not a directory. upgrade_footprint_lib upgrades a"
+            " whole .pretty library, so pass the library's directory."
+        )
     backup = _backup_for_external_write(footprint_path, "footprint library")
     changed = _upgrade_out_of_place(footprint_path, "footprint library", ["fp", "upgrade"])
     if not changed:
