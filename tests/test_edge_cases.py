@@ -298,7 +298,7 @@ class TestPlacementNeedsADefinition:
             )
         assert "extends 'R'" in str(exc.value)
         assert _files(tmp_path) == before
-        # The parent places, so the refusal is not broader than the problem.
+        # The parent places, pins and all, so the refusal is not broader than the problem.
         assert "Placed R1" in schematic.place_component(
             lib_id="Lib:R",
             reference="R1",
@@ -308,6 +308,8 @@ class TestPlacementNeedsADefinition:
             symbol_lib_path=lib.filePath,
             schematic_path=str(empty_sch),
         )
+        (r1,) = reparse(empty_sch).schematicSymbols
+        assert r1.libId == "Lib:R" and set(r1.pins) == {"1", "2"}
 
     # The schematic carrying the stub is the subject: KiCad refuses to load it.
     @pytest.mark.no_kicad_validation
