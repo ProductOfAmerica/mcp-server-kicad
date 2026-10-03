@@ -1,7 +1,22 @@
+# These hooks run the ruff that uv.lock pins, which is the one CI runs. The
+# usual remote hook (astral-sh/ruff-pre-commit) carries a version pin of its
+# own, and that pin drifted behind the lock without anything noticing.
+#
+# 4.4.0 is the first pre-commit that knows `language: unsupported`, the name
+# that replaces `system`.
+minimum_pre_commit_version: "4.4.0"
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.11.2
+  - repo: local
     hooks:
-      - id: ruff
-        args: [--fix]
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --frozen --extra dev ruff check --fix --force-exclude
+        language: unsupported
+        types_or: [python, pyi]
+        require_serial: true
       - id: ruff-format
+        name: ruff format
+        entry: uv run --frozen --extra dev ruff format --force-exclude
+        language: unsupported
+        types_or: [python, pyi]
+        require_serial: true

@@ -767,7 +767,11 @@ class TestProjectToolsPreservation:
         assert project.annotate_schematic(schematic_path=p) == "No unannotated components found"
         assert kicad_native_sch.read_bytes() == after
 
-    def test_duplicate_sheet_uuid_scope(self, tmp_path, kicad_native_sch):
+    def test_duplicate_sheet_uuid_scope(
+        self, tmp_path, kicad_native_sch, stock_symbol_dir, monkeypatch
+    ):
+        # Device:R from the stand-in stock folder, so this does not need KiCad.
+        monkeypatch.setenv("KICAD_SYMBOL_DIR", str(stock_symbol_dir))
         parent, child = self._hierarchy(tmp_path, kicad_native_sch)
         schematic.place_component(
             "Device:R",
@@ -796,9 +800,14 @@ class TestProjectToolsPreservation:
         # kiutils parity: nested pin uuids in the copy are NOT regenerated
         src_pin_uuids = [pn.find("uuid").atoms[1].text for pn in src_sym.find_all("pin")]
         dst_pin_uuids = [pn.find("uuid").atoms[1].text for pn in dst_sym.find_all("pin")]
+        # Without a definition R7 had no pins, and on a host without KiCad this
+        # compared two empty lists and proved nothing.
+        assert src_pin_uuids, "R7 has no pins to compare"
         assert src_pin_uuids == dst_pin_uuids
 
-    def test_flatten_counts(self, tmp_path, kicad_native_sch):
+    def test_flatten_counts(self, tmp_path, kicad_native_sch, stock_symbol_dir, monkeypatch):
+        # Device:R from the stand-in stock folder, so this does not need KiCad.
+        monkeypatch.setenv("KICAD_SYMBOL_DIR", str(stock_symbol_dir))
         parent, child = self._hierarchy(tmp_path, kicad_native_sch)
         schematic.place_component("Device:R", "R7", "1K", 60, 60, schematic_path=str(child))
         project.add_hierarchical_sheet(

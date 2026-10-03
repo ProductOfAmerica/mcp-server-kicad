@@ -25,6 +25,7 @@ from mcp_server_kicad._shared import (
     _gen_uuid,
     _kicad_root,
     _node_uuid,
+    _open_sym_lib,
     _read_kicad_bytes,
     _remove_root_symbol_instance,
     _require_kicad_path,
@@ -36,6 +37,7 @@ from mcp_server_kicad._shared import (
     _sheet_name_cst,
     _snap_grid,
     _sym_property_cst,
+    _system_sym_dirs,
     _upsert_root_symbol_instance,
     build_server,
 )
@@ -722,8 +724,9 @@ def place_component(
         x: X position in schematic units (mm)
         y: Y position in schematic units (mm)
         rotation: Rotation angle in degrees (0, 90, 180, 270)
-        symbol_lib_path: Path to .kicad_sym file if using custom library.
-            Optional; omit to use the configured default.
+        symbol_lib_path: Path to a .kicad_sym file that defines the symbol, for a
+            library outside KiCad's stock set. Optional; omit to load the symbol
+            from the stock library named by the lib_id prefix.
         mirror: Mirror axis ("x", "y", or "" for none)
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file (for correct hierarchy resolution in sub-sheets)
@@ -765,37 +768,31 @@ def place_component(
     x = _snap_grid(x)
     y = _snap_grid(y)
 
-    # Load symbol definition from custom lib or system library
-    symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-    suggestions_lib = None
-    if _find_lib_symbol_cst(root, lib_id) is None:
+    # A placed symbol is a part only if its definition sits in lib_symbols
+    # beside it: KiCad keeps the body and pins there, and the instance merely
+    # points at them. Load it from symbol_lib_path when given, else from the
+    # stock library the lib_id prefix names, and refuse if neither has it.
+    # Measured 2026-10-02: this used to write the instance regardless, and a
+    # symbol with no definition has no pins, so kicad-cli loaded the file and ERC
+    # reported nothing at all. Placement time is the only time it can be caught.
+    symbol_name = lib_id.split(":")[-1]
+    lib_prefix = lib_id.split(":")[0] if ":" in lib_id else ""
+    lib_sym = _find_lib_symbol_cst(root, lib_id)
+    if lib_sym is None:
         if symbol_lib_path:
             _copy_lib_symbol_from_file_cst(root, symbol_lib_path, symbol_name, symbol_name)
-            suggestions_lib = symbol_lib_path
-        elif ":" in lib_id:
-            lib_prefix = lib_id.split(":")[0]
-            if not _copy_system_lib_symbol_cst(root, lib_prefix, symbol_name):
-                suggestions_lib = _resolve_system_lib(lib_prefix)
+        elif lib_prefix:
+            _copy_system_lib_symbol_cst(root, lib_prefix, symbol_name)
+        lib_sym = _find_lib_symbol_cst(root, lib_id)
+    if lib_sym is None:
+        raise ToolError(_no_definition_message(lib_id, symbol_name, lib_prefix, symbol_lib_path))
+    # The copy refuses a derived stub; this catches one an older version embedded.
+    _refuse_derived(lib_sym, lib_id)
 
-    # Check if lib_symbol was found; give helpful error if not
-    if _find_lib_symbol_cst(root, lib_id) is None and ":" in lib_id:
-        if suggestions_lib is not None:
-            lib_root = _cst.parse(Path(suggestions_lib).read_bytes()).lists[0]
-            available = [s.atoms[1].text for s in lib_root.find_all("symbol")]
-            similar = difflib.get_close_matches(symbol_name, available, n=5, cutoff=0.4)
-            lib_prefix = lib_id.split(":")[0]
-            if similar:
-                hint = f" Similar: {', '.join(similar)}"
-            else:
-                hint = " Try list_lib_symbols to search across all libraries."
-            raise ToolError(f"symbol '{symbol_name}' not found in {lib_prefix} library.{hint}")
-
-    # Create instance — lib_name mirrors the lib_symbol's stored name so KiCad
+    # Create the instance. lib_name mirrors the lib_symbol's stored name so KiCad
     # can resolve the lookup without crashing (see the slice-8 segfault note).
-    lib_sym = _find_lib_symbol_cst(root, lib_id)
     node = _SYMBOL_TPL.copy()
-    lib_name = lib_sym.atoms[1].text if lib_sym is not None else symbol_name
-    node.find("lib_name").atoms[1].set_text(lib_name)
+    node.find("lib_name").atoms[1].set_text(lib_sym.atoms[1].text)
     node.find("lib_id").atoms[1].set_text(lib_id)
     _check_rotation(rotation)
     _fill_at(node, x, y, rotation)
@@ -817,18 +814,17 @@ def place_component(
 
     # Pin UUIDs from the lib symbol
     instances = node.find("instances")
-    if lib_sym is not None:
-        pin_nums = set()
-        for unit_node in lib_sym.find_all("symbol"):
-            for pin in unit_node.find_all("pin"):
-                number = pin.find("number")
-                if number is not None:
-                    pin_nums.add(number.atoms[1].text)
-        for pn in sorted(pin_nums):
-            pnode = _PIN_REF_TPL.copy()
-            pnode.atoms[1].set_text(pn)
-            pnode.find("uuid").atoms[1].set_text(_gen_uuid())
-            node.insert_before(instances, pnode)
+    pin_nums = set()
+    for unit_node in lib_sym.find_all("symbol"):
+        for pin in unit_node.find_all("pin"):
+            number = pin.find("number")
+            if number is not None:
+                pin_nums.add(number.atoms[1].text)
+    for pn in sorted(pin_nums):
+        pnode = _PIN_REF_TPL.copy()
+        pnode.atoms[1].set_text(pn)
+        pnode.find("uuid").atoms[1].set_text(_gen_uuid())
+        node.insert_before(instances, pnode)
 
     # Instances block — required by KiCad 9 for proper annotation
     root_uuid = _node_uuid(root)
@@ -1414,16 +1410,91 @@ def _copy_lib_symbol_from_file_cst(root, lib_path: str, symbol_name: str, new_na
     """Splice a copy of a .kicad_sym symbol node into lib_symbols.
 
     The node's bytes come straight from the library file (no emission
-    knowledge); only the name atom is rewritten to *new_name*.
+    knowledge); only the name atom is rewritten to *new_name*. A derived symbol
+    is refused rather than copied; see _refuse_derived.
     """
-    lib_root = _cst.parse(Path(lib_path).read_bytes()).lists[0]
+    _, lib_root = _open_sym_lib(lib_path)
     for s in lib_root.find_all("symbol"):
         if s.atoms[1].text == symbol_name:
+            _refuse_derived(s, new_name)
             node = s.copy()
             node.atoms[1].set_text(new_name)
             _splice_lib_symbol_cst(root, node)
             return True
     return False
+
+
+def _refuse_derived(definition, name: str) -> None:
+    """Refuse a derived symbol definition, which holds no pins of its own.
+
+    A derived symbol is an (extends "Parent") plus properties, with the body and
+    pins left in the parent; 12,127 of the stock symbols in a KiCad 9 install
+    are derived (counted 2026-10-02). KiCad embeds one flattened: the three
+    KiCad 9 demo schematics that use a derived stock symbol all carry the
+    parent's pins and no (extends ...). Copied verbatim, the stub names a parent
+    the schematic does not have, and kicad-cli 9 then refuses to load the whole
+    file: "Failed to load schematic" for Regulator_Linear:AMS1117-3.3, measured
+    2026-10-02, and the same file loaded once the (extends ...) node was removed.
+
+    Flattening is not implemented yet, so the honest outcome is a refusal that
+    names the parent: a derived symbol shares its parent's pins, so placing the
+    parent and setting its fields gets the same part.
+    """
+    extends = definition.find("extends")
+    if extends is None:
+        return
+    parent = extends.atoms[1].text
+    prefix = name.split(":")[0] + ":" if ":" in name else ""
+    raise ToolError(
+        f"'{name}' is a derived symbol: it extends '{parent}' and has no pins of its"
+        " own, and this server cannot flatten derived symbols yet. Embedded as it"
+        " stands, it makes KiCad refuse to load the schematic. Use"
+        f" '{prefix}{parent}' instead, which has the same pins, and set its Value,"
+        " Footprint and Datasheet with set_component_property. Nothing was written."
+    )
+
+
+def _no_definition_message(
+    lib_id: str, symbol_name: str, lib_prefix: str, symbol_lib_path: str
+) -> str:
+    """Why place_component has no definition for *lib_id*, and the ways out."""
+    lib_path = symbol_lib_path or (_resolve_system_lib(lib_prefix) if lib_prefix else None)
+    if lib_path:
+        # A library was read and lacks the symbol: name it, and what is close.
+        _, lib_root = _open_sym_lib(lib_path)
+        names = [s.atoms[1].text for s in lib_root.find_all("symbol")]
+        similar = difflib.get_close_matches(symbol_name, names, n=5, cutoff=0.4)
+        where = f"{lib_prefix} library ({lib_path})" if lib_prefix else lib_path
+        hint = (
+            f"Similar: {', '.join(similar)}."
+            if similar
+            else f"list_lib_symbols on {lib_path} shows what it holds."
+        )
+        return (
+            f"'{lib_id}': symbol '{symbol_name}' not found in {where}. {hint} Nothing was written."
+        )
+    if lib_prefix:
+        # No library file by that name in any folder the search covers.
+        searched = ", ".join(str(d) for d in _system_sym_dirs())
+        unknown = (
+            ""
+            if _kicad_root()
+            else " kicad-cli was not found, so KiCad's own library folder is unknown."
+        )
+        return (
+            f"'{lib_id}' not found: no {lib_prefix}.kicad_sym in {searched}.{unknown}"
+            " A lib_id prefix only resolves against KiCad's stock symbol libraries; a"
+            " project sym-lib-table is not read. Pass symbol_lib_path to the .kicad_sym"
+            f" that defines {symbol_name}, set KICAD_SYMBOL_DIR to the folder holding"
+            f" {lib_prefix}.kicad_sym, or load the definition first with add_lib_symbol."
+            " Nothing was written."
+        )
+    return (
+        f"'{lib_id}' not found: no symbol of that name is defined in this schematic,"
+        " and a lib_id without a library prefix has nowhere to load one from. Use the"
+        " Library:Symbol form (e.g. 'Device:R'), pass symbol_lib_path to a .kicad_sym"
+        " that defines it, or load it first with add_lib_symbol. Nothing was written."
+    )
 
 
 def _copy_system_lib_symbol_cst(root, lib_prefix: str, symbol_name: str) -> bool:

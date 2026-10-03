@@ -8,7 +8,6 @@ with no remedy in it.
 Tests for locating the KiCad installation: the CLI, its libraries, its interpreter."""
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -18,21 +17,78 @@ from mcp.server.mcpserver.exceptions import ToolError
 import mcp_server_kicad._freerouting as _freerouting
 from mcp_server_kicad._shared import (
     _find_kicad_cli,
+    _find_on_path,
     _kicad_root,
     _resolve_system_lib,
     _run_cli,
 )
 
 
-def test_which_result_is_made_absolute(monkeypatch):
-    """Windows shutil.which searches the current directory before PATH."""
-    monkeypatch.delenv("KICAD_CLI_PATH", raising=False)
-    monkeypatch.setattr(shutil, "which", lambda _: "./kicad-cli")
+def _exe(directory: Path, name: str = "kicad-cli") -> Path:
+    """An empty executable, named the way _find_on_path looks for one on this OS."""
+    directory.mkdir(parents=True, exist_ok=True)
+    exe = directory / (name + ".exe" if os.name == "nt" else name)
+    exe.write_text("")
+    exe.chmod(0o755)
+    return exe
+
+
+def test_path_lookup_never_searches_the_working_directory(tmp_path, monkeypatch):
+    """Only absolute PATH entries count.
+
+    shutil.which looks in the current directory before PATH on Windows, and an
+    empty or relative PATH entry means the current directory on every platform.
+    Either way a program left in whatever directory the host started the
+    server in would run in place of the real one.
+    """
+    cwd = tmp_path / "cwd"
+    _exe(cwd)
+    _exe(cwd / "rel")
+    real = _exe(tmp_path / "bin")
+    monkeypatch.chdir(cwd)
+    relative = ["", ".", "rel"]
+
+    monkeypatch.setenv("PATH", os.pathsep.join([*relative, str(real.parent)]))
+    assert _find_on_path("kicad-cli") == str(real)
+
+    monkeypatch.setenv("PATH", os.pathsep.join(relative))
+    assert _find_on_path("kicad-cli") is None
+
+
+@pytest.mark.skipif(os.name != "nt", reason="PATHEXT is a Windows mechanism")
+def test_windows_matches_only_exe(tmp_path, monkeypatch):
+    """PATHEXT would let a .bat, .cmd or .com answer for the name."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name in ("kicad-cli", "kicad-cli.bat", "kicad-cli.cmd", "kicad-cli.com"):
+        (bin_dir / name).write_text("")
+    monkeypatch.setenv("PATH", str(bin_dir))
+    assert _find_on_path("kicad-cli") is None
+
+    (bin_dir / "kicad-cli.exe").write_text("")
+    assert _find_on_path("kicad-cli") == str(bin_dir / "kicad-cli.exe")
+
+
+def test_a_relative_kicad_cli_path_is_ignored(tmp_path, monkeypatch):
+    """A relative override names the working directory as surely as a relative
+    PATH entry does, and resolving it anchors it there. It is ignored, so the
+    lookup carries on as though it were unset."""
+    cwd = tmp_path / "cwd"
+    planted = _exe(cwd)
+    real = _exe(tmp_path / "bin")
+    monkeypatch.chdir(cwd)
+    monkeypatch.setenv("KICAD_CLI_PATH", os.path.join(os.curdir, planted.name))
+    monkeypatch.setattr("mcp_server_kicad._shared._KICAD_APP", str(tmp_path / "no-app"))
+    monkeypatch.setattr("mcp_server_kicad._shared._KICAD_WIN_DIRS", ())
+
+    monkeypatch.setenv("PATH", str(real.parent))
     _find_kicad_cli.cache_clear()
-    resolved = _find_kicad_cli()
+    assert _find_kicad_cli() == str(real.resolve())
+
+    monkeypatch.setenv("PATH", "")
     _find_kicad_cli.cache_clear()
-    assert resolved is not None
-    assert Path(resolved).is_absolute()
+    assert _find_kicad_cli() is None
+    _find_kicad_cli.cache_clear()
 
 
 def test_macos_bundle_used_when_not_on_path(tmp_path, monkeypatch):
@@ -40,7 +96,7 @@ def test_macos_bundle_used_when_not_on_path(tmp_path, monkeypatch):
     bundled = tmp_path / "kicad-cli"
     bundled.write_text("")
     monkeypatch.delenv("KICAD_CLI_PATH", raising=False)
-    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setattr("mcp_server_kicad._shared._find_on_path", lambda _: None)
     monkeypatch.setattr("mcp_server_kicad._shared._KICAD_APP", str(bundled))
     _find_kicad_cli.cache_clear()
     assert _find_kicad_cli() == str(bundled.resolve())
@@ -58,7 +114,7 @@ def _win_install(root: Path, version: str) -> Path:
 def _only_win_probe(monkeypatch, tmp_path, *roots: Path) -> None:
     """Nothing in the environment, on PATH, or in the bundle: only the probe is left."""
     monkeypatch.delenv("KICAD_CLI_PATH", raising=False)
-    monkeypatch.setattr(shutil, "which", lambda _: None)
+    monkeypatch.setattr("mcp_server_kicad._shared._find_on_path", lambda _: None)
     monkeypatch.setattr("mcp_server_kicad._shared._KICAD_APP", str(tmp_path / "no-app"))
     monkeypatch.setattr("mcp_server_kicad._shared._KICAD_WIN_DIRS", tuple(str(r) for r in roots))
 
@@ -109,7 +165,7 @@ def test_env_var_and_path_win_over_the_windows_probe(tmp_path, monkeypatch):
     assert _find_kicad_cli() == str(chosen.resolve())
 
     monkeypatch.delenv("KICAD_CLI_PATH")
-    monkeypatch.setattr(shutil, "which", lambda _: str(chosen))
+    monkeypatch.setattr("mcp_server_kicad._shared._find_on_path", lambda _: str(chosen))
     _find_kicad_cli.cache_clear()
     assert _find_kicad_cli() == str(chosen.resolve())
     _find_kicad_cli.cache_clear()

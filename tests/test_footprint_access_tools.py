@@ -91,6 +91,18 @@ class TestUpgradeFootprintLib:
         assert "success" in result.lower() or "upgraded" in result.lower()
 
 
+class TestUpgradeFootprintLibNeedsALibrary:
+    def test_a_single_footprint_is_refused_before_any_backup(self, tmp_path):
+        """kicad-cli upgrades libraries, not footprints, so a .kicad_mod is
+        refused, and before the backup, or a .bak would land beside a file that
+        was never going to be upgraded. No kicad-cli needed: nothing is run."""
+        mod = tmp_path / "R_0603.kicad_mod"
+        mod.write_bytes(b'(footprint "R_0603")\n')
+        with pytest.raises(ToolError, match="is not a directory"):
+            footprint.upgrade_footprint_lib(str(mod))
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["R_0603.kicad_mod"]
+
+
 class TestGetFootprintInfoExtended:
     """Extended tests for get_footprint_info covering courtyard, keep-out, and graphics."""
 

@@ -65,6 +65,7 @@ from mcp_server_kicad._shared import (
     _courtyard_bbox_cst,
     _ensure_dir,
     _file_meta,
+    _find_on_path,
     _gen_uuid,
     _keepout_dict,
     _kicad_cli_major,
@@ -1720,8 +1721,8 @@ def add_keepout_zone(
     )
 
 
-def _require_pcbnew_era(pcb_path: str) -> int:
-    """Refuse a board the running pcbnew cannot load. Returns its format version.
+def _require_pcbnew_era(pcb_path: str) -> None:
+    """Refuse a board the running pcbnew cannot load.
 
     The same check autoroute_pcb makes, for the same reason and in the same
     words. pcbnew 9's LoadBoard returns None on a KiCad 10 board, so the script
@@ -1729,9 +1730,6 @@ def _require_pcbnew_era(pcb_path: str) -> int:
     of wx image-handler chatter ending in "NoneType object has no attribute
     Zones", naming no version anywhere. Measured: the file is byte-identical
     afterward, so this is a diagnostics fix, not a safety one.
-
-    Parsed fresh rather than through _open_pcb_cst, because the subprocess
-    rewrites the file between this read and _format_upgrade_warning's.
     """
     board_version = _board_version(_cst.parse(_read_kicad_bytes(pcb_path, "board")).lists[0])
     major = _pcbnew_major()
@@ -1741,42 +1739,6 @@ def _require_pcbnew_era(pcb_path: str) -> int:
             f"pcbnew {major} cannot load. Install KiCad 10, or point KICAD_PYTHON at "
             "the Python of a KiCad 10 install."
         )
-    return board_version
-
-
-def _format_upgrade_warning(pcb_path: str, before: int) -> list[str]:
-    """Report a format upgrade the pcbnew subprocess performed in place.
-
-    SaveBoard writes the running pcbnew's own format, so a board stamped below
-    it is upgraded with no undo. Measured on KiCad 9 against KiCad's own shipped
-    multichannel_mixer-unrouted: 20241030 -> 20241229, 114 footprint property
-    UUIDs dropped and user layers renamed, returning status ok and raising
-    nothing.
-
-    Measured rather than predicted, because it cannot be predicted. _pcbnew_major
-    reads pcbnew's major version, not the stamp it writes, and the numbers above
-    are both inside the KiCad 9 era, so no comparison of (major, board_version)
-    can see it. Reading the file afterward always can.
-
-    before == 0 means there was no file to compare, which is the create-if-missing
-    path of update_pcb_from_schematic.
-    """
-    # Before the read, not after: on the create-if-missing path there is no
-    # file to read yet and _read_kicad_bytes would refuse.
-    if not before:
-        return []
-    after = _board_version(_cst.parse(_read_kicad_bytes(pcb_path, "board")).lists[0])
-    if after <= before:
-        return []
-    msg = (
-        f"pcbnew rewrote this board from format version {before} to {after}. The "
-        "upgrade happened in place and has no undo: measured, it also drops "
-        "footprint property UUIDs and renames user layers. Restore from version "
-        "control if that was not wanted."
-    )
-    if before <= _NUMERIC_NET_VERSION_MAX < after:
-        msg += " A KiCad 9 install can no longer open this board."
-    return [msg]
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -3190,11 +3152,16 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
 
     pcbnew's ExportSpecctraDSN does not export keepout zones defined inside
     a footprint, so the autorouter would never see them. This parses
-    *pcb_path*, appends one board-level zone per footprint keepout polygon
-    with its points transformed into board coordinates, and writes the
+    *pcb_path*, appends one board-level zone per footprint keepout zone with
+    every polygon's points transformed into board coordinates, and writes the
     result to *output_path*. The source board is never modified.
 
-    Returns the number of polygons promoted. At zero, *output_path* is not
+    A zone's polygons stay together. KiCad's zone parser makes the first one
+    the outline and every later one a hole in it, so promoting each polygon as
+    a zone of its own turned a cutout into a keepout over exactly the area it
+    was cut out to free. A zone with no polygon at all is skipped.
+
+    Returns the number of zones promoted. At zero, *output_path* is not
     written and the caller feeds the original board to the DSN export.
     """
     tree = _cst.parse(_read_kicad_bytes(pcb_path, "board"))
@@ -3209,25 +3176,21 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
         fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
 
         for source_zone in fp.find_all("zone"):
-            if source_zone.find("keepout") is None:
+            if source_zone.find("keepout") is None or source_zone.find("polygon") is None:
                 continue
-            for index in range(len(source_zone.find_all("polygon"))):
-                # One board zone per polygon, as the kiutils twin produced.
-                zone = source_zone.copy()
-                polygons = zone.find_all("polygon")
-                for other in polygons[:index] + polygons[index + 1 :]:
-                    zone.remove_child(other)
-                for xy in polygons[index].find("pts").find_all("xy"):
+            zone = source_zone.copy()
+            for polygon in zone.find_all("polygon"):
+                for xy in polygon.find("pts").find_all("xy"):
                     bx, by = _transform_local_to_board(fp_x, fp_y, fp_angle, *_xy(xy))
                     xy.atoms[1].set_text(_num(round(bx, 6)))
                     xy.atoms[2].set_text(_num(round(by, 6)))
-                _replace_child(zone, _HATCH_TPL.copy())
-                fresh_uuid = _UUID_TPL.copy()
-                fresh_uuid.atoms[1].set_text(_gen_uuid())
-                _replace_child(zone, fresh_uuid)
-                _set_promoted_zone_net(zone, root)
-                _splice_pcb_zone(root, zone)
-                count += 1
+            _replace_child(zone, _HATCH_TPL.copy())
+            fresh_uuid = _UUID_TPL.copy()
+            fresh_uuid.atoms[1].set_text(_gen_uuid())
+            _replace_child(zone, fresh_uuid)
+            _set_promoted_zone_net(zone, root)
+            _splice_pcb_zone(root, zone)
+            count += 1
 
     if count > 0:
         try:
@@ -3344,10 +3307,13 @@ def autoroute_pcb(
             " freerouting.jar, or allow the automatic download."
         )
 
-    # Pre-flight: a Java new enough for that JAR specifically.
-    java_err = _check_java(jar_path)
-    if java_err:
-        raise ToolError(java_err)
+    # Pre-flight: a Java new enough for that JAR specifically. Looked up once,
+    # here, and the same path goes to the router, so the java that was checked
+    # is the java that runs.
+    java = _find_on_path("java")
+    java_err = _check_java(jar_path, java=java)
+    if java_err or not java:
+        raise ToolError(java_err or "Java runtime not found.")
 
     # Count existing traces/vias for before/after comparison
     traces_before, vias_before, board_version = _trace_counts(pcb_path)
@@ -3400,6 +3366,7 @@ def autoroute_pcb(
             max_passes=max_passes,
             num_threads=num_threads,
             timeout=timeout,
+            java=java,
         )
         if route_err:
             raise ToolError(route_err)
