@@ -750,9 +750,8 @@ def place_component(
     # downstream catches it: measured 2026-08-12, `kicad-cli sch erc` reports no
     # duplicate-reference violation even for a resistor and a capacitor both
     # called R1, so this tool is the only place it can be caught. Nothing in the
-    # package produces one legitimately either, since add_power_symbol already
-    # scans for a free #FLG number and this tool has no unit parameter, so it
-    # can never be placing a second unit of a multi-unit part.
+    # package produces one legitimately either: this tool has no unit parameter,
+    # so it can never be placing a second unit of a multi-unit part.
     if any(_sym_property_cst(sym, "Reference") == reference for sym in root.find_all("symbol")):
         raise ToolError(
             f"{reference} is already placed in this schematic. Reference designators"
@@ -1860,8 +1859,9 @@ def add_power_symbol(
         x: X position
         y: Y position
         rotation: Rotation in degrees
-        symbol_lib_path: Path to power symbol .kicad_sym if not in schematic.
-            Optional; omit to use the configured default.
+        symbol_lib_path: Path to a .kicad_sym file that defines the power symbol,
+            for a library outside KiCad's stock set. Optional; omit to load it
+            from the stock library named by the lib_id prefix.
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
@@ -1906,8 +1906,9 @@ def auto_place_decoupling_cap(
         power_net: Label for pin 1 (e.g. "VCC", "+3V3")
         ground_net: Label for pin 2 (e.g. "GND", "PGND")
         rotation: Rotation in degrees (default 0)
-        symbol_lib_path: Path to .kicad_sym if using custom lib.
-            Optional; omit to use the configured default.
+        symbol_lib_path: Path to a .kicad_sym file that defines the capacitor,
+            for a library outside KiCad's stock set. Optional; omit to load it
+            from the stock library named by the lib_id prefix.
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
