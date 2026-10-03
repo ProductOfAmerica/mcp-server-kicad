@@ -317,3 +317,21 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   symbol with no definition, which the MCP SDK wraps exactly as it wraps a ToolError;
   and resolving a prefix through a project sym-lib-table, which the refusal now states
   plainly instead.
+
+- 2026-10-02: `wire_pins_to_net` no longer places a PWR_FLAG, so it emits no symbol and
+  copies no lib_symbols entry; its writes are wires, labels and junctions only, and the
+  slice-8 placed template and synthetic lib template are deleted with it. The flag was
+  decided per call, but whether a net needs one depends on every driver on the net, so
+  on a net that already had a flag or a power output it added a second one, which ERC
+  reports as "Pins of type Power output and Power output are connected" (measured on
+  kicad-cli 9.0.8 with two flags on one net). The routing pressure test also measured
+  kicad-cli ERC crashing (0xC0000005) when the auto flag's lib_id `power:PWR_FLAG`, with
+  no lib_name, met an entry `add_power_symbol` had copied under the bare name. The
+  verbatim system-library copy that this path used to exercise is still tested, now
+  through `place_component`. `add_power_symbol` loses its own automatic flag for the
+  same reason, plus a sharper one: a flag tells ERC the net has a source it cannot
+  see, which only the designer knows, so placing one beside every power symbol marked
+  every rail as driven and silenced the undriven-net check it exists to satisfy. It is
+  now one `place_component` call, which also ends its two-write sequence (symbol, then
+  flag) that could leave half the change on disk. Callers place a flag with
+  `add_power_symbol` and lib_id `power:PWR_FLAG`, on the nets that need one.
