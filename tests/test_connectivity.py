@@ -180,3 +180,60 @@ def test_a_refusal_names_every_blocked_pin(tmp_path):
     text = _plan(p, [("R1", "1"), ("R2", "1")]).refusal()
     assert text.startswith("[touch] wire_pins_to_net refused the whole call; nothing was written.")
     assert "R1:1" in text and "R2:1" in text
+
+
+# ---------------------------------------------------------------------------------------------
+# Validation (design 4.8), before any file is read
+# ---------------------------------------------------------------------------------------------
+
+_BAD_ARGS = [
+    pytest.param({"label_text": ""}, id="empty"),
+    pytest.param({"label_text": " VCC"}, id="leading_space"),
+    pytest.param({"label_text": "VCC "}, id="trailing_space"),
+    pytest.param({"label_text": "/VCC"}, id="sheet_path_slash"),
+    pytest.param({"label_text": "${NET}"}, id="text_variable"),
+    pytest.param({"label_text": "Net-(R1-Pad1)"}, id="auto_name"),
+    pytest.param({"label_text": "unconnected-(R1-Pad1)"}, id="auto_unconnected"),
+    pytest.param({"label_text": "D[0..7]"}, id="bus_range"),
+    pytest.param({"label_text": "{A B}"}, id="bus_group"),
+    pytest.param({"direction": "sideways"}, id="direction"),
+    pytest.param({"stub_length": 0}, id="stub_zero"),
+    pytest.param({"stub_length": -2.54}, id="stub_negative"),
+    pytest.param({"stub_length": 2.5401}, id="stub_off_grid"),
+    pytest.param({"stub_length": float("nan")}, id="stub_nan"),
+    pytest.param({"stub_length": True}, id="stub_bool"),
+    pytest.param({"stub_length": "2.54"}, id="stub_text"),
+]
+
+
+@pytest.mark.parametrize("bad", _BAD_ARGS)
+@pytest.mark.parametrize("with_pins", [True, False], ids=["pins", "no_pins"])
+def test_bad_arguments_refuse_before_reading(tmp_path, bad, with_pins):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    from mcp_server_kicad import schematic
+    from mcp_server_kicad.models import PinRefSpec
+
+    p = _r1(tmp_path)
+    before = Path(p).read_bytes()
+    kw = {"label_text": "N", **bad}
+    pins: list[PinRefSpec] = [{"reference": "R1", "pin": "1"}] if with_pins else []
+    with pytest.raises(ToolError, match=r"^\[validation\] "):
+        schematic.wire_pins_to_net(pins, schematic_path=p, **kw)
+    assert Path(p).read_bytes() == before
+
+
+@pytest.mark.parametrize("name", ["~{RESET}", "V_{CC}", "A^{2}", "+3V3", "SDA"])
+def test_formatting_markup_is_not_bus_syntax(tmp_path, name):
+    assert not _plan(_r1(tmp_path), [("R1", "1")], net=name).refused
+
+
+def test_a_malformed_pin_entry_refuses(tmp_path):
+    plan = C.plan_wire_pins(_root(_r1(tmp_path)), [{"reference": "R1"}], "N", "auto", 2.54)
+    assert plan.codes == ["validation"]
+
+
+def test_the_same_pad_twice_is_wired_once(tmp_path):
+    plan = _plan(_r1(tmp_path), [("R1", "1"), ("R1", "1")])
+    assert len(plan.wires) == 1 and len(plan.labels) == 1
+    assert plan.lines[1] == "R1:1: same pad as R1:1; counted once."

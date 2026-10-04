@@ -1937,7 +1937,7 @@ def remove_text(
 def wire_pins_to_net(
     pins: list[PinRefSpec],
     label_text: str,
-    direction: str = "auto",
+    direction: Literal["auto", "left", "right", "up", "down"] = "auto",
     stub_length: float = 2.54,
     schematic_path: str = SCH_PATH,
 ) -> str:
@@ -1956,11 +1956,20 @@ def wire_pins_to_net(
 
     Args:
         pins: List of {"reference": "R1", "pin": "1"} dicts
-        label_text: Net label text (e.g. "GND", "VCC")
+        label_text: Net name (e.g. "GND", "VCC"), exactly as it should read: no surrounding
+            spaces, no leading "/", no bus syntax, not a KiCad auto name such as "Net-(R1-1)"
         direction: Stub direction: "auto" (away from the symbol), "left", "right", "up", "down"
-        stub_length: Stub length in mm (default 2.54)
+        stub_length: Stub length in mm, a multiple of 1.27 (default 2.54)
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
+    # Literal publishes the choices; this check is for direct Python callers, which pydantic
+    # never sees. It runs before the empty-list return so a bad call fails the same either way.
+    try:
+        _connectivity.check_args(label_text, direction, stub_length)
+    except _connectivity.Refusal as e:
+        plan = _connectivity.WirePlan(str(label_text))
+        plan.refuse(e.codes, e.text)
+        raise ToolError(plan.refusal()) from None
     if not pins:
         return f"Wired 0 pins to '{label_text}'."
     tree, root, *_ = _open_sch_cst(schematic_path)

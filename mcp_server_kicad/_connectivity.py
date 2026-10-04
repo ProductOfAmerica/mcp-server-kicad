@@ -14,6 +14,8 @@ schematic.py.
 
 from __future__ import annotations
 
+import math
+import re
 from dataclasses import dataclass, field
 
 IU_PER_MM = 10000
@@ -749,6 +751,72 @@ _DIR_NAME = {v: k for k, v in DIRECTIONS.items()}
 #: Label rotation for a stub direction: right 0, up 90, left 180, down 270.
 LABEL_ROT: dict[Point, int] = {(1, 0): 0, (0, -1): 90, (-1, 0): 180, (0, 1): 270}
 
+#: KiCad's 50 mil schematic grid, in IU.
+GRID = 12700
+#: Names KiCad gives unnamed nets. A label spelled like one collides with them.
+_AUTO_NAME = re.compile(r"^(Net|unconnected)-\(")
+_BUS_RANGE = re.compile(r"\[[^\]]*\.\.[^\]]*\]")
+
+
+def check_args(net, direction, stub_length) -> int:
+    """Validate wire_pins_to_net's arguments before any file is read. Returns the stub in IU.
+
+    Each rule is a measured way a bad argument wrote a wrong file (pressure-test-report.md,
+    problem P12): an empty name joins every such call into one net, a name with a stray space
+    or a leading "/" is a different net from the one meant, an auto-looking name collides with
+    KiCad's own, bus syntax writes a bus label on a wire, and an off-grid stub ends a hair from
+    a grid item.
+    """
+
+    def bad(text: str) -> Refusal:
+        return Refusal("validation", text)
+
+    if not isinstance(net, str) or not net:
+        raise bad("label_text must be a non-empty net name.")
+    if net != net.strip():
+        raise bad(
+            f"label_text {net!r} has leading or trailing whitespace, which KiCad keeps as part"
+            f" of the name, so it would make a net apart from {net.strip()!r}. Pass the name"
+            " without it."
+        )
+    if net.startswith("/"):
+        raise bad(
+            f"label_text {net!r} starts with '/', which is the sheet path KiCad prints before a"
+            " local net's name, not part of the name; as label text it makes a different net."
+            " Pass the name without it."
+        )
+    if "${" in net:
+        raise bad(
+            f"label_text {net!r} contains a text variable ('${{'): its value, and so the net it"
+            " would join, cannot be known here. Pass the literal net name."
+        )
+    if _AUTO_NAME.match(net):
+        raise bad(
+            f"label_text {net!r} looks like a name KiCad generates for an unnamed net, and KiCad"
+            " renames or splits nets that collide with one. Choose a real net name."
+        )
+    if _BUS_RANGE.search(net) or any(
+        c == "{" and (i == 0 or net[i - 1] not in "_^~") for i, c in enumerate(net)
+    ):
+        raise bad(
+            f"label_text {net!r} is bus syntax, and a bus label on a wire is a bus/net conflict."
+            " Choose a plain net name."
+        )
+    if direction != "auto" and direction not in DIRECTIONS:
+        raise bad(f"direction must be one of auto, left, right, up, down; got {direction!r}.")
+    if isinstance(stub_length, bool) or not isinstance(stub_length, (int, float)):
+        raise bad(f"stub_length must be a number of mm; got {stub_length!r}.")
+    if not math.isfinite(stub_length) or stub_length <= 0:
+        raise bad(f"stub_length must be a length greater than 0 mm; got {stub_length!r}.")
+    L = kiround(float(stub_length) * IU_PER_MM)
+    if L % GRID:
+        raise bad(
+            f"stub_length {stub_length!r} mm is not a multiple of 1.27 mm, the 50 mil grid KiCad"
+            " schematics use, and an off-grid stub end can land a hair from a grid item and"
+            " join it. Use 1.27, 2.54, 3.81 and so on."
+        )
+    return L
+
 
 @dataclass
 class WirePlan:
@@ -818,17 +886,31 @@ def plan_wire_pins(root, pins: list, net: str, direction: str, stub_length: floa
     """Decide wire_pins_to_net's edit on a parsed schematic root. Writes nothing."""
     plan = WirePlan(net)
     try:
+        L = check_args(net, direction, stub_length)
         m = Model(root)
     except Refusal as e:
         plan.refuse(e.codes, e.text)
         return plan
     fixed = None if direction == "auto" else DIRECTIONS[direction]
-    L = kiround(float(stub_length) * IU_PER_MM)
+    seen: dict[tuple, str] = {}
     for pd in pins:
+        if (
+            not isinstance(pd, dict)
+            or not isinstance(pd.get("reference"), str)
+            or isinstance(pd.get("pin"), bool)
+            or not isinstance(pd.get("pin"), (str, int))
+        ):
+            plan.refuse("validation", f"{pd!r}: each pin must be {{'reference': str, 'pin': str}}.")
+            continue
         ref, label = pd["reference"], str(pd["pin"])
         tag = f"{ref}:{label}"
         try:
             c = m.find_pin(ref, label)
+            key = (c.ref, c.num)
+            if key in seen:
+                plan.lines.append(f"{tag}: same pad as {seen[key]}; counted once.")
+                continue
+            seen[key] = tag
             text = _wire_copy(m, plan, c, net, fixed, L)
         except Refusal as e:
             plan.refuse(e.codes, f"{tag}: {e.text}")
