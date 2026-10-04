@@ -1854,6 +1854,7 @@ def auto_place_decoupling_cap(
     )
     done = f"placed {reference}"
     undo = [f"remove_component({reference!r})"]
+    notes: list[str] = []
     for pin, net, direction in (("1", power_net, "up"), ("2", ground_net, "down")):
         try:
             plan = _wire_pins(
@@ -1866,6 +1867,7 @@ def auto_place_decoupling_cap(
                 f" {', '.join(undo)}.\n- " + "\n- ".join(e.plan.lines)
             ) from None
         assert plan is not None  # one pin, so the file was read
+        notes += [n for n in plan.notes if n not in notes]
         done += f" and wired pin {pin} to {net!r}"
         mm = _connectivity.mm
         undo += [
@@ -1873,7 +1875,9 @@ def auto_place_decoupling_cap(
         ]
         undo += [f"remove_label({net!r}, {mm(lx)}, {mm(ly)})" for (lx, ly), _r in plan.labels]
 
-    return f"{result} | pin 1->{power_net} | pin 2->{ground_net}"
+    # The wiring's notes say, among other things, when a net name is new on this sheet: a
+    # power symbol or global label of that name elsewhere does not reach the cap.
+    return "\n".join([f"{result} | pin 1->{power_net} | pin 2->{ground_net}", *notes])
 
 
 @mcp.tool(annotations=_ADDITIVE)

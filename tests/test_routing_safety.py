@@ -765,6 +765,15 @@ def test_a_refused_pin_2_says_what_pin_1_got(tmp_path):
     assert _counts(p) == {"C5": 0, "wire": 1, "label": 0}
 
 
+def test_the_cap_passes_on_its_wirings_notes(tmp_path):
+    """The result ended at "pin 1->VCC | pin 2->GND" and dropped what the wiring reported, so
+    it never said that nothing on the sheet carried VCC or GND: on a sub-sheet the cap then sits
+    on local nets, not on the rails the root's power symbols name (found by review)."""
+    out = _cap(fresh(tmp_path))
+    assert "Warning: nothing on this sheet carried 'VCC'" in out
+    assert "Warning: nothing on this sheet carried 'GND'" in out
+
+
 @pytest.mark.parametrize("bad", [{"power_net": " VCC"}, {"ground_net": "Net-(C5-Pad2)"}])
 def test_a_bad_net_name_refuses_before_the_cap_is_placed(tmp_path, bad):
     """Validation needs nothing from the sheet, so it runs before the first write."""
