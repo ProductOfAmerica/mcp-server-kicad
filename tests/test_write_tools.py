@@ -1490,7 +1490,7 @@ class TestMultiUnitWrites:
         result = schematic.wire_pins_to_net(
             [{"reference": "U1", "pin": "4"}], "TIE_LOW", schematic_path=p
         )
-        assert result == "Wired 1 pins to 'TIE_LOW'."
+        assert result.splitlines()[0] == "Wired 1 pins to 'TIE_LOW'."
         ends = _wire_ends(reparse(p))
         assert (155.08, 100.0) in ends
         assert (105.08, 100.0) not in ends

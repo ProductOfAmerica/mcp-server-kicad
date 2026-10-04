@@ -150,7 +150,11 @@ class TestWirePinToLabel:
         assert label.position.angle == 0
 
     def test_auto_direction_rotated_90(self, tmp_path):
-        """TestPart at 90deg: IN pin outward should be up (-Y)."""
+        """TestPart at 90 deg: KiCad turns IN, which points left at 0 deg, to point down.
+
+        IN sits at (100, 105.08), below the body. This test used to assert "up", which is the
+        direction into the body: the old outward angle was wrong at 90 and 270 deg.
+        """
         path = _make_test_part_sch(tmp_path, rotation=90)
         schematic.wire_pins_to_net(
             pins=[{"reference": "U1", "pin": "IN"}],
@@ -160,10 +164,10 @@ class TestWirePinToLabel:
         )
         sch = reparse(path)
         label = next(lbl for lbl in sch.labels if lbl.text == "ROT90")
-        assert label.position.angle == 90  # up-pointing label
-        # Wire should go up: end_y < start_y
+        assert label.position.angle == 270  # down-pointing label
         wire = [g for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"][0]
-        assert wire.points[1].Y < wire.points[0].Y
+        assert (wire.points[0].X, wire.points[0].Y) == (100, 105.08)
+        assert wire.points[1].Y > wire.points[0].Y
 
     def test_auto_direction_mirror_x(self, tmp_path):
         """TestPart IN pin with mirror=x: outward should still be left."""
@@ -870,8 +874,15 @@ class TestAutoJunctions:
         )
         assert near_count == 1, f"Expected 1 junction near (100, 96.19), got {near_count}"
 
-    def test_wire_pins_to_net_auto_junction(self, tmp_path):
-        """wire_pins_to_net creates junction when stub crosses existing wire."""
+    def test_wire_pins_to_net_refuses_a_pin_end_on_a_wire_interior(self, tmp_path):
+        """R1:1 sits on the interior of an unlabelled wire, which in KiCad does not connect.
+
+        This test used to assert that wire_pins_to_net joins them with a junction. A junction on
+        an unsplit wire is read by kicad-cli 9, the reader behind netlist export, ERC and PCB
+        update, as cutting the wire (docs/adr-routing-safety.md). Without one, neither the stub
+        nor a label on the pin end can be placed without touching the wire, so the call refuses
+        and writes nothing.
+        """
         sch = new_schematic()
         sch.libSymbols.append(build_r_symbol())
 
@@ -894,21 +905,14 @@ class TestAutoJunctions:
         sch.to_file()
         sch_path = str(path)
 
-        # Wire R1 pin 1 to net "VCC". Pin 1 is at (100, 96.19).
-        # The pin endpoint is ON the existing wire — but at an interior point
-        # (the wire runs from x=90 to x=110, pin is at x=100).
-        # A junction should be auto-created at (100, 96.19).
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "R1", "pin": "1"}],
-            label_text="VCC",
-            schematic_path=sch_path,
-        )
-
-        sch_after = reparse(sch_path)
-        junc_positions = [(j.position.X, j.position.Y) for j in sch_after.junctions]
-        assert any(abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02 for x, y in junc_positions), (
-            f"Expected junction near (100, 96.19), got {junc_positions}"
-        )
+        before = path.read_bytes()
+        with pytest.raises(ToolError, match=r"\[touch\]"):
+            schematic.wire_pins_to_net(
+                pins=[{"reference": "R1", "pin": "1"}],
+                label_text="VCC",
+                schematic_path=sch_path,
+            )
+        assert path.read_bytes() == before
 
 
 # ===========================================================================

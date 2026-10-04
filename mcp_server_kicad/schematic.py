@@ -9,7 +9,15 @@ from typing import Literal
 
 from mcp.server.mcpserver.exceptions import ToolError
 
+import mcp_server_kicad._connectivity as _connectivity
 import mcp_server_kicad._cst as _cst
+from mcp_server_kicad._connectivity import (
+    _instance_units,
+    _sym_body_style_cst,
+    _sym_unit_cst,
+    not_drawn_message,
+    pin_matches,
+)
 from mcp_server_kicad._cst import _fill_at, _node_text, _node_xy, _num, _numish
 from mcp_server_kicad._shared import (
     _ADDITIVE,
@@ -1213,78 +1221,6 @@ def _find_sym_cst(root, reference: str):
     return found[0] if found else None
 
 
-def _sym_unit_cst(sym) -> int:
-    """Unit number of a placed symbol node.
-
-    One when the node carries no ``(unit N)``, which is how KiCad reads it
-    (``SCH_SYMBOL::Init``).
-    """
-    node = sym.find("unit")
-    if node is None or len(node.atoms) < 2:
-        return 1
-    try:
-        return int(node.atoms[1].text)
-    except ValueError:
-        return 1
-
-
-def _sym_body_style_cst(sym) -> int:
-    """Body style of a placed symbol node.
-
-    KiCad 10 writes ``(body_style N)`` on every placed symbol; KiCad 9 writes
-    ``(convert N)``, and only for a De Morgan alternate. Absent means 1.
-    """
-    node = sym.find("body_style")
-    if node is None:
-        node = sym.find("convert")
-    if node is None or len(node.atoms) < 2:
-        return 1
-    try:
-        return int(node.atoms[1].text)
-    except ValueError:
-        return 1
-
-
-def _lib_unit_style(unit_node) -> tuple[int, int] | None:
-    """The (unit, body style) a lib sub-symbol's name encodes, or None if none.
-
-    KiCad names them ``NAME_<unit>_<bodyStyle>``, and NAME itself may contain
-    underscores, so the two trailing fields are the ones to read.
-    """
-    atoms = unit_node.atoms
-    if len(atoms) < 2:
-        return None
-    parts = atoms[1].text.rsplit("_", 2)
-    if len(parts) != 3:
-        return None
-    try:
-        return int(parts[1]), int(parts[2])
-    except ValueError:
-        return None
-
-
-def _instance_units(lib_sym, unit: int, body_style: int = 1):
-    """The lib sub-symbols a placed instance of *unit* in *body_style* draws.
-
-    KiCad's rule (``LIB_SYMBOL::GetPins``): a sub-symbol is drawn when its
-    unit is this one or 0 and its body style is this one or 0, with 0 meaning
-    "common" on both axes. So a placed ``(unit 2)`` draws units 2 and 0 and
-    nothing else, and a De Morgan part placed in its normal style draws
-    ``_1_1`` but not ``_1_2``. Scanning every sub-symbol instead reports a
-    sibling unit's pins as this instance's own, at coordinates derived from
-    this instance's origin, and an alternate style's pins a second time.
-
-    A sub-symbol whose name encodes no unit is kept. KiCad's own parser
-    refuses such a name, so only a hand-built file carries one.
-    """
-    kept = []
-    for sub in lib_sym.find_all("symbol"):
-        ids = _lib_unit_style(sub)
-        if ids is None or (ids[0] in (unit, 0) and ids[1] in (body_style, 0)):
-            kept.append(sub)
-    return kept
-
-
 def _find_lib_symbol_cst(root, lib_id: str):
     """CST twin of _find_lib_symbol: bare and prefixed names both match."""
     bare = lib_id.split(":")[-1] if ":" in lib_id else lib_id
@@ -1295,15 +1231,6 @@ def _find_lib_symbol_cst(root, lib_id: str):
         if entry == bare or entry == lib_id or raw == lib_id:
             return ls
     return None
-
-
-def _pin_matches_cst(pin, pin_name: str) -> bool:
-    """True when a lib pin node's name or number is *pin_name*."""
-    name = pin.find("name")
-    number = pin.find("number")
-    return (name is not None and name.atoms[1].text == pin_name) or (
-        number is not None and number.atoms[1].text == pin_name
-    )
 
 
 def _drawn_pin_pos_cst(root, target, pin_name: str, reference: str):
@@ -1322,7 +1249,7 @@ def _drawn_pin_pos_cst(root, target, pin_name: str, reference: str):
     mir = m.atoms[1].text if m is not None else None
     for unit in _instance_units(lib_sym, _sym_unit_cst(target), _sym_body_style_cst(target)):
         for pin in unit.find_all("pin"):
-            if _pin_matches_cst(pin, pin_name):
+            if pin_matches(pin, pin_name):
                 pat = pin.find("at")
                 px, py = float(pat.atoms[1].text), float(pat.atoms[2].text)
                 pangle = float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0
@@ -1351,47 +1278,7 @@ def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float,
         if pos is not None:
             return pos
     lib_sym = _find_lib_symbol_cst(root, targets[0].find("lib_id").atoms[1].text)
-    subs = lib_sym.find_all("symbol") if lib_sym is not None else []
-    carriers = sorted(
-        {
-            ids
-            for sub in subs
-            if (ids := _lib_unit_style(sub)) is not None
-            and any(_pin_matches_cst(pin, pin_name) for pin in sub.find_all("pin"))
-        }
-    )
-    if not carriers:
-        raise ValueError(f"Pin '{pin_name}' not found on {reference}")
-    # Name the body style only where it is the thing that differs: the unit is
-    # here in its other style, or it is unit 0, which every placed unit draws.
-    # An unplaced unit is named as a unit, and placing it is then the remedy.
-    placed_units = {_sym_unit_cst(t) for t in targets}
-    styles_by_unit: dict[int, set[int]] = {}
-    for u, s in carriers:
-        styles_by_unit.setdefault(u, set()).add(s)
-
-    def _carrier(u: int, styles: set[int]) -> str:
-        style = "body style " + "/".join(map(str, sorted(styles)))
-        if u == 0:
-            return f"{style} (common to all units)"
-        return f"unit {u} {style}" if u in placed_units else f"unit {u}"
-
-    where = ", ".join(_carrier(u, styles) for u, styles in sorted(styles_by_unit.items()))
-    placed = ", ".join(
-        f"unit {_sym_unit_cst(t)}"
-        + (f" body style {_sym_body_style_cst(t)}" if _sym_body_style_cst(t) != 1 else "")
-        for t in targets
-    )
-    if any(u != 0 and u not in placed_units for u in styles_by_unit):
-        raise ValueError(
-            f"Pin '{pin_name}' of {reference} is on {where}, which is not placed on this sheet "
-            f"({reference} here: {placed}). Place that unit, or wire the pin on the sheet "
-            "that holds it."
-        )
-    raise ValueError(
-        f"Pin '{pin_name}' of {reference} is on {where}, which this sheet does not draw "
-        f"({reference} here: {placed}). Switch the placed symbol to that body style in KiCad."
-    )
+    raise ValueError(not_drawn_message(reference, pin_name, lib_sym, targets))
 
 
 def _splice_lib_symbol_cst(root, node) -> None:
@@ -2085,17 +1972,6 @@ def remove_text(
 # High-level routing tools (4)
 # ---------------------------------------------------------------------------
 
-# Direction -> (dx_sign, dy_sign, label_rotation)
-_DIR_OFFSETS = {
-    "right": (1, 0, 0),
-    "left": (-1, 0, 180),
-    "up": (0, -1, 90),
-    "down": (0, 1, 270),
-}
-
-# Outward angle (math Y-down) -> cardinal direction name
-_ANGLE_TO_DIR = {0: "right", 90: "down", 180: "left", 270: "up"}
-
 
 @mcp.tool(annotations=_ADDITIVE)
 def wire_pins_to_net(
@@ -2105,107 +1981,50 @@ def wire_pins_to_net(
     stub_length: float = 2.54,
     schematic_path: str = SCH_PATH,
 ) -> str:
-    """Wire multiple component pins to the same net label.
+    """Put each listed pin on the net named label_text, or refuse and write nothing.
 
-    Wires each pin with a short stub and a shared net label, one file write.
+    Each pin gets a short wire stub pointing away from its symbol, with a net
+    label at the stub's end. When the stub would touch, overlap or cross
+    anything else on the sheet, the label goes on the pin end itself instead,
+    and when that is blocked too the whole call is refused. No junction is
+    ever written. The file is written once or not at all: a refusal lists
+    every blocked pin with a bracketed reason code such as [touch], the
+    obstacle, and a remedy.
+
     It places no PWR_FLAG: whether a net needs one depends on every driver on
     the net, not on the pins in one call. Use add_power_symbol for that.
 
     Args:
         pins: List of {"reference": "R1", "pin": "1"} dicts
         label_text: Net label text (e.g. "GND", "VCC")
-        direction: Wire direction: "auto", "left", "right", "up", "down"
-        stub_length: Wire stub length in mm (default 2.54)
+        direction: Stub direction: "auto" (away from the symbol), "left", "right", "up", "down"
+        stub_length: Stub length in mm (default 2.54)
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     if not pins:
         return f"Wired 0 pins to '{label_text}'."
     tree, root, *_ = _open_sch_cst(schematic_path)
-    tol = 0.1
-    warnings = []
-    stub_endpoints = []
-    for pin_def in pins:
-        ref = pin_def["reference"]
-        pin_name = pin_def["pin"]
-        try:
-            px, py, outward = _get_pin_pos_cst(root, ref, pin_name)
-        except ValueError as e:
-            raise ToolError(f"Error wiring {ref}:{pin_name}: {e}") from e
-
-        if direction == "auto":
-            snapped = round(outward / 90) * 90 % 360
-            d = _ANGLE_TO_DIR[snapped]
-        else:
-            d = direction
-
-        dx_sign, dy_sign, label_rot = _DIR_OFFSETS[d]
-        end_x = round(px + dx_sign * stub_length, 4)
-        end_y = round(py + dy_sign * stub_length, 4)
-
-        # Check for stub collision with existing labels from different nets.
-        # If the chosen direction produces a stub that overlaps an existing
-        # label of a different net within stub_length along the same axis,
-        # try alternate directions to avoid a short circuit.
-        def _stub_collides(ex: float, ey: float) -> bool:
-            """True if endpoint (ex, ey) collides with a different-net label."""
-            for existing in root.find_all("label"):
-                if _node_text(existing) == label_text:
-                    continue
-                lx, ly = _node_xy(existing)
-                # Check if label is on the stub path (between pin and end)
-                if dx_sign != 0 and abs(ly - py) < tol:
-                    lo = min(px, ex)
-                    hi = max(px, ex)
-                    if lo - tol <= lx <= hi + tol:
-                        return True
-                if dy_sign != 0 and abs(lx - px) < tol:
-                    lo = min(py, ey)
-                    hi = max(py, ey)
-                    if lo - tol <= ly <= hi + tol:
-                        return True
-                # Check endpoint overlap
-                if abs(lx - ex) < tol and abs(ly - ey) < tol:
-                    return True
-            return False
-
-        if _stub_collides(end_x, end_y):
-            # Try alternate directions
-            resolved = False
-            for alt_d in _DIR_OFFSETS:
-                if alt_d == d:
-                    continue
-                adx, ady, alt_rot = _DIR_OFFSETS[alt_d]
-                alt_ex = round(px + adx * stub_length, 4)
-                alt_ey = round(py + ady * stub_length, 4)
-                if not _stub_collides(alt_ex, alt_ey):
-                    d = alt_d
-                    dx_sign, dy_sign, label_rot = adx, ady, alt_rot
-                    end_x, end_y = alt_ex, alt_ey
-                    resolved = True
-                    break
-            if not resolved:
-                warnings.append(
-                    f"{ref}:{pin_name} stub collides with existing net; no safe direction found"
-                )
-
-        # Wire stub
-        _splice_wire(root, px, py, end_x, end_y)
-        stub_endpoints.append((px, py))
-        stub_endpoints.append((end_x, end_y))
-        # Net label
-        label_node = _LABEL_TPL.copy()
-        label_node.atoms[1].set_text(label_text)
-        _fill_at(label_node, end_x, end_y, label_rot)
-        label_node.find("uuid").atoms[1].set_text(_gen_uuid())
-        _splice_sch_node(root, "label", label_node)
-
-    _auto_junctions_cst(root, stub_endpoints)
-
+    plan = _connectivity.plan_wire_pins(root, pins, label_text, direction, stub_length)
+    if plan.refused:
+        raise ToolError(plan.refusal())
+    for a, b in plan.wires:
+        node = _WIRE_TPL.copy()
+        for xy, (x, y) in zip(node.find("pts").find_all("xy"), (a, b)):
+            xy.atoms[1].set_text(_connectivity.mm(x))
+            xy.atoms[2].set_text(_connectivity.mm(y))
+        node.find("uuid").atoms[1].set_text(_gen_uuid())
+        _splice_sch_node(root, "wire", node)
+    for (x, y), rot in plan.labels:
+        node = _LABEL_TPL.copy()
+        node.atoms[1].set_text(label_text)
+        at = node.find("at")
+        at.atoms[1].set_text(_connectivity.mm(x))
+        at.atoms[2].set_text(_connectivity.mm(y))
+        at.atoms[3].set_text(str(rot))
+        node.find("uuid").atoms[1].set_text(_gen_uuid())
+        _splice_sch_node(root, "label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
-    msg = f"Wired {len(pins)} pins to '{label_text}'."
-    if warnings:
-        msg += " WARNINGS: " + "; ".join(warnings)
-    return msg
+    return plan.success()
 
 
 @mcp.tool(annotations=_ADDITIVE)

@@ -427,7 +427,7 @@ class TestWirePinsToNetPreservation:
             direction="up",
             schematic_path=p,
         )
-        assert result == "Wired 1 pins to 'NETX'."
+        assert result.splitlines()[0] == "Wired 1 pins to 'NETX'."
         after = kicad_native_sch.read_bytes()
         assert b"generator_version" in after and b"(embedded_fonts" in after
         assert _cst.serialize(_cst.parse(after)) == after
@@ -1137,7 +1137,7 @@ class TestKicad10E2E:
         result = schematic.wire_pins_to_net(
             pins=[{"reference": "R1", "pin": "1"}], label_text="K10NET", schematic_path=p
         )
-        assert result == "Wired 1 pins to 'K10NET'."
+        assert result.splitlines()[0] == "Wired 1 pins to 'K10NET'."
         root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
         assert len(root.find_all("wire")) == 2
         assert "K10NET" in [n.atoms[1].text for n in root.find_all("label")]

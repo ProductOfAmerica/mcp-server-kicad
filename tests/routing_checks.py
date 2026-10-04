@@ -147,14 +147,17 @@ def lint_new_geometry(before: bytes, after: bytes) -> None:
     old_lines, old_points = _lines(rb), _points(rb)
     old_wires = {_cst.serialize(w) for w in rb.find_all("wire")}
     old_labels = {_cst.serialize(n) for n in rb.find_all("label")}
+    new_segs: list[Seg] = []
     for w in ra.find_all("wire"):
         if _cst.serialize(w) in old_wires:
             continue
         xy = _pts(w)
         for seg in zip(xy, xy[1:]):
-            for line in old_lines:
+            # Earlier new wires count too: two pins of one call must not stack their stubs.
+            for line in old_lines + new_segs:
                 assert not _overlap(seg, line), f"new wire {seg} overlaps {line}"
                 assert not _proper_cross(seg, line), f"new wire {seg} crosses {line}"
+            new_segs.append(seg)
             for end in seg:
                 for line in old_lines:
                     assert not _on_interior(end, line), f"new end {end} on the interior of {line}"
@@ -177,15 +180,28 @@ def call_wptn(path, pins, label_text, **kw) -> tuple[str, str]:
     """
     path = Path(path)
     before = path.read_bytes()
+    writes = []
+    real = schematic._atomic_write
+
+    def counting(target, data):
+        writes.append(Path(target).name)
+        return real(target, data)
+
+    schematic._atomic_write = counting
     try:
         msg = schematic.wire_pins_to_net(pins, label_text, schematic_path=str(path), **kw)
     except ToolError as e:
         assert path.read_bytes() == before, "a refusal changed the file"
+        assert writes == [], f"a refusal wrote {writes}"
         return "REFUSED", str(e)
+    finally:
+        schematic._atomic_write = real
     after = path.read_bytes()
     if msg.startswith("No change") or not pins:
         assert after == before, "a no-op changed the file"
+        assert writes == [], f"a no-op wrote {writes}"
         return "NOOP", msg
+    assert writes == [path.name], f"expected one write of {path.name}, got {writes}"
     assert after != before, f"success reported but nothing written: {msg}"
     assert_only_added(before, after)
     lint_new_geometry(before, after)
