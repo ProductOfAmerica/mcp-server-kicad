@@ -212,3 +212,34 @@ All in the scratch directory named in the status line; dates are when the run wa
 ## Status log
 
 Each slice appends an entry when it lands.
+
+- 2026-10-04, slice 1: the pin transform for every pin read; the shared model,
+  `mcp_server_kicad/_connectivity.py`; the touch rule with the overlap and crossing bans; and
+  wire_pins_to_net on it, with validation, resolution, every copy of a pad, the no-op and names
+  decisions, the outright refusals, duplicate references, net classes and one write. Where the
+  prototype (h2_impl with the crossing ban) and this record differed, the record was built:
+  - a pin name matching pads drawn at one point is one target; the prototype refused any name
+    matching two pads;
+  - stub_length must be a multiple of 1.27 mm, and label_text trimmed with no leading "/";
+  - references and units are read at the sheet's live instance paths, by KiCad 9.0.8's rule as
+    its source reads: the entry for the path, else the first entry, which its parser makes the
+    symbol's own, else the Reference property and the top-level unit. tiny_tapeout's U3 and U4
+    now pass and PI-15's duplicates still refuse, which settles ADR-R3's open point. Checked per
+    reference, a reused sheet whose instances share one is refused; the prototype accepted it;
+  - remedies end "otherwise stop and report" and never suggest add_label;
+  - the unit-0 rule covers any pad drawn by a unit not placed on the sheet, an inference that
+    was not measured.
+  Also in the slice: auto_place_decoupling_cap reports what a refused pin leaves on disk, and the
+  hierarchy is parsed only where the bytes can hold what a call needs, so a cold call on
+  vme-wren takes 1.7 to 3.7 s of CPU where it took about 6.1 s. Measured along the way, with
+  kicad-cli 9.0.8: the model's two views agree with its netlist on all 93 demo sheets; on a
+  sweep of 42 sampled calls on three demo sheets, main wrote 5 wrong (3 named merges, 2 splits)
+  and failed the write checks 20 times, 2 of those among the 5, where this slice wrote none
+  wrong and passed every check; its ERC crashes on a sheet whose lib_name names no lib_symbols
+  entry; and it cannot load a symbol with jumper_pin_groups. IC14 on vme-wren is 20 symbols
+  under 4 library names, not the 5 variants dupref-report.md counts. Left for later:
+  connect_pins, get_net_connections and the composed auto_place_decoupling_cap (slices 2 and
+  3); the `Net-(...)` label connect_pins still writes, which wire_pins_to_net then refuses as
+  [names] while its message names the remove_label call that clears it; netclass patterns in a
+  .kicad_pro; and stacked pin numbers such as `[1-4]`, which resolve only as literal text. KiCad
+  10 is checked by the macOS and Windows jobs only.

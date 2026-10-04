@@ -36,7 +36,7 @@ change on disk.
 "Add a 100 nF decoupling cap on U1's VCC pin, then check ERC."
 
   get_pin_positions            locate U1's VCC and GND pins
-  auto_place_decoupling_cap    place C3, wire it, drop the junctions
+  auto_place_decoupling_cap    place C3 and wire both pins to their nets
   run_erc                      report what the change broke
 
 "Now push the netlist to the board and route it."

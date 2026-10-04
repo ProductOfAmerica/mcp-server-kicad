@@ -189,9 +189,9 @@ outputs, battery terminals, connector pins providing external power.
 
 | Cause | Fix |
 |-------|-----|
-| Pin should be connected | Wire it: `connect_pins` or `wire_pins_to_net` |
+| Pin should be connected | Wire it: `connect_pins` or `wire_pins_to_net`. If `wire_pins_to_net` refuses, act on its bracketed code (schematic-design's refusal table), never by hand with `add_label` |
 | Pin is intentionally unused | Mark it: `no_connect_pin` |
-| Wire just misses the pin | Check pin position with `get_pin_positions`, rewire |
+| Wire just misses the pin | Check pin position with `get_pin_positions` (it reports where KiCad draws the pin, rotation and mirror included), rewire |
 
 Use `list_unconnected_pins` to get a precise list of which pins are
 unconnected and on which components.

@@ -1960,11 +1960,18 @@ def wire_pins_to_net(
 
     Each pin gets a short wire stub pointing away from its symbol, with a net
     label at the stub's end. When the stub would touch, overlap or cross
-    anything else on the sheet, the label goes on the pin end itself instead,
-    and when that is blocked too the whole call is refused. No junction is
-    ever written. The file is written once or not at all: a refusal lists
-    every blocked pin with a bracketed reason code such as [touch], the
-    obstacle, and a remedy.
+    anything else on the sheet, or move a net into another net class, the
+    label goes on the pin end itself instead. No junction is ever written, and
+    a pin already on the net is left alone. The file is written once or not
+    at all.
+
+    The whole call is refused when any pin cannot be wired safely: its net may
+    already carry another name, it may reach something this tool cannot judge
+    (a bus, a sheet pin, a text variable, a copy of the pad on another sheet),
+    another part shares its reference, or every position is blocked. The
+    refusal lists every refused pin with a bracketed reason code such as
+    [names] or [touch], the obstacle, and a remedy. add_label and add_wires
+    check none of this, so they are no way around a refusal.
 
     It places no PWR_FLAG: whether a net needs one depends on every driver on
     the net, not on the pins in one call. Use add_power_symbol for that.
