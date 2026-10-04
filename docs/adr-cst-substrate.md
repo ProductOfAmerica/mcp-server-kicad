@@ -335,3 +335,59 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   now one `place_component` call, which also ends its two-write sequence (symbol, then
   flag) that could leave half the change on disk. Callers place a flag with
   `add_power_symbol` and lib_id `power:PWR_FLAG`, on the nets that need one.
+
+- 2026-10-04: the netlist import carries what KiCad's own update carries, and
+  footprint libraries are resolved through the `fp-lib-table` files KiCad reads. Until
+  now `update_pcb_from_schematic` copied a footprint's Reference, Value, library id,
+  path and pad nets and nothing else, so a board it built differed from one KiCad's
+  F8 built in every field, every DNP and BOM flag and every sheet link, and a nickname
+  that only the project's table knew was reported `footprint_lib_not_found`. Both
+  halves were measured before they were written. The netlist side on kicad-cli 10.0.6:
+  a component's `<fields>` always lists Footprint, Datasheet and Description, empty or
+  not, plus the symbol's user fields; the three boxes arrive as value-less
+  `<property name="dnp"/>`, `exclude_from_bom` and `exclude_from_board` markers written
+  only when the box is ticked; the sheet is `<sheetpath names="/">` at the root plus a
+  `Sheetfile` property. The board side on a footprint KiCad's own update wrote (the
+  torque block's INA821, placed at 180 degrees): a user field lands as a hidden
+  `(property ...)` on the footprint's F.Fab at `(at 0 0 180)`, so its angle cancels the
+  footprint's and the text reads upright, `(unlocked yes)`, size 1 by 1, thickness
+  0.15; Datasheet and Description are updated in place where the library footprint
+  put them; `path`, `sheetname` and `sheetfile` follow the symbol; `(attr smd)` keeps
+  the mounting type; the library's own KiLib_Generator field survives; Footprint is
+  not a footprint field. `_FP_FIELD_TPL` is that measured node, `_ATTR_ORDER` is the
+  writer's token order in pcb_io_kicad_sexpr.cpp, and `_SYMBOL_OWNED_ATTRS` names the
+  two tokens the schematic owns, so clearing a box clears the flag while
+  `board_only`, `exclude_from_pos_files` and `allow_missing_courtyard` stay the
+  board's. One decision is recorded so it is not re-litigated: a field that left the
+  symbol is NOT removed from the footprint. KiCad itself keeps a footprint's library
+  fields through its update, and a property the user placed by hand is text an import
+  has no business deleting unasked; the cost is a stale field the user can delete,
+  against the alternative of destroying placed text. A symbol with "On board" unticked
+  is what KiCad's update treats as not on this board: never placed, listed in
+  `excluded_from_board`, its pins skipped in the pad pass without a warning, and a
+  footprint it left behind reported stale like any other. The oracle for DNP is KiCad,
+  not the bytes: `kicad-cli pcb export pos --exclude-dnp` drops exactly the flagged
+  footprint and keeps it again once the box is cleared. A first draft of that test
+  asserted `b"dnp" not in raw` and failed on a board with every flag cleared, because
+  the board's own setup carries `hidednponfab`, `sketchdnponfab` and `crossoutdnponfab`;
+  the assertion now names the attribute. On libraries: `_fp_lib_tables` is the one
+  reader of `fp-lib-table`, returning the project table and the global table apart
+  because they sit at different points of the search. KiCad's order is the project's
+  table, then the directories this package has always searched (`.pretty` beside the
+  board and schematic, `KICAD_FP_LIB`), then the global table, then the stock
+  footprints, and `place_footprint` now walks the same list so a hand-placed part and
+  an imported one resolve to one file. Only rows the package can serve are returned:
+  type KiCad, enabled, `${VAR}` expanded, directory present; `${KIPRJMOD}` is the
+  `.kicad_pro`'s directory (`_project_dir`, falling back to the first of the board's
+  and schematic's directories that holds a table or a project), every other variable
+  comes from the environment first and then from the resolved kicad-cli's install for
+  the `KICAD<N>_FOOTPRINT_DIR` family. Measured on KiCad 10.0.6: the global table under
+  `~/.config/kicad/10.0/` is a single `(type "Table")` row pointing at
+  `${KICAD10_TEMPLATE_DIR}/fp-lib-table`, whose 155 rows use `${KICAD10_FOOTPRINT_DIR}`,
+  so the reader follows one level of `Table` rows (`_LIB_TABLE_DEPTH`). An unreadable
+  or malformed table answers empty rather than failing the tool, since the table is a
+  hint about where libraries live and not the operation itself, and the refusal still
+  names every directory searched plus how many table rows named other libraries.
+  Gates: the two fields E2E tests (new, edited and cleared, idempotent on the second
+  run) and the table E2E test turn red without the three sync calls or the table
+  lookup; a second import that changes nothing is still byte-identical.

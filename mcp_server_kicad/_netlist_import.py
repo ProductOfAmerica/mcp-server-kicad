@@ -16,17 +16,38 @@ import os
 import sys
 import xml.etree.ElementTree as ET
 
+#: Netlist fields the updater does not copy as footprint fields: Reference and
+#: Value are the footprint's own text items and are set directly, Footprint is
+#: the library id the footprint was copied from. KiCad's own
+#: BOARD_NETLIST_UPDATER erases the same three before it compares fields.
+_FIELDS_HANDLED_APART = frozenset({"Reference", "Value", "Footprint"})
+
 
 def parse_netlist(path: str) -> tuple[list[dict], list[dict]]:
     """Parse a kicad-cli XML netlist into (components, nets).
 
-    components: [{ref, value, footprint, path}] — footprint "" when unassigned;
+    components: [{ref, value, footprint, path, fields, dnp, exclude_from_bom,
+    exclude_from_board, sheetname, sheetfile}] — footprint "" when unassigned;
     path is the sheetpath+symbol KIID chain for GUI F8 linkage. A multi-unit
     symbol's <tstamps> lists every unit's KIID, space-separated, and the path
     takes the first one, as KiCad's own update does: a footprint has one
     identity, and the whole list written as its path was a token pcbnew
     cannot parse, so it gave the footprint a fresh random KIID on every load
     and the footprint was linked to no unit at all.
+
+    fields is what KiCad's own update copies onto the footprint: every entry
+    of the component's <fields> except Reference, Value and Footprint, which
+    the updater handles on their own (Reference and Value are the footprint's
+    own text items, Footprint is the library id). Measured on kicad-cli 10.0.6:
+    the list always carries Footprint, Datasheet and Description, empty or
+    not, plus the symbol's user fields, so Datasheet and Description reach the
+    footprint even when blank, as the GUI leaves them. The three flags come
+    from the <property> markers the exporter writes only when set:
+    exclude_from_bom and dnp for the symbol's "In BOM" and "DNP" boxes,
+    exclude_from_board for "On board" unticked, which KiCad's update treats as
+    "not on this board". sheetname is the <sheetpath names> ("/" at the root)
+    and sheetfile the Sheetfile property; both land on the footprint as the
+    (sheetname ...) and (sheetfile ...) children KiCad writes.
     nets: [{name, nodes: [(ref, pin), ...]}] — the netlist @code is ignored;
     net names are the only identity that survives onto the board.
     """
@@ -40,12 +61,24 @@ def parse_netlist(path: str) -> tuple[list[dict], list[dict]]:
         prefix = sheetpath.get("tstamps", "/") if sheetpath is not None else "/"
         units = (comp.findtext("tstamps") or "").split()
         tstamp = units[0] if units else ""
+        fields = {}
+        for field in comp.findall("./fields/field"):
+            name = field.get("name") or ""
+            if name and name not in _FIELDS_HANDLED_APART:
+                fields[name] = field.text or ""
+        markers = {p.get("name") or "": p.get("value") or "" for p in comp.findall("property")}
         components.append(
             {
                 "ref": comp.get("ref") or "",
                 "value": comp.findtext("value") or "",
                 "footprint": comp.findtext("footprint") or "",
                 "path": (prefix.rstrip("/") + "/" + tstamp) if tstamp else "",
+                "fields": fields,
+                "dnp": "dnp" in markers,
+                "exclude_from_bom": "exclude_from_bom" in markers,
+                "exclude_from_board": "exclude_from_board" in markers,
+                "sheetname": (sheetpath.get("names") or "/") if sheetpath is not None else "/",
+                "sheetfile": markers.get("Sheetfile", ""),
             }
         )
     nets = []
@@ -94,6 +127,8 @@ def new_summary() -> dict:
         "added": [],
         "value_updated": [],
         "fpid_changed": [],
+        "fields_updated": [],
+        "excluded_from_board": [],
         "stale_footprints": [],
         "stale_removed": [],
         "nets_added": 0,
