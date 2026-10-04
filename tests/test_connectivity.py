@@ -713,3 +713,86 @@ def test_the_reference_check_comes_after_units_disagree_and_before_the_lookup(tm
     assert _plan(p, [("R1", "no such pin")]).codes == ["dup_ref"]
     add_instance(p, "R1", "/00000000-0000-0000-0000-00000000000a/0000000b", 2)
     assert _plan(p, [("R1", "1")]).codes == ["units_disagree"]
+
+
+# ---------------------------------------------------------------------------------------------
+# Live instance paths (design 4.6, 4.1): references and units as KiCad reads them
+# ---------------------------------------------------------------------------------------------
+
+DEAD = "/00000000-0000-0000-0000-00000000000a/0000000b"
+
+
+def _with_dead_entry(tmp_path, sub: str = ""):
+    """Root h.kicad_sch (with h.kicad_pro) holding a sheet for c.kicad_sch, in *sub* when
+    given. The child's U1, a 74LS04, is unit 1 at its live path and carries a leftover entry
+    for unit 2 on a path no sheet of this project has."""
+    from routing_fixtures import add_instance, project_file, sheet
+
+    from mcp_server_kicad import project
+
+    root = fresh(tmp_path, "h")
+    d = tmp_path / "h" / sub if sub else tmp_path / "h"
+    d.mkdir(parents=True, exist_ok=True)
+    child = str(d / "c.kicad_sch")
+    project.create_schematic(schematic_path=child)
+    project_file(tmp_path / "h", "h")
+    place(child, "74LS04", "U1", 101.6, 101.6)
+    sheet(root, child, "C", 152.4, 25.4, file=f"{sub}/c.kicad_sch" if sub else None)
+    add_instance(child, "U1", DEAD, 2)
+    return root, child
+
+
+def test_a_dead_entry_does_not_count(tmp_path):
+    """KiCad draws the unit at the live path (sch_symbol.cpp GetUnitSelection, 9.0.8); every
+    entry counted, the leftover unit 2 made U1 look like a reused sheet's disagreeing units."""
+    _root, child = _with_dead_entry(tmp_path)
+    assert not _plan_in(child, [("U1", "1")]).refused
+    assert _plan(child, [("U1", "1")]).codes == ["units_disagree"]  # no path: every entry
+
+
+def test_the_project_is_found_from_a_sheet_in_a_subdirectory(tmp_path):
+    """The project file sits a directory above the sheet (RoyalBlue54L-Feather's sch/ layout),
+    so its live path is found only by looking up."""
+    _root, child = _with_dead_entry(tmp_path, sub="sch")
+    assert not _plan_in(child, [("U1", "1")]).refused
+
+
+def test_an_unreached_sheet_counts_every_entry(tmp_path):
+    """Guard (this was every case before live paths): a sheet the project's hierarchy never
+    reaches has no live path, so every entry counts, as the prototype counted them."""
+    root, child = _with_dead_entry(tmp_path)
+    tree = _cst.parse(Path(root).read_bytes())
+    tree.lists[0].remove_child(tree.lists[0].find("sheet"))
+    Path(root).write_bytes(_cst.serialize(tree))
+    assert _plan_in(child, [("U1", "1")]).codes == ["units_disagree"]
+
+
+def test_a_kicad6_root_table_counts_as_references(tmp_path):
+    """Below version 20221002 KiCad takes references from the root's (symbol_instances) table
+    (eeschema_helpers.cpp, 9.0.8). Here the table gives the child's R5 the reference R1, the
+    root's own R1's. The old version and the table go into the parsed root only."""
+    root, child = _two_sheets(tmp_path, child_ref="R5")
+    r5 = next(s for s in _root(child).find_all("symbol") if "R5" in _cst.serialize(s).decode())
+    sheet_uuid = _root(root).find("sheet").find("uuid").atoms[1].text
+    tree = _root(root)
+    tree.find("version").atoms[1].set_text("20211123")
+    table = (
+        f'(symbol_instances (path "/{sheet_uuid}/{r5.find("uuid").atoms[1].text}"'
+        ' (reference "R1") (unit 1) (value "R5") (footprint "")))'
+    )
+    tree.append_child(_cst.parse(table.encode()).lists[0], b"\n")
+    pins = [{"reference": "R1", "pin": "1"}]
+    plan = C.plan_wire_pins(tree, pins, "N", "auto", 2.54, root)
+    assert plan.codes == ["dup_ref"], plan.lines
+
+
+def test_a_sheet_that_contains_itself_ends_the_walk(tmp_path):
+    """Guard: KiCad refuses a recursive hierarchy, and the walk must stop rather than follow it.
+    The loop goes into the parsed root only."""
+    root, _child = _two_sheets(tmp_path)
+    tree = _root(root)
+    for q in tree.find("sheet").find_all("property"):
+        if q.atoms[1].text == "Sheetfile":
+            q.atoms[2].set_text("h.kicad_sch")
+    pins = [{"reference": "R1", "pin": "1"}]
+    assert not C.plan_wire_pins(tree, pins, "N", "auto", 2.54, root).refused

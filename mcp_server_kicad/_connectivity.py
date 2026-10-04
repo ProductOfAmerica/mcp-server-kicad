@@ -610,22 +610,6 @@ class _Coarse:
         return self.bad.get(self.uf.find(it.id), [])
 
 
-def _entry_units(sym) -> list[int]:
-    """The units a placed symbol's instance entries give it, every project and path (I02);
-    the top-level (unit) when it has none. More than one means they disagree."""
-    units: set[int] = set()
-    inst = sym.find("instances")
-    for proj in inst.find_all("project") if inst is not None else ():
-        for path in proj.find_all("path"):
-            u = path.find("unit")
-            if u is not None and len(u.atoms) > 1:
-                try:
-                    units.add(int(u.atoms[1].text))
-                except ValueError:
-                    pass
-    return sorted(units) or [_sym_unit_cst(sym)]
-
-
 def _pad_units(lib) -> dict[str, set[int]]:
     """{pad number: units that draw it} of a library symbol; 0 is common to every unit, and a
     sub-symbol whose name encodes no unit counts as 0."""
@@ -655,24 +639,67 @@ def _pad_map(lib) -> dict[str, tuple[frozenset[int], frozenset[str]]]:
 
 @dataclass(frozen=True)
 class SymRecord:
-    """What one placed symbol brings to the duplicate-reference check (H-C1)."""
+    """What one placed symbol brings to the reference and unit rules (H-C1, design 4.6)."""
 
-    refs: frozenset[str]  # its Reference property and every instance entry's reference
+    prop_ref: str  # its Reference property
+    entries: tuple[tuple[str, str, int], ...]  # (path, reference, unit) per instance entry
+    top_unit: int  # its top-level (unit)
+    uuid: str
     key: str  # the library symbol it names (lib_name, else lib_id)
     pads: dict | None  # its definition's pad map; None when unresolved or derived
     derived: bool
-    units: tuple[int, ...]
+
+    def at(self, path: str) -> tuple[str, int]:
+        """KiCad's reference and unit for this symbol's instance at sheet path *path*.
+
+        The entry for that path wins, the last one when several share it; else the first entry,
+        which KiCad's parser makes the symbol's own reference and unit as it loads it; else the
+        Reference property and the top-level unit (9.0.8: sch_symbol.cpp GetRef,
+        GetUnitSelection, AddHierarchicalReference).
+        """
+        hit = None
+        for p, ref, unit in self.entries:
+            if p == path:
+                hit = (ref, unit)
+        if hit is not None:
+            return hit
+        if self.entries:
+            return self.entries[0][1], self.entries[0][2]
+        return self.prop_ref, self.top_unit
+
+    def every_ref(self, extra=()) -> frozenset[str]:
+        """Every reference it could carry, for when its live paths cannot be known."""
+        return frozenset(
+            {self.prop_ref, *(r for _p, r, _u in self.entries), *(r for r, _ in extra)}
+        )
+
+    def every_unit(self, extra=()) -> tuple[int, ...]:
+        """Every unit it could be, for when its live paths cannot be known (I02)."""
+        units = {u for _p, _r, u in self.entries} | {u for _r, u in extra}
+        return tuple(sorted(units)) or (self.top_unit,)
+
+
+def _instance_entries(node) -> tuple[tuple[str, str, int], ...]:
+    """(path, reference, unit) of a placed symbol's instance entries, every project, in file
+    order. A missing reference reads as the Reference property, a missing unit as 1 (the
+    default of KiCad's SCH_SYMBOL_INSTANCE)."""
+    prop = _property(node, "Reference") or "?"
+    out = []
+    inst = node.find("instances")
+    for proj in inst.find_all("project") if inst is not None else ():
+        for path in proj.find_all("path"):
+            if len(path.atoms) < 2:
+                continue
+            try:
+                unit = int(_child_text(path, "unit", "1"))
+            except ValueError:
+                unit = 1
+            out.append((path.atoms[1].text, _child_text(path, "reference") or prop, unit))
+    return tuple(out)
 
 
 def _record(node, libs: dict, maps: dict) -> SymRecord:
     """*maps* memoises pad maps per library name across the symbols of one file."""
-    refs = {_property(node, "Reference") or "?"}
-    inst = node.find("instances")
-    for proj in inst.find_all("project") if inst is not None else ():
-        for path in proj.find_all("path"):
-            r = path.find("reference")
-            if r is not None and len(r.atoms) > 1:
-                refs.add(r.atoms[1].text)
     key = _child_text(node, "lib_name") or _child_text(node, "lib_id")
     lib = libs.get(key)
     derived = lib is not None and lib.find("extends") is not None
@@ -681,7 +708,15 @@ def _record(node, libs: dict, maps: dict) -> SymRecord:
         pads = maps.get(key)
         if pads is None:
             pads = maps[key] = _pad_map(lib)
-    return SymRecord(frozenset(refs), key, pads, derived, tuple(_entry_units(node)))
+    return SymRecord(
+        _property(node, "Reference") or "?",
+        _instance_entries(node),
+        _sym_unit_cst(node),
+        _child_text(node, "uuid"),
+        key,
+        pads,
+        derived,
+    )
 
 
 def _lib_index(root) -> dict:
@@ -693,29 +728,56 @@ def _lib_index(root) -> dict:
     return out
 
 
-def _children(root) -> tuple[str, ...]:
-    """The file names of a sheet's child sheets."""
-    return tuple(n for sh in root.find_all("sheet") if (n := _shared._sheet_file_cst(sh)))
+@dataclass(frozen=True)
+class SheetFacts:
+    """What the hierarchy rules need from one sheet file, never the tree itself."""
+
+    uuid: str
+    version: int
+    records: tuple[SymRecord, ...]  # its placed symbols, in file order
+    children: tuple[tuple[str, str], ...]  # (sheet block uuid, file name) per child sheet
+    legacy: tuple[tuple[str, str, int], ...]  # a KiCad 6 root's (symbol_instances) table
 
 
-#: Facts of the sheet files read for the hierarchy: {blake2b of the bytes: (records, children)}.
-#: Keyed by content, so an edited file is never served stale; bounded, least recently used out;
-#: locked, because the server may run tools on worker threads.
-_FACTS: OrderedDict[bytes, tuple[tuple[SymRecord, ...], tuple[str, ...]]] = OrderedDict()
+def sheet_facts(root, records: tuple[SymRecord, ...] | None = None) -> SheetFacts:
+    """The facts of a parsed sheet; *records* when the caller has them already."""
+    if records is None:
+        libs, maps = _lib_index(root), {}
+        records = tuple(_record(s, libs, maps) for s in root.find_all("symbol"))
+    try:
+        version = int(_child_text(root, "version", "0"))
+    except ValueError:
+        version = 0
+    children = tuple(
+        (_child_text(sh, "uuid"), n)
+        for sh in root.find_all("sheet")
+        if (n := _shared._sheet_file_cst(sh))
+    )
+    legacy = tuple(
+        (path.atoms[1].text, _child_text(path, "reference"), int(_child_text(path, "unit", "1")))
+        for table in root.find_all("symbol_instances")
+        for path in table.find_all("path")
+        if len(path.atoms) > 1 and _child_text(path, "unit", "1").isdigit()
+    )
+    return SheetFacts(_child_text(root, "uuid"), version, records, children, legacy)
+
+
+#: Facts of the sheet files read for the hierarchy, by a blake2b digest of their bytes: keyed by
+#: content, so an edited file is never served stale; bounded, least recently used out; locked,
+#: because the server may run tools on worker threads.
+_FACTS: OrderedDict[bytes, SheetFacts] = OrderedDict()
 _FACTS_MAX = 512
 _FACTS_LOCK = threading.Lock()
 
 
-def _file_facts(data: bytes) -> tuple[tuple[SymRecord, ...], tuple[str, ...]]:
+def _file_facts(data: bytes) -> SheetFacts:
     digest = hashlib.blake2b(data, digest_size=16).digest()
     with _FACTS_LOCK:
         hit = _FACTS.get(digest)
         if hit is not None:
             _FACTS.move_to_end(digest)
             return hit
-    root = _cst.parse(data).lists[0]
-    libs, maps = _lib_index(root), {}
-    facts = (tuple(_record(s, libs, maps) for s in root.find_all("symbol")), _children(root))
+    facts = sheet_facts(_cst.parse(data).lists[0])
     with _FACTS_LOCK:
         _FACTS[digest] = facts
         while len(_FACTS) > _FACTS_MAX:
@@ -723,60 +785,161 @@ def _file_facts(data: bytes) -> tuple[tuple[SymRecord, ...], tuple[str, ...]]:
     return facts
 
 
-def hierarchy_records(path: str | Path, here_root) -> list[tuple[str, SymRecord]]:
-    """Every placed symbol on the other sheets of this sheet's hierarchy, with its file (H-C1).
+#: Below this version KiCad keeps instance data in the root's (symbol_instances) table, not on
+#: the symbols (9.0.8 eeschema_helpers.cpp).
+_ON_SYMBOL_VERSION = 20221002
+#: Sheet instances walked before giving up on live paths: reuse inside reuse multiplies them.
+_MAX_INSTANCES = 4096
+#: Directories above this sheet's own that are searched for its project file.
+_PROJECT_LEVELS = 3
 
-    The walk starts at the project's root schematic beside this sheet when there is one
-    (_shared._find_root_schematic), else at this sheet, and resolves a sheet's file name against
-    its parent's directory, then the root's. Each file is read once, and this sheet's symbols
-    and children come from the tree being edited, never from disk. A missing sheet file is
-    skipped, as KiCad loads it empty; one that cannot be read or parsed refuses [dup_ref].
+
+@dataclass
+class Hierarchy:
+    """This sheet's place in its project, as far as the reference and unit rules need it.
+
+    With *live* set, references and units are read as KiCad reads them, at the instance paths
+    the project's hierarchy gives each sheet. Without it (no project found, this sheet not
+    reached from it, a KiCad 6 root, or too many instances), every entry of every symbol counts,
+    as the prototype counted them, and a KiCad 6 root's table counts too.
     """
-    here = Path(path).resolve()
-    start = Path(_shared._find_root_schematic(str(path)) or path)
-    out: list[tuple[str, SymRecord]] = []
+
+    live: tuple[str, ...] = ()  # this sheet's instance paths
+    others: list[tuple[str, SymRecord, tuple[str, ...]]] = field(default_factory=list)
+    legacy: dict[str, list[tuple[str, int]]] = field(default_factory=dict)  # by symbol uuid
+    error: Refusal | None = None
+
+
+def _project_roots(path: Path) -> list[Path]:
+    """Root schematics that may own this sheet, nearest first: the .kicad_sch named after the
+    only .kicad_pro in its directory, then in each of the _PROJECT_LEVELS directories above."""
+    out, d = [], path.parent
+    for _ in range(_PROJECT_LEVELS + 1):
+        pros = list(d.glob("*.kicad_pro"))
+        if len(pros) == 1 and pros[0].with_suffix(".kicad_sch").is_file():
+            out.append(pros[0].with_suffix(".kicad_sch"))
+        if d.parent == d:
+            break
+        d = d.parent
+    return out
+
+
+def hierarchy(path: str | Path, here: SheetFacts) -> Hierarchy:
+    """Walk this sheet's project for the reference and unit rules (H-C1, design 4.6).
+
+    A sheet block's file name resolves against its parent's directory, then the root's. This
+    sheet's facts come from the tree being edited, never from disk. A missing sheet file is
+    skipped, as KiCad loads it empty; one that cannot be read or parsed makes every reference
+    check refuse, since what it holds is unknown.
+    """
+    path = Path(path)
+    me = path.resolve()
+    cache: dict[Path, SheetFacts | None] = {me: here}
+    bad: list[str] = []
+
+    def facts(f: Path) -> SheetFacts | None:
+        rf = f.resolve()
+        if rf not in cache:
+            try:
+                cache[rf] = _file_facts(f.read_bytes()) if f.is_file() else None
+            except Exception:  # noqa: BLE001 - any failure leaves the sheet unknown
+                cache[rf] = None
+                bad.append(f.name)
+        return cache[rf]
+
+    def child_of(f: Path, base: Path, name: str) -> Path:
+        cands = [f.parent / name, base / name]
+        return next((c for c in cands if c.exists()), cands[0])
+
+    roots = _project_roots(path)
+    for root in roots:
+        top = facts(root)
+        if top is None or top.version < _ON_SYMBOL_VERSION:
+            continue
+        found: dict[Path, list[str]] = {}
+        sheets: dict[Path, SheetFacts] = {}
+        stack: list[tuple[Path, str, tuple[Path, ...]]] = [
+            (root, f"/{top.uuid}", (root.resolve(),))
+        ]
+        n = 0
+        while stack and n < _MAX_INSTANCES:
+            f, kpath, chain = stack.pop()
+            ff = facts(f)
+            if ff is None:
+                continue
+            found.setdefault(chain[-1], []).append(kpath)
+            sheets[chain[-1]] = ff
+            n += 1
+            for su, name in ff.children:
+                c = child_of(f, root.parent, name)
+                if c.resolve() not in chain:  # KiCad refuses a sheet that contains itself
+                    stack.append((c, f"{kpath}/{su}", (*chain, c.resolve())))
+        if stack or me not in found:
+            continue
+        error = _unreadable(bad)
+        if error is not None:
+            break
+        others = [
+            (rf.name, rec, tuple(ps))
+            for rf, ps in found.items()
+            if rf != me
+            for rec in sheets[rf].records
+        ]
+        return Hierarchy(tuple(found[me]), others)
     seen: set[Path] = set()
-    todo = [start]
+    todo = [(path, path.parent)] + [(r, r.parent) for r in roots]
+    others, legacy = [], {}
     while todo:
-        f = todo.pop()
+        f, base = todo.pop()
         rf = f.resolve()
         if rf in seen:
             continue
         seen.add(rf)
-        if rf == here:
-            children = _children(here_root)
-        elif not f.is_file():
+        ff = facts(f)
+        if ff is None:
             continue
-        else:
-            try:
-                records, children = _file_facts(f.read_bytes())
-            except Exception as e:  # noqa: BLE001 - any failure means the sheet is unknown
-                raise Refusal(
-                    "dup_ref",
-                    f"sheet {f.name} of this hierarchy could not be read ({type(e).__name__}),"
-                    " so the reference cannot be checked for uniqueness. Remedy: fix or remove"
-                    " that sheet; otherwise stop and report.",
-                ) from None
-            out += [(f.name, r) for r in records]
-        for name in children:
-            cands = [f.parent / name, start.parent / name]
-            todo.append(next((c for c in cands if c.exists()), cands[0]))
+        if rf != me:
+            others += [(f.name, rec, ()) for rec in ff.records]
+        if ff.version < _ON_SYMBOL_VERSION:
+            for p, ref, unit in ff.legacy:
+                legacy.setdefault(p.rsplit("/", 1)[-1], []).append((ref, unit))
+        todo += [(child_of(f, base, name), base) for _su, name in ff.children]
+    return Hierarchy((), others, legacy, _unreadable(bad))
+
+
+def _legacy(facts: SheetFacts) -> dict[str, list[tuple[str, int]]]:
+    """A KiCad 6 sheet's own table, by symbol uuid, for a sheet read alone."""
+    out: dict[str, list[tuple[str, int]]] = {}
+    if facts.version < _ON_SYMBOL_VERSION:
+        for p, ref, unit in facts.legacy:
+            out.setdefault(p.rsplit("/", 1)[-1], []).append((ref, unit))
     return out
 
 
-def _one_part(group: list[SymRecord]) -> str | None:
-    """None when the placed symbols sharing a reference are one part, else why not (H-C1): each
-    places one distinct unit, every definition resolves and is not derived, and the definitions
-    agree on which units draw each pad and with which electrical types."""
-    units = [r.units for r in group]
+def _unreadable(bad: list[str]) -> Refusal | None:
+    if not bad:
+        return None
+    return Refusal(
+        "dup_ref",
+        f"sheet {bad[0]} of this hierarchy could not be read, so the reference cannot be checked"
+        " for uniqueness. Remedy: fix or remove that sheet; otherwise stop and report.",
+    )
+
+
+def _one_part(group: list[tuple[SymRecord, tuple[int, ...]]]) -> str | None:
+    """None when the placed symbols sharing a reference, each with the units it places, are one
+    part, else why not (H-C1): each places one distinct unit, every definition resolves and is
+    not derived, and the definitions agree on which units draw each pad and with which electrical
+    types."""
+    units = [u for _r, u in group]
     if not all(len(u) == 1 for u in units) or len({u[0] for u in units}) != len(units):
         return "they do not each place a distinct unit"
-    for r in group:
+    for r, _u in group:
         if r.pads is None:
             return f"library symbol '{r.key}' {'is derived' if r.derived else 'does not resolve'}"
-    first = group[0]
+    first = group[0][0]
     assert first.pads is not None
-    for r in group[1:]:
+    for r, _u in group[1:]:
         assert r.pads is not None
         if r.pads == first.pads:
             continue
@@ -846,9 +1009,7 @@ class Model:
 
     def __init__(self, root, path: str | Path | None = None):
         self.root = root
-        self.path = path  # the sheet's file, for the hierarchy; None checks this sheet alone
-        self._hier: list[tuple[str, SymRecord]] | None = None
-        self._mine: list[tuple[None, SymRecord]] | None = None
+        self.path = path  # the sheet's file, for the hierarchy; None reads this sheet alone
         self.items: list[Item] = []
         self.syms: list[Sym] = []
         self.pads: dict[tuple[str, str], list[Item]] = {}
@@ -857,6 +1018,10 @@ class Model:
         self.libs: dict = _lib_index(root)
         self._dirty = True
         self._coarse: _Coarse | None = None
+        maps: dict = {}
+        self.records = {id(n): _record(n, self.libs, maps) for n in root.find_all("symbol")}
+        here = sheet_facts(root, tuple(self.records.values()))
+        self.hier = hierarchy(path, here) if path is not None else Hierarchy(legacy=_legacy(here))
         for ch in root.lists:
             self._take(ch)
 
@@ -931,7 +1096,11 @@ class Model:
         if s.lib is None or s.derived:
             return
         pos, t = symbol_transform(node, ref)
-        s.units = _entry_units(node)
+        rec, h = self.records[id(node)], self.hier
+        if h.live:
+            s.units = sorted({rec.at(p)[1] for p in h.live})
+        else:
+            s.units = list(rec.every_unit(h.legacy.get(rec.uuid, ())))
         s.style = _sym_body_style_cst(node)
         s.is_power = s.lib.find("power") is not None
         s.lib_units = {
@@ -1197,32 +1366,57 @@ class Model:
             )
 
     def check_unique(self, ref: str) -> None:
-        """Refuse [dup_ref] unless every placed symbol in the hierarchy that can carry one of
-        *ref*'s references is a distinct unit of one part (H-C1, design 4.6). KiCad's netlist
-        knows a component by its reference, so same-numbered pads of symbols sharing one become
-        one pad."""
-        if self._mine is None:
-            maps: dict = {}
-            self._mine = [(None, _record(s.node, self.libs, maps)) for s in self.syms]
-        mine = self._mine
-        refs = frozenset().union(*(r.refs for (_f, r), s in zip(mine, self.syms) if s.ref == ref))
-        if self._hier is None:
-            self._hier = hierarchy_records(self.path, self.root) if self.path is not None else []
-        group = [(f, r) for f, r in mine + self._hier if r.refs & refs]
+        """Refuse [dup_ref] unless every placed symbol in the hierarchy carrying one of the
+        references *ref*'s symbols here carry is a distinct unit of one part (H-C1, design
+        4.6). KiCad's netlist knows a component by its reference, so same-numbered pads of
+        symbols sharing one become one pad.
+
+        At live paths each reference is checked on its own, so a reused sheet annotated R1 and
+        R101 is two parts, and one whose instances both say R1 is refused.
+        """
+        h = self.hier
+        if h.error is not None:
+            raise h.error
+        mine = [self.records[id(s.node)] for s in self.syms]
+        targets = [rec for rec, s in zip(mine, self.syms) if s.ref == ref]
+        if h.live:
+            placed = [(None, rec, p) for rec in mine for p in h.live]
+            placed += [(f, rec, p) for f, rec, paths in h.others for p in paths]
+            for r in sorted({rec.at(p)[0] for rec in targets for p in h.live}):
+                group = [(f, rec, (rec.at(p)[1],), p) for f, rec, p in placed if rec.at(p)[0] == r]
+                self._refuse_unless_one_part(ref, r, group)
+            return
+        extra = h.legacy.get
+        refs = frozenset().union(*(rec.every_ref(extra(rec.uuid, ())) for rec in targets))
+        group = [
+            (f, rec, rec.every_unit(extra(rec.uuid, ())), None)
+            for f, rec in [(None, rec) for rec in mine] + [(f, rec) for f, rec, _p in h.others]
+            if rec.every_ref(extra(rec.uuid, ())) & refs
+        ]
+        self._refuse_unless_one_part(ref, None, group)
+
+    def _refuse_unless_one_part(self, ref: str, shared: str | None, group: list) -> None:
+        """*group*: (file or None for this sheet, record, units, instance path or None)."""
         if len(group) <= 1:
             return
-        why = _one_part([r for _f, r in group])
+        why = _one_part([(rec, units) for _f, rec, units, _p in group])
         if why is None:
             return
-        shown = "; ".join(
-            f"{'/'.join(sorted(r.refs))} ({r.key}, unit {','.join(map(str, r.units))}"
-            f"{', on ' + f if f else ''})"
-            for f, r in group[:6]
-        )
+        twice = {(f, id(rec)) for f, rec, _u, _p in group}
+        many = len(twice) < len(group)
+
+        def where(f, rec, units, p) -> str:
+            shown = shared or "/".join(sorted(rec.every_ref(self.hier.legacy.get(rec.uuid, ()))))
+            at = f" at {p}" if many and p else ""
+            unit = ",".join(map(str, units))
+            return f"{shown} ({rec.key}, unit {unit}, on {f or 'this sheet'}{at})"
+
+        shown = "; ".join(where(*g) for g in group[:6])
         more = f" and {len(group) - 6} more" if len(group) > 6 else ""
+        name = shared or ref
         raise Refusal(
             "dup_ref",
-            f"reference {ref} is carried by {len(group)} placed symbols in this hierarchy that"
+            f"reference {name} is carried by {len(group)} placed symbols in this hierarchy that"
             f" are not distinct units of one part ({shown}{more}): {why}; KiCad joins their pads"
             " by reference. Remedy: give each part its own reference (annotate_schematic numbers"
             " the ones ending in '?'), then call again; otherwise stop and report.",
@@ -1755,5 +1949,20 @@ def plan_wire_pins(
     if mates:
         plan.notes.append(
             "Already connected to a wired pin, so now also on it: " + ", ".join(sorted(mates))
+        )
+    live = m.hier.live
+    if len(live) > 1 and plan.wired and not plan.refused:
+        refs = sorted(
+            {
+                (m.records[id(cs[0].sym.node)].at(p)[0], cs[0].num or "")
+                for _tag, cs, _hint in ready
+                if cs[0].sym is not None
+                for p in live
+            },
+            key=lambda rn: (rn[0], _pad_order(rn[1])),
+        )
+        plan.notes.append(
+            f"Note: this sheet is used {len(live)} times in its project, so this wiring is in"
+            f" every instance: {', '.join(f'{r}:{n}' for r, n in refs)}."
         )
     return plan

@@ -148,3 +148,31 @@ def test_one_part_placed_across_a_project_is_not_a_duplicate(vme_wren, sheet, re
     root = _cst.parse(path.read_bytes()).lists[0]
     m = _connectivity.Model(root, str(path))
     m.check_unique(ref)  # raises Refusal("dup_ref") if the group is not one part
+
+
+@pytest.fixture(scope="module")
+def tiny_tapeout(tmp_path_factory) -> Path:
+    base = demo_dir()
+    src = base / "tiny_tapeout" if base is not None else None
+    if src is None or not (src / "tinytapeout-demo.kicad_pro").is_file():
+        pytest.skip("KiCad's demos have no tiny_tapeout project on this host")
+    dst = Path(tmp_path_factory.mktemp("tt")) / "tiny_tapeout"
+    dst.mkdir()
+    for f in [*src.glob("*.kicad_sch"), *src.glob("*.kicad_pro")]:
+        shutil.copy2(f, dst / f.name)
+    return dst
+
+
+@pytest.mark.parametrize("ref", ["U3", "U4"])
+def test_a_reference_on_a_dead_path_is_not_a_duplicate(tiny_tapeout, ref):
+    """dupref-report.md's one remaining unneeded refusal. On tinytapeout-demo.kicad_sch, U3
+    (an AP2112K) carries a second entry from a project called tip-top, on a path this project
+    does not have, that names it U4, the reference of the 74CBTLV3257's five units (read
+    2026-10-04 in KiCad 9.0.8's copy). KiCad reads U3 at its live path, so neither reference is
+    shared."""
+    path = tiny_tapeout / "tinytapeout-demo.kicad_sch"
+    data = path.read_bytes()
+    if b'(project "tip-top"' not in data:
+        pytest.skip("this KiCad's tiny_tapeout has no tip-top entry")
+    m = _connectivity.Model(_cst.parse(data).lists[0], str(path))
+    m.check_unique(ref)  # raises Refusal("dup_ref") if the reference is shared

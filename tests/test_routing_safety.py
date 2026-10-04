@@ -847,3 +847,37 @@ def test_units_of_one_part_on_two_sheets_are_accepted(tmp_path):
     assert status == "OK", msg
     status, msg = wired(child, [("U1", "5")], "B_IN", judge_on=root)
     assert status == "OK", msg
+
+
+def _reused(tmp_path, second_ref: str) -> tuple[str, str]:
+    """One child sheet used twice from the root, holding R1, whose instance under the second
+    sheet block is annotated *second_ref*. R2 on the root ties its pin 1 to nothing."""
+    root, child = _hierarchy(tmp_path, "h")
+    place(child, "R", "R1", 101.6, 101.6)
+    sheet(root, child, "C1", 152.4, 25.4)
+    sheet(root, child, "C2", 152.4, 76.2, again={"R1": second_ref})
+    place(root, "R", "R2", 50.8, 101.6)
+    return root, child
+
+
+def test_a_reused_sheet_whose_instances_share_a_reference_is_refused(tmp_path):
+    """Divergence 8 of the design record (the prototype accepted this). Both instances of the
+    child carry R1, so KiCad's netlist has one R1 whose pin 1 sits on two nets, /C1/N and
+    /C2/N, once the child is wired: the reference names two parts."""
+    root, child = _reused(tmp_path, "R1")
+    status, msg = wired(child, [("R1", "1")], "N", judge_on=root)
+    assert status == "REFUSED" and msg.startswith("[dup_ref] "), msg
+
+
+def test_a_reused_sheet_annotated_per_instance_is_accepted(tmp_path):
+    """The instances carry R1 and R101, two parts with their own references, which is how KiCad
+    annotates a reused sheet. Wiring the sheet wires every instance, R1:1 onto /C1/N and R101:1
+    onto /C2/N, and the result says so."""
+    root, child = _reused(tmp_path, "R101")
+    before = nets(root) if _cli() else None
+    status, msg = call_wptn(child, pins(("R1", "1")), "N")
+    assert status == "OK", msg
+    assert "used 2 times in its project, so this wiring is in every instance: R1:1, R101:1" in msg
+    if before is not None:
+        v = judge(before, nets(root), [{("R1", "1")}, {("R101", "1")}], "N")
+        assert v.delivered and not v.wrong, v.problems()

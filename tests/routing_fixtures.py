@@ -285,13 +285,28 @@ def project_file(directory, name: str) -> str:
     return str(p)
 
 
-def sheet(parent: str, child: str, name: str, x, y, pins=(), w=30.48, h=20.32) -> dict:
+def sheet(
+    parent: str,
+    child: str,
+    name: str,
+    x,
+    y,
+    pins=(),
+    w=30.48,
+    h=20.32,
+    file: str | None = None,
+    again: dict | None = None,
+) -> dict:
     """A sheet block on the root sheet *parent* for *child*, in the node shape the routing
     pressure test's hierarchy probes wrote. pins: [(name, shape, side, k)], pin k at
-    y + k * 2.54 on the left or right edge, with no wire or label added on either side.
+    y + k * 2.54 on the left or right edge, with no wire or label added on either side. *file*
+    is the Sheetfile text, the child's file name by default.
 
     Every symbol already on *child* is given the instance path KiCad gives it under this sheet,
-    so place the child's symbols first. Returns {pin name: (x, y)}.
+    so place the child's symbols first. With *again*, the sheet is a further instance of a
+    child already placed: each symbol keeps its entries and gains one for this path, with the
+    reference *again* maps its current one to (unchanged when absent). Returns {pin name: (x,
+    y)}.
     """
     root = _cst.parse(Path(parent).read_bytes()).lists[0]
     root_uuid = root.find("uuid").atoms[1].text
@@ -315,7 +330,7 @@ def sheet(parent: str, child: str, name: str, x, y, pins=(), w=30.48, h=20.32) -
         f' (stroke (width 0.1524) (type solid)) (fill (color 0 0 0 0.0000)) (uuid "{su}")'
         f' (property "Sheetname" "{name}" (at {_n(x)} {_n(y - 0.7116)} 0)'
         f" {eff} (justify left bottom)))"
-        f' (property "Sheetfile" "{Path(child).name}" (at {_n(x)} {_n(y + h + 0.5846)} 0)'
+        f' (property "Sheetfile" "{file or Path(child).name}" (at {_n(x)} {_n(y + h + 0.5846)} 0)'
         f" {eff} (justify left top))) "
         + " ".join(pin_nodes)
         + f' (instances (project "{stem}" (path "/{root_uuid}" (page "{page}")))))',
@@ -327,8 +342,16 @@ def sheet(parent: str, child: str, name: str, x, y, pins=(), w=30.48, h=20.32) -
             inst = s.find("instances")
             for proj in inst.find_all("project") if inst is not None else ():
                 proj.atoms[1].set_text(stem)
-                for path_node in proj.find_all("path"):
-                    path_node.atoms[1].set_text(f"/{root_uuid}/{su}")
+                paths = proj.find_all("path")
+                if again is None:
+                    for path_node in paths:
+                        path_node.atoms[1].set_text(f"/{root_uuid}/{su}")
+                    continue
+                new = paths[-1].copy()
+                new.atoms[1].set_text(f"/{root_uuid}/{su}")
+                ref = new.find("reference").atoms[1]
+                ref.set_text(again.get(ref.text, ref.text))
+                proj.insert_after(paths[-1], new)
 
     _edit(child, repath)
     return where
