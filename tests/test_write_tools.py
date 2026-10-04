@@ -11,7 +11,6 @@ from conftest import (
     assert_kicad_parseable,
     build_r_symbol,
     make_dual_unit_sch,
-    make_power_sch,
     netlist_nodes,
     new_schematic,
     reparse,
@@ -890,8 +889,13 @@ class TestAddPowerSymbol:
         assert len(flg_refs) == 1
         assert flg_refs[0] == "#FLG01"
 
-    def test_vcc_gets_auto_pwr_flag(self, empty_sch, scratch_power_lib):
-        """Placing VCC should auto-create a PWR_FLAG."""
+    def test_vcc_and_gnd_get_no_pwr_flag(self, empty_sch, scratch_power_lib):
+        """Placing VCC or GND places only that symbol, never a PWR_FLAG.
+
+        A flag tells ERC the net has a source it cannot see, which only the
+        designer knows. Placing one per power symbol silenced the undriven-net
+        check on every rail and put two flags on a net with two symbols.
+        """
         schematic.add_power_symbol(
             lib_id="power:VCC",
             reference="#PWR01",
@@ -901,13 +905,23 @@ class TestAddPowerSymbol:
             schematic_path=str(empty_sch),
             project_path=str(empty_sch.with_suffix(".kicad_pro")),
         )
+        result = schematic.add_power_symbol(
+            lib_id="power:GND",
+            reference="#PWR02",
+            x=100,
+            y=120,
+            symbol_lib_path=str(scratch_power_lib),
+            schematic_path=str(empty_sch),
+            project_path=str(empty_sch.with_suffix(".kicad_pro")),
+        )
+        assert "#FLG" not in result
         sch = reparse(str(empty_sch))
         refs = [
             next((p.value for p in s.properties if p.key == "Reference"), "")
             for s in sch.schematicSymbols
         ]
-        assert "#PWR01" in refs
-        assert any(r.startswith("#FLG") for r in refs)
+        assert sorted(refs) == ["#PWR01", "#PWR02"]
+        assert not any(ls.entryName.endswith("PWR_FLAG") for ls in sch.libSymbols)
 
 
 class TestSetComponentFootprint:
@@ -1447,53 +1461,6 @@ class TestConnectPinsNetLabel:
         sch = Schematic.from_file(str(scratch_sch))
         auto_labels = [lbl.text for lbl in sch.labels if lbl.text.startswith("Net-(")]
         assert len(auto_labels) == 0, f"Should skip auto-label, got: {auto_labels}"
-
-
-# ---------------------------------------------------------------------------
-# wire_pins_to_net  –  auto_pwr_flag opt-out
-# ---------------------------------------------------------------------------
-
-
-class TestWirePinsToNetAutoPwrFlag:
-    @pytest.mark.no_kicad_validation
-    def test_auto_pwr_flag_false_skips_pwr_flag(self, tmp_path):
-        """wire_pins_to_net with auto_pwr_flag=False should not place PWR_FLAG."""
-        sch_path = Path(make_power_sch(tmp_path))
-
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC_NET",
-            auto_pwr_flag=False,
-            schematic_path=str(sch_path),
-        )
-
-        # Reload and check no PWR_FLAG was placed
-        sch2 = reparse(str(sch_path))
-        pwr_flags = [
-            s
-            for s in sch2.schematicSymbols
-            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in s.properties)
-        ]
-        assert len(pwr_flags) == 0, "PWR_FLAG should not be placed when auto_pwr_flag=False"
-
-    @pytest.mark.no_kicad_validation
-    def test_auto_pwr_flag_true_places_pwr_flag(self, tmp_path):
-        """wire_pins_to_net with auto_pwr_flag=True (default) should place PWR_FLAG for power_in."""
-        sch_path = Path(make_power_sch(tmp_path))
-
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "#PWR01", "pin": "1"}],
-            label_text="VCC_NET2",
-            schematic_path=str(sch_path),
-        )
-
-        sch2 = reparse(str(sch_path))
-        pwr_flags = [
-            s
-            for s in sch2.schematicSymbols
-            if any(p.key == "Value" and p.value == "PWR_FLAG" for p in s.properties)
-        ]
-        assert len(pwr_flags) == 1, "PWR_FLAG should be placed when auto_pwr_flag=True (default)"
 
 
 # ---------------------------------------------------------------------------
