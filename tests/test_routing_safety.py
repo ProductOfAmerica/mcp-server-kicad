@@ -11,6 +11,8 @@ netlist is exported anyway, the model's two views are also checked against it
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from conftest import netlist_nodes, requires_cli
 from netlist_oracle import judge, model_disagreements, nets
@@ -881,3 +883,54 @@ def test_a_reused_sheet_annotated_per_instance_is_accepted(tmp_path):
     if before is not None:
         v = judge(before, nets(root), [{("R1", "1")}, {("R101", "1")}], "N")
         assert v.delivered and not v.wrong, v.problems()
+
+
+# ---------------------------------------------------------------------------------------------
+# Net classes (H-C2 to H-C5)
+# ---------------------------------------------------------------------------------------------
+
+_BOX = [(71.12, 60.96), (81.28, 60.96), (81.28, 71.12), (71.12, 71.12)]
+_STRIP = [(71.12, 70.485), (81.28, 70.485), (81.28, 71.755), (71.12, 71.755)]
+
+
+def _inert05(tmp_path, v: str) -> str:
+    """INERT-05 (v05_rule_area). R1:1 at (76.2, 72.39) points up into a rule area; R2:1 carries
+    SIG; the project defines class HV. RA1 and RA4: a box from y 60.96 to 71.12 with an HV
+    directive on its top edge. RA2: a strip from y 70.485 to 71.755 across the stub's path, its
+    directive on the left edge. RA3: the box with no directive."""
+    from routing_fixtures import netclass_flag, rule_area
+
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 76.2, 76.2)
+    place(p, "R", "R2", 96.52, 76.2)
+    wire(p, 96.52, 72.39, 96.52, 69.85)
+    label(p, "SIG", 96.52, 69.85)
+    project_file(Path(p).parent, Path(p).stem, classes=("HV",))
+    if v in ("RA1", "RA4"):
+        rule_area(p, _BOX)
+        netclass_flag(p, "HV", 78.74, 60.96)
+    elif v == "RA2":
+        rule_area(p, _STRIP)
+        netclass_flag(p, "HV", 71.12, 71.12)
+    else:
+        rule_area(p, _BOX)
+    return p
+
+
+@pytest.mark.parametrize("v", ["RA1", "RA2"])
+def test_inert05_a_stub_into_a_classed_rule_area_falls_back_to_the_pin(tmp_path, v):
+    """INERT-05. The 2.54 mm stub up from R1:1 enters an area whose directive assigns HV, which
+    KiCad then gives to every net the area holds: the old stub moved R1:1 and R2:1 (SIG's net)
+    into HV. The label goes on the pin end instead, outside the area."""
+    p = _inert05(tmp_path, v)
+    status, msg = wired(p, [("R1", "1")], "SIG")
+    assert status == "OK" and "on the pin end" in msg, msg
+
+
+@pytest.mark.parametrize(("v", "direction"), [("RA3", "auto"), ("RA4", "left")])
+def test_inert05_a_stub_clear_of_any_class_is_kept(tmp_path, v, direction):
+    """Guards against over-refusal: an area with no directive assigns nothing (RA3), and a
+    stub left stays clear of the box (RA4)."""
+    p = _inert05(tmp_path, v)
+    status, msg = wired(p, [("R1", "1")], "SIG", direction=direction)
+    assert status == "OK" and "stub" in msg and "on the pin end" not in msg, msg

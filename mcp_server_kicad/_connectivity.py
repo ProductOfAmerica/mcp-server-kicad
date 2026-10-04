@@ -33,6 +33,9 @@ IU_PER_MM = 10000
 #: other than the target pin's own connection point.
 TOL = 500
 TOL2 = TOL * TOL
+#: A directive this close to a rule area's outline certainly attaches to it: KiCad attaches
+#: within 5 IU (sch_rule_area.cpp, 9.0.8), so 4 holds whichever way coordinates round (H-C4).
+CERT2 = 16
 
 Point = tuple[int, int]
 Matrix = tuple[int, int, int, int]
@@ -257,7 +260,7 @@ class Refusal(Exception):
 
     def __init__(self, codes: str | tuple[str, ...] | list[str], text: str):
         super().__init__(text)
-        self.codes = (codes,) if isinstance(codes, str) else tuple(codes)
+        self.codes = (codes,) if isinstance(codes, str) else tuple(dict.fromkeys(codes))
         self.text = text
 
 
@@ -487,6 +490,8 @@ class Item:
         "new",
         "alt_names",
         "tv",
+        "cls",
+        "w",
     )
 
     def __init__(self, kind: str, x: int, y: int, x2: int | None = None, y2: int | None = None):
@@ -508,6 +513,8 @@ class Item:
         # which name KiCad gives the net.
         self.alt_names: tuple[str, ...] = ()
         self.tv = False  # text holding a text variable ("${"), whose value is unknown here
+        self.cls: tuple[str, ...] = ()  # a label's non-empty Netclass field values (H-C2)
+        self.w = 0  # a wire's or bus's stroke width as written; 0 is the default
 
 
 def _conn_points(it: Item):
@@ -961,6 +968,42 @@ def _one_part(group: list[tuple[SymRecord, tuple[int, ...]]]) -> str | None:
     return None
 
 
+def _edges(poly: list[Point]):
+    return zip(poly, poly[1:] + poly[:1])
+
+
+def _in_poly(x: int, y: int, poly: list[Point]) -> bool:
+    """Even-odd point in polygon, exact in integers. A point on the outline may fall either
+    way; every caller tests the outline too."""
+    inside = False
+    for (ax, ay), (bx, by) in _edges(poly):
+        if (ay > y) != (by > y):
+            lhs, rhs = (x - ax) * (by - ay), (y - ay) * (bx - ax)
+            if (lhs < rhs) if by > ay else (lhs > rhs):
+                inside = not inside
+    return inside
+
+
+def _near_poly(x: int, y: int, poly: list[Point], r2: int) -> bool:
+    """Inside the polygon or within sqrt(r2) of its outline."""
+    return _in_poly(x, y, poly) or any(_within(x, y, *a, *b, r2) for a, b in _edges(poly))
+
+
+def _seg_poly(ax: int, ay: int, bx: int, by: int, poly: list[Point], r2: int) -> bool:
+    """A segment inside the polygon, crossing its outline, or within sqrt(r2) of it."""
+    if _near_poly(ax, ay, poly, r2) or _near_poly(bx, by, poly, r2):
+        return True
+    for (cx, cy), (dx, dy) in _edges(poly):
+        if _within(cx, cy, ax, ay, bx, by, r2):
+            return True
+        if (
+            _side(cx, cy, dx, dy, ax, ay) * _side(cx, cy, dx, dy, bx, by) < 0
+            and _side(ax, ay, bx, by, cx, cy) * _side(ax, ay, bx, by, dx, dy) < 0
+        ):
+            return True
+    return False
+
+
 def _overlaps(lines: list[Item]) -> list[tuple[Item, Item]]:
     """Pairs of same-layer lines (wire with wire, bus with bus) overlapping collinearly."""
     out = []
@@ -1015,6 +1058,7 @@ class Model:
         self.pads: dict[tuple[str, str], list[Item]] = {}
         self.placed: dict[str, set[int]] = {}  # units this sheet places per reference
         self.jumpers: list[list[Item]] = []
+        self.areas: list[list[Point]] = []  # rule area outlines
         self.libs: dict = _lib_index(root)
         self._dirty = True
         self._coarse: _Coarse | None = None
@@ -1043,8 +1087,15 @@ class Model:
                 if len(xys) == 2:
                     self.add(Item("gline", *xys[0], *xys[1]))
                 return
+            stroke = ch.find("stroke")
+            width = iu(_child_text(stroke, "width", "0")) if stroke is not None else 0
             for a, b in zip(xys, xys[1:]):
-                self.add(Item(h, *a, *b))
+                self.add(Item(h, *a, *b)).w = max(width, 0)
+        elif h == "rule_area":
+            poly = ch.find("polyline")
+            xys = _xys(poly) if poly is not None else []
+            if xys:
+                self.areas.append(xys)
         elif h == "bus_entry":
             at, size = ch.find("at"), ch.find("size")
             x, y = iu(at.atoms[1].text), iu(at.atoms[2].text)
@@ -1069,11 +1120,12 @@ class Model:
             it.name = None if h in ("netclass_flag", "directive_label") else it.text
             # Every property but Intersheetrefs can feed the net's name or class (H-C8).
             props = [
-                q.atoms[2].text
+                (q.atoms[1].text, q.atoms[2].text)
                 for q in ch.find_all("property")
                 if len(q.atoms) > 2 and q.atoms[1].text != "Intersheetrefs"
             ]
-            it.tv = any("${" in v for v in (it.text, *props))
+            it.tv = any("${" in v for v in (it.text, *(v for _k, v in props)))
+            it.cls = tuple(v for k, v in props if k == "Netclass" and v)
         elif h == "sheet":
             sheet_name = _property(ch, "Sheetname") or _property(ch, "Sheet name") or "?"
             for p in ch.find_all("pin"):
@@ -1267,6 +1319,8 @@ class Model:
             if it.name is not None and "${" not in it.name:
                 self._cnames.setdefault(uf.find(it.id), {}).setdefault(it.name, []).append(it)
         self._coarse = None
+        self._poss: dict[int, set[str]] = {}
+        self._cert: dict[int, set[str]] | None = None
         self._dirty = False
 
     def narrow_names(self, it: Item) -> dict[str, list[Item]]:
@@ -1504,6 +1558,126 @@ class Model:
         return bool(per_sym) and all(
             set(drawn) == set(nums) and len(set().union(*drawn.values())) == 1
             for drawn in per_sym.values()
+        )
+
+    # -- net classes (H-C2 to H-C5) -------------------------------------------------------
+    def _area_classes(self, r2: int) -> list[tuple[list[Point], set[str]]]:
+        """[(outline, classes of the directives within sqrt(r2) of it)] per rule area."""
+        flags = [it for it in self.items if it.kind == "label" and it.name is None and it.cls]
+        return [
+            (
+                poly,
+                {
+                    c
+                    for d in flags
+                    for c in d.cls
+                    if any(_within(d.x, d.y, *a, *b, r2) for a, b in _edges(poly))
+                },
+            )
+            for poly in self.areas
+        ]
+
+    def _touches(self, it: Item, poly: list[Point]) -> bool:
+        """KiCad collides a wire or bus with a rule area as a segment of its stroke width, and
+        a point item by its point (sch_rule_area.cpp, 9.0.8), here widened by the margin."""
+        if it.kind in _SEGS:
+            return _seg_poly(it.x, it.y, it.x2, it.y2, poly, (TOL + it.w // 2) ** 2)
+        return _near_poly(it.x, it.y, poly, TOL2)
+
+    def poss_classes(self, its: list[Item]) -> set[str]:
+        """H-C3: the classes these items possibly carry, from labels and touched rule areas."""
+        out = {c for it in its for c in it.cls}
+        for poly, cls in self._area_classes(TOL2):
+            if cls and any(self._touches(it, poly) for it in its):
+                out |= cls
+        return out
+
+    def _comp_poss(self, it: Item) -> set[str]:
+        cm = self.coarse()
+        r = cm.uf.find(it.id)
+        if r not in self._poss:
+            self._poss[r] = self.poss_classes([x for x in self.items if cm.uf.find(x.id) == r])
+        return self._poss[r]
+
+    def cert_classes(self, roots: set[int]) -> set[str]:
+        """H-C4: the classes the narrow components with these roots certainly carry: their
+        named labels' fields; directives they certainly hold (at a certain conductor, or alone
+        on one reliable wire's interior); and rule areas that certainly hold both a directive
+        and one of their items. A class holding a text variable is never certain."""
+        self.ensure()
+        if self._cert is None:
+            cert: dict[int, set[str]] = {}
+            for it in self.items:
+                if it.kind != "label" or not it.cls:
+                    continue
+                if it.name is not None:
+                    tgt: Item | None = it
+                else:
+                    at = [x for x in self._pts[(it.x, it.y)] if self._certain(x)]
+                    tgt = at[0] if at else self._lone_wire(it)
+                if tgt is not None:
+                    cert.setdefault(self._C.find(tgt.id), set()).update(it.cls)
+            for poly, cls in self._area_classes(CERT2):
+                for it in self.items if cls else ():
+                    if (it.kind == "pin" and it.hidden) or it.kind == "junction":
+                        continue
+                    if not self._certain(it):
+                        continue
+                    if any(_near_poly(x, y, poly, 0) for x, y in _conn_points(it)):
+                        cert.setdefault(self._C.find(it.id), set()).update(cls)
+            self._cert = cert
+        out: set[str] = set()
+        for r in roots:
+            out |= self._cert.get(r, set())
+        return {c for c in out if "${" not in c}
+
+    def class_block(
+        self, pins: list[Item], pts: list[Point], segs: list[tuple[Point, Point]], net: str
+    ) -> str | None:
+        """H-C5 for one candidate geometry: None when it passes, else why not.
+
+        It fires when the pin's possible net or the new geometry possibly carries a class, and
+        passes only when every part being joined (the pin's net and, when this sheet carries
+        *net*, that net) certainly carries one class set and possibly nothing else, and the new
+        geometry possibly carries nothing outside it. A class only *net*'s side carries does not
+        fire it: KiCad then gives the pin that class, which is the join asked for.
+        """
+        if not self.areas and not any(it.cls for it in self.items):
+            return None
+        self.ensure()
+        parts = [
+            (self._comp_poss(q), self.cert_classes({self._C.find(q.id)}), _desc(q)) for q in pins
+        ]
+        new = [Item("wire", *a, *b) for a, b in segs] + [Item("label", *q) for q in pts]
+        g = self.poss_classes(new)
+        g |= {
+            c
+            for it in self.items
+            if it.cls
+            for c in it.cls
+            if any(_within(it.x, it.y, n.x, n.y, n.x2, n.y2, TOL2) for n in new)
+        }
+        touched = set().union(g, *(ps for ps, _c, _d in parts))
+        if not touched:
+            return None
+        named = [it for it in self.items if it.name == net]
+        if named:
+            parts.append(
+                (
+                    self._comp_poss(named[0]),
+                    self.cert_classes({self._C.find(it.id) for it in named}),
+                    f"net '{net}'",
+                )
+            )
+        want = parts[0][1]
+        if all(ps == want and cs == want for ps, cs, _d in parts) and g <= want:
+            return None
+        shown = "; ".join(
+            f"{d} possibly {sorted(ps)}, certainly {sorted(cs)}" for ps, cs, d in parts
+        )
+        return (
+            f"net classes {sorted(touched)} are touched and not certainly the same on every part"
+            f" being joined ({shown}; the new geometry possibly {sorted(g)})"
         )
 
     # -- the touch rule -------------------------------------------------------------------
@@ -1805,7 +1979,8 @@ def _wire_copy(m: Model, plan: WirePlan, c: Item, net: str, fixed: Point | None,
     E = (c.x + d[0] * L, c.y + d[1] * L)
     dname = _DIR_NAME[d]
     why_stub = m.touch([(P, c)], [E], [(P, E)])
-    if why_stub is None:
+    cls_stub = None if why_stub else m.class_block([c], [E], [(P, E)], net)
+    if why_stub is None and cls_stub is None:
         wire = m.add(Item("wire", *P, *E))
         wire.new = True
         lab = m.add(Item("label", *E))
@@ -1814,15 +1989,19 @@ def _wire_copy(m: Model, plan: WirePlan, c: Item, net: str, fixed: Point | None,
         plan.labels.append((E, LABEL_ROT[d]))
         return f"stub {dname} {mm(L)} mm from {pt(P)} to {pt(E)}, label '{net}' at its end"
     why_label = m.rule1(P, c, ("wire",), ("wire",))
-    if why_label is None:
+    cls_label = None if why_label else m.class_block([c], [P], [], net)
+    if why_label is None and cls_label is None:
         lab = m.add(Item("label", *P))
         lab.sub, lab.text, lab.name, lab.new = "label", net, net, True
         plan.labels.append((P, LABEL_ROT[d]))
-        return f"label '{net}' on the pin end {pt(P)} (stub {dname} blocked: {why_stub})"
+        return (
+            f"label '{net}' on the pin end {pt(P)} (stub {dname} blocked: {why_stub or cls_stub})"
+        )
     raise Refusal(
-        "touch",
-        f"stub {dname} blocked: {why_stub}; label on the pin blocked: {why_label}. Remedy:"
-        " move the part or the obstacle, or pass another direction; otherwise stop and report.",
+        ["touch" if why else "netclass" for why in (why_stub, why_label)],
+        f"stub {dname} blocked: {why_stub or cls_stub}; label on the pin blocked:"
+        f" {why_label or cls_label}. Remedy: move the part or the obstacle, or pass another"
+        " direction; otherwise stop and report.",
     )
 
 

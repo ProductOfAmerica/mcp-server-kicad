@@ -177,6 +177,27 @@ def bus_entry(path: str, x, y, dx, dy) -> None:
     )
 
 
+def rule_area(path: str, pts) -> None:
+    """A schematic rule area with this outline (KiCad 9's rule_area node)."""
+    xy = " ".join(f"(xy {_n(x)} {_n(y)})" for x, y in pts)
+    splice(
+        path,
+        f"(rule_area (polyline (pts {xy}) (stroke (width 0) (type dash)) (fill (type none))"
+        f' (uuid "{uuid.uuid4()}")))',
+    )
+
+
+def netclass_flag(path: str, cls: str, x, y, rot=0) -> None:
+    """A directive label assigning net class *cls*, anchored at (x, y)."""
+    splice(
+        path,
+        f'(netclass_flag "" (length 2.54) (shape round) (at {_n(x)} {_n(y)} {rot})'
+        ' (effects (font (size 1.27 1.27)) (justify left bottom)) (uuid "x")'
+        f' (property "Netclass" "{cls}" (at {_n(x)} {_n(y)} 0)'
+        " (effects (font (size 1.27 1.27) (italic yes)) (justify left))))",
+    )
+
+
 def junction(path: str, x, y) -> None:
     splice(path, f'(junction (at {_n(x)} {_n(y)}) (diameter 0) (color 0 0 0 0) (uuid "x"))')
 
@@ -278,10 +299,41 @@ def add_instance(path: str, ref: str, inst_path: str, unit: int) -> None:
     _edit(path, fn)
 
 
-def project_file(directory, name: str) -> str:
-    """A minimal .kicad_pro, which makes <name>.kicad_sch beside it the root of its hierarchy."""
+def project_file(directory, name: str, classes=()) -> str:
+    """A minimal .kicad_pro, which makes <name>.kicad_sch beside it the root of its hierarchy,
+    defining net classes Default and *classes* (the routing pressure test's v_write_pro)."""
+
+    def cls(cname: str, prio: int) -> dict:
+        return {
+            "name": cname,
+            "priority": prio,
+            "clearance": 0.2,
+            "track_width": 0.25,
+            "via_diameter": 0.8,
+            "via_drill": 0.4,
+            "microvia_diameter": 0.3,
+            "microvia_drill": 0.1,
+            "diff_pair_width": 0.2,
+            "diff_pair_gap": 0.25,
+            "diff_pair_via_gap": 0.25,
+            "wire_width": 6,
+            "bus_width": 12,
+            "line_style": 0,
+            "pcb_color": "rgba(0, 0, 0, 0.000)",
+            "schematic_color": "rgba(0, 0, 0, 0.000)",
+        }
+
     p = Path(directory) / f"{name}.kicad_pro"
-    p.write_text(json.dumps({"meta": {"filename": p.name, "version": 1}}, indent=2) + "\n")
+    data: dict = {"meta": {"filename": p.name, "version": 1}}
+    if classes:
+        data["net_settings"] = {
+            "classes": [cls("Default", 2147483647)] + [cls(c, i) for i, c in enumerate(classes)],
+            "meta": {"version": 4},
+            "net_colors": None,
+            "netclass_assignments": None,
+            "netclass_patterns": [],
+        }
+    p.write_text(json.dumps(data, indent=2) + "\n")
     return str(p)
 
 

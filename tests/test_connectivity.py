@@ -796,3 +796,95 @@ def test_a_sheet_that_contains_itself_ends_the_walk(tmp_path):
             q.atoms[2].set_text("h.kicad_sch")
     pins = [{"reference": "R1", "pin": "1"}]
     assert not C.plan_wire_pins(tree, pins, "N", "auto", 2.54, root).refused
+
+
+# ---------------------------------------------------------------------------------------------
+# Net classes (H-C2 to H-C5): carriers, the two views of a class, the check
+# ---------------------------------------------------------------------------------------------
+
+
+def _classed(tmp_path, *, area=None, flag=None, sig_flag=False):
+    """R1 at (101.6, 101.6), R2 at (127, 101.6) with SIG on R2:1, optional rule area and HV
+    directive, and optionally an HV directive on SIG's net too (certainly, at the label)."""
+    from routing_fixtures import netclass_flag, rule_area
+
+    p = _r1(tmp_path)
+    place(p, "R", "R2", 127, 101.6)
+    wire(p, 127, 97.79, 127, 92.71)
+    label(p, "SIG", 127, 92.71)
+    if area:
+        rule_area(p, area)
+    if flag:
+        netclass_flag(p, "HV", *flag)
+    if sig_flag:
+        netclass_flag(p, "HV", 127, 92.71)
+    return p
+
+
+#: A box around R1:1's end (101.6, 97.79) and its stub path, directive on the top edge.
+_AROUND = [(96.52, 91.44), (106.68, 91.44), (106.68, 99.06), (96.52, 99.06)]
+#: A box above the pin end that the 2.54 mm stub (to y 95.25) runs into.
+_ABOVE = [(96.52, 88.9), (106.68, 88.9), (106.68, 96.52), (96.52, 96.52)]
+
+
+def test_a_stub_into_a_classed_area_is_replaced_by_a_label_on_the_pin(tmp_path):
+    p = _classed(tmp_path, area=_ABOVE, flag=(101.6, 88.9))
+    plan = _plan(p, [("R1", "1")], net="SIG")
+    assert not plan.refused and not plan.wires and plan.labels, plan.lines
+    assert "net classes ['HV'] are touched" in plan.lines[0]
+
+
+def test_a_pin_inside_a_classed_area_joining_an_unclassed_net_is_refused(tmp_path):
+    """R1:1 certainly has HV and SIG certainly has none, so joining them changes one side's
+    class, whichever geometry does it."""
+    p = _classed(tmp_path, area=_AROUND, flag=(101.6, 91.44))
+    plan = _plan(p, [("R1", "1")], net="SIG")
+    assert set(plan.codes) == {"netclass"}, plan.lines
+    assert plan.refusal().startswith("[netclass] ")
+
+
+def test_joining_two_nets_of_one_certain_class_is_allowed(tmp_path):
+    p = _classed(tmp_path, area=_AROUND, flag=(101.6, 91.44), sig_flag=True)
+    assert not _plan(p, [("R1", "1")], net="SIG").refused
+
+
+def test_a_class_only_the_named_net_carries_does_not_block(tmp_path):
+    """Guard (the check is new): KiCad gives the pin's net N's class, which is the requested
+    join, so a class on N's side alone is no reason to refuse."""
+    p = _classed(tmp_path, sig_flag=True)
+    plan = _plan(p, [("R1", "1")], net="SIG")
+    assert not plan.refused and plan.wires
+
+
+def test_a_directive_inside_an_area_but_off_its_outline_assigns_nothing(tmp_path):
+    """Guard: KiCad attaches a directive to a rule area only within 5 IU of the outline
+    (sch_rule_area.cpp, 9.0.8), so an area with its directive in the middle carries no class."""
+    p = _classed(tmp_path, area=_ABOVE, flag=(101.6, 91.44))
+    plan = _plan(p, [("R1", "1")], net="SIG")
+    assert not plan.refused and plan.wires, plan.lines
+
+
+def test_a_directive_on_the_pins_net_is_a_carrier(tmp_path):
+    from routing_fixtures import netclass_flag
+
+    p = _classed(tmp_path)
+    wire(p, 101.6, 97.79, 88.9, 97.79)
+    netclass_flag(p, "HV", 88.9, 97.79)
+    assert set(_plan(p, [("R1", "1")], net="SIG").codes) == {"netclass"}
+
+
+def test_a_netclass_field_on_any_label_is_a_carrier(tmp_path):
+    """H-C2: a Netclass field counts on every label kind, not only on a directive. Label A sits
+    0.03 mm past R1:1's wire end, so only the possible view reaches it: R1:1 might be HV already
+    and A certainly is, which H-C5 refuses. That is the check's conservative edge, as
+    specified."""
+    from routing_fixtures import splice
+
+    p = _classed(tmp_path)
+    wire(p, 101.6, 97.79, 88.9, 97.79)
+    splice(
+        p,
+        '(label "A" (at 88.87 97.79 0) (effects (font (size 1.27 1.27))) (uuid "x")'
+        ' (property "Netclass" "HV" (at 88.87 97.79 0) (effects (font (size 1.27 1.27)))))',
+    )
+    assert set(_plan(p, [("R1", "1")], net="A").codes) == {"netclass"}
