@@ -1830,6 +1830,17 @@ def auto_place_decoupling_cap(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
+    # The net names need nothing from the sheet, so they are checked before the first write.
+    # What the stubs will meet is known only once the cap is placed, and the cap and each pin
+    # are written separately, so a later refusal leaves the earlier writes on disk; it then says
+    # what they were and how to undo them.
+    for param, net in (("power_net", power_net), ("ground_net", ground_net)):
+        try:
+            _connectivity.check_args(net, "auto", 2.54, param=param)
+        except _connectivity.Refusal as e:
+            raise ToolError(
+                f"{_connectivity.tags(e.codes)} {e.text} Nothing was written."
+            ) from None
     result = place_component(
         lib_id=lib_id,
         reference=reference,
@@ -1841,22 +1852,26 @@ def auto_place_decoupling_cap(
         schematic_path=schematic_path,
         project_path=project_path,
     )
-
-    # Wire pin 1 (top) to power net
-    wire_pins_to_net(
-        pins=[{"reference": reference, "pin": "1"}],
-        label_text=power_net,
-        direction="up",
-        schematic_path=schematic_path,
-    )
-
-    # Wire pin 2 (bottom) to ground net
-    wire_pins_to_net(
-        pins=[{"reference": reference, "pin": "2"}],
-        label_text=ground_net,
-        direction="down",
-        schematic_path=schematic_path,
-    )
+    done = f"placed {reference}"
+    undo = [f"remove_component({reference!r})"]
+    for pin, net, direction in (("1", power_net, "up"), ("2", ground_net, "down")):
+        try:
+            plan = _wire_pins(
+                [{"reference": reference, "pin": pin}], net, direction, 2.54, schematic_path
+            )
+        except _WireRefused as e:
+            raise ToolError(
+                f"{_connectivity.tags(e.plan.codes)} auto_place_decoupling_cap {done}, but wiring"
+                f" pin {pin} to {net!r} was refused, and what it wrote stays on disk. To undo it:"
+                f" {', '.join(undo)}.\n- " + "\n- ".join(e.plan.lines)
+            ) from None
+        assert plan is not None  # one pin, so the file was read
+        done += f" and wired pin {pin} to {net!r}"
+        mm = _connectivity.mm
+        undo += [
+            f"remove_wire({mm(a[0])}, {mm(a[1])}, {mm(b[0])}, {mm(b[1])})" for a, b in plan.wires
+        ]
+        undo += [f"remove_label({net!r}, {mm(lx)}, {mm(ly)})" for (lx, ly), _r in plan.labels]
 
     return f"{result} | pin 1->{power_net} | pin 2->{ground_net}"
 
@@ -1962,6 +1977,34 @@ def wire_pins_to_net(
         stub_length: Stub length in mm, a multiple of 1.27 (default 2.54)
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
+    plan = _wire_pins(pins, label_text, direction, stub_length, schematic_path)
+    if plan is None:
+        return f"Wired 0 pins to '{label_text}'."
+    if not plan.wires and not plan.labels:
+        return plan.no_change()
+    return plan.success()
+
+
+class _WireRefused(ToolError):
+    """wire_pins_to_net's refusal, with the plan kept for a caller that composes it."""
+
+    def __init__(self, plan: _connectivity.WirePlan):
+        super().__init__(plan.refusal())
+        self.plan = plan
+
+
+def _wire_pins(
+    pins: list[PinRefSpec],
+    label_text: str,
+    direction: str,
+    stub_length: float,
+    schematic_path: str,
+) -> _connectivity.WirePlan | None:
+    """wire_pins_to_net's work: plan the edit, and write it when it adds anything.
+
+    Raises _WireRefused with the file untouched. None for an empty pin list, which reads no
+    file.
+    """
     # Literal publishes the choices; this check is for direct Python callers, which pydantic
     # never sees. It runs before the empty-list return so a bad call fails the same either way.
     try:
@@ -1969,15 +2012,15 @@ def wire_pins_to_net(
     except _connectivity.Refusal as e:
         plan = _connectivity.WirePlan(str(label_text))
         plan.refuse(e.codes, e.text)
-        raise ToolError(plan.refusal()) from None
+        raise _WireRefused(plan) from None
     if not pins:
-        return f"Wired 0 pins to '{label_text}'."
+        return None
     tree, root, *_ = _open_sch_cst(schematic_path)
     plan = _connectivity.plan_wire_pins(root, pins, label_text, direction, stub_length)
     if plan.refused:
-        raise ToolError(plan.refusal())
+        raise _WireRefused(plan)
     if not plan.wires and not plan.labels:
-        return plan.no_change()
+        return plan
     for a, b in plan.wires:
         node = _WIRE_TPL.copy()
         for xy, (x, y) in zip(node.find("pts").find_all("xy"), (a, b)):
@@ -1995,7 +2038,7 @@ def wire_pins_to_net(
         node.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(root, "label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
-    return plan.success()
+    return plan
 
 
 @mcp.tool(annotations=_ADDITIVE)

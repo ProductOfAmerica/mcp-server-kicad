@@ -658,3 +658,94 @@ def test_bus_p5_a_net_reaching_a_bus_is_refused(tmp_path):
         assert _on(p)[("R38", "1")][0] == "/SIG"  # the premise
     status, msg = call_wptn(p, pins(("R38", "1")), "NEWNET")
     assert status == "REFUSED" and msg.startswith("[bus] "), msg
+
+
+# ---------------------------------------------------------------------------------------------
+# auto_place_decoupling_cap inherits these refusals after it has placed the cap
+# ---------------------------------------------------------------------------------------------
+
+
+def _cap(path, power_net="VCC", ground_net="GND"):
+    """C5 = Device:C at (101.6, 101.6): pin 1 at (101.6, 97.79), pin 2 at (101.6, 105.41)."""
+    from routing_fixtures import LIB
+
+    return schematic.auto_place_decoupling_cap(
+        "Device:C",
+        "C5",
+        "100nF",
+        101.6,
+        101.6,
+        power_net,
+        ground_net,
+        symbol_lib_path=LIB,
+        schematic_path=path,
+    )
+
+
+def _counts(path) -> dict:
+    root = _cst.parse(open(path, "rb").read()).lists[0]
+    placed = [
+        s
+        for s in root.find_all("symbol")
+        if any(q.atoms[2].text == "C5" for q in s.find_all("property") if len(q.atoms) > 2)
+    ]
+    return {
+        "C5": len(placed),
+        "wire": len(root.find_all("wire")),
+        "label": len(root.find_all("label")),
+    }
+
+
+def test_a_refused_pin_1_says_the_cap_is_on_the_sheet(tmp_path):
+    """The cap is written before either pin is wired, so a wiring refusal used to arrive as
+    "wire_pins_to_net refused the whole call; nothing was written" with the cap on disk."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    p = fresh(tmp_path)
+    wire(p, 95, 97.79, 110, 97.79)  # through C5:1's end: no stub, no label on the pin
+    with pytest.raises(ToolError) as e:
+        _cap(p)
+    msg = str(e.value)
+    head = msg.splitlines()[0]
+    assert head.startswith("[touch] auto_place_decoupling_cap placed C5, but wiring pin 1"), msg
+    assert "nothing was written" not in msg
+    assert "remove_component('C5')" in msg and "C5:1:" in msg
+    assert _counts(p) == {"C5": 1, "wire": 1, "label": 0}
+    schematic.remove_component("C5", schematic_path=p)
+    assert _counts(p) == {"C5": 0, "wire": 1, "label": 0}
+
+
+def test_a_refused_pin_2_says_what_pin_1_got(tmp_path):
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    p = fresh(tmp_path)
+    wire(p, 95, 105.41, 110, 105.41)  # through C5:2's end
+    with pytest.raises(ToolError) as e:
+        _cap(p)
+    msg = str(e.value)
+    assert msg.startswith(
+        "[touch] auto_place_decoupling_cap placed C5 and wired pin 1 to 'VCC', but wiring pin 2"
+    ), msg
+    assert "nothing was written" not in msg
+    undo = (
+        "remove_component('C5'), remove_wire(101.6, 97.79, 101.6, 95.25),"
+        " remove_label('VCC', 101.6, 95.25)"
+    )
+    assert undo in msg
+    assert _counts(p) == {"C5": 1, "wire": 2, "label": 1}
+    schematic.remove_component("C5", schematic_path=p)
+    schematic.remove_wire(101.6, 97.79, 101.6, 95.25, schematic_path=p)
+    schematic.remove_label("VCC", 101.6, 95.25, schematic_path=p)
+    assert _counts(p) == {"C5": 0, "wire": 1, "label": 0}
+
+
+@pytest.mark.parametrize("bad", [{"power_net": " VCC"}, {"ground_net": "Net-(C5-Pad2)"}])
+def test_a_bad_net_name_refuses_before_the_cap_is_placed(tmp_path, bad):
+    """Validation needs nothing from the sheet, so it runs before the first write."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    p = fresh(tmp_path)
+    before = open(p, "rb").read()
+    with pytest.raises(ToolError, match=rf"^\[validation\] {next(iter(bad))} "):
+        _cap(p, **bad)
+    assert open(p, "rb").read() == before

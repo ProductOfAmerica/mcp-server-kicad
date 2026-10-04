@@ -1238,8 +1238,9 @@ _AUTO_NAME = re.compile(r"^(Net|unconnected)-\(")
 _BUS_RANGE = re.compile(r"\[[^\]]*\.\.[^\]]*\]")
 
 
-def check_args(net, direction, stub_length) -> int:
+def check_args(net, direction, stub_length, param: str = "label_text") -> int:
     """Validate wire_pins_to_net's arguments before any file is read. Returns the stub in IU.
+    *param* names the net argument in the messages, for callers that call it something else.
 
     Each rule is a measured way a bad argument wrote a wrong file (pressure-test-report.md,
     problem P12): an empty name joins every such call into one net, a name with a stray space
@@ -1252,34 +1253,34 @@ def check_args(net, direction, stub_length) -> int:
         return Refusal("validation", text)
 
     if not isinstance(net, str) or not net:
-        raise bad("label_text must be a non-empty net name.")
+        raise bad(f"{param} must be a non-empty net name.")
     if net != net.strip():
         raise bad(
-            f"label_text {net!r} has leading or trailing whitespace, which KiCad keeps as part"
+            f"{param} {net!r} has leading or trailing whitespace, which KiCad keeps as part"
             f" of the name, so it would make a net apart from {net.strip()!r}. Pass the name"
             " without it."
         )
     if net.startswith("/"):
         raise bad(
-            f"label_text {net!r} starts with '/', which is the sheet path KiCad prints before a"
+            f"{param} {net!r} starts with '/', which is the sheet path KiCad prints before a"
             " local net's name, not part of the name; as label text it makes a different net."
             " Pass the name without it."
         )
     if "${" in net:
         raise bad(
-            f"label_text {net!r} contains a text variable ('${{'): its value, and so the net it"
+            f"{param} {net!r} contains a text variable ('${{'): its value, and so the net it"
             " would join, cannot be known here. Pass the literal net name."
         )
     if _AUTO_NAME.match(net):
         raise bad(
-            f"label_text {net!r} looks like a name KiCad generates for an unnamed net, and KiCad"
+            f"{param} {net!r} looks like a name KiCad generates for an unnamed net, and KiCad"
             " renames or splits nets that collide with one. Choose a real net name."
         )
     if _BUS_RANGE.search(net) or any(
         c == "{" and (i == 0 or net[i - 1] not in "_^~") for i, c in enumerate(net)
     ):
         raise bad(
-            f"label_text {net!r} is bus syntax, and a bus label on a wire is a bus/net conflict."
+            f"{param} {net!r} is bus syntax, and a bus label on a wire is a bus/net conflict."
             " Choose a plain net name."
         )
     if direction != "auto" and direction not in DIRECTIONS:
