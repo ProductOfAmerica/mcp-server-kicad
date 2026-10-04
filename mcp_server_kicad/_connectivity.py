@@ -1828,7 +1828,7 @@ class Model:
                 continue
             where = "at" if dd == 0 else "within 0.05 mm of"
             return f"{_pdesc(x, y, it)} {where} the pin end {pt(P)}"
-        for ln in self._lines():
+        for ln in self._lines(_SEGS):
             if not _within(P[0], P[1], ln.x, ln.y, ln.x2, ln.y2, TOL2):
                 continue
             if ln.kind in ends and P in ((ln.x, ln.y), (ln.x2, ln.y2)):
@@ -1837,18 +1837,20 @@ class Model:
         return None
 
     def rule2(self, E: Point) -> str | None:
-        """Nothing at or near a new endpoint that is not a pin end."""
+        """Nothing at or near a new endpoint that is not a pin end: no point item, and no line
+        of any kind, a bus entry's body included, since the possible view joins all of them."""
         for x, y, it in self._point_entries():
             if _d2(x, y, *E) <= TOL2:
                 return f"{_pdesc(x, y, it)} at or within 0.05 mm of {pt(E)}"
-        for ln in self._lines():
+        for ln in self._lines(_SEGS):
             if _within(E[0], E[1], ln.x, ln.y, ln.x2, ln.y2, TOL2):
                 return f"{_desc(ln)} passes at or within 0.05 mm of {pt(E)}"
         return None
 
     def rule3(self, A: Point, B: Point, pin_ends: set) -> str | None:
-        """A new wire's interior meets nothing: no point item near it, no collinear overlap
-        with a wire or bus, and no crossing of any line."""
+        """A new wire's interior meets nothing: no point item near it, a graphic line's ends
+        included (the possible view joins them, though they are not connection points), no
+        collinear overlap with a wire or bus, and no crossing of any line."""
         ends = {A, B} & pin_ends
         for x, y, it in self._point_entries():
             if (x, y) in ends:
@@ -1857,6 +1859,13 @@ class Model:
                 return (
                     f"{_pdesc(x, y, it)} lies on or within 0.05 mm of the new wire {pt(A)}-{pt(B)}"
                 )
+        for ln in self._lines(("gline",)):
+            for x, y in ((ln.x, ln.y), (ln.x2, ln.y2)):
+                if (x, y) not in ends and _within(x, y, A[0], A[1], B[0], B[1], TOL2):
+                    return (
+                        f"end {pt((x, y))} of {_desc(ln)} lies on or within 0.05 mm of the new"
+                        f" wire {pt(A)}-{pt(B)}"
+                    )
         for ln in self._lines(("wire", "bus")):
             if _overlap_axis(A, B, ln):
                 return f"{_desc(ln)} overlaps the new wire {pt(A)}-{pt(B)} collinearly"

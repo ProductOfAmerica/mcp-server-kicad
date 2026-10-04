@@ -114,6 +114,13 @@ def test_a_clear_pin_gets_the_outward_stub(tmp_path):
     assert plan.labels == [((1016000, 952500), 90)]
 
 
+def _entry(path, x, y):
+    """A bus entry from (x, y) up and to the right, 2.54 mm each way: its middle is 1.27 mm in."""
+    from routing_fixtures import bus_entry
+
+    bus_entry(path, x, y, 2.54, -2.54)
+
+
 @pytest.mark.parametrize(
     ("obstacle", "expect"),
     [
@@ -132,6 +139,14 @@ def test_a_clear_pin_gets_the_outward_stub(tmp_path):
         pytest.param(lambda p: label(p, "X", 101.63, 97.79), "refused", id="label_near_pin"),
         # Exactly at the pin end: a wire end and another pin end are the pin's own connections.
         pytest.param(lambda p: wire(p, 101.6, 97.79, 110, 97.79), "stub", id="wire_ends_at_pin"),
+        # What the possible view joins, the touch rule must avoid: a bus entry's body at the stub
+        # end or through the pin end, and a graphic line's end on the stub.
+        pytest.param(lambda p: _entry(p, 100.33, 96.52), "label", id="entry_body_at_end"),
+        # (a body through the pin end is refused earlier, as [bus_entry]: a guard)
+        pytest.param(lambda p: _entry(p, 100.33, 99.06), "refused", id="entry_body_at_pin"),
+        pytest.param(
+            lambda p: polyline(p, 101.6, 96.52, 110, 96.52), "label", id="gline_end_on_stub"
+        ),
     ],
 )
 def test_the_touch_rule(tmp_path, obstacle, expect):
