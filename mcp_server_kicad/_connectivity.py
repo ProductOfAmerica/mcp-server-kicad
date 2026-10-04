@@ -801,6 +801,63 @@ _MAX_INSTANCES = 4096
 _PROJECT_LEVELS = 3
 
 
+def _atom(text: bytes) -> bytes:
+    """A regex for one s-expression atom with this text, quoted or bare, the way _cst.TOKEN
+    reads it: a bare atom runs to whitespace, a parenthesis, a quote or the end."""
+    e = re.escape(text)
+    return rb'(?:"' + e + rb'"|' + e + rb'(?=[\s()"]|\Z))'
+
+
+def _head(*words: bytes) -> bytes:
+    """A regex for the start of a list whose leading atoms are *words*, any whitespace between."""
+    return rb"\(\s*" + rb"\s*".join(_atom(w) for w in words)
+
+
+#: A sheet block or a KiCad 6 instance table somewhere in the bytes. A match inside a quoted
+#: string is a false positive, which only costs a parse.
+_STRUCTURE = re.compile(_head(b"sheet") + b"|" + _head(b"symbol_instances"))
+
+
+def refs_pattern(refs) -> re.Pattern | None:
+    """A regex matching every place a sheet's bytes can give a placed symbol one of *refs*: an
+    instance entry's or a KiCad 6 table's (reference R), or the (property Reference R). A file
+    it does not match holds no symbol carrying them, so it need not be parsed. None when a
+    reference holds a character the file would escape (quote, backslash, TAB, LF, CR), or is
+    empty: then every sheet is read."""
+    texts = []
+    for r in sorted(refs):
+        if not r or any(c in r for c in '"\\\t\n\r'):
+            return None
+        texts.append(r.encode("utf-8", "surrogateescape"))
+    if not texts:
+        return None
+    ref = b"(?:" + b"|".join(_atom(t) for t in texts) + b")"
+    return re.compile(
+        _head(b"reference")
+        + rb"\s*"
+        + ref
+        + b"|"
+        + _head(b"property", b"Reference")
+        + rb"\s*"
+        + ref
+    )
+
+
+@dataclass
+class OtherSheet:
+    """Another sheet file of the hierarchy. Its bytes are kept, unparsed, until a reference the
+    call asks about may be on it."""
+
+    name: str
+    paths: tuple[str, ...]  # its instance paths, when the live paths are known
+    data: bytes | None
+    facts: SheetFacts | None
+
+    @property
+    def records(self) -> tuple[SymRecord, ...]:
+        return self.facts.records if self.facts is not None else ()
+
+
 @dataclass
 class Hierarchy:
     """This sheet's place in its project, as far as the reference and unit rules need it.
@@ -812,7 +869,7 @@ class Hierarchy:
     """
 
     live: tuple[str, ...] = ()  # this sheet's instance paths
-    others: list[tuple[str, SymRecord, tuple[str, ...]]] = field(default_factory=list)
+    others: list[OtherSheet] = field(default_factory=list)
     legacy: dict[str, list[tuple[str, int]]] = field(default_factory=dict)  # by symbol uuid
     error: Refusal | None = None
 
@@ -831,28 +888,47 @@ def _project_roots(path: Path) -> list[Path]:
     return out
 
 
+#: An unparsed sheet: no sheet block and no instance table, so it adds no path and no
+#: reference of its own until its symbols are needed.
+_LEAF = SheetFacts("", _ON_SYMBOL_VERSION, (), (), ())
+
+
 def hierarchy(path: str | Path, here: SheetFacts) -> Hierarchy:
     """Walk this sheet's project for the reference and unit rules (H-C1, design 4.6).
 
     A sheet block's file name resolves against its parent's directory, then the root's. This
-    sheet's facts come from the tree being edited, never from disk. A missing sheet file is
-    skipped, as KiCad loads it empty; one that cannot be read or parsed makes every reference
-    check refuse, since what it holds is unknown.
+    sheet's facts come from the tree being edited, never from disk. A sheet is parsed only when
+    its bytes can hold a sheet block or an instance table; the rest wait in OtherSheet until a
+    reference check needs them (Model.prepare). A missing sheet file is skipped, as KiCad loads
+    it empty; one that cannot be read or parsed makes every reference check refuse, since what
+    it holds is unknown.
     """
     path = Path(path)
     me = path.resolve()
-    cache: dict[Path, SheetFacts | None] = {me: here}
+    cache: dict[Path, tuple[bytes | None, SheetFacts] | None] = {me: (None, here)}
     bad: list[str] = []
 
     def facts(f: Path) -> SheetFacts | None:
         rf = f.resolve()
         if rf not in cache:
             try:
-                cache[rf] = _file_facts(f.read_bytes()) if f.is_file() else None
+                if not f.is_file():
+                    cache[rf] = None
+                else:
+                    data = f.read_bytes()
+                    if _STRUCTURE.search(data):
+                        cache[rf] = (None, _file_facts(data))
+                    else:
+                        cache[rf] = (data, _LEAF)
             except Exception:  # noqa: BLE001 - any failure leaves the sheet unknown
                 cache[rf] = None
                 bad.append(f.name)
-        return cache[rf]
+        hit = cache[rf]
+        return hit[1] if hit is not None else None
+
+    def other(rf: Path, paths: tuple[str, ...]) -> OtherSheet:
+        data, ff = cache[rf] or (None, _LEAF)
+        return OtherSheet(rf.name, paths, data, None if data is not None else ff)
 
     def child_of(f: Path, base: Path, name: str) -> Path:
         cands = [f.parent / name, base / name]
@@ -861,10 +937,9 @@ def hierarchy(path: str | Path, here: SheetFacts) -> Hierarchy:
     roots = _project_roots(path)
     for root in roots:
         top = facts(root)
-        if top is None or top.version < _ON_SYMBOL_VERSION:
+        if top is None or top is _LEAF or top.version < _ON_SYMBOL_VERSION:
             continue
         found: dict[Path, list[str]] = {}
-        sheets: dict[Path, SheetFacts] = {}
         stack: list[tuple[Path, str, tuple[Path, ...]]] = [
             (root, f"/{top.uuid}", (root.resolve(),))
         ]
@@ -875,7 +950,6 @@ def hierarchy(path: str | Path, here: SheetFacts) -> Hierarchy:
             if ff is None:
                 continue
             found.setdefault(chain[-1], []).append(kpath)
-            sheets[chain[-1]] = ff
             n += 1
             for su, name in ff.children:
                 c = child_of(f, root.parent, name)
@@ -886,12 +960,7 @@ def hierarchy(path: str | Path, here: SheetFacts) -> Hierarchy:
         error = _unreadable(bad)
         if error is not None:
             break
-        others = [
-            (rf.name, rec, tuple(ps))
-            for rf, ps in found.items()
-            if rf != me
-            for rec in sheets[rf].records
-        ]
+        others = [other(rf, tuple(ps)) for rf, ps in found.items() if rf != me]
         return Hierarchy(tuple(found[me]), others)
     seen: set[Path] = set()
     todo = [(path, path.parent)] + [(r, r.parent) for r in roots]
@@ -906,7 +975,7 @@ def hierarchy(path: str | Path, here: SheetFacts) -> Hierarchy:
         if ff is None:
             continue
         if rf != me:
-            others += [(f.name, rec, ()) for rec in ff.records]
+            others.append(other(rf, ()))
         if ff.version < _ON_SYMBOL_VERSION:
             for p, ref, unit in ff.legacy:
                 legacy.setdefault(p.rsplit("/", 1)[-1], []).append((ref, unit))
@@ -1066,6 +1135,8 @@ class Model:
         self.records = {id(n): _record(n, self.libs, maps) for n in root.find_all("symbol")}
         here = sheet_facts(root, tuple(self.records.values()))
         self.hier = hierarchy(path, here) if path is not None else Hierarchy(legacy=_legacy(here))
+        self._scanned: set[str] = set()  # references the other sheets were read for
+        self._unique: set[str] = set()  # references already found to name one part
         for ch in root.lists:
             self._take(ch)
 
@@ -1419,6 +1490,36 @@ class Model:
                 f" here. Remedy: re-place {s.ref} {remedy}; otherwise stop and report.",
             )
 
+    def references_of(self, ref: str) -> set[str]:
+        """Every reference the symbols placed here as *ref* carry: at this sheet's live paths,
+        or every entry's when those are not known."""
+        h = self.hier
+        recs = [self.records[id(s.node)] for s in self.syms if s.ref == ref]
+        if h.live:
+            return {rec.at(p)[0] for rec in recs for p in h.live}
+        return set().union(*(rec.every_ref(h.legacy.get(rec.uuid, ())) for rec in recs))
+
+    def prepare(self, refs) -> None:
+        """Parse every other sheet of the hierarchy whose bytes can hold a symbol carrying one
+        of the references *refs*' symbols here carry; one pass over the bytes for all of them.
+        The rest stay unparsed: no symbol on them can share those references."""
+        wanted = set().union(set(), *(self.references_of(r) for r in refs)) - self._scanned
+        if not wanted or self.hier.error is not None:
+            return
+        # A KiCad 6 root's table gives references by symbol uuid, which a sheet's own bytes
+        # need not spell, so then every sheet is read.
+        pattern = None if self.hier.legacy else refs_pattern(wanted)
+        for sheet in self.hier.others:
+            if sheet.data is None or (pattern is not None and not pattern.search(sheet.data)):
+                continue
+            try:
+                sheet.facts = _file_facts(sheet.data)
+            except Exception:  # noqa: BLE001 - any failure leaves the sheet unknown
+                self.hier.error = _unreadable([sheet.name])
+                return
+            sheet.data = None
+        self._scanned |= wanted
+
     def check_unique(self, ref: str) -> None:
         """Refuse [dup_ref] unless every placed symbol in the hierarchy carrying one of the
         references *ref*'s symbols here carry is a distinct unit of one part (H-C1, design
@@ -1428,26 +1529,32 @@ class Model:
         At live paths each reference is checked on its own, so a reused sheet annotated R1 and
         R101 is two parts, and one whose instances both say R1 is refused.
         """
+        if ref in self._unique:
+            return
+        self.prepare([ref])
         h = self.hier
         if h.error is not None:
             raise h.error
         mine = [self.records[id(s.node)] for s in self.syms]
         targets = [rec for rec, s in zip(mine, self.syms) if s.ref == ref]
         if h.live:
+            wanted = {rec.at(p)[0] for rec in targets for p in h.live}
             placed = [(None, rec, p) for rec in mine for p in h.live]
-            placed += [(f, rec, p) for f, rec, paths in h.others for p in paths]
-            for r in sorted({rec.at(p)[0] for rec in targets for p in h.live}):
+            placed += [(o.name, rec, p) for o in h.others for rec in o.records for p in o.paths]
+            for r in sorted(wanted):
                 group = [(f, rec, (rec.at(p)[1],), p) for f, rec, p in placed if rec.at(p)[0] == r]
                 self._refuse_unless_one_part(ref, r, group)
-            return
-        extra = h.legacy.get
-        refs = frozenset().union(*(rec.every_ref(extra(rec.uuid, ())) for rec in targets))
-        group = [
-            (f, rec, rec.every_unit(extra(rec.uuid, ())), None)
-            for f, rec in [(None, rec) for rec in mine] + [(f, rec) for f, rec, _p in h.others]
-            if rec.every_ref(extra(rec.uuid, ())) & refs
-        ]
-        self._refuse_unless_one_part(ref, None, group)
+        else:
+            extra = h.legacy.get
+            refs = frozenset().union(*(rec.every_ref(extra(rec.uuid, ())) for rec in targets))
+            group = [
+                (f, rec, rec.every_unit(extra(rec.uuid, ())), None)
+                for f, rec in [(None, rec) for rec in mine]
+                + [(o.name, rec) for o in h.others for rec in o.records]
+                if rec.every_ref(extra(rec.uuid, ())) & refs
+            ]
+            self._refuse_unless_one_part(ref, None, group)
+        self._unique.add(ref)
 
     def _refuse_unless_one_part(self, ref: str, shared: str | None, group: list) -> None:
         """*group*: (file or None for this sheet, record, units, instance path or None)."""
@@ -2029,6 +2136,13 @@ def plan_wire_pins(
 
     targets: list[tuple[str, list[Item]]] = []
     seen: dict[tuple, str] = {}
+    m.prepare(
+        {
+            pd["reference"]
+            for pd in pins
+            if isinstance(pd, dict) and isinstance(pd.get("reference"), str)
+        }
+    )
     for pd in pins:
         if (
             not isinstance(pd, dict)

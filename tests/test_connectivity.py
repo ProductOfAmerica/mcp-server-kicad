@@ -687,11 +687,12 @@ def test_a_missing_sheet_file_is_skipped(tmp_path):
 
 @pytest.mark.no_kicad_validation
 def test_a_sheet_that_cannot_be_read_refuses(tmp_path):
-    """A child cut off mid-file: its references are unknown, so uniqueness is too. The truncated
-    sheet is the subject, which is why the output oracle is off."""
-    root, child = _two_sheets(tmp_path)
+    """A child that can carry R1, cut off before its last parenthesis: what it holds is
+    unknown, so R1's uniqueness is too. The truncated sheet is the subject, which is why the
+    output oracle is off. (A sheet that cannot carry the reference is never parsed for it.)"""
+    root, child = _two_sheets(tmp_path, child_ref="R1")
     data = Path(child).read_bytes()
-    Path(child).write_bytes(data[: len(data) // 2])
+    Path(child).write_bytes(data[: data.rindex(b")")])
     plan = _plan_in(root, [("R1", "1")])
     assert plan.codes == ["dup_ref"] and "c.kicad_sch of this hierarchy could not be read" in (
         plan.refusal()
@@ -888,3 +889,75 @@ def test_a_netclass_field_on_any_label_is_a_carrier(tmp_path):
         ' (property "Netclass" "HV" (at 88.87 97.79 0) (effects (font (size 1.27 1.27)))))',
     )
     assert set(_plan(p, [("R1", "1")], net="A").codes) == {"netclass"}
+
+
+# ---------------------------------------------------------------------------------------------
+# The byte pre-filter: which sheets a reference check must parse
+# ---------------------------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        b'(reference "R1")',
+        b"(reference R1)",
+        b'(reference"R1")',
+        b'( reference\t"R1" )',
+        b'("reference" "R1")',
+        b'\r\n\t\t\t\t(reference "R1")\r\n',
+        b'(property "Reference" "R1" (at 0 0 0))',
+        b"(property Reference R1(at 0 0 0))",
+        b'(property\r\n"Reference"\r\n"R1"',
+    ],
+)
+def test_the_reference_pattern_matches_every_spelling(text):
+    """Quoted, bare, re-spaced and glued: every way _cst.TOKEN reads (reference R1) or
+    (property Reference R1)."""
+    pattern = C.refs_pattern({"R1"})
+    assert pattern is not None and pattern.search(text)
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        b'(reference "R10")',
+        b'(reference "XR1")',
+        b"(reference R1A)",
+        b'(name "R1")',
+        b'(property "Value" "R1")',
+        b'(reference_x "R1")',
+    ],
+)
+def test_the_reference_pattern_matches_only_that_reference(text):
+    pattern = C.refs_pattern({"R1"})
+    assert pattern is not None and not pattern.search(text)
+
+
+@pytest.mark.parametrize("ref", ['R"1', "R\\1", "R\t1", "", "R\n1"])
+def test_a_reference_the_file_would_escape_reads_every_sheet(ref):
+    assert C.refs_pattern({ref, "R2"}) is None
+
+
+def test_the_structure_pattern_finds_sheets_and_tables_only():
+    for text in (b"(sheet (at 1 2)", b"(sheet\r\n\t(at", b'("sheet"(at', b"(symbol_instances"):
+        assert C._STRUCTURE.search(text), text
+    for text in (b"(sheet_instances (path", b"(sheetfile x)", b'(property "Sheetname" "x")'):
+        assert not C._STRUCTURE.search(text), text
+
+
+def test_a_sheet_without_the_reference_is_not_parsed(tmp_path):
+    """The child holds R2 and no sheet block, so R1's check leaves it unparsed; once its symbol
+    carries R1 it is read, and the duplicate is found."""
+    from routing_fixtures import rename_ref
+
+    root, child = _two_sheets(tmp_path)
+    m = C.Model(_root(root), root)
+    (other,) = m.hier.others
+    assert other.facts is None and other.data is not None
+    m.check_unique("R1")
+    assert other.facts is None
+    rename_ref(child, "R2", "R1")
+    m = C.Model(_root(root), root)
+    with pytest.raises(C.Refusal):
+        m.check_unique("R1")
+    assert m.hier.others[0].facts is not None
