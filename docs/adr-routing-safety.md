@@ -1,0 +1,214 @@
+# Routing safety: decision record
+
+Status: approved 2026-10-04 as design Hb2. The design, the alternatives it was chosen over and
+every figure below come from the routing pressure test of 2026-10-01 to 2026-10-04: a worker
+session that built prototypes against commit 54160c1 and judged each tool call by comparing
+kicad-cli 9.0.8 netlists before and after, node set by node set (**measured**), and again after an
+emulation of the KiCad 9 GUI's load-time cleanup (**emulated**; eeschema itself was never driven).
+A manager re-measured two claims independently. There is no KiCad 10 reading of any of it. The
+reports and the harness live in a scratch directory (`%TEMP%\pr57work` and `%TEMP%\pr57pt`), which
+is not durable, so this record restates what the design depends on and names the report each
+figure came from (see Sources).
+
+## The problem
+
+wire_pins_to_net and connect_pins edit geometry, and KiCad derives connectivity from geometry.
+Before this work they could merge unrelated nets, split nets, or wire the wrong pin, and report
+success. Three measured examples:
+- 16 of 36 generated layouts built the way the repo's skills prescribe came out shorted
+  (pressure-test-report.md section 1, probe LW-13, worker).
+- The wrong pin was wired on rotated and mirrored parts in 4 of 12 orientations: the repo mirrored
+  before rotating and KiCad rotates first, so the computed point was the true pin reflected
+  through the symbol origin, which is the other pin of a resistor or diode and empty space on a
+  transistor (manager, `mgr_verify.py`; source read of KiCad 9.0 sch_io_kicad_sexpr_parser.cpp
+  and sch_symbol.cpp SetOrientation).
+- Routing junctions cut wires in kicad-cli 9, the reader behind this repo's netlist export, ERC
+  and PCB update: a junction on the interior of an unsplit wire keeps only the half from the
+  wire's first point to the junction (manager, `mgr_verify.py`; the 9 GUI and KiCad 10 connect
+  it).
+
+## The contract (fixed)
+
+- **Delivery.** On success every requested pad, in every placed copy on this sheet, is on N, or
+  the two pins are connected.
+- **Nothing else changes.** No other nets merge or split, no pad ends up in two nets, no existing
+  net is renamed, and no net's class set changes except the joined net's.
+- **Atomic.** One write per call. A refusal leaves the file byte-identical and lists, per pin,
+  the reason code, the obstacle and a remedy.
+
+## ADR-R1: model only what KiCad does stably, and refuse whatever reaches the rest
+
+**Decision.** Design Hb2. Model only what KiCad does that is stable and fundamental, and refuse
+outright whenever the pin's possible net reaches something that is not modelled.
+
+**Evidence.** Three designs were built and run on identical inputs (hybrid-report.md sections 3
+and 4; dupref-report.md section 5):
+
+| Design | What it is | Wrong writes | Refusal rate, generated layouts / demo pins |
+|---|---|---|---|
+| M2 | a precise model of KiCad's rules | 24 | 17.3% / 36.9% |
+| E | writes only into empty space, no model of existing wiring | 0 | 20.1% / 100% |
+| Hb2 | this design | 0, in both readings | 17.3% / 36.9% |
+
+- M2's 24 wrong writes were mostly cases it modelled wrongly: sheet pins on wire interiors, pad
+  copies on other sheets, unresolved symbols, duplicate references (hybrid-report.md section 3).
+- E refused almost every edit to an existing design and left 99 planned pins off their net with
+  adaptive retries, where the other designs left 0.
+- Hb2's extra refusals over M2 come from the outright refusals and the pad-copy rule below; some
+  of them blocked M2's wrong writes, and the rest are the price of not modelling those items.
+- One probe call has no verdict in any design: it uses a KiCad 10 `(power local)` symbol that
+  kicad-cli 9 cannot load.
+
+**Pin geometry, the prerequisite for everything.**
+- KiCad's transform order, rotate then mirror, in integer internal units (0.0001 mm), for both
+  the position and the outward direction. A `(mirror)` written before `(at)` is ignored, as
+  KiCad's parser ignores it.
+- The library symbol is resolved as KiCad resolves it: `lib_name` if present, else `lib_id`,
+  exact match, no fallback.
+- The unit comes from the instance entry for this sheet's path; body style; hidden pins
+  included; the effective electrical type includes a placed alternate.
+
+**Two views of existing connectivity, built once per call.**
+- The **possible view** decides refusals. Anything within a 0.05 mm margin of a point or line
+  joins it; 2-point graphic lines count as lines; plain crossings do not join; same-text names
+  join transitively.
+- The **narrow view** decides "already on N". It holds only the joins every KiCad reader makes.
+  It may miss a connection; the cost is a redundant label, measured clean in every sample.
+- **Names, by KiCad's rule only:** every label kind; a power symbol's Value; a hidden power_in
+  pin's name. PWR_FLAG names nothing (its pin is power_out).
+
+**Outright refusals.** Refuse when the pin's possible net reaches a bus or bus entry, a sheet pin,
+text containing `${`, a symbol with jumper groups, a unit-0 pad whose units are not all placed on
+this sheet, a symbol whose instances disagree on its unit, or a netclass label or rule area unless
+every joined part certainly carries one class set. Refuse the whole call if any symbol on the
+sheet is derived or unresolved.
+
+**Decisions per pad, in order.**
+1. The narrow view says the pad is on N in every copy: no-op.
+2. The possible view carries a different name: refuse, naming it.
+3. Otherwise wire it, report the pin's existing net-mates, and say when N is a new local net on
+   this sheet.
+
+**Pad identity.** A pad is (reference, pad number) across the placed units of one part. Every
+copy on this sheet is wired; a copy on another sheet refuses.
+
+## ADR-R2: new geometry touches only the target pin
+
+**Decision.** New items may touch only the target pin's connection point. A new wire's interior
+passes no item, overlaps no wire or bus, and crosses no existing line. The label is captured by
+nothing but its own stub, or sits on the pin. Routing never writes a junction.
+
+**Evidence.** Junctions on unsplit wires split nets in kicad-cli 9, and collinear overlaps split
+nets in the GUI reading (pressure-test-report.md section 3, problems P2 and P3). The crossing ban
+is kept because a later call by another tool that puts a label or junction on such a crossing
+merges the two nets: after a stub crossing net A's wire, `add_label` or `add_global_label` at the
+crossing merged /A and /N in both readings, and `add_junctions` or an `add_wires` that
+auto-junctions there merged them in both readings and split /N in kicad-cli (hybrid-report.md
+section 6, `crossban_probe.out`). The ban cost 20 connect_pins refusals across every sample; in
+wire_pins_to_net it never refused, it only swapped a stub for a label on the pin.
+
+## ADR-R3: a shared reference is one part only when the pad maps agree
+
+**Decision.** Two placed symbols sharing a reference are one part, and allowed, only if each
+places a distinct unit and their library definitions agree on which unit draws each pad number,
+with the same electrical type. Otherwise refuse. References are read from live instance paths
+only, the ones KiCad uses for this project's hierarchy.
+
+**Evidence** (dupref-report.md sections 3 to 5). Of the 63 calls where an earlier rule
+(byte-identical library entries) refused, 58 lift: 19 clean writes, 27 correct no-ops, and 12
+refused for other reasons the old refusal hid. The 4 true duplicates (probe PI-15) still refuse.
+The rule is stricter than KiCad in one synthetic case, two edited library variants of one chip;
+that costs refusals only, and no real sample reached it. KiCad's own netlist never joins copies of
+a pad and carries no part-identity judgement; its only one-part notion is ERC's
+`different_unit_net`.
+
+The live-path refinement was not measured: a leftover reference on a dead instance path caused
+the one remaining unnecessary refusal (tiny_tapeout's U3). Its implementation test must show that
+case lifting and the true duplicates still refusing.
+
+## ADR-R4: the tools
+
+**wire_pins_to_net** (slice 1).
+- Validate: label_text non-empty and trimmed, no leading `/`, no bus syntax, not an auto-name
+  pattern (`Net-(`, `unconnected-(`), no `${`; direction from the closed set; stub_length a
+  positive multiple of 1.27 mm; duplicate pins removed.
+- Resolve pins: an exact pad number wins; a name matching pads drawn at one point is one target;
+  a name matching pads at different points refuses and lists them; no_connect-type pins and pins
+  with an NC flag refuse.
+- Geometry: the outward stub at 1x length, else a label on the pin. A longer stub contains the
+  shorter one, so it cannot pass when 1x fails; the sideways and inward fallbacks go.
+- One write.
+
+**connect_pins** (slice 2).
+- Routes: straight, then horizontal-first L, then vertical-first L, each through the touch rule.
+  No label, no junction.
+- No-op when already connected; refuse when the two sides carry different names, or when either
+  is a multi-copy pad. The automatic `Net-(ref-pin)` label goes: it made later legitimate calls
+  refuse.
+- Skill guidance, from measured recovery (hybrid-report.md section 7): after a `touch` refusal,
+  retry with wire_pins_to_net and one fresh shared name; after a `names` refusal, use the name the
+  message reports; otherwise stop and report. The low-level add_label is not a safe fallback: it
+  wrote wrong in 41 of 67 `names`, `sheet_pin` and `bus` cases.
+
+**get_net_connections** (slice 2) gains a pin-seeded mode in the same slice that removes the auto
+label, because it finds connect_pins nets only through that label.
+
+**auto_place_decoupling_cap** (slice 3): placement and both wirings composed on one parsed tree,
+written once. Placed pin ends follow the touch rule; after placement, refuse if any pre-existing
+net changed.
+
+## Slices and tests
+
+1. The pin transform fix, routing junctions removed, the overlap and crossing bans, the shared
+   connectivity module, and wire_pins_to_net on it. These ship together: the transform fix alone
+   makes the old stubs run along existing outward wires, where the kept junction truncates them
+   (pressure-test-report.md section 5.7, critique e3, measured).
+2. connect_pins and get_net_connections.
+3. auto_place_decoupling_cap.
+
+Tests the design requires: a netlist oracle comparing kicad-cli netlists before and after by node
+set, reporting merges, splits, renames, class changes and pads in two nets; byte preservation on
+every successful write and byte identity on every refusal; fixtures ported from the probe cases;
+a model-versus-KiCad differential on every KiCad version CI carries, since the design's soundness
+depends on KiCad not changing these rules; and the tests that blessed the old bugs rewritten.
+
+Performance: the prototype's hierarchy scan took about 8 s per call on vme-wren, the largest demo
+project, when that project was present (h_build\perf_h.out, design H). The product needs a cached
+scan and a budget test.
+
+## Out of scope, recorded
+
+- Flattening derived symbols (queued separately; until then they refuse).
+- Following sheet pins into child sheets, and bus support: refused for now; revisit on usage
+  data.
+- Existing files where earlier versions of this repo wrote junctions that cut wires in kicad-cli
+  9: a separate read-only check plus a release note.
+- add_wires and add_junctions still write junctions on unsplit wires, and add_label is
+  unchecked. Separate issues.
+
+## Decisions (2026-10-04)
+
+1. Hb2 is approved as specified.
+2. N present as a power or global net elsewhere in the project but not on this sheet: write it,
+   and warn in the result that N is a new local net on this sheet.
+3. connect_pins loses its automatic `Net-(ref-pin)` label and refuses to join two differently
+   named nets.
+
+## Sources
+
+All in the scratch directory named in the status line; dates are when the run was made.
+- `pr57work\pressure-test-report.md` (2026-10-01): the first pressure test, the facts sections 2
+  and 5 rely on, and the probe case IDs (PI-, HIER-, UP-, DEC-, INERT-, LW-).
+- `pr57work\coarse-variant-report.md` (2026-10-02): the coarse refusal model against the precise
+  one.
+- `pr57work\hybrid-report.md` (2026-10-03): Hb against M2 and E, the crossing ban, and the
+  recovery measurements.
+- `pr57work\dupref-report.md` (2026-10-03): the pad-map rule for duplicate references, and the
+  gate figures for Hb2.
+- `pr57work\routing-proposal-v2.md` (2026-10-03, decisions 2026-10-04): the design this record
+  restates.
+- `pr57pt\HANDOFF.md` (2026-10-04): how to rerun the harness against an implementation.
+
+## Status log
+
+Each slice appends an entry when it lands.
