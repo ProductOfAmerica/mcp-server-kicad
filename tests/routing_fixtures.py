@@ -197,3 +197,83 @@ def stub(path: str, x, y, dx, dy, text: str) -> None:
 
 def text_of(path: str) -> bytes:
     return Path(path).read_bytes()
+
+
+def place_units(path: str, symbol: str, ref: str, placements) -> None:
+    """One multi-unit part: placements [(unit, x, y), ...], the first placed by place_component
+    and the rest cloned from it with their own unit, position and uuids, the way KiCad stores
+    units of one reference."""
+    (unit0, x0, y0), *rest = placements
+    place(path, symbol, ref, x0, y0)
+    p = Path(path)
+    tree = _cst.parse(p.read_bytes())
+    root = tree.lists[0]
+    src = next(
+        s
+        for s in root.find_all("symbol")
+        if any(q.atoms[2].text == ref for q in s.find_all("property") if len(q.atoms) > 2)
+    )
+
+    def set_unit(node, unit: int) -> None:
+        node.find("unit").atoms[1].set_text(str(unit))
+        for proj in node.find("instances").find_all("project"):
+            for path_node in proj.find_all("path"):
+                path_node.find("unit").atoms[1].set_text(str(unit))
+
+    set_unit(src, unit0)
+    anchor = src
+    for unit, x, y in rest:
+        node = src.copy()
+        at = node.find("at")
+        at.atoms[1].set_text(_n(x))
+        at.atoms[2].set_text(_n(y))
+        for prop in node.find_all("property"):
+            pat = prop.find("at")
+            pat.atoms[1].set_text(_n(float(pat.atoms[1].text) - x0 + x))
+            pat.atoms[2].set_text(_n(float(pat.atoms[2].text) - y0 + y))
+        node.find("uuid").atoms[1].set_text(str(uuid.uuid4()))
+        for pin in node.find_all("pin"):
+            pin.find("uuid").atoms[1].set_text(str(uuid.uuid4()))
+        set_unit(node, unit)
+        root.insert_after(anchor, node)
+        anchor = node
+    p.write_bytes(_cst.serialize(tree))
+
+
+def custom_lib(directory: Path, name: str, pins) -> str:
+    """A one-symbol library: pins [(number, name, type, x, y, angle, hidden)], one unit."""
+    eff = "(effects (font (size 1.27 1.27)))"
+    body = " ".join(
+        f"(pin {typ} line (at {_n(x)} {_n(y)} {ang}) (length 2.54)"
+        + (" (hide yes)" if hidden else "")
+        + f' (name "{pin_name}" {eff}) (number "{num}" {eff}))'
+        for num, pin_name, typ, x, y, ang, hidden in pins
+    )
+    text = (
+        '(kicad_symbol_lib (version 20241209) (generator "kicad_symbol_editor")'
+        ' (generator_version "9.0")\n'
+        f'  (symbol "{name}" (exclude_from_sim no) (in_bom yes) (on_board yes)'
+        f' (property "Reference" "U" (at 0 7.62 0) {eff})'
+        f' (property "Value" "{name}" (at 0 -7.62 0) {eff})'
+        ' (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))'
+        ' (property "Datasheet" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))'
+        f' (symbol "{name}_0_1" (rectangle (start -2.54 2.54) (end 2.54 -2.54)'
+        " (stroke (width 0.254) (type default)) (fill (type none))))"
+        f' (symbol "{name}_1_1" {body})'
+        " (embedded_fonts no))\n)\n"
+    )
+    path = Path(directory) / f"{name}.kicad_sym"
+    path.write_text(text, encoding="utf-8")
+    return str(path)
+
+
+def place_custom(path: str, lib: str, name: str, ref: str, x: float, y: float) -> None:
+    schematic.place_component(
+        lib_id=f"Test:{name}",
+        reference=ref,
+        value=name,
+        x=x,
+        y=y,
+        symbol_lib_path=lib,
+        schematic_path=path,
+    )

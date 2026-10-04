@@ -163,13 +163,14 @@ def test_an_explicit_direction_is_honoured(tmp_path):
     assert plan.labels == [((990600, 977900), 180)]
 
 
-def test_items_a_call_adds_block_its_next_pin(tmp_path):
-    """H-C15: the second stub would run up the first one's 2.54 mm."""
+def test_items_a_call_adds_join_the_model_before_its_next_pin(tmp_path):
+    """H-C15. R1 and R2 sit on top of each other, so R2:1 shares R1:1's point. Once R1:1's stub
+    and label are in the model, R2:1 is already on N: no second stub, no second label."""
     p = _r1(tmp_path)
     place(p, "R", "R2", 101.6, 101.6)
     plan = _plan(p, [("R1", "1"), ("R2", "1")])
-    assert len(plan.wires) == 1 and len(plan.labels) == 2
-    assert "R2:1: label 'N' on the pin end (101.6, 97.79)" in plan.lines[1]
+    assert len(plan.wires) == 1 and len(plan.labels) == 1
+    assert plan.lines[1].startswith("R2:1: already on 'N' via label 'N' at (101.6, 95.25)")
 
 
 def test_a_refusal_names_every_blocked_pin(tmp_path):
@@ -276,10 +277,13 @@ def test_pwr_flag_names_nothing(tmp_path):
 
 
 def _4011(tmp_path):
-    """U1 = 4011, unit 1 and every other unit placed, so its unit-0 power pins are drawn."""
+    """U1 = 4011 with all four gates placed, so its unit-0 power pins are drawn four times."""
+    from routing_fixtures import place_units
+
     p = fresh(tmp_path)
-    for unit_x, unit in ((50.8, 1), (101.6, 2), (152.4, 3), (203.2, 4)):
-        place(p, "4011", f"U{unit}", unit_x, 101.6)
+    place_units(
+        p, "4011", "U1", [(1, 50.8, 101.6), (2, 101.6, 101.6), (3, 152.4, 101.6), (4, 203.2, 101.6)]
+    )
     return p
 
 
@@ -304,13 +308,13 @@ def _hide_lib_pin(path, number: str, alternate: str | None = None) -> None:
                     alt = f'(alternate "{alternate}" power_in line)'.encode()
                     pin.append_child(_cst.parse(alt).lists[0], b" ")
     if alternate:
-        u1 = next(
-            s
-            for s in root.find_all("symbol")
-            if any(q.atoms[2].text == "U1" for q in s.find_all("property") if len(q.atoms) > 2)
-        )
-        placed = next(q for q in u1.find_all("pin") if q.atoms[1].text == number)
-        placed.append_child(_cst.parse(f'(alternate "{alternate}")'.encode()).lists[0], b" ")
+        for u1 in root.find_all("symbol"):
+            if not any(
+                q.atoms[2].text == "U1" for q in u1.find_all("property") if len(q.atoms) > 2
+            ):
+                continue
+            placed = next(q for q in u1.find_all("pin") if q.atoms[1].text == number)
+            placed.append_child(_cst.parse(f'(alternate "{alternate}")'.encode()).lists[0], b" ")
     Path(path).write_bytes(_cst.serialize(tree))
 
 

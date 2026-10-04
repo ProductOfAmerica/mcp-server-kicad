@@ -496,6 +496,11 @@ def _pin_hidden(p) -> bool:
 _CELL = 25400
 
 
+def _pad_order(num: str):
+    """Pad numbers in natural order: 2 before 10."""
+    return (0, int(num), "") if num.isdigit() else (1, 0, num)
+
+
 def _all_names(it: Item):
     if it.name is not None:
         yield it.name
@@ -865,10 +870,16 @@ class Model:
         r = cm.uf.find(it.id)
         return [q for q in self.items if q.kind == "pin" and cm.uf.find(q.id) == r]
 
-    # -- lookup ---------------------------------------------------------------------------
-    def find_pin(self, ref: str, label: str) -> Item:
-        """The pin a reference and a pin name or number mean: the first pin, in file order,
-        whose name or number matches, on the first placed symbol that draws one."""
+    # -- resolution -----------------------------------------------------------------------
+    def resolve(self, ref: str, label: str) -> list[tuple[str, list[Item]]]:
+        """The pads a reference and a pin number or name mean, each with every copy this sheet
+        draws (design 4.5, 4.8).
+
+        An exact pad number wins. A name matching one pad is that pad. A name matching several
+        is one target only when, on every placed symbol here, the matching pads it draws sit at
+        one point and every matching pad is drawn by the same placed symbols (stacked pins);
+        otherwise it is refused with the pads listed.
+        """
         syms = [s for s in self.syms if s.ref == ref]
         if not syms:
             raise Refusal(
@@ -878,17 +889,63 @@ class Model:
             )
         for s in syms:
             if s.lib is None or s.derived:
-                what = "is derived and was never flattened" if s.derived else "is not in"
+                what = "is derived and was never flattened into" if s.derived else "is not in"
                 raise Refusal(
                     "derived",
                     f"{ref} uses library symbol '{s.key}', which {what} this file's lib_symbols,"
                     " so its pins are unknown here. Remedy: re-place it with place_component"
                     " from a non-derived library symbol.",
                 )
-            for it in self.items:
-                if it.kind == "pin" and it.sym is s and (it.num == label or it.pname == label):
-                    return it
-        raise Refusal("resolve", not_drawn_message(ref, label, syms[0].lib, [s.node for s in syms]))
+        libs: list = []
+        for s in syms:
+            if all(s.lib is not lib for lib in libs):
+                libs.append(s.lib)
+        numbers: dict[str, str] = {}  # number -> its name, over every unit of every definition
+        for lib in libs:
+            for sub in lib.find_all("symbol"):
+                for pin in sub.find_all("pin"):
+                    numbers.setdefault(_child_text(pin, "number"), _child_text(pin, "name"))
+        if label in numbers:
+            nums = [label]
+        else:
+            nums = sorted((n for n, name in numbers.items() if name == label), key=_pad_order)
+            if not nums:
+                raise Refusal(
+                    "resolve", not_drawn_message(ref, label, syms[0].lib, [s.node for s in syms])
+                )
+            if len(nums) > 1 and not self._stacked(ref, nums):
+                where = "; ".join(
+                    f"pad {n} at " + ", ".join(pt((c.x, c.y)) for c in self.pads.get((ref, n), []))
+                    if self.pads.get((ref, n))
+                    else f"pad {n} not drawn here"
+                    for n in nums
+                )
+                raise Refusal(
+                    "resolve",
+                    f"pin name '{label}' on {ref} matches several pads that are not drawn at one"
+                    f" point ({where}). Remedy: pass the pad number of each pin you mean.",
+                )
+        out = []
+        for n in nums:
+            copies = self.pads.get((ref, n), [])
+            if not copies:
+                raise Refusal(
+                    "resolve", not_drawn_message(ref, n, syms[0].lib, [s.node for s in syms])
+                )
+            out.append((n, copies))
+        return out
+
+    def _stacked(self, ref: str, nums: list[str]) -> bool:
+        """Every placed symbol here that draws one of these pads draws all of them, at one
+        point."""
+        per_sym: dict[int, dict[str, set[Point]]] = {}
+        for n in nums:
+            for c in self.pads.get((ref, n), []):
+                per_sym.setdefault(id(c.sym), {}).setdefault(n, set()).add((c.x, c.y))
+        return bool(per_sym) and all(
+            set(drawn) == set(nums) and len(set().union(*drawn.values())) == 1
+            for drawn in per_sym.values()
+        )
 
     # -- the touch rule -------------------------------------------------------------------
     def _point_entries(self):
@@ -1192,7 +1249,7 @@ def plan_wire_pins(root, pins: list, net: str, direction: str, stub_length: floa
         return plan
     fixed = None if direction == "auto" else DIRECTIONS[direction]
 
-    targets: list[tuple[str, Item]] = []
+    targets: list[tuple[str, list[Item]]] = []
     seen: dict[tuple, str] = {}
     for pd in pins:
         if (
@@ -1204,48 +1261,64 @@ def plan_wire_pins(root, pins: list, net: str, direction: str, stub_length: floa
             plan.refuse("validation", f"{pd!r}: each pin must be {{'reference': str, 'pin': str}}.")
             continue
         ref, label = pd["reference"], str(pd["pin"])
-        tag = f"{ref}:{label}"
         try:
-            c = m.find_pin(ref, label)
+            pads = m.resolve(ref, label)
         except Refusal as e:
-            plan.refuse(e.codes, f"{tag}: {e.text}")
+            plan.refuse(e.codes, f"{ref}:{label}: {e.text}")
             continue
-        key = (c.ref, c.num)
-        if key in seen:
-            plan.lines.append(f"{tag}: same pad as {seen[key]}; counted once.")
-            continue
-        seen[key] = tag
-        targets.append((tag, c))
+        for num, copies in pads:
+            tag = f"{ref}:{label}" if len(pads) == 1 else f"{ref}:{label} (pad {num})"
+            if (ref, num) in seen:
+                plan.lines.append(f"{tag}: same pad as {seen[(ref, num)]}; counted once.")
+                continue
+            seen[(ref, num)] = tag
+            targets.append((tag, copies))
 
-    requested = {(c.ref, c.num) for _, c in targets}
+    def where(copies: list[Item], c: Item) -> str:
+        return f"copy at {pt((c.x, c.y))}: " if len(copies) > 1 else ""
+
+    requested = {(copies[0].ref, copies[0].num) for _, copies in targets}
     mates: set[str] = set()
-    ready: list[tuple[str, Item, Item | None]] = []
-    for tag, c in targets:
+    ready: list[tuple[str, list[Item], Item | None]] = []
+    for tag, copies in targets:
         mates |= {
             f"{q.ref}:{q.num}"
-            for q in m.members(c)
+            for q in m.members(copies[0])
             if q.ref and not q.ref.startswith("#") and (q.ref, q.num) not in requested
         }
-        on = m.narrow_names(c).get(net)
-        if on:
-            plan.lines.append(f"{tag}: already on '{net}' via {_desc(on[0])}; unchanged")
+        on = [m.narrow_names(c).get(net) for c in copies]
+        if all(on):
+            plan.lines.append(
+                f"{tag}: "
+                + "; ".join(
+                    f"{where(copies, c)}already on '{net}' via {_desc(via[0])}; unchanged"
+                    for c, via in zip(copies, on)
+                    if via
+                )
+            )
             continue
-        named = m.coarse().names_of(c)
+        named = m.coarse().names_of(copies[0])  # every copy of a pad is one possible component
         other = [e for e in named if e[1] != net]
         if other:
             e = _names_refusal(other, net)
             plan.refuse(e.codes, f"{tag}: {e.text}")
             continue
-        hint = next((it for it, t in named if t == net), None)
-        ready.append((tag, c, hint))
+        ready.append((tag, copies, next((it for it, t in named if t == net), None)))
 
     joins = [_desc(it) for it in m.items if it.name == net and not it.new]
-    for tag, c, hint in ready:
+    for tag, copies, hint in ready:
+        parts = []
         try:
-            text = _wire_copy(m, plan, c, net, fixed, L)
+            for c in copies:
+                via = m.narrow_names(c).get(net)  # an earlier copy or pad may have joined it
+                if via:
+                    parts.append(f"{where(copies, c)}already on '{net}' via {_desc(via[0])}")
+                    continue
+                parts.append(where(copies, c) + _wire_copy(m, plan, c, net, fixed, L))
         except Refusal as e:
-            plan.refuse(e.codes, f"{tag}: {e.text}")
+            plan.refuse(e.codes, f"{tag}: {where(copies, c)}{e.text}")
             continue
+        text = "; ".join(parts)
         if hint is not None:
             text += (
                 f" (it possibly reached '{net}' already, via {_desc(hint)}, which not every"

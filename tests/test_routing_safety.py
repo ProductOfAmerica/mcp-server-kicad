@@ -369,3 +369,99 @@ def test_a_pin_already_on_the_net_is_a_no_op(tmp_path):
     stub(p, 101.6, 97.79, 0, -2.54, "N")
     status, msg = call_wptn(p, pins(("R1", "1")), "N")
     assert status == "NOOP" and "already on 'N' via label 'N' at (101.6, 95.25)" in msg
+
+
+# ---------------------------------------------------------------------------------------------
+# Pad identity and pin resolution (design 4.5, 4.8)
+# ---------------------------------------------------------------------------------------------
+
+
+@requires_cli
+def test_every_copy_of_a_unit0_pad_is_wired(tmp_path):
+    """UP-01. DualGate's pin 5 (GND) is common to both units, so each placed unit draws a copy.
+    The old lookup wired the first copy only, and KiCad then listed pad 5 in two nets."""
+    from conftest import make_dual_unit_sch
+
+    p = make_dual_unit_sch(tmp_path)
+    status, msg = wired(p, [("U1", "5")], "NGND")
+    assert status == "OK" and msg.count("copy at") == 2, msg
+
+
+def test_a_pad_with_one_copy_on_n_gets_only_the_other(tmp_path):
+    from conftest import make_dual_unit_sch
+
+    p = make_dual_unit_sch(tmp_path)
+    stub(p, 100, 107.62, 0, 2.54, "NGND")  # unit 1's copy of pad 5, already on NGND
+    old = open(p, "rb").read()
+    status, msg = call_wptn(p, pins(("U1", "5")), "NGND")
+    assert status == "OK", msg
+    wires = [n for n in assert_only_added(old, open(p, "rb").read()) if n.head == "wire"]
+    assert len(wires) == 1 and _xy(wires[0], 0) == (150.0, 107.62)
+    assert "copy at (100, 107.62): already on 'NGND'" in msg
+
+
+def test_a_pad_on_n_in_every_copy_is_a_no_op(tmp_path):
+    from conftest import make_dual_unit_sch
+
+    p = make_dual_unit_sch(tmp_path)
+    stub(p, 100, 107.62, 0, 2.54, "NGND")
+    stub(p, 150, 107.62, 0, 2.54, "NGND")
+    status, msg = call_wptn(p, pins(("U1", "5")), "NGND")
+    assert status == "NOOP", msg
+
+
+def test_an_exact_pad_number_wins_over_a_pin_name(tmp_path):
+    """PI-14. Pin 1 is named "2" and pin 2 is named "1"; "2" means pad 2. The old lookup took
+    the first pin whose name or number matched, in file order, which was pad 1."""
+    from routing_fixtures import custom_lib, place_custom
+
+    p = fresh(tmp_path)
+    lib = custom_lib(
+        tmp_path,
+        "SWAP",
+        [("1", "2", "passive", -5.08, 0, 0, False), ("2", "1", "passive", 5.08, 0, 180, False)],
+    )
+    place_custom(p, lib, "SWAP", "U1", 101.6, 101.6)
+    old = open(p, "rb").read()
+    status, msg = call_wptn(p, pins(("U1", "2")), "N")
+    assert status == "OK", msg
+    wires = [n for n in assert_only_added(old, open(p, "rb").read()) if n.head == "wire"]
+    assert _xy(wires[0], 0) == (106.68, 101.6)  # pad 2, on the right
+
+
+def _stack(tmp_path, apart: bool):
+    from routing_fixtures import custom_lib, place_custom
+
+    p = fresh(tmp_path)
+    second = (5.08, 0, 180) if apart else (-5.08, 0, 0)
+    lib = custom_lib(
+        tmp_path,
+        "STACK",
+        [
+            ("3", "COM", "passive", -5.08, 0, 0, False),
+            ("5", "COM", "passive", *second, True),
+            ("1", "IN", "passive", 0, 5.08, 270, False),
+        ],
+    )
+    place_custom(p, lib, "STACK", "U1", 101.6, 101.6)
+    return p
+
+
+def test_a_name_on_stacked_pads_is_one_target(tmp_path):
+    """Pads 3 and 5 are both "COM", drawn at one point: one stub wires both."""
+    p = _stack(tmp_path, apart=False)
+    before = nets(p) if _cli() else None
+    status, msg = call_wptn(p, pins(("U1", "COM")), "N")
+    assert status == "OK" and "(pad 3)" in msg and "(pad 5)" in msg, msg
+    if before is not None:
+        v = judge(before, nets(p), [{("U1", "3"), ("U1", "5")}], "N")
+        assert v.delivered and not v.wrong, v.problems()
+
+
+def test_a_name_on_pads_at_two_points_is_refused(tmp_path):
+    """PI-14/LW-04. "COM" names pads 3 and 5 at different points: which was meant is unknown,
+    so the call refuses and lists them. The old lookup wired the first one only."""
+    p = _stack(tmp_path, apart=True)
+    status, msg = call_wptn(p, pins(("U1", "COM")), "N")
+    assert status == "REFUSED" and msg.startswith("[resolve]"), msg
+    assert "pad 3 at (96.52, 101.6)" in msg and "pad 5 at (106.68, 101.6)" in msg
