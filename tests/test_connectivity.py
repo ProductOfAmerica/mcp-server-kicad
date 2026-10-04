@@ -961,3 +961,17 @@ def test_a_sheet_without_the_reference_is_not_parsed(tmp_path):
     with pytest.raises(C.Refusal):
         m.check_unique("R1")
     assert m.hier.others[0].facts is not None
+
+
+def test_without_a_project_every_reference_a_part_could_carry_counts(tmp_path):
+    """No project file, so the live path is unknown. R2 carries a first entry from elsewhere
+    naming it R1, and R1 as its property, so it may be R1 as well as R2: both references are
+    refused as shared ([dup_ref]), the conservative rule, where matching by the property alone
+    had answered "R2" with not found."""
+    from routing_fixtures import stale_reference
+
+    p = _r1(tmp_path)
+    place(p, "R", "R2", 152.4, 101.6)
+    stale_reference(p, "R2", "R1")
+    assert _plan(p, [("R2", "1")]).codes == ["dup_ref"]
+    assert _plan(p, [("R1", "1")]).codes == ["dup_ref"]

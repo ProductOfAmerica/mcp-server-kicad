@@ -299,6 +299,32 @@ def add_instance(path: str, ref: str, inst_path: str, unit: int) -> None:
     _edit(path, fn)
 
 
+def stale_reference(path: str, ref: str, stale: str) -> None:
+    """Give the placed *ref* a first instance entry from another project, on a path this one
+    does not have, naming it *stale*, and *stale* as its Reference property. KiCad's parser makes
+    the first entry a symbol's own reference, so that is what KiCad saves after a sheet copied
+    from another project is re-annotated (smps-com in KiCad's demos carries R2 on eight
+    resistors). KiCad still reads *ref* at the live path."""
+
+    def fn(root) -> None:
+        node = _placed(root, ref)[0]
+        inst = node.find("instances")
+        proj = inst.find("project")
+        dead = proj.copy()
+        dead.atoms[1].set_text("elsewhere")
+        for extra in dead.find_all("path")[1:]:
+            dead.remove_child(extra)
+        entry = dead.find("path")
+        entry.atoms[1].set_text("/00000000-0000-0000-0000-0000000000dd")
+        entry.find("reference").atoms[1].set_text(stale)
+        inst.insert_before(proj, dead)
+        for q in node.find_all("property"):
+            if len(q.atoms) > 2 and q.atoms[1].text == "Reference":
+                q.atoms[2].set_text(stale)
+
+    _edit(path, fn)
+
+
 def project_file(directory, name: str, classes=()) -> str:
     """A minimal .kicad_pro, which makes <name>.kicad_sch beside it the root of its hierarchy,
     defining net classes Default and *classes* (the routing pressure test's v_write_pro)."""

@@ -311,3 +311,24 @@ def test_a_call_on_vme_wren_stays_within_its_budget(vme_wren, sheet, ref, cold_s
         spent = time.process_time() - t0
         path.write_bytes(before)
         assert spent <= limit, f"{'warm' if warm else 'cold'} call took {spent:.2f}s of CPU"
+
+
+def test_smps_com_parts_are_known_by_the_reference_kicad_reads(tmp_path_factory):
+    """KiCad 9.0.8's simulation/power_supplies/boost/smps-com.kicad_sch: eight resistors carry
+    the Reference property R2 from a first entry left by another project, and KiCad reads them
+    as R2 to R9 at the live path (read 2026-10-04). "R2" means one part and "R6" another, as in
+    KiCad; matched by the property, "R2" was eight parts and "R6" was not found."""
+    base = demo_dir()
+    src = base / "simulation" / "power_supplies" / "boost" if base is not None else None
+    if src is None or not (src / "smps-com.kicad_pro").is_file():
+        pytest.skip("KiCad's demos have no smps-com project on this host")
+    dst = Path(tmp_path_factory.mktemp("smps")) / "boost"
+    shutil.copytree(src, dst)
+    path = dst / "smps-com.kicad_sch"
+    m = _connectivity.Model(_cst.parse(path.read_bytes()).lists[0], str(path))
+    stale = [s for s in m.syms if m.records[id(s.node)].prop_ref == "R2"]
+    if len(stale) < 2:
+        pytest.skip("this KiCad's smps-com has no stale R2 property")
+    for ref in ("R2", "R6"):
+        ((_num, copies),) = m.resolve(ref, "1")
+        assert len({id(c.sym) for c in copies}) == 1, (ref, len(copies))

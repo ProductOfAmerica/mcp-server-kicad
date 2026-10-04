@@ -438,6 +438,7 @@ class Sym:
     __slots__ = (
         "node",
         "ref",
+        "refs",
         "value",
         "key",
         "lib",
@@ -450,8 +451,11 @@ class Sym:
         "pad_units",
     )
 
-    def __init__(self, node, ref: str, value: str, key: str, lib):
+    def __init__(self, node, ref: str, value: str, key: str, lib, refs=frozenset()):
         self.node, self.ref, self.value, self.key, self.lib = node, ref, value, key, lib
+        # Every reference it answers to: KiCad's at this sheet's live paths, or, when those are
+        # unknown, every one its entries and property give it. ref is the one shown.
+        self.refs: frozenset[str] = refs or frozenset({ref})
         self.derived = lib is not None and lib.find("extends") is not None
         self.units: list[int] = []
         self.style = 1
@@ -1133,6 +1137,8 @@ class Model:
         self._coarse: _Coarse | None = None
         maps: dict = {}
         self.records = {id(n): _record(n, self.libs, maps) for n in root.find_all("symbol")}
+        #: The path kicad-cli gives this sheet when it reads it alone, as its own root.
+        self.own_path = f"/{_child_text(root, 'uuid')}"
         here = sheet_facts(root, tuple(self.records.values()))
         self.hier = hierarchy(path, here) if path is not None else Hierarchy(legacy=_legacy(here))
         self._scanned: set[str] = set()  # references the other sheets were read for
@@ -1210,16 +1216,23 @@ class Model:
             self._take_symbol(ch)
 
     def _take_symbol(self, node) -> None:
-        ref = _property(node, "Reference") or "?"
+        # A part is known by the reference KiCad reads for it, which the Reference property need
+        # not be: KiCad sets the property from the first instance entry, possibly one another
+        # project left behind (smps-com in KiCad's demos carries R2 on eight resistors).
+        rec, h = self.records[id(node)], self.hier
+        if h.live:
+            ref, refs = rec.at(h.live[0])[0], frozenset(rec.at(p)[0] for p in h.live)
+        else:
+            ref = rec.at(self.own_path)[0]
+            refs = rec.every_ref(h.legacy.get(rec.uuid, ())) | {ref}
         value = _property(node, "Value") or ""
         # KiCad resolves lib_name when present, else lib_id, by exact name, with no fallback.
         key = _child_text(node, "lib_name") or _child_text(node, "lib_id")
-        s = Sym(node, ref, value, key, self.libs.get(key))
+        s = Sym(node, ref, value, key, self.libs.get(key), refs)
         self.syms.append(s)
         if s.lib is None or s.derived:
             return
         pos, t = symbol_transform(node, ref)
-        rec, h = self.records[id(node)], self.hier
         if h.live:
             s.units = sorted({rec.at(p)[1] for p in h.live})
         else:
@@ -1230,7 +1243,8 @@ class Model:
             ids[0] for sub in s.lib.find_all("symbol") if (ids := _lib_unit_style(sub)) and ids[0]
         } or {1}
         s.pad_units = _pad_units(s.lib)
-        self.placed.setdefault(ref, set()).update(s.units)
+        for r in s.refs:
+            self.placed.setdefault(r, set()).update(s.units)
         alts = {}
         for p in node.find_all("pin"):
             a = p.find("alternate")
@@ -1270,7 +1284,8 @@ class Model:
         it = self.add(Item("pin", x, y))
         it.sym, it.ref, it.out = s, s.ref, out
         it.num = _child_text(p, "number")
-        self.pads.setdefault((s.ref, it.num), []).append(it)
+        for r in s.refs:
+            self.pads.setdefault((r, it.num), []).append(it)
         it.pname = _child_text(p, "name")
         primary = p.atoms[1].text if len(p.atoms) > 1 else "unspecified"
         it.etype = primary
@@ -1466,7 +1481,7 @@ class Model:
                 out.append("jumper")
             drawn_by = s.pad_units.get(it.num or "", set())
             needed = s.lib_units if 0 in drawn_by else drawn_by
-            if not needed <= self.placed.get(s.ref, set()):
+            if any(not needed <= self.placed.get(r, set()) for r in s.refs):
                 out.append("unit0_unplaced")
             if s.amb:
                 out.append("units_disagree")
@@ -1493,11 +1508,7 @@ class Model:
     def references_of(self, ref: str) -> set[str]:
         """Every reference the symbols placed here as *ref* carry: at this sheet's live paths,
         or every entry's when those are not known."""
-        h = self.hier
-        recs = [self.records[id(s.node)] for s in self.syms if s.ref == ref]
-        if h.live:
-            return {rec.at(p)[0] for rec in recs for p in h.live}
-        return set().union(*(rec.every_ref(h.legacy.get(rec.uuid, ())) for rec in recs))
+        return set().union(*(s.refs for s in self.syms if ref in s.refs))
 
     def prepare(self, refs) -> None:
         """Parse every other sheet of the hierarchy whose bytes can hold a symbol carrying one
@@ -1536,7 +1547,7 @@ class Model:
         if h.error is not None:
             raise h.error
         mine = [self.records[id(s.node)] for s in self.syms]
-        targets = [rec for rec, s in zip(mine, self.syms) if s.ref == ref]
+        targets = [rec for rec, s in zip(mine, self.syms) if ref in s.refs]
         if h.live:
             wanted = {rec.at(p)[0] for rec in targets for p in h.live}
             placed = [(None, rec, p) for rec in mine for p in h.live]
@@ -1599,7 +1610,7 @@ class Model:
         one point and every matching pad is drawn by the same placed symbols (stacked pins);
         otherwise it is refused with the pads listed.
         """
-        syms = [s for s in self.syms if s.ref == ref]
+        syms = [s for s in self.syms if ref in s.refs]
         if not syms:
             raise Refusal(
                 "resolve",

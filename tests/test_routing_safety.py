@@ -29,6 +29,7 @@ from routing_fixtures import (
     set_lib_name,
     set_unit,
     sheet,
+    stale_reference,
     stub,
     wire,
 )
@@ -934,3 +935,43 @@ def test_inert05_a_stub_clear_of_any_class_is_kept(tmp_path, v, direction):
     p = _inert05(tmp_path, v)
     status, msg = wired(p, [("R1", "1")], "SIG", direction=direction)
     assert status == "OK" and "stub" in msg and "on the pin end" not in msg, msg
+
+
+# ---------------------------------------------------------------------------------------------
+# A part is known by the reference KiCad reads, not by a stale Reference property
+# ---------------------------------------------------------------------------------------------
+
+
+def _stale(tmp_path) -> str:
+    """A project's root holding R1, R2 and R3, with R2:1 wired to R3:1. R1 and R2 both carry a
+    first instance entry from another project naming them R1, and R1 as their Reference
+    property; KiCad reads them as R1 and R2 at the live path."""
+    p = fresh(tmp_path, "h")
+    project_file(Path(p).parent, "h")
+    place(p, "R", "R1", 101.6, 101.6)
+    place(p, "R", "R2", 152.4, 101.6)
+    place(p, "R", "R3", 203.2, 101.6)
+    wire(p, 152.4, 97.79, 152.4, 92.71)
+    wire(p, 152.4, 92.71, 203.2, 92.71)
+    wire(p, 203.2, 92.71, 203.2, 97.79)
+    stale_reference(p, "R1", "R1")
+    stale_reference(p, "R2", "R1")
+    return p
+
+
+def test_a_stale_reference_property_does_not_make_two_parts_one_pad(tmp_path):
+    """Matching parts by the Reference property made KiCad's R1 and R2 one pad "R1", so wiring
+    R1:1 also wired R2:1 and merged R2's net into N. Only R1:1 is wired now."""
+    p = _stale(tmp_path)
+    old = open(p, "rb").read()
+    status, msg = wired(p, [("R1", "1")], "N")
+    assert status == "OK" and "copy at" not in msg, msg
+    added = assert_only_added(old, open(p, "rb").read())
+    assert [_xy(n, 0) for n in added if n.head == "wire"] == [(101.6, 97.79)]
+
+
+def test_a_part_is_found_by_the_reference_kicad_reads(tmp_path):
+    """KiCad's R2 has the Reference property R1; asking for R2 wired nothing ("not found")."""
+    p = _stale(tmp_path)
+    status, msg = wired(p, [("R2", "1")], "M")
+    assert status == "OK", msg
