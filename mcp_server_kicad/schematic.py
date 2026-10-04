@@ -1976,6 +1976,8 @@ def wire_pins_to_net(
     plan = _connectivity.plan_wire_pins(root, pins, label_text, direction, stub_length)
     if plan.refused:
         raise ToolError(plan.refusal())
+    if not plan.wires and not plan.labels:
+        return plan.no_change()
     for a, b in plan.wires:
         node = _WIRE_TPL.copy()
         for xy, (x, y) in zip(node.find("pts").find_all("xy"), (a, b)):

@@ -236,4 +236,134 @@ def test_a_malformed_pin_entry_refuses(tmp_path):
 def test_the_same_pad_twice_is_wired_once(tmp_path):
     plan = _plan(_r1(tmp_path), [("R1", "1"), ("R1", "1")])
     assert len(plan.wires) == 1 and len(plan.labels) == 1
-    assert plan.lines[1] == "R1:1: same pad as R1:1; counted once."
+    assert "R1:1: same pad as R1:1; counted once." in plan.lines
+
+
+# ---------------------------------------------------------------------------------------------
+# Names, by KiCad's rule (design 4.2), and the two views
+# ---------------------------------------------------------------------------------------------
+
+
+def _named(tmp_path, *, net="N"):
+    """R1 at (101.6, 101.6) with a raw wire from pin 1 left to (88.9, 97.79)."""
+    p = _r1(tmp_path)
+    wire(p, 101.6, 97.79, 88.9, 97.79)
+    return p
+
+
+def _first_line(plan) -> str:
+    return plan.refusal() if plan.refused else plan.lines[0]
+
+
+def test_a_power_symbol_names_its_net_by_its_value(tmp_path):
+    from routing_fixtures import power
+
+    p = _named(tmp_path)
+    power(p, "GND", "#PWR01", 88.9, 97.79, rot=270)  # its pin end is its origin
+    refused = _plan(p, [("R1", "1")], net="VCC")
+    assert refused.codes == ["names"] and "'GND'" in refused.refusal()
+    noop = _plan(p, [("R1", "1")], net="GND")
+    assert not noop.refused and not noop.wires and not noop.labels
+    assert "already on 'GND' via power symbol #PWR01" in noop.lines[0]
+
+
+def test_pwr_flag_names_nothing(tmp_path):
+    from routing_fixtures import power
+
+    p = _named(tmp_path)
+    power(p, "PWR_FLAG", "#FLG01", 88.9, 97.79)
+    assert not _plan(p, [("R1", "1")], net="VCC").refused
+
+
+def _4011(tmp_path):
+    """U1 = 4011, unit 1 and every other unit placed, so its unit-0 power pins are drawn."""
+    p = fresh(tmp_path)
+    for unit_x, unit in ((50.8, 1), (101.6, 2), (152.4, 3), (203.2, 4)):
+        place(p, "4011", f"U{unit}", unit_x, 101.6)
+    return p
+
+
+def test_a_visible_power_in_pin_names_nothing(tmp_path):
+    """4011 pin 14 (Vdd) is power_in and visible: KiCad names no net after it."""
+    p = _4011(tmp_path)
+    assert not _plan(p, [("U1", "14")], net="RAIL").refused
+
+
+def _hide_lib_pin(path, number: str, alternate: str | None = None) -> None:
+    """Hide lib pin *number* of the 4011 in this file's lib_symbols, optionally adding an
+    alternate of type power_in and selecting it on U1."""
+    data = Path(path).read_bytes()
+    tree = _cst.parse(data)
+    root = tree.lists[0]
+    lib = next(s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == "4011")
+    for sub in lib.find_all("symbol"):
+        for pin in sub.find_all("pin"):
+            if pin.find("number").atoms[1].text == number:
+                pin.insert_after(pin.find("length"), _cst.parse(b"(hide yes)").lists[0], b" ")
+                if alternate:
+                    alt = f'(alternate "{alternate}" power_in line)'.encode()
+                    pin.append_child(_cst.parse(alt).lists[0], b" ")
+    if alternate:
+        u1 = next(
+            s
+            for s in root.find_all("symbol")
+            if any(q.atoms[2].text == "U1" for q in s.find_all("property") if len(q.atoms) > 2)
+        )
+        placed = next(q for q in u1.find_all("pin") if q.atoms[1].text == number)
+        placed.append_child(_cst.parse(f'(alternate "{alternate}")'.encode()).lists[0], b" ")
+    Path(path).write_bytes(_cst.serialize(tree))
+
+
+def test_a_hidden_power_in_pin_names_its_net(tmp_path):
+    p = _4011(tmp_path)
+    _hide_lib_pin(p, "14")
+    assert _plan(p, [("U1", "14")], net="RAIL").codes == ["names"]
+    noop = _plan(p, [("U1", "14")], net="Vdd")
+    assert not noop.refused and not noop.labels
+
+
+def test_an_alternate_makes_the_name_possible_only(tmp_path):
+    """With a placed alternate it is not established which name KiCad uses, so the narrow view
+    takes neither (no no-op) and the possible view takes both (Vdd and VBAT conflict)."""
+    p = _4011(tmp_path)
+    _hide_lib_pin(p, "14", alternate="VBAT")
+    plan = _plan(p, [("U1", "14")], net="Vdd")
+    assert plan.codes == ["names"] and "'VBAT'" in plan.refusal()
+
+
+def test_the_margin_reaches_a_near_miss_label(tmp_path):
+    """GM-06. A label 0.03 mm past the wire end joins nothing in KiCad, but the possible view's
+    0.05 mm margin reaches it, so another name refuses."""
+    p = _named(tmp_path)
+    label(p, "X", 88.87, 97.79)
+    assert _plan(p, [("R1", "1")]).codes == ["names"]
+
+
+def test_a_join_only_the_possible_view_sees_is_wired_explicitly(tmp_path):
+    p = _named(tmp_path)
+    label(p, "N", 88.87, 97.79)
+    plan = _plan(p, [("R1", "1")])
+    assert not plan.refused and plan.labels
+    assert "possibly reached 'N' already" in plan.lines[0]
+
+
+def test_net_mates_are_reported(tmp_path):
+    p = _named(tmp_path)
+    place(p, "R", "R2", 88.9, 101.6)  # R2:1 at (88.9, 97.79), the wire's far end
+    plan = _plan(p, [("R1", "1")])
+    assert "Already connected to a wired pin, so now also on it: R2:1" in plan.success()
+
+
+def test_a_new_local_net_is_a_warning(tmp_path):
+    plan = _plan(_r1(tmp_path), [("R1", "1")], net="GND")
+    assert "Warning: nothing on this sheet carried 'GND'" in plan.success()
+
+
+def test_joining_a_name_on_this_sheet_says_so(tmp_path):
+    from routing_fixtures import power
+
+    p = _r1(tmp_path)
+    power(p, "GND", "#PWR01", 152.4, 101.6)
+    text = _plan(p, [("R1", "1")], net="GND").success()
+    assert "'GND' joins on this sheet: power symbol #PWR01" in text
+    assert "Warning" not in text

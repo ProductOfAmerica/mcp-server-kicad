@@ -326,3 +326,46 @@ def test_get_net_connections_names_the_pin_kicad_draws(tmp_path):
     assert status == "OK"
     found = schematic.get_net_connections("GN", schematic_path=p)
     assert [(c["reference"], c["pin"]) for c in found.connections] == [("R1", "1")]
+
+
+# ---------------------------------------------------------------------------------------------
+# Named nets and no-ops (design 4.4, decisions 1 and 2)
+# ---------------------------------------------------------------------------------------------
+
+
+@requires_cli
+def test_s8_a_pin_already_on_a_named_net(tmp_path):
+    """S8. The old code put NET_B on the pin beside NET_A's stub, joining the two."""
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    stub(p, 101.6, 97.79, 0, -2.54, "NET_A")
+    status, msg = wired(p, [("R1", "1")], "NET_B")
+    assert status == "REFUSED" and msg.startswith("[names]") and "'NET_A'" in msg
+
+
+@requires_cli
+def test_s9_coincident_pins_to_two_names(tmp_path):
+    """S9. R1:2 and R2:1 share a point, so they are one net; the second name is refused."""
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    place(p, "R", "R2", 101.6, 109.22)  # R2:1 at (101.6, 105.41), on R1:2
+    stub(p, 101.6, 105.41, 2.54, 0, "NET_A")
+    status, msg = wired(p, [("R2", "1")], "NET_B")
+    assert status == "REFUSED" and msg.startswith("[names]")
+
+
+def test_dec23_a_power_symbol_pin_to_its_own_name_is_a_no_op(tmp_path):
+    """DEC-23. A VCC power symbol's pin is on VCC by its Value: nothing to write."""
+    p = fresh(tmp_path)
+    power(p, "VCC", "#PWR02", 76.2, 38.1)
+    status, msg = call_wptn(p, pins(("#PWR02", "1")), "VCC")
+    assert status == "NOOP", msg
+    assert "already on 'VCC' via power symbol #PWR02 (Value 'VCC')" in msg
+
+
+def test_a_pin_already_on_the_net_is_a_no_op(tmp_path):
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    stub(p, 101.6, 97.79, 0, -2.54, "N")
+    status, msg = call_wptn(p, pins(("R1", "1")), "N")
+    assert status == "NOOP" and "already on 'N' via label 'N' at (101.6, 95.25)" in msg

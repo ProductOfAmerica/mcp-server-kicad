@@ -227,35 +227,29 @@ class TestWirePinToLabel:
                 schematic_path=str(scratch_sch),
             )
 
-    def test_avoids_conflicting_label(self, scratch_sch):
-        """Auto-redirect stub when a different net label would collide."""
-        # Wire R1 pin 1 to "NET_A"
+    def test_a_pin_already_on_another_named_net_is_refused(self, scratch_sch):
+        """R1:1 is on NET_A; wiring it to NET_B as well would join the two nets.
+
+        This test used to assert the opposite: that the second call "auto-redirected" its stub
+        and succeeded, with the two labels at different positions. Both labels were on R1:1's
+        net, so NET_A and NET_B became one net. The call now refuses and writes nothing.
+        """
+        path = str(scratch_sch)
         schematic.wire_pins_to_net(
             pins=[{"reference": "R1", "pin": "1"}],
             label_text="NET_A",
             direction="up",
-            schematic_path=str(scratch_sch),
+            schematic_path=path,
         )
-        # Wire R1 pin 1 again to "NET_B" (different net, same pin = same endpoint)
-        result = schematic.wire_pins_to_net(
-            pins=[{"reference": "R1", "pin": "1"}],
-            label_text="NET_B",
-            direction="up",
-            schematic_path=str(scratch_sch),
-        )
-        # Should succeed — collision auto-resolved by picking a different direction
-        assert "Wired" in result
-        # Verify both labels exist with different positions
-        sch = reparse(str(scratch_sch))
-        net_a = [lbl for lbl in sch.labels if lbl.text == "NET_A"]
-        net_b = [lbl for lbl in sch.labels if lbl.text == "NET_B"]
-        assert len(net_a) == 1
-        assert len(net_b) == 1
-        # Labels should NOT be at the same position (collision was avoided)
-        assert (
-            abs(net_a[0].position.X - net_b[0].position.X) > 0.1
-            or abs(net_a[0].position.Y - net_b[0].position.Y) > 0.1
-        )
+        before = scratch_sch.read_bytes()
+        with pytest.raises(ToolError, match=r"(?s)^\[names\] .*'NET_A'"):
+            schematic.wire_pins_to_net(
+                pins=[{"reference": "R1", "pin": "1"}],
+                label_text="NET_B",
+                direction="up",
+                schematic_path=path,
+            )
+        assert scratch_sch.read_bytes() == before
 
 
 def _make_two_parts_sch(tmp_path: Path) -> str:
@@ -597,9 +591,14 @@ class TestConnectPinsNoSnap:
 
 
 class TestStubCollision:
-    def test_avoids_stub_collision_different_nets(self, tmp_path):
-        """Two adjacent pins wired to different nets shouldn't collide."""
-        # Create schematic with R1 at (100,100) and R2 very close at (100,105.08)
+    def test_coincident_pins_cannot_go_to_different_nets(self, tmp_path):
+        """R1:2 and R2:1 share the point (100, 103.81), so KiCad joins them.
+
+        This test used to assert that wiring them to NET_A and then NET_B "avoided the
+        collision" because the two labels landed at different positions. They were one net,
+        so that merged NET_A and NET_B. The second call now refuses and writes nothing.
+        """
+        # R1 at (100, 100) and R2 at (100, 107.62): R1:2 and R2:1 coincide
         sch = new_schematic()
         sch.libSymbols.append(build_r_symbol())
         sch.schematicSymbols.append(place_r1(100, 100))
@@ -660,26 +659,15 @@ class TestStubCollision:
             direction="down",
             schematic_path=path,
         )
-        # Wire R2 pin 1 to NET_B (up — toward R1, could collide)
-        result = schematic.wire_pins_to_net(
-            pins=[{"reference": "R2", "pin": "1"}],
-            label_text="NET_B",
-            direction="up",
-            schematic_path=path,
-        )
-        assert "Wired" in result
-
-        # Verify the two labels are at different positions (collision avoided)
-        sch2 = reparse(path)
-        lbl_a = [lb for lb in sch2.labels if lb.text == "NET_A"]
-        lbl_b = [lb for lb in sch2.labels if lb.text == "NET_B"]
-        assert len(lbl_a) == 1
-        assert len(lbl_b) == 1
-        # They should not overlap
-        assert (
-            abs(lbl_a[0].position.X - lbl_b[0].position.X) > 0.1
-            or abs(lbl_a[0].position.Y - lbl_b[0].position.Y) > 0.1
-        )
+        before = Path(path).read_bytes()
+        with pytest.raises(ToolError, match=r"(?s)^\[names\] .*'NET_A'"):
+            schematic.wire_pins_to_net(
+                pins=[{"reference": "R2", "pin": "1"}],
+                label_text="NET_B",
+                direction="up",
+                schematic_path=path,
+            )
+        assert Path(path).read_bytes() == before
 
 
 # ===========================================================================

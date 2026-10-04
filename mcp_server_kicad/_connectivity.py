@@ -419,6 +419,7 @@ class Item:
         "out",
         "sym",
         "new",
+        "alt_names",
     )
 
     def __init__(self, kind: str, x: int, y: int, x2: int | None = None, y2: int | None = None):
@@ -436,6 +437,9 @@ class Item:
         self.hidden = self.nc = self.new = False
         self.out: Point | None = None
         self.sym: Sym | None = None
+        # Names only the possible view counts: a pin whose placed alternate leaves it unclear
+        # which name KiCad gives the net.
+        self.alt_names: tuple[str, ...] = ()
 
 
 def _conn_points(it: Item):
@@ -488,6 +492,85 @@ def _pin_hidden(p) -> bool:
     return h is not None and (len(h.atoms) < 2 or h.atoms[1].text == "yes")
 
 
+#: Line index cell for the possible view, IU (2.54 mm).
+_CELL = 25400
+
+
+def _all_names(it: Item):
+    if it.name is not None:
+        yield it.name
+    yield from it.alt_names
+
+
+class _UF:
+    __slots__ = ("p",)
+
+    def __init__(self, n: int):
+        self.p = list(range(n))
+
+    def find(self, x: int) -> int:
+        p = self.p
+        while p[x] != x:
+            p[x] = p[p[x]]
+            x = p[x]
+        return x
+
+    def union(self, a: int, b: int) -> None:
+        ra, rb = self.find(a), self.find(b)
+        if ra != rb:
+            self.p[ra] = rb
+
+
+class _Coarse:
+    """The possible view: a union-find, and per component the names [(item, name)]."""
+
+    __slots__ = ("uf", "names")
+
+    def __init__(self, uf: _UF, names: dict):
+        self.uf, self.names = uf, names
+
+    def names_of(self, it: Item) -> list[tuple[Item, str]]:
+        return self.names.get(self.uf.find(it.id), [])
+
+
+def _overlaps(lines: list[Item]) -> list[tuple[Item, Item]]:
+    """Pairs of same-layer lines (wire with wire, bus with bus) overlapping collinearly."""
+    out = []
+    for layer in ("wire", "bus"):
+        hz: dict[int, list] = {}
+        vt: dict[int, list] = {}
+        dg = []
+        for ln in lines:
+            if ln.kind != layer or (ln.x == ln.x2 and ln.y == ln.y2):
+                continue
+            if ln.y == ln.y2:
+                hz.setdefault(ln.y, []).append((min(ln.x, ln.x2), max(ln.x, ln.x2), ln))
+            elif ln.x == ln.x2:
+                vt.setdefault(ln.x, []).append((min(ln.y, ln.y2), max(ln.y, ln.y2), ln))
+            else:
+                dg.append(ln)
+        for groups in (hz, vt):
+            for lst in groups.values():
+                lst.sort(key=lambda r: (r[0], r[1]))
+                for i in range(len(lst)):
+                    for j in range(i + 1, len(lst)):
+                        if lst[j][0] >= lst[i][1]:
+                            break
+                        out.append((lst[i][2], lst[j][2]))
+        for i, a in enumerate(dg):
+            ax, ay = a.x2 - a.x, a.y2 - a.y
+            for b in dg[i + 1 :]:
+                bx, by = b.x2 - b.x, b.y2 - b.y
+                if ax * by - ay * bx != 0 or (b.x - a.x) * ay - (b.y - a.y) * ax != 0:
+                    continue
+                l2 = ax * ax + ay * ay
+                t1 = (b.x - a.x) * ax + (b.y - a.y) * ay
+                t2 = (b.x2 - a.x) * ax + (b.y2 - a.y) * ay
+                if min(l2, max(t1, t2)) - max(0, min(t1, t2)) > 0:
+                    out.append((a, b))
+    return out
+
+
 # ---------------------------------------------------------------------------------------------
 # The model
 # ---------------------------------------------------------------------------------------------
@@ -500,7 +583,10 @@ class Model:
         self.root = root
         self.items: list[Item] = []
         self.syms: list[Sym] = []
+        self.pads: dict[tuple[str, str], list[Item]] = {}
         self.libs: dict = {}
+        self._dirty = True
+        self._coarse: _Coarse | None = None
         libs = root.find("lib_symbols")
         for ls in libs.find_all("symbol") if libs is not None else ():
             if len(ls.atoms) > 1:
@@ -513,6 +599,7 @@ class Model:
         call is checked against them (H-C15)."""
         it.id = len(self.items)
         self.items.append(it)
+        self._dirty = True
         return it
 
     def _take(self, ch) -> None:
@@ -595,8 +682,10 @@ class Model:
         it = self.add(Item("pin", x, y))
         it.sym, it.ref, it.out = s, s.ref, out
         it.num = _child_text(p, "number")
+        self.pads.setdefault((s.ref, it.num), []).append(it)
         it.pname = _child_text(p, "name")
-        it.etype = p.atoms[1].text if len(p.atoms) > 1 else "unspecified"
+        primary = p.atoms[1].text if len(p.atoms) > 1 else "unspecified"
+        it.etype = primary
         alt = alts.get(it.num)
         if alt:
             for a in p.find_all("alternate"):
@@ -605,6 +694,176 @@ class Model:
                     break
         it.hidden = _pin_hidden(p)
         it.nc = it.etype == "no_connect"
+        # KiCad's rule (sch_pin.cpp): a power_in pin names its net when it is hidden, by its own
+        # name, or when it sits on a power symbol, by the symbol's Value. PWR_FLAG's pin is
+        # power_out and a visible power_in pin on an ordinary part names nothing.
+        if s.is_power:
+            if it.etype == "power_in":
+                it.name = s.value
+            elif primary == "power_in":
+                it.alt_names = (s.value,)
+        elif it.hidden:
+            if not alt:
+                it.name = it.pname if it.etype == "power_in" else None
+            else:
+                # Whether KiCad names the net by the primary or the alternate name is not
+                # established, so neither counts as certain and both count as possible.
+                cands = []
+                if it.etype == "power_in":
+                    cands += [it.pname, alt]
+                if primary == "power_in":
+                    cands.append(it.pname)
+                it.alt_names = tuple(n for n in dict.fromkeys(cands) if n is not None)
+
+    # -- the narrow view: joins every KiCad reader makes ----------------------------------
+    def ensure(self) -> None:
+        if self._dirty:
+            self._build()
+
+    def _near(self, x: int, y: int, kinds) -> list[Item]:
+        """Lines passing exactly through (x, y)."""
+        out = []
+        for lo, hi, ln in self._H.get(y, ()):
+            if ln.kind in kinds and lo <= x <= hi:
+                out.append(ln)
+        for lo, hi, ln in self._V.get(x, ()):
+            if ln.kind in kinds and lo <= y <= hi and ln not in out:
+                out.append(ln)
+        for ln in self._D:
+            if ln.kind in kinds and _within(x, y, ln.x, ln.y, ln.x2, ln.y2, 0):
+                out.append(ln)
+        return out
+
+    def _certain(self, it: Item) -> bool:
+        k = it.kind
+        if k == "wire":
+            return it.id not in self._unreliable
+        if k == "pin":
+            return not it.nc
+        if k == "label":
+            return it.name is not None
+        return k == "junction"
+
+    def _lone_wire(self, it: Item) -> Item | None:
+        """The one reliable wire whose interior a named label sits on alone, if any."""
+        if len(self._pts[(it.x, it.y)]) != 1:
+            return None
+        lines = self._near(it.x, it.y, _LINES)
+        if len(lines) == 1 and lines[0].kind == "wire" and lines[0].id not in self._unreliable:
+            return lines[0]
+        return None
+
+    def _build(self) -> None:
+        lines = [it for it in self.items if it.kind in _LINES]
+        H: dict[int, list] = {}
+        V: dict[int, list] = {}
+        D: list[Item] = []
+        for ln in lines:
+            if ln.y == ln.y2:
+                H.setdefault(ln.y, []).append((min(ln.x, ln.x2), max(ln.x, ln.x2), ln))
+            elif ln.x == ln.x2:
+                V.setdefault(ln.x, []).append((min(ln.y, ln.y2), max(ln.y, ln.y2), ln))
+            else:
+                D.append(ln)
+        self._H, self._V, self._D = H, V, D
+        pts: dict[Point, list[Item]] = {}
+        for it in self.items:
+            for xy in _conn_points(it):
+                pts.setdefault(xy, []).append(it)
+        self._pts = pts
+        # A wire with a junction or a bus-entry end on its interior is cut there by kicad-cli 9
+        # and joined by the GUI; a collinear overlap is merged by the GUI on load and not by
+        # kicad-cli. Readers disagree about both, so the narrow view uses neither.
+        unreliable: set[int] = set()
+        for it in self.items:
+            ends = ((it.x, it.y),) if it.kind == "junction" else _conn_points(it)
+            if it.kind not in ("junction", "be"):
+                continue
+            for x, y in ends:
+                for ln in self._near(x, y, ("wire", "bus")):
+                    if (x, y) not in ((ln.x, ln.y), (ln.x2, ln.y2)):
+                        unreliable.add(ln.id)
+        for a, b in _overlaps(lines):
+            unreliable.update((a.id, b.id))
+        self._unreliable = unreliable
+        uf = _UF(len(self.items))
+        for its in pts.values():
+            cond = [it for it in its if self._certain(it)]
+            for it in cond[1:]:
+                uf.union(cond[0].id, it.id)
+        for it in self.items:
+            if it.kind == "label" and it.name is not None and (w := self._lone_wire(it)):
+                uf.union(it.id, w.id)
+        self._C = uf
+        self._cnames: dict[int, dict[str, list[Item]]] = {}
+        for it in self.items:
+            if it.name is not None and "${" not in it.name:
+                self._cnames.setdefault(uf.find(it.id), {}).setdefault(it.name, []).append(it)
+        self._coarse = None
+        self._dirty = False
+
+    def narrow_names(self, it: Item) -> dict[str, list[Item]]:
+        """{name: [items]} on the narrow component of *it*."""
+        self.ensure()
+        return self._cnames.get(self._C.find(it.id), {})
+
+    # -- the possible view: every join any reader might make ------------------------------
+    def coarse(self) -> _Coarse:
+        self.ensure()
+        if self._coarse is None:
+            self._coarse = self._build_coarse()
+        return self._coarse
+
+    def _build_coarse(self) -> _Coarse:
+        uf = _UF(len(self.items))
+        pts: list[tuple[int, int, Item]] = []
+        for it in self.items:
+            if it.kind in _SEGS:
+                pts += [(it.x, it.y, it), (it.x2, it.y2, it)]
+            else:
+                pts.append((it.x, it.y, it))
+        grid: dict[Point, list] = {}
+        for q in pts:
+            grid.setdefault((q[0] // TOL, q[1] // TOL), []).append(q)
+        for (cx, cy), cell in grid.items():  # two points within the margin
+            for dx in (-1, 0, 1):
+                for dy in (-1, 0, 1):
+                    for u, v, b in grid.get((cx + dx, cy + dy), ()):
+                        for x, y, a in cell:
+                            if a.id < b.id and _d2(x, y, u, v) <= TOL2:
+                                uf.union(a.id, b.id)
+        cells: dict[Point, list[Item]] = {}
+        for ln in self.items:
+            if ln.kind in _SEGS and (ln.x, ln.y) != (ln.x2, ln.y2):
+                for gx in range(
+                    (min(ln.x, ln.x2) - TOL) // _CELL, (max(ln.x, ln.x2) + TOL) // _CELL + 1
+                ):
+                    for gy in range(
+                        (min(ln.y, ln.y2) - TOL) // _CELL, (max(ln.y, ln.y2) + TOL) // _CELL + 1
+                    ):
+                        cells.setdefault((gx, gy), []).append(ln)
+        for x, y, a in pts:  # a point within the margin of a line
+            for ln in cells.get((x // _CELL, y // _CELL), ()):
+                if ln is not a and _within(x, y, ln.x, ln.y, ln.x2, ln.y2, TOL2):
+                    uf.union(a.id, ln.id)
+        for copies in self.pads.values():
+            for it in copies[1:]:
+                uf.union(copies[0].id, it.id)
+        first: dict[str, int] = {}
+        for it in self.items:  # same-text names join, transitively
+            for name in _all_names(it):
+                uf.union(first.setdefault(name, it.id), it.id)
+        names: dict[int, list[tuple[Item, str]]] = {}
+        for it in self.items:
+            for name in _all_names(it):
+                names.setdefault(uf.find(it.id), []).append((it, name))
+        return _Coarse(uf, names)
+
+    def members(self, it: Item) -> list[Item]:
+        """Pins on the possible component of *it*."""
+        cm = self.coarse()
+        r = cm.uf.find(it.id)
+        return [q for q in self.items if q.kind == "pin" and cm.uf.find(q.id) == r]
 
     # -- lookup ---------------------------------------------------------------------------
     def find_pin(self, ref: str, label: str) -> Item:
@@ -827,6 +1086,7 @@ class WirePlan:
     labels: list[tuple[Point, int]] = field(default_factory=list)
     lines: list[str] = field(default_factory=list)
     codes: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
     wired: int = 0
 
     @property
@@ -845,7 +1105,41 @@ class WirePlan:
         )
 
     def success(self) -> str:
-        return f"Wired {self.wired} pins to '{self.net}'.\n- " + "\n- ".join(self.lines)
+        head = f"Wired {self.wired} pins to '{self.net}'."
+        return "\n".join([head, *(f"- {line}" for line in self.lines), *self.notes])
+
+    def no_change(self) -> str:
+        head = f"No change: every pin is already on '{self.net}'."
+        return "\n".join([head, *(f"- {line}" for line in self.lines)])
+
+
+def _names_text(entries: list[tuple[Item, str]]) -> str:
+    """Name entries [(item, text)] grouped by text, two carriers each."""
+    by_text: dict[str, list[Item]] = {}
+    for it, text in entries:
+        by_text.setdefault(text, []).append(it)
+    parts = []
+    for text, its in list(by_text.items())[:4]:
+        more = f" and {len(its) - 2} more" if len(its) > 2 else ""
+        parts.append(f"{text!r} via {'; '.join(_desc(it) for it in its[:2])}{more}")
+    if len(by_text) > 4:
+        parts.append(f"{len(by_text) - 4} more names")
+    return ", ".join(parts)
+
+
+def _names_refusal(other: list[tuple[Item, str]], net: str) -> Refusal:
+    text = (
+        f"its net possibly carries {_names_text(other)}; putting it on '{net}' could merge that"
+        f" net with '{net}', and two named nets are never joined here. Remedy: if the pin belongs"
+        " on that net, pass that name as label_text; otherwise stop and report."
+    )
+    auto = [(it, t) for it, t in other if it.kind == "label" and _AUTO_NAME.match(t)]
+    for it, t in auto[:1]:
+        text += (
+            f" {t!r} looks like the label connect_pins writes; to name this net yourself, remove"
+            f" it with remove_label({t!r}, {mm(it.x)}, {mm(it.y)}) and call again."
+        )
+    return Refusal("names", text)
 
 
 def _wire_copy(m: Model, plan: WirePlan, c: Item, net: str, fixed: Point | None, L: int) -> str:
@@ -883,7 +1177,12 @@ def _wire_copy(m: Model, plan: WirePlan, c: Item, net: str, fixed: Point | None,
 
 
 def plan_wire_pins(root, pins: list, net: str, direction: str, stub_length: float) -> WirePlan:
-    """Decide wire_pins_to_net's edit on a parsed schematic root. Writes nothing."""
+    """Decide wire_pins_to_net's edit on a parsed schematic root. Writes nothing.
+
+    In order: arguments; every pin resolved to a drawn pin; per pad, a no-op when the narrow
+    view already puts it on *net*, else a refusal when the possible view carries another name;
+    then geometry for the rest, each new item joining the model before the next pin.
+    """
     plan = WirePlan(net)
     try:
         L = check_args(net, direction, stub_length)
@@ -892,6 +1191,8 @@ def plan_wire_pins(root, pins: list, net: str, direction: str, stub_length: floa
         plan.refuse(e.codes, e.text)
         return plan
     fixed = None if direction == "auto" else DIRECTIONS[direction]
+
+    targets: list[tuple[str, Item]] = []
     seen: dict[tuple, str] = {}
     for pd in pins:
         if (
@@ -906,15 +1207,71 @@ def plan_wire_pins(root, pins: list, net: str, direction: str, stub_length: floa
         tag = f"{ref}:{label}"
         try:
             c = m.find_pin(ref, label)
-            key = (c.ref, c.num)
-            if key in seen:
-                plan.lines.append(f"{tag}: same pad as {seen[key]}; counted once.")
-                continue
-            seen[key] = tag
+        except Refusal as e:
+            plan.refuse(e.codes, f"{tag}: {e.text}")
+            continue
+        key = (c.ref, c.num)
+        if key in seen:
+            plan.lines.append(f"{tag}: same pad as {seen[key]}; counted once.")
+            continue
+        seen[key] = tag
+        targets.append((tag, c))
+
+    requested = {(c.ref, c.num) for _, c in targets}
+    mates: set[str] = set()
+    ready: list[tuple[str, Item, Item | None]] = []
+    for tag, c in targets:
+        mates |= {
+            f"{q.ref}:{q.num}"
+            for q in m.members(c)
+            if q.ref and not q.ref.startswith("#") and (q.ref, q.num) not in requested
+        }
+        on = m.narrow_names(c).get(net)
+        if on:
+            plan.lines.append(f"{tag}: already on '{net}' via {_desc(on[0])}; unchanged")
+            continue
+        named = m.coarse().names_of(c)
+        other = [e for e in named if e[1] != net]
+        if other:
+            e = _names_refusal(other, net)
+            plan.refuse(e.codes, f"{tag}: {e.text}")
+            continue
+        hint = next((it for it, t in named if t == net), None)
+        ready.append((tag, c, hint))
+
+    joins = [_desc(it) for it in m.items if it.name == net and not it.new]
+    for tag, c, hint in ready:
+        try:
             text = _wire_copy(m, plan, c, net, fixed, L)
         except Refusal as e:
             plan.refuse(e.codes, f"{tag}: {e.text}")
             continue
+        if hint is not None:
+            text += (
+                f" (it possibly reached '{net}' already, via {_desc(hint)}, which not every"
+                " KiCad reader joins; wired explicitly)"
+            )
         plan.lines.append(f"{tag}: {text}")
         plan.wired += 1
+
+    if joins:
+        plan.notes.append(f"'{net}' joins on this sheet: " + "; ".join(joins[:6]) + ".")
+    else:
+        plan.notes.append(
+            f"Warning: nothing on this sheet carried '{net}', so this is a new local net here."
+            f" A power symbol or global label named '{net}' on another sheet does not join it;"
+            " to reach one, place a power symbol (add_power_symbol) or a global label"
+            " (add_global_label) instead."
+        )
+    ports = [_desc(it) for it in m.items if it.kind == "sheetpin" and it.text == net]
+    if ports:
+        plan.notes.append(
+            "Note: " + "; ".join(ports) + " is a hierarchy port, not a name: KiCad joins it to a"
+            f" label '{net}' only when something on this sheet already carries '{net}', so do"
+            " not rely on the name to reach it; wire to it explicitly if that was the intent."
+        )
+    if mates:
+        plan.notes.append(
+            "Already connected to a wired pin, so now also on it: " + ", ".join(sorted(mates))
+        )
     return plan
