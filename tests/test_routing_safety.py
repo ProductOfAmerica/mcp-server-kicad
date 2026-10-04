@@ -10,7 +10,7 @@ splits or is renamed, and the requested pad lands on the requested net.
 from __future__ import annotations
 
 import pytest
-from conftest import requires_cli
+from conftest import netlist_nodes, requires_cli
 from netlist_oracle import judge, nets
 from routing_checks import assert_only_added, call_wptn
 from routing_fixtures import ORIENTED, fresh, label, place, power, stub, wire
@@ -244,3 +244,85 @@ def test_a_later_tool_at_the_crossing_merges_nothing(tmp_path, follow_up):
     follow_up(p)
     v = judge(before, nets(p), [], None)
     assert v.bad_merges == [] and v.named_merge == [], v.problems()
+
+
+# ---------------------------------------------------------------------------------------------
+# Every other pin read uses the same transform (PI-01 for the read and flag tools)
+# ---------------------------------------------------------------------------------------------
+
+
+def _orientation_sheet(tmp_path):
+    """All 36 placements of the sweep on one sheet; returns (path, {(ref, pin): (x, y)})."""
+    p = fresh(tmp_path)
+    want = {}
+    for symbol, table in ORIENTED.items():
+        prefix, y = _ROW[symbol]
+        for i, ((rot, mir), ends) in enumerate(table.items()):
+            ref, x = f"{prefix}{i + 1}", 25.4 + 20.32 * i
+            place(p, symbol, ref, x, y, rot=rot, mirror=mir)
+            for k, (dx, dy, _d) in enumerate(ends):
+                want[(ref, str(k + 1))] = (round(x + dx, 2), round(y + dy, 2))
+    return p, want
+
+
+def _reported(path, refs) -> dict:
+    """{(ref, pin): (x, y)} as get_pin_positions prints them."""
+    got = {}
+    for ref in refs:
+        for line in schematic.get_pin_positions(ref, schematic_path=path).splitlines()[1:]:
+            num = line.split()[1]
+            x, y = line.rsplit("(", 1)[1].rstrip(")").split(", ")
+            got[(ref, num)] = (float(x), float(y))
+    return got
+
+
+def test_get_pin_positions_reports_where_kicad_draws(tmp_path):
+    """get_pin_positions shared the old transform, so it reported the reflected point for every
+    rotation 90 or 270 with a mirror, and a caller drawing to it wired the other pin."""
+    p, want = _orientation_sheet(tmp_path)
+    assert _reported(p, {r for r, _ in want}) == want
+
+
+@requires_cli
+def test_a_label_at_the_reported_point_lands_on_that_pin(tmp_path):
+    """The manager's re-check of the transform claim (mgr_verify.py claim 1), every orientation:
+    a label dropped where get_pin_positions says pin 1 is must put pin 1 on its net."""
+    p, want = _orientation_sheet(tmp_path)
+    refs = {r for r, _ in want}
+    for (ref, num), (x, y) in _reported(p, refs).items():
+        if num == "1":
+            schematic.add_label(f"P_{ref}", x, y, schematic_path=p)
+    on = {name.lstrip("/"): sorted(nodes) for _c, name, _k, nodes in nets(p)}
+    assert {ref: on.get(f"P_{ref}") for ref in refs if on.get(f"P_{ref}") != [(ref, "1")]} == {}
+
+
+@requires_cli
+def test_no_connect_pin_flags_the_pin_kicad_draws(tmp_path):
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6, rot=90, mirror="x")
+    assert schematic.no_connect_pin("R1", "1", schematic_path=p).endswith("at (97.79, 101.6)")
+    pintypes = {node: t for v in netlist_nodes(p).values() for node, t in v.items()}
+    assert pintypes[("R1", "1")].endswith("+no_connect")
+    assert not pintypes[("R1", "2")].endswith("+no_connect")
+
+
+@requires_cli
+def test_connect_pins_joins_the_pins_kicad_draws(tmp_path):
+    """connect_pins itself is unchanged here, but its pin lookup shared the transform: at
+    rotation 90 with mirror y it used to route to R1's other pin."""
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6, rot=90, mirror="y")
+    place(p, "R", "R9", 152.4, 152.4)
+    before = nets(p)
+    schematic.connect_pins("R1", "1", "R9", "1", schematic_path=p)
+    v = judge(before, nets(p), [{("R1", "1"), ("R9", "1")}], None)
+    assert v.delivered and not v.wrong, v.problems()
+
+
+def test_get_net_connections_names_the_pin_kicad_draws(tmp_path):
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6, rot=270, mirror="x")
+    status, _ = call_wptn(p, pins(("R1", "1")), "GN")
+    assert status == "OK"
+    found = schematic.get_net_connections("GN", schematic_path=p)
+    assert [(c["reference"], c["pin"]) for c in found.connections] == [("R1", "1")]

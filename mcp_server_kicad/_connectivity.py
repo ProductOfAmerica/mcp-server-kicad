@@ -306,6 +306,51 @@ def symbol_transform(sym, ref: str) -> tuple[Point, Matrix]:
     return pos, t
 
 
+#: Outward direction in degrees as the float interface reports it: 0 right, 90 down (+Y),
+#: 180 left, 270 up.
+_OUT_DEG: dict[Point, int] = {(1, 0): 0, (0, 1): 90, (-1, 0): 180, (0, -1): 270}
+
+
+def effective_mirror(sym) -> str | None:
+    """The mirror axis KiCad applies to a placed symbol: one written after its (at)."""
+    mirror = None
+    for ch in sym.lists:
+        if ch.head == "at":
+            mirror = None
+        elif ch.head == "mirror" and len(ch.atoms) > 1 and ch.atoms[1].text in _MIR:
+            mirror = ch.atoms[1].text
+    return mirror
+
+
+def transform_mm(
+    px: float, py: float, pin_angle: float, cx: float, cy: float, angle: float, mirror
+) -> tuple[float, float, int]:
+    """A lib pin's sheet position (mm) and outward angle, for callers holding plain numbers.
+
+    The same integer transform as symbol_transform and pin_end. Raises ValueError for an angle
+    KiCad cannot load.
+    """
+    rot, pang = _angle(str(angle)), _angle(str(pin_angle))
+    if rot is None or pang is None:
+        bad = angle if rot is None else pin_angle
+        raise ValueError(f"angle {bad} cannot be loaded by KiCad, which accepts 0, 90, 180 or 270")
+    t = _ROT[rot]
+    if mirror in _MIR:
+        t = _compose(t, _MIR[mirror])
+    dx, dy = _apply(t, kiround(px * IU_PER_MM), -kiround(py * IU_PER_MM))
+    tx, ty = _TOWARD[pang]
+    x = (kiround(cx * IU_PER_MM) + dx) / IU_PER_MM
+    y = (kiround(cy * IU_PER_MM) + dy) / IU_PER_MM
+    return x, y, _OUT_DEG[_apply(t, -tx, -ty)]
+
+
+def pin_point_mm(sym, pin, ref: str) -> tuple[float, float, int]:
+    """Sheet position (mm) and outward angle of lib *pin* drawn by placed symbol *sym*."""
+    pos, t = symbol_transform(sym, ref)
+    x, y, out = pin_end(pos, t, pin, ref)
+    return x / IU_PER_MM, y / IU_PER_MM, _OUT_DEG[out]
+
+
 def pin_end(pos: Point, t: Matrix, pin, ref: str) -> tuple[int, int, Point]:
     """Connection point and outward unit vector of a lib pin under a symbol's transform."""
     at = pin.find("at")

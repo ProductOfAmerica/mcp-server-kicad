@@ -2,7 +2,6 @@
 
 import difflib
 import json
-import math
 import re
 from pathlib import Path
 from typing import Literal
@@ -182,31 +181,14 @@ def _transform_pin_pos(
 
     The outward angle is the direction away from the component body in
     schematic coordinates (0=right, 90=down/+Y, 180=left, 270=up/-Y).
+
+    KiCad's order: rotate, then mirror. This used to mirror first, which
+    for rotation 90 or 270 with a mirror reflects the pin through the symbol
+    origin, onto the other pin of a two-pin part. The arithmetic is the
+    routing model's integer transform (_connectivity.transform_mm), so every
+    pin read agrees with what wire_pins_to_net wires.
     """
-    angle_rad = math.radians(comp_angle_deg)
-
-    # Negate Y to convert from lib_symbol (Y-up) to schematic (Y-down)
-    py = -py
-
-    # Apply mirror and compute absolute pin angle (toward-body direction)
-    if mirror == "x":
-        py = -py
-        abs_pin_angle = pin_angle + comp_angle_deg
-    elif mirror == "y":
-        px = -px
-        abs_pin_angle = pin_angle + 180 + comp_angle_deg
-    else:
-        abs_pin_angle = -pin_angle + comp_angle_deg
-
-    # Apply rotation (KiCad rotates CW in the Y-down coordinate system)
-    cos_a = math.cos(angle_rad)
-    sin_a = math.sin(angle_rad)
-    final_x = cx + px * cos_a + py * sin_a
-    final_y = cy - px * sin_a + py * cos_a
-
-    # Outward direction (away from body)
-    outward = (abs_pin_angle + 180) % 360
-    return round(final_x, 4), round(final_y, 4), outward
+    return _connectivity.transform_mm(px, py, pin_angle, cx, cy, comp_angle_deg, mirror)
 
 
 def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, float]:
@@ -568,8 +550,8 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
         cx = _numish(at.atoms[1].text)
         cy = _numish(at.atoms[2].text)
         angle_deg = _numish(at.atoms[3].text) if len(at.atoms) > 3 else 0
-        m = target.find("mirror")
-        mir = m.atoms[1].text if m is not None else None
+        # The mirror KiCad applies: one written before (at) is ignored on load.
+        mir = _connectivity.effective_mirror(target)
         unit = _sym_unit_cst(target)
 
         head = f"{reference} ({symbol_name}) @ ({cx}, {cy}) rot={angle_deg} mirror={mir}"
@@ -577,16 +559,10 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
 
         for unit_node in _instance_units(lib_sym, unit, _sym_body_style_cst(target)):
             for pin in unit_node.find_all("pin"):
-                pat = pin.find("at")
-                final_x, final_y, _ = _transform_pin_pos(
-                    float(pat.atoms[1].text),
-                    float(pat.atoms[2].text),
-                    float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0,
-                    cx,
-                    cy,
-                    angle_deg,
-                    mir,
-                )
+                try:
+                    final_x, final_y, _ = _connectivity.pin_point_mm(target, pin, reference)
+                except _connectivity.Refusal as e:
+                    raise ToolError(e.text) from None
                 number = pin.find("number")
                 name = pin.find("name")
                 lines.append(
@@ -660,23 +636,12 @@ def get_net_connections(
         lib_sym = _find_lib_symbol_cst(root, lib_id_node.atoms[1].text)
         if lib_sym is None:
             continue
-        at = sym.find("at")
-        cx, cy = float(at.atoms[1].text), float(at.atoms[2].text)
-        comp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
-        m = sym.find("mirror")
-        mir = m.atoms[1].text if m is not None else None
         for unit in _instance_units(lib_sym, _sym_unit_cst(sym), _sym_body_style_cst(sym)):
             for pin in unit.find_all("pin"):
-                pat = pin.find("at")
-                px, py, _ = _transform_pin_pos(
-                    float(pat.atoms[1].text),
-                    float(pat.atoms[2].text),
-                    float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0,
-                    cx,
-                    cy,
-                    comp_angle,
-                    mir,
-                )
+                try:
+                    px, py, _ = _connectivity.pin_point_mm(sym, pin, ref)
+                except _connectivity.Refusal as e:
+                    raise ToolError(e.text) from None
                 number = pin.find("number")
                 name = pin.find("name")
                 for rx, ry in reachable:
@@ -1242,18 +1207,13 @@ def _drawn_pin_pos_cst(root, target, pin_name: str, reference: str):
     lib_sym = _find_lib_symbol_cst(root, target.find("lib_id").atoms[1].text)
     if lib_sym is None:
         raise ValueError(f"Lib symbol for {reference} not found")
-    at = target.find("at")
-    cx, cy = float(at.atoms[1].text), float(at.atoms[2].text)
-    comp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
-    m = target.find("mirror")
-    mir = m.atoms[1].text if m is not None else None
     for unit in _instance_units(lib_sym, _sym_unit_cst(target), _sym_body_style_cst(target)):
         for pin in unit.find_all("pin"):
             if pin_matches(pin, pin_name):
-                pat = pin.find("at")
-                px, py = float(pat.atoms[1].text), float(pat.atoms[2].text)
-                pangle = float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0
-                return _transform_pin_pos(px, py, pangle, cx, cy, comp_angle, mir)
+                try:
+                    return _connectivity.pin_point_mm(target, pin, reference)
+                except _connectivity.Refusal as e:
+                    raise ValueError(e.text) from None
     return None
 
 
