@@ -371,3 +371,264 @@ def test_joining_a_name_on_this_sheet_says_so(tmp_path):
     text = _plan(p, [("R1", "1")], net="GND").success()
     assert "'GND' joins on this sheet: power symbol #PWR01" in text
     assert "Warning" not in text
+
+
+# ---------------------------------------------------------------------------------------------
+# Outright refusals (design 4.3) and the order of the checks (H-C11, H-C12)
+# ---------------------------------------------------------------------------------------------
+
+
+def _nc_part(tmp_path):
+    """U1 with pin 1 of no-connect type at (96.52, 101.6) and an ordinary pin 2."""
+    from routing_fixtures import custom_lib, place_custom
+
+    p = fresh(tmp_path)
+    lib = custom_lib(
+        tmp_path,
+        "NCP",
+        [("1", "NC", "no_connect", -5.08, 0, 0, False), ("2", "A", "passive", 5.08, 0, 180, False)],
+    )
+    place_custom(p, lib, "NCP", "U1", 101.6, 101.6)
+    return p
+
+
+def test_a_no_connect_type_pin_is_refused(tmp_path):
+    p = _nc_part(tmp_path)
+    assert _plan(p, [("U1", "1")]).codes == ["nc_type"]
+    assert not _plan(p, [("U1", "2")]).refused
+
+
+def test_a_no_connect_flag_on_the_pin_is_refused(tmp_path):
+    from routing_fixtures import no_connect
+
+    p = _r1(tmp_path)
+    no_connect(p, 101.6, 97.79)
+    plan = _plan(p, [("R1", "1")])
+    assert plan.codes == ["nc_flag"] and "remove_no_connect" in plan.refusal()
+
+
+def test_the_type_is_reported_before_a_flag_on_it(tmp_path):
+    from routing_fixtures import no_connect
+
+    p = _nc_part(tmp_path)
+    no_connect(p, 96.52, 101.6)
+    assert _plan(p, [("U1", "1")]).codes == ["nc_type"]
+
+
+def test_a_flagged_pin_already_on_n_is_a_no_op(tmp_path):
+    """Guard on the order (H-C11): the no-op is decided first, so a pin already on N writes
+    nothing whatever else is on it. Before the flag check existed this passed trivially."""
+    from routing_fixtures import no_connect, stub
+
+    p = _r1(tmp_path)
+    stub(p, 101.6, 97.79, 0, -2.54, "N")
+    no_connect(p, 101.6, 97.79)
+    plan = _plan(p, [("R1", "1")])
+    assert not plan.refused and not plan.wires and not plan.labels
+
+
+def _bus_net(tmp_path, name=None):
+    """R1:1 wired up to a bus entry whose other end is on an unlabelled bus."""
+    from routing_fixtures import bus, bus_entry
+
+    p = _r1(tmp_path)
+    wire(p, 101.6, 97.79, 101.6, 93.98)
+    bus_entry(p, 101.6, 93.98, 2.54, -2.54)  # far end (104.14, 91.44), the bus's start
+    bus(p, 104.14, 91.44, 127, 91.44)
+    if name:
+        label(p, name, 101.6, 95.25)  # on the wire
+    return p
+
+
+def test_every_unhandled_item_is_reported_in_a_fixed_order(tmp_path):
+    """H-C12: bus, then bus entry, though the net reaches the entry first."""
+    plan = _plan(_bus_net(tmp_path), [("R1", "1")])
+    assert plan.codes == ["bus", "bus_entry"]
+    text = plan.refusal()
+    assert text.startswith("[bus] [bus_entry] ")
+    assert "otherwise stop and report" in text and "add_label" in text
+
+
+def test_an_unhandled_item_is_reported_before_a_name(tmp_path):
+    assert _plan(_bus_net(tmp_path, name="OTHER"), [("R1", "1")]).codes == ["bus", "bus_entry"]
+
+
+def test_the_flag_is_reported_before_an_unhandled_item(tmp_path):
+    from routing_fixtures import no_connect
+
+    p = _bus_net(tmp_path)
+    no_connect(p, 101.6, 97.79)
+    assert _plan(p, [("R1", "1")]).codes == ["nc_flag"]
+
+
+def test_a_name_is_reported_before_a_blocked_stub(tmp_path):
+    """Guard on the order: names are decided before geometry, and the name is the refusal the
+    caller can act on. R1:1 sits on a wire carrying OTHER that also blocks every candidate."""
+    p = _r1(tmp_path)
+    wire(p, 95, 97.79, 110, 97.79)
+    label(p, "OTHER", 95, 97.79)
+    assert _plan(p, [("R1", "1")]).codes == ["names"]
+
+
+def test_a_text_variable_on_the_net_is_refused(tmp_path):
+    p = _named(tmp_path)
+    label(p, "${RAIL}", 88.9, 97.79)
+    assert _plan(p, [("R1", "1")]).codes == ["text_var"]
+
+
+def test_a_global_labels_intersheet_field_is_not_a_text_variable(tmp_path):
+    """Guard (the check is new, so this passed before it): KiCad 9 gives every global label an
+    Intersheetrefs field holding ${INTERSHEET_REFS}, and counting it would refuse every net
+    with a global label (H-C8). Here R1:1 reaches G only through a junction on a wire's
+    interior, which the narrow view does not trust, so the call is not a no-op and the field is
+    what decides."""
+    from routing_fixtures import splice
+
+    p = _named(tmp_path)  # R1:1 wired left to (88.9, 97.79)
+    junction(p, 95.25, 97.79)
+    wire(p, 95.25, 97.79, 95.25, 92.71)
+    splice(
+        p,
+        '(global_label "G" (shape input) (at 95.25 92.71 90) (fields_autoplaced yes)'
+        ' (effects (font (size 1.27 1.27)) (justify left)) (uuid "x")'
+        ' (property "Intersheetrefs" "${INTERSHEET_REFS}" (at 95.25 92.71 0)'
+        " (effects (font (size 1.27 1.27)) (justify left) (hide yes))))",
+    )
+    plan = _plan(p, [("R1", "1")], net="G")
+    assert not plan.refused and plan.labels, plan.lines
+    assert "possibly reached 'G' already" in plan.lines[0]
+
+
+def _with_jumpers(tmp_path, form: bytes, numbers):
+    """U1 (JMP) with its first pin on R1:1's end, and the jumper declaration *form* added to
+    its library entry. kicad-cli 9.0.8 cannot load a schematic with jumpers ("Failed to load
+    schematic", measured), so they go into the parsed tree only, never into the file."""
+    from routing_fixtures import custom_lib, place_custom
+
+    p = _r1(tmp_path)
+    lib = custom_lib(
+        tmp_path,
+        "JMP",
+        [
+            (numbers[0], "A", "passive", -5.08, 0, 0, False),
+            (numbers[1], "B", "passive", 5.08, 0, 180, False),
+        ],
+    )
+    place_custom(p, lib, "JMP", "U1", 106.68, 97.79)  # its first pin at (101.6, 97.79)
+    root = _root(p)
+    entry = next(s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == "JMP")
+    entry.append_child(_cst.parse(form).lists[0], b" ")
+    return root
+
+
+@pytest.mark.parametrize(
+    ("form", "numbers"),
+    [
+        pytest.param(b'(jumper_pin_groups ("1" "2"))', ("1", "2"), id="groups"),
+        pytest.param(b"(duplicate_pin_numbers_are_jumpers yes)", ("1", "1"), id="duplicates"),
+    ],
+)
+def test_a_net_reaching_a_symbol_with_jumper_pins_is_refused(tmp_path, form, numbers):
+    """H-C9. KiCad 10 joins jumpered pins inside the symbol, which nothing here models."""
+    root = _with_jumpers(tmp_path, form, numbers)
+    for ref, num in (("R1", "1"), ("U1", numbers[1])):
+        plan = C.plan_wire_pins(root, [{"reference": ref, "pin": num}], "N", "auto", 2.54)
+        assert plan.codes == ["jumper"], (ref, num, plan.lines)
+
+
+def _two_units(tmp_path):
+    """U1 = 74LS04 placed once with two instance entries, unit 1 and unit 2: the shape a sheet
+    used twice with a different unit per instance has. R1:1 sits on U1 pin 1's end."""
+    from routing_fixtures import add_instance
+
+    p = fresh(tmp_path)
+    place(p, "74LS04", "U1", 152.4, 101.6)  # unit 1: pin 1 at (144.78, 101.6)
+    add_instance(p, "U1", "/00000000-0000-0000-0000-00000000000a/0000000b", 2)
+    place(p, "R", "R1", 144.78, 105.41)  # R1:1 at (144.78, 101.6)
+    return p
+
+
+def test_instance_entries_that_disagree_on_the_unit_refuse_the_pin(tmp_path):
+    p = _two_units(tmp_path)
+    assert _plan(p, [("U1", "1")]).codes == ["units_disagree"]
+    assert _plan(p, [("U1", "no such pin")]).codes == ["units_disagree"]  # before the lookup
+
+
+def test_a_net_reaching_a_symbol_whose_units_disagree_is_refused(tmp_path):
+    """H-C16: its pins enter the model for every listed unit, none of them certain."""
+    assert _plan(_two_units(tmp_path), [("R1", "1")]).codes == ["units_disagree"]
+
+
+def test_a_unit0_pad_of_a_part_not_fully_placed_here_is_refused(tmp_path):
+    """The KiCad-free twin of HIER-14: one 4011 gate here, so pad 14 has copies elsewhere."""
+    p = fresh(tmp_path)
+    place(p, "4011", "U1", 101.6, 101.6)
+    assert _plan(p, [("U1", "14")]).codes == ["unit0_unplaced"]
+    assert not _plan(p, [("U1", "1")]).refused  # only unit 1 draws pad 1
+
+
+def test_a_pad_also_drawn_by_a_unit_not_placed_here_is_refused(tmp_path):
+    """Generalised from the unit-0 rule (design 4.5; an inference, not a measured case): pad 3
+    is drawn by both units and only unit 1 is placed here, so its other copy is out of sight.
+    The same holds for a pin whose net reaches that pad."""
+    from routing_fixtures import custom_lib, place_custom
+
+    p = fresh(tmp_path)
+    lib = custom_lib(
+        tmp_path,
+        "DUO",
+        [
+            ("1", "A", "passive", -5.08, 2.54, 0, False, 1),
+            ("3", "S", "passive", -5.08, -2.54, 0, False, 1),
+            ("2", "B", "passive", -5.08, 2.54, 0, False, 2),
+            ("3", "S", "passive", -5.08, -2.54, 0, False, 2),
+        ],
+    )
+    place_custom(p, lib, "DUO", "U1", 101.6, 101.6)  # pad 3 at (96.52, 104.14)
+    place(p, "R", "R1", 96.52, 107.95)  # R1:1 on pad 3
+    assert _plan(p, [("U1", "3")]).codes == ["unit0_unplaced"]
+    assert _plan(p, [("R1", "1")]).codes == ["unit0_unplaced"]
+    assert not _plan(p, [("U1", "1")]).refused
+
+
+def _unresolved(tmp_path):
+    """R1, and D3 off R1's net with a lib_name that names no lib_symbols entry. The lib_name is
+    set in the parsed tree only: kicad-cli 9.0.8's ERC crashes on such a file (exit 0xC0000005,
+    measured), so the output oracle could not check it on disk."""
+    from routing_fixtures import _placed
+
+    p = _r1(tmp_path)
+    place(p, "D", "D3", 152.4, 101.6)
+    root = _root(p)
+    _placed(root, "D3")[0].find("lib_name").atoms[1].set_text("D_9")
+    return root
+
+
+def test_an_unresolved_symbol_anywhere_refuses_the_whole_call(tmp_path):
+    """PI-17 without its geometry: D3 is nowhere near R1:1 and the call still refuses, alone,
+    before any pin is looked up."""
+    pins = [{"reference": "R1", "pin": "1"}, {"reference": "NOPE", "pin": "1"}]
+    plan = C.plan_wire_pins(_unresolved(tmp_path), pins, "N", "auto", 2.54)
+    assert plan.codes == ["derived"]
+    assert "D3 uses library symbol 'D_9'" in plan.refusal()
+
+
+def test_a_derived_library_entry_refuses_the_whole_call(tmp_path):
+    p = _r1(tmp_path)
+    place(p, "D", "D3", 152.4, 101.6)
+    root = _root(p)  # KiCad never writes (extends) into a schematic, so add it in memory only
+    entry = next(s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == "D")
+    entry.append_child(_cst.parse(b'(extends "D0")').lists[0], b" ")
+    plan = C.plan_wire_pins(root, [{"reference": "R1", "pin": "1"}], "N", "auto", 2.54)
+    assert plan.codes == ["derived"] and "is derived" in plan.refusal()
+
+
+def test_an_unloadable_symbol_is_reported_before_an_unresolved_one(tmp_path):
+    """Guard on the order of the whole-call checks (the [derived] check is new, so this passed
+    before it)."""
+    from routing_fixtures import _placed
+
+    root = _unresolved(tmp_path)  # the bad angle goes into memory only, like the lib_name
+    _placed(root, "R1")[0].find("at").atoms[3].set_text("45")
+    plan = C.plan_wire_pins(root, [{"reference": "R1", "pin": "1"}], "N", "auto", 2.54)
+    assert plan.codes == ["unloadable"]

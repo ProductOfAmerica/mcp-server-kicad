@@ -377,6 +377,42 @@ def pin_end(pos: Point, t: Matrix, pin, ref: str) -> tuple[int, int, Point]:
 _LINES = ("wire", "bus", "gline")
 #: Every connectable line kind, bus entries included.
 _SEGS = ("wire", "bus", "be", "gline")
+#: Items the model does not handle, in the order they are reported (H-C12): what it is, why
+#: this tool cannot judge it, and what to do instead.
+_UNHANDLED = {
+    "bus": ("a bus", "bus members are not modelled", "keep this net's wiring off the bus"),
+    "bus_entry": (
+        "a bus entry",
+        "bus members are not modelled",
+        "keep this net's wiring off the bus entry",
+    ),
+    "sheet_pin": (
+        "a sheet pin",
+        "its net is named across the hierarchy, which this tool does not follow",
+        "draw this connection in KiCad, where the child sheet is visible",
+    ),
+    "text_var": (
+        "text with a text variable",
+        "its value is unknown here",
+        "replace the text variable with the literal text",
+    ),
+    "jumper": (
+        "a symbol with jumper pins",
+        "KiCad 10 joins pins inside it",
+        "keep this net off that symbol",
+    ),
+    "unit0_unplaced": (
+        "a pad also drawn by a unit not placed on this sheet",
+        "the pad has copies this sheet cannot see",
+        "place every unit that draws that pad on this sheet, or wire it where they are",
+    ),
+    "units_disagree": (
+        "a symbol whose instance entries disagree on its unit",
+        "a reused sheet draws different pins per instance",
+        "give every instance of the sheet the same unit for it",
+    ),
+}
+
 _LABEL_KINDS = {
     "label": "label",
     "global_label": "global label",
@@ -387,7 +423,20 @@ _LABEL_KINDS = {
 
 
 class Sym:
-    __slots__ = ("node", "ref", "value", "key", "lib", "derived", "units", "style", "is_power")
+    __slots__ = (
+        "node",
+        "ref",
+        "value",
+        "key",
+        "lib",
+        "derived",
+        "units",
+        "style",
+        "is_power",
+        "jumper",
+        "lib_units",
+        "pad_units",
+    )
 
     def __init__(self, node, ref: str, value: str, key: str, lib):
         self.node, self.ref, self.value, self.key, self.lib = node, ref, value, key, lib
@@ -395,6 +444,14 @@ class Sym:
         self.units: list[int] = []
         self.style = 1
         self.is_power = False
+        self.jumper = False
+        self.lib_units: set[int] = {1}
+        self.pad_units: dict[str, set[int]] = {}
+
+    @property
+    def amb(self) -> bool:
+        """Its instance entries disagree on its unit."""
+        return len(self.units) > 1
 
 
 class Item:
@@ -420,6 +477,7 @@ class Item:
         "sym",
         "new",
         "alt_names",
+        "tv",
     )
 
     def __init__(self, kind: str, x: int, y: int, x2: int | None = None, y2: int | None = None):
@@ -440,6 +498,7 @@ class Item:
         # Names only the possible view counts: a pin whose placed alternate leaves it unclear
         # which name KiCad gives the net.
         self.alt_names: tuple[str, ...] = ()
+        self.tv = False  # text holding a text variable ("${"), whose value is unknown here
 
 
 def _conn_points(it: Item):
@@ -527,15 +586,47 @@ class _UF:
 
 
 class _Coarse:
-    """The possible view: a union-find, and per component the names [(item, name)]."""
+    """The possible view: a union-find, and per component its names [(item, name)] and its
+    unhandled items [(code, item)]."""
 
-    __slots__ = ("uf", "names")
+    __slots__ = ("uf", "names", "bad")
 
-    def __init__(self, uf: _UF, names: dict):
-        self.uf, self.names = uf, names
+    def __init__(self, uf: _UF, names: dict, bad: dict):
+        self.uf, self.names, self.bad = uf, names, bad
 
     def names_of(self, it: Item) -> list[tuple[Item, str]]:
         return self.names.get(self.uf.find(it.id), [])
+
+    def bad_of(self, it: Item) -> list[tuple[str, Item]]:
+        return self.bad.get(self.uf.find(it.id), [])
+
+
+def _entry_units(sym) -> list[int]:
+    """The units a placed symbol's instance entries give it, every project and path (I02);
+    the top-level (unit) when it has none. More than one means they disagree."""
+    units: set[int] = set()
+    inst = sym.find("instances")
+    for proj in inst.find_all("project") if inst is not None else ():
+        for path in proj.find_all("path"):
+            u = path.find("unit")
+            if u is not None and len(u.atoms) > 1:
+                try:
+                    units.add(int(u.atoms[1].text))
+                except ValueError:
+                    pass
+    return sorted(units) or [_sym_unit_cst(sym)]
+
+
+def _pad_units(lib) -> dict[str, set[int]]:
+    """{pad number: units that draw it} of a library symbol; 0 is common to every unit, and a
+    sub-symbol whose name encodes no unit counts as 0."""
+    out: dict[str, set[int]] = {}
+    for sub in lib.find_all("symbol"):
+        ids = _lib_unit_style(sub)
+        unit = ids[0] if ids else 0
+        for pin in sub.find_all("pin"):
+            out.setdefault(_child_text(pin, "number"), set()).add(unit)
+    return out
 
 
 def _overlaps(lines: list[Item]) -> list[tuple[Item, Item]]:
@@ -589,6 +680,8 @@ class Model:
         self.items: list[Item] = []
         self.syms: list[Sym] = []
         self.pads: dict[tuple[str, str], list[Item]] = {}
+        self.placed: dict[str, set[int]] = {}  # units this sheet places per reference
+        self.jumpers: list[list[Item]] = []
         self.libs: dict = {}
         self._dirty = True
         self._coarse: _Coarse | None = None
@@ -641,6 +734,13 @@ class Model:
             it.sub = _LABEL_KINDS[h]
             it.text = ch.atoms[1].text if len(ch.atoms) > 1 else ""
             it.name = None if h in ("netclass_flag", "directive_label") else it.text
+            # Every property but Intersheetrefs can feed the net's name or class (H-C8).
+            props = [
+                q.atoms[2].text
+                for q in ch.find_all("property")
+                if len(q.atoms) > 2 and q.atoms[1].text != "Intersheetrefs"
+            ]
+            it.tv = any("${" in v for v in (it.text, *props))
         elif h == "sheet":
             sheet_name = _property(ch, "Sheetname") or _property(ch, "Sheet name") or "?"
             for p in ch.find_all("pin"):
@@ -663,26 +763,49 @@ class Model:
         if s.lib is None or s.derived:
             return
         pos, t = symbol_transform(node, ref)
-        s.units = [_sym_unit_cst(node)]
+        s.units = _entry_units(node)
         s.style = _sym_body_style_cst(node)
         s.is_power = s.lib.find("power") is not None
+        s.lib_units = {
+            ids[0] for sub in s.lib.find_all("symbol") if (ids := _lib_unit_style(sub)) and ids[0]
+        } or {1}
+        s.pad_units = _pad_units(s.lib)
+        self.placed.setdefault(ref, set()).update(s.units)
         alts = {}
         for p in node.find_all("pin"):
             a = p.find("alternate")
             if a is not None and len(a.atoms) > 1 and len(p.atoms) > 1:
                 alts[p.atoms[1].text] = a.atoms[1].text
         seen: set[int] = set()
+        pins: list[Item] = []
         for u in s.units:
             for sub in _instance_units(s.lib, u, s.style):
                 if id(sub) in seen:
                     continue
                 seen.add(id(sub))
                 for p in sub.find_all("pin"):
-                    self._take_pin(s, p, pos, t, alts)
+                    it = self._take_pin(s, p, pos, t, alts)
+                    if it is not None:
+                        pins.append(it)
+        # KiCad 10 jumpers join pins inside one symbol (H-C9).
+        if _child_text(s.lib, "duplicate_pin_numbers_are_jumpers") == "yes":
+            s.jumper = True
+            by_num: dict[str, list[Item]] = {}
+            for it in pins:
+                by_num.setdefault(it.num or "", []).append(it)
+            self.jumpers += [g for g in by_num.values() if len(g) > 1]
+        groups = s.lib.find("jumper_pin_groups")
+        if groups is not None:
+            s.jumper = s.jumper or bool(groups.lists)
+            for g in groups.lists:
+                nums = {a.text for a in g.atoms}
+                members = [it for it in pins if it.num in nums]
+                if len(members) > 1:
+                    self.jumpers.append(members)
 
-    def _take_pin(self, s: Sym, p, pos: Point, t: Matrix, alts: dict) -> None:
+    def _take_pin(self, s: Sym, p, pos: Point, t: Matrix, alts: dict) -> Item | None:
         if p.find("at") is None:
-            return
+            return None
         x, y, out = pin_end(pos, t, p, s.ref)
         it = self.add(Item("pin", x, y))
         it.sym, it.ref, it.out = s, s.ref, out
@@ -719,6 +842,8 @@ class Model:
                 if primary == "power_in":
                     cands.append(it.pname)
                 it.alt_names = tuple(n for n in dict.fromkeys(cands) if n is not None)
+        it.tv = any("${" in n for n in (it.name or "", *it.alt_names))
+        return it
 
     # -- the narrow view: joins every KiCad reader makes ----------------------------------
     def ensure(self) -> None:
@@ -744,7 +869,7 @@ class Model:
         if k == "wire":
             return it.id not in self._unreliable
         if k == "pin":
-            return not it.nc
+            return not it.nc and not (it.sym is not None and it.sym.amb)
         if k == "label":
             return it.name is not None
         return k == "junction"
@@ -851,18 +976,57 @@ class Model:
             for ln in cells.get((x // _CELL, y // _CELL), ()):
                 if ln is not a and _within(x, y, ln.x, ln.y, ln.x2, ln.y2, TOL2):
                     uf.union(a.id, ln.id)
-        for copies in self.pads.values():
-            for it in copies[1:]:
-                uf.union(copies[0].id, it.id)
+        for group in [*self.pads.values(), *self.jumpers]:
+            for it in group[1:]:
+                uf.union(group[0].id, it.id)
         first: dict[str, int] = {}
         for it in self.items:  # same-text names join, transitively
             for name in _all_names(it):
                 uf.union(first.setdefault(name, it.id), it.id)
         names: dict[int, list[tuple[Item, str]]] = {}
+        bad: dict[int, list[tuple[str, Item]]] = {}
         for it in self.items:
+            r = uf.find(it.id)
             for name in _all_names(it):
-                names.setdefault(uf.find(it.id), []).append((it, name))
-        return _Coarse(uf, names)
+                names.setdefault(r, []).append((it, name))
+            for code in self._unhandled(it):
+                bad.setdefault(r, []).append((code, it))
+        return _Coarse(uf, names, bad)
+
+    def _unhandled(self, it: Item) -> list[str]:
+        k = it.kind
+        if k in ("bus", "be", "sheetpin"):
+            return [{"bus": "bus", "be": "bus_entry", "sheetpin": "sheet_pin"}[k]]
+        out = ["text_var"] if it.tv else []
+        if k == "pin" and it.sym is not None:
+            s = it.sym
+            if s.jumper:
+                out.append("jumper")
+            drawn_by = s.pad_units.get(it.num or "", set())
+            needed = s.lib_units if 0 in drawn_by else drawn_by
+            if not needed <= self.placed.get(s.ref, set()):
+                out.append("unit0_unplaced")
+            if s.amb:
+                out.append("units_disagree")
+        return out
+
+    def check_loadable(self) -> None:
+        """A derived or unresolved symbol anywhere on the sheet refuses the whole call: its pins
+        are unknown, and KiCad stacks an unresolved symbol's pins at its origin (PI-17)."""
+        for s in self.syms:
+            if s.derived:
+                what = "is derived and was never flattened into this file"
+                remedy = "with place_component from a non-derived library symbol"
+            elif s.lib is None:
+                what = "is not in this file's lib_symbols"
+                remedy = "with place_component, which copies its library symbol into the file"
+            else:
+                continue
+            raise Refusal(
+                "derived",
+                f"{s.ref} uses library symbol '{s.key}', which {what}, so its pins are unknown"
+                f" here. Remedy: re-place {s.ref} {remedy}; otherwise stop and report.",
+            )
 
     def members(self, it: Item) -> list[Item]:
         """Pins on the possible component of *it*."""
@@ -888,13 +1052,13 @@ class Model:
                 " what is placed.",
             )
         for s in syms:
-            if s.lib is None or s.derived:
-                what = "is derived and was never flattened into" if s.derived else "is not in"
+            if s.amb:
                 raise Refusal(
-                    "derived",
-                    f"{ref} uses library symbol '{s.key}', which {what} this file's lib_symbols,"
-                    " so its pins are unknown here. Remedy: re-place it with place_component"
-                    " from a non-derived library symbol.",
+                    "units_disagree",
+                    f"{ref}'s instance entries disagree on its unit"
+                    f" ({', '.join(map(str, s.units))}): a reused sheet draws different units"
+                    " per instance, so this sheet has no single pin geometry. Remedy: give every"
+                    f" instance the same unit for {ref}, or wire it on a sheet used once.",
                 )
         libs: list = []
         for s in syms:
@@ -1184,6 +1348,39 @@ def _names_text(entries: list[tuple[Item, str]]) -> str:
     return ", ".join(parts)
 
 
+def _pad_conflict(m: Model, copies: list[Item]) -> Refusal | None:
+    """The refusals that come after the no-op and before names (H-C11, H-C12): a no-connect
+    type pin, a no-connect flag on a copy, and anything unhandled on the possible net."""
+    for c in copies:
+        if c.nc:
+            return Refusal(
+                "nc_type",
+                "it is a no-connect type pin, which KiCad never connects to anything. Remedy:"
+                " pick another pin.",
+            )
+        for x, y, it in m._point_entries():
+            if it.kind == "nc" and _d2(x, y, c.x, c.y) <= TOL2:
+                return Refusal(
+                    "nc_flag",
+                    f"it has a no-connect flag at {pt((x, y))}. Remedy: if the pin should be"
+                    " connected, remove the flag with remove_no_connect first.",
+                )
+    bad = m.coarse().bad_of(copies[0])
+    if not bad:
+        return None
+    codes = [c for c in _UNHANDLED if any(code == c for code, _ in bad)]
+    shown = "; ".join(
+        f"{_UNHANDLED[c][0]} ({_desc(next(it for k, it in bad if k == c))}): {_UNHANDLED[c][1]}"
+        for c in codes
+    )
+    remedy = "; ".join(_UNHANDLED[c][2] for c in codes)
+    return Refusal(
+        codes,
+        f"its net possibly reaches {shown}. Remedy: {remedy}; otherwise stop and report."
+        " add_label and add_wires check none of this, so they are not a safe way around it.",
+    )
+
+
 def _names_refusal(other: list[tuple[Item, str]], net: str) -> Refusal:
     text = (
         f"its net possibly carries {_names_text(other)}; putting it on '{net}' could merge that"
@@ -1244,6 +1441,7 @@ def plan_wire_pins(root, pins: list, net: str, direction: str, stub_length: floa
     try:
         L = check_args(net, direction, stub_length)
         m = Model(root)
+        m.check_loadable()
     except Refusal as e:
         plan.refuse(e.codes, e.text)
         return plan
@@ -1296,6 +1494,10 @@ def plan_wire_pins(root, pins: list, net: str, direction: str, stub_length: floa
                     if via
                 )
             )
+            continue
+        why = _pad_conflict(m, copies)
+        if why:
+            plan.refuse(why.codes, f"{tag}: {why.text}")
             continue
         named = m.coarse().names_of(copies[0])  # every copy of a pad is one possible component
         other = [e for e in named if e[1] != net]

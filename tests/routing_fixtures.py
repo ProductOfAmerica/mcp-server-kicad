@@ -16,6 +16,7 @@ test's harness built them (docs/adr-routing-safety.md).
 
 from __future__ import annotations
 
+import json
 import uuid
 from pathlib import Path
 from typing import Any
@@ -129,11 +130,11 @@ def _n(v: float) -> str:
     return "0" if s in ("-0", "") else s
 
 
-def splice(path: str, sexpr: str) -> None:
-    """Insert one node after its last same-kind sibling, with a fresh uuid."""
+def splice(path: str, sexpr: str, keep_uuid: bool = False) -> None:
+    """Insert one node after its last same-kind sibling, with a fresh uuid unless kept."""
     node = _cst.parse(sexpr.encode()).lists[0]
     u = node.find("uuid")
-    if u is not None:
+    if u is not None and not keep_uuid:
         u.atoms[1].set_text(str(uuid.uuid4()))
     p = Path(path)
     tree = _cst.parse(p.read_bytes())
@@ -163,6 +164,15 @@ def polyline(path: str, x1, y1, x2, y2) -> None:
     splice(
         path,
         f"(polyline (pts (xy {_n(x1)} {_n(y1)}) (xy {_n(x2)} {_n(y2)}))"
+        ' (stroke (width 0) (type default)) (uuid "x"))',
+    )
+
+
+def bus_entry(path: str, x, y, dx, dy) -> None:
+    """A bus entry from (x, y) to (x + dx, y + dy)."""
+    splice(
+        path,
+        f"(bus_entry (at {_n(x)} {_n(y)}) (size {_n(dx)} {_n(dy)})"
         ' (stroke (width 0) (type default)) (uuid "x"))',
     )
 
@@ -199,6 +209,115 @@ def text_of(path: str) -> bytes:
     return Path(path).read_bytes()
 
 
+def _placed(root, ref: str):
+    """The placed symbol nodes whose Reference property is *ref*."""
+    return [
+        s
+        for s in root.find_all("symbol")
+        if any(
+            q.atoms[1].text == "Reference" and q.atoms[2].text == ref
+            for q in s.find_all("property")
+            if len(q.atoms) > 2
+        )
+    ]
+
+
+def _edit(path: str, fn) -> None:
+    p = Path(path)
+    tree = _cst.parse(p.read_bytes())
+    fn(tree.lists[0])
+    p.write_bytes(_cst.serialize(tree))
+
+
+def _set_unit(node, unit: int) -> None:
+    node.find("unit").atoms[1].set_text(str(unit))
+    for proj in node.find("instances").find_all("project"):
+        for path_node in proj.find_all("path"):
+            path_node.find("unit").atoms[1].set_text(str(unit))
+
+
+def set_unit(path: str, ref: str, unit: int) -> None:
+    """Make every placed *ref* on this sheet unit *unit*, top level and every instance entry."""
+    _edit(path, lambda root: [_set_unit(s, unit) for s in _placed(root, ref)])
+
+
+def set_lib_name(path: str, ref: str, name: str) -> None:
+    """Point *ref*'s lib_name at *name*, whether or not lib_symbols holds an entry of that name
+    (the routing pressure test's set_lib_name)."""
+    _edit(path, lambda root: _placed(root, ref)[0].find("lib_name").atoms[1].set_text(name))
+
+
+def add_instance(path: str, ref: str, inst_path: str, unit: int) -> None:
+    """Give *ref* one more instance entry, at *inst_path* with *unit*: the shape a sheet used
+    twice gives its symbols."""
+
+    def fn(root) -> None:
+        proj = _placed(root, ref)[0].find("instances").find("project")
+        old = proj.find_all("path")[-1]
+        new = old.copy()
+        new.atoms[1].set_text(inst_path)
+        new.find("unit").atoms[1].set_text(str(unit))
+        proj.insert_after(old, new)
+
+    _edit(path, fn)
+
+
+def project_file(directory, name: str) -> str:
+    """A minimal .kicad_pro, which makes <name>.kicad_sch beside it the root of its hierarchy."""
+    p = Path(directory) / f"{name}.kicad_pro"
+    p.write_text(json.dumps({"meta": {"filename": p.name, "version": 1}}, indent=2) + "\n")
+    return str(p)
+
+
+def sheet(parent: str, child: str, name: str, x, y, pins=(), w=30.48, h=20.32) -> dict:
+    """A sheet block on the root sheet *parent* for *child*, in the node shape the routing
+    pressure test's hierarchy probes wrote. pins: [(name, shape, side, k)], pin k at
+    y + k * 2.54 on the left or right edge, with no wire or label added on either side.
+
+    Every symbol already on *child* is given the instance path KiCad gives it under this sheet,
+    so place the child's symbols first. Returns {pin name: (x, y)}.
+    """
+    root = _cst.parse(Path(parent).read_bytes()).lists[0]
+    root_uuid = root.find("uuid").atoms[1].text
+    page = len(root.find_all("sheet")) + 2
+    su = str(uuid.uuid4())
+    eff = "(effects (font (size 1.27 1.27))"
+    where, pin_nodes = {}, []
+    for pin_name, shape, side, k in pins:
+        px, py = (x if side == "left" else x + w), y + k * 2.54
+        ang, just = (180, "left") if side == "left" else (0, "right")
+        where[pin_name] = (round(px, 4), round(py, 4))
+        pin_nodes.append(
+            f'(pin "{pin_name}" {shape} (at {_n(px)} {_n(py)} {ang}) (uuid "{uuid.uuid4()}")'
+            f" {eff} (justify {just})))"
+        )
+    stem = Path(parent).stem
+    splice(
+        parent,
+        f"(sheet (at {_n(x)} {_n(y)}) (size {_n(w)} {_n(h)}) (exclude_from_sim no)"
+        " (in_bom yes) (on_board yes) (dnp no) (fields_autoplaced yes)"
+        f' (stroke (width 0.1524) (type solid)) (fill (color 0 0 0 0.0000)) (uuid "{su}")'
+        f' (property "Sheetname" "{name}" (at {_n(x)} {_n(y - 0.7116)} 0)'
+        f" {eff} (justify left bottom)))"
+        f' (property "Sheetfile" "{Path(child).name}" (at {_n(x)} {_n(y + h + 0.5846)} 0)'
+        f" {eff} (justify left top))) "
+        + " ".join(pin_nodes)
+        + f' (instances (project "{stem}" (path "/{root_uuid}" (page "{page}")))))',
+        keep_uuid=True,
+    )
+
+    def repath(child_root) -> None:
+        for s in child_root.find_all("symbol"):
+            inst = s.find("instances")
+            for proj in inst.find_all("project") if inst is not None else ():
+                proj.atoms[1].set_text(stem)
+                for path_node in proj.find_all("path"):
+                    path_node.atoms[1].set_text(f"/{root_uuid}/{su}")
+
+    _edit(child, repath)
+    return where
+
+
 def place_units(path: str, symbol: str, ref: str, placements) -> None:
     """One multi-unit part: placements [(unit, x, y), ...], the first placed by place_component
     and the rest cloned from it with their own unit, position and uuids, the way KiCad stores
@@ -208,19 +327,8 @@ def place_units(path: str, symbol: str, ref: str, placements) -> None:
     p = Path(path)
     tree = _cst.parse(p.read_bytes())
     root = tree.lists[0]
-    src = next(
-        s
-        for s in root.find_all("symbol")
-        if any(q.atoms[2].text == ref for q in s.find_all("property") if len(q.atoms) > 2)
-    )
-
-    def set_unit(node, unit: int) -> None:
-        node.find("unit").atoms[1].set_text(str(unit))
-        for proj in node.find("instances").find_all("project"):
-            for path_node in proj.find_all("path"):
-                path_node.find("unit").atoms[1].set_text(str(unit))
-
-    set_unit(src, unit0)
+    (src,) = _placed(root, ref)
+    _set_unit(src, unit0)
     anchor = src
     for unit, x, y in rest:
         node = src.copy()
@@ -234,20 +342,26 @@ def place_units(path: str, symbol: str, ref: str, placements) -> None:
         node.find("uuid").atoms[1].set_text(str(uuid.uuid4()))
         for pin in node.find_all("pin"):
             pin.find("uuid").atoms[1].set_text(str(uuid.uuid4()))
-        set_unit(node, unit)
+        _set_unit(node, unit)
         root.insert_after(anchor, node)
         anchor = node
     p.write_bytes(_cst.serialize(tree))
 
 
 def custom_lib(directory: Path, name: str, pins) -> str:
-    """A one-symbol library: pins [(number, name, type, x, y, angle, hidden)], one unit."""
+    """A one-symbol library: pins [(number, name, type, x, y, angle, hidden[, unit])]. The unit
+    defaults to 1; unit 0 puts the pin in the common sub-symbol, which every unit draws."""
     eff = "(effects (font (size 1.27 1.27)))"
-    body = " ".join(
-        f"(pin {typ} line (at {_n(x)} {_n(y)} {ang}) (length 2.54)"
-        + (" (hide yes)" if hidden else "")
-        + f' (name "{pin_name}" {eff}) (number "{num}" {eff}))'
-        for num, pin_name, typ, x, y, ang, hidden in pins
+    by_unit: dict[int, list[str]] = {}
+    for num, pin_name, typ, x, y, ang, hidden, *unit in pins:
+        by_unit.setdefault(unit[0] if unit else 1, []).append(
+            f"(pin {typ} line (at {_n(x)} {_n(y)} {ang}) (length 2.54)"
+            + (" (hide yes)" if hidden else "")
+            + f' (name "{pin_name}" {eff}) (number "{num}" {eff}))'
+        )
+    common = " ".join(by_unit.pop(0, []))
+    units = " ".join(
+        f'(symbol "{name}_{u}_1" {" ".join(body)})' for u, body in sorted(by_unit.items())
     )
     text = (
         '(kicad_symbol_lib (version 20241209) (generator "kicad_symbol_editor")'
@@ -258,8 +372,8 @@ def custom_lib(directory: Path, name: str, pins) -> str:
         ' (property "Footprint" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))'
         ' (property "Datasheet" "" (at 0 0 0) (effects (font (size 1.27 1.27)) (hide yes)))'
         f' (symbol "{name}_0_1" (rectangle (start -2.54 2.54) (end 2.54 -2.54)'
-        " (stroke (width 0.254) (type default)) (fill (type none))))"
-        f' (symbol "{name}_1_1" {body})'
+        f" (stroke (width 0.254) (type default)) (fill (type none))) {common})"
+        f" {units}"
         " (embedded_fonts no))\n)\n"
     )
     path = Path(directory) / f"{name}.kicad_sym"

@@ -13,9 +13,22 @@ import pytest
 from conftest import netlist_nodes, requires_cli
 from netlist_oracle import judge, nets
 from routing_checks import assert_only_added, call_wptn
-from routing_fixtures import ORIENTED, fresh, label, place, power, stub, wire
+from routing_fixtures import (
+    ORIENTED,
+    bus,
+    fresh,
+    label,
+    place,
+    power,
+    project_file,
+    set_lib_name,
+    set_unit,
+    sheet,
+    stub,
+    wire,
+)
 
-from mcp_server_kicad import schematic
+from mcp_server_kicad import _connectivity, _cst, project, schematic
 
 
 def pins(*specs):
@@ -465,3 +478,183 @@ def test_a_name_on_pads_at_two_points_is_refused(tmp_path):
     status, msg = call_wptn(p, pins(("U1", "COM")), "N")
     assert status == "REFUSED" and msg.startswith("[resolve]"), msg
     assert "pad 3 at (96.52, 101.6)" in msg and "pad 5 at (106.68, 101.6)" in msg
+
+
+# ---------------------------------------------------------------------------------------------
+# Outright refusals (design 4.3): nets this tool cannot judge
+# ---------------------------------------------------------------------------------------------
+
+
+def _on(path) -> dict:
+    """{node: (printed name, nodes)} in the kicad-cli netlist of *path*."""
+    return {node: (name, nodes) for _c, name, _k, nodes in nets(path) for node in nodes}
+
+
+def _hierarchy(tmp_path, name: str, child: str = "c") -> tuple[str, str]:
+    """A root sheet with a project file beside it and an empty child sheet."""
+    root = fresh(tmp_path, name)
+    kid = str(tmp_path / name / f"{child}.kicad_sch")
+    project.create_schematic(schematic_path=kid)
+    project_file(tmp_path / name, name)
+    return root, kid
+
+
+def _hier06(tmp_path, geom: str) -> str:
+    """HIER-06 (h04_sheetpin_on_wire_interior): R1:1's wire passes over sheet pin PWR without
+    ending on it, and the child ties PWR to +5V. R2:1 is on N1 and R3:1 on GND."""
+    root, child = _hierarchy(tmp_path, "h")
+    place(child, "R", "R31", 50.8, 50.8)  # R31:1 at (50.8, 46.99)
+    wire(child, 50.8, 46.99, 50.8, 41.91)
+    wire(child, 50.8, 41.91, 50.8, 38.1)
+    label(child, "PWR", 50.8, 41.91, kind="hierarchical_label")
+    power(child, "+5V", "#PWR01", 50.8, 38.1)
+    pin = sheet(root, child, "C", 152.4, 25.4, pins=[("PWR", "input", "left", 2)])
+    assert pin == {"PWR": (152.4, 30.48)}
+    place(root, "R", "R1", 127, 40.64)  # R1:1 at (127, 36.83)
+    if geom == "edge":  # along the sheet's left edge, over the pin
+        wire(root, 127, 36.83, 152.4, 36.83)
+        wire(root, 152.4, 36.83, 152.4, 27.94)
+    else:  # through the pin into the sheet body
+        wire(root, 127, 36.83, 139.7, 36.83)
+        wire(root, 139.7, 36.83, 139.7, 30.48)
+        wire(root, 139.7, 30.48, 165.1, 30.48)
+    place(root, "R", "R2", 76.2, 50.8)
+    stub(root, 76.2, 46.99, 0, -5.08, "N1")
+    place(root, "R", "R3", 101.6, 50.8)
+    wire(root, 101.6, 46.99, 101.6, 41.91)
+    power(root, "GND", "#PWR02", 101.6, 41.91)
+    return root
+
+
+@pytest.mark.parametrize("net", ["GND", "N1"])
+@pytest.mark.parametrize("geom", ["edge", "into"])
+def test_hier06_a_net_reaching_a_sheet_pin_is_refused(tmp_path, geom, net):
+    """HIER-06. kicad-cli attaches a sheet pin to a wire that merely passes over it, so R1:1 is
+    on the child's +5V. Wiring it to GND shorted +5V into GND, and to N1 joined N1 to +5V. The
+    net is named across the hierarchy, which this tool does not follow, so it refuses."""
+    root = _hier06(tmp_path, geom)
+    if _cli():
+        assert _on(root)[("R1", "1")][1] >= {("R1", "1"), ("R31", "1")}  # the premise
+    status, msg = call_wptn(root, pins(("R1", "1")), net)
+    assert status == "REFUSED" and msg.startswith("[sheet_pin] "), msg
+    assert "sheet pin 'PWR' of sheet 'C' at (152.4, 30.48)" in msg
+
+
+def _pi17(tmp_path) -> str:
+    """PI-17 (b_m_orphan): D3's lib_name names no lib_symbols entry, and its origin is where
+    R1:1's 2.54 mm stub would end."""
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    place(p, "D", "D3", 101.6, 95.25)
+    set_lib_name(p, "D3", "D_9")
+    return p
+
+
+@pytest.mark.no_kicad_validation
+def test_pi17_an_unresolved_symbol_refuses_the_whole_call(tmp_path):
+    """PI-17. D3's lib_name names no lib_symbols entry, so KiCad stacks both its pins at its
+    origin, which is where R1:1's stub ends; the old code knew nothing of D3's pins and joined
+    R1:1 to them. Pins nobody can place cannot be judged, so the whole call refuses.
+
+    The unresolved symbol is the subject, and kicad-cli 9.0.8's ERC, which the output oracle
+    runs, crashes on it (exit 0xC0000005, measured); its netlist export loads it, so the
+    premise below is still checked by KiCad.
+    """
+    p = _pi17(tmp_path)
+    if _cli():
+        assert _on(p)[("D3", "1")][1] == {("D3", "1"), ("D3", "2")}  # the premise
+    status, msg = call_wptn(p, pins(("R1", "1")), "N")
+    assert status == "REFUSED" and msg.startswith("[derived] "), msg
+    assert "'D_9'" in msg
+
+
+def _units_two_sheets(tmp_path) -> tuple[str, str]:
+    """HIER-14 (h15_units_across_sheets): one 4011 split across two sheets, unit 1 on the root
+    and unit 2 on the child, so each sheet draws its own copy of the unit-0 pad 14 (Vdd). Both
+    sheets have a +5V power symbol on a resistor."""
+    root, child = _hierarchy(tmp_path, "h")
+    place(child, "4011", "U1", 101.6, 101.6, value="4011")
+    set_unit(child, "U1", 2)
+    place(child, "R", "R31", 50.8, 50.8)
+    wire(child, 50.8, 46.99, 50.8, 41.91)
+    power(child, "+5V", "#PWR01", 50.8, 41.91)
+    sheet(root, child, "C", 203.2, 25.4)
+    place(root, "4011", "U1", 101.6, 101.6, value="4011")
+    place(root, "R", "R9", 50.8, 50.8)
+    wire(root, 50.8, 46.99, 50.8, 41.91)
+    power(root, "+5V", "#PWR02", 50.8, 41.91)
+    return root, child
+
+
+@pytest.mark.parametrize(
+    ("where", "net"),
+    [("root", "+5V"), ("child", "+5V"), ("root", "VDD")],
+    ids=["root_existing_name", "child_existing_name", "root_new_name"],
+)
+def test_hier14_a_pad_with_a_copy_on_another_sheet_is_refused(tmp_path, where, net):
+    """HIER-14, and UP-05's shape (UP-05 used 74xx_IEEE:7400, whose pads 14 and 7 are unit-0
+    pins as the 4011's are). A sheet sees only its own copy of pad 14, so the old code wired
+    that copy and kicad-cli then listed the pad in two nets, the wired one and the other copy's.
+    The pad has a copy this sheet cannot see, so the call refuses."""
+    root, child = _units_two_sheets(tmp_path)
+    if _cli():
+        assert sum(("U1", "14") in nodes for *_x, nodes in nets(root)) == 2  # the premise
+    status, msg = call_wptn(root if where == "root" else child, pins(("U1", "14")), net)
+    assert status == "REFUSED" and msg.startswith("[unit0_unplaced] "), msg
+
+
+def _stub_on(path: str, ref: str, num: str, text: str) -> None:
+    """A raw 2.54 mm stub with a label, outward from pin *num* of *ref*."""
+    tree = _cst.parse(open(path, "rb").read())
+    (c, *_more) = _connectivity.Model(tree.lists[0]).pads[(ref, num)]
+    assert c.out is not None
+    stub(path, c.x / 1e4, c.y / 1e4, c.out[0] * 2.54, c.out[1] * 2.54, text)
+
+
+def _dec14(tmp_path) -> str:
+    """DEC-14 (d11_pad_copies_across_sheets): RN1, an R_Network03_Split, unit 1 on the root and
+    unit 2 on the child; its pad 1 is common to every unit. The child's copy of pad 1 is on X
+    with R12:1, and the root's R5:1 is on N."""
+    root, kid = _hierarchy(tmp_path, "hp", "kid")
+    place(kid, "R_Network03_Split", "RN1", 101.6, 101.6, value="RN")
+    set_unit(kid, "RN1", 2)
+    place(kid, "R", "R12", 152.4, 101.6)
+    _stub_on(kid, "RN1", "1", "X")
+    _stub_on(kid, "R12", "1", "X")
+    sheet(root, kid, "kid", 152.4, 50.8)
+    place(root, "R_Network03_Split", "RN1", 101.6, 101.6, value="RN")
+    place(root, "R", "R5", 177.8, 101.6)
+    _stub_on(root, "R5", "1", "N")
+    return root
+
+
+def test_dec14_a_common_pad_split_across_sheets_is_refused(tmp_path):
+    """DEC-14. Wiring the root's copy of RN1:1 to N put the pad in two nets, N and the child's
+    X. The pad has a copy this sheet cannot see, so the call refuses."""
+    root = _dec14(tmp_path)
+    status, msg = call_wptn(root, pins(("RN1", "1")), "N")
+    assert status == "REFUSED" and msg.startswith("[unit0_unplaced] "), msg
+
+
+def _bus_p5(tmp_path) -> str:
+    """BUS-P5 (s03d): R36:1 is both a bus end and a wire end, the bus carries a plain label
+    SIG, and the wire runs to R38:1."""
+    p = fresh(tmp_path)
+    place(p, "R", "R36", 101.6, 101.6)
+    place(p, "R", "R37", 127, 101.6)
+    place(p, "R", "R38", 88.9, 101.6)
+    bus(p, 101.6, 97.79, 127, 97.79)
+    label(p, "SIG", 114.3, 97.79)
+    wire(p, 101.6, 97.79, 88.9, 97.79)
+    return p
+
+
+def test_bus_p5_a_net_reaching_a_bus_is_refused(tmp_path):
+    """BUS-P5. kicad-cli puts R36:1, R37:1 and R38:1 on /SIG; main wired R38:1 to NEWNET and
+    renamed /SIG to /NEWNET. Bus members are not modelled, so a net that reaches a bus is
+    refused as [bus], before any name it carries is weighed."""
+    p = _bus_p5(tmp_path)
+    if _cli():
+        assert _on(p)[("R38", "1")][0] == "/SIG"  # the premise
+    status, msg = call_wptn(p, pins(("R38", "1")), "NEWNET")
+    assert status == "REFUSED" and msg.startswith("[bus] "), msg
