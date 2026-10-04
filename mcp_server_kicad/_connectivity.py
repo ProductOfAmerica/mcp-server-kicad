@@ -10,13 +10,22 @@ docs/adr-routing-safety.md.
 Coordinates are KiCad's internal units (IU, 0.0001 mm) as integers, compared exactly, the way
 KiCad compares connection points. schematic.py imports this module, so it must not import
 schematic.py.
+
+The only files it reads are the other sheets of the hierarchy, for the duplicate-reference
+check, and only facts are kept from them: a small cache keyed by each file's content.
 """
 
 from __future__ import annotations
 
+import hashlib
 import math
 import re
+import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
+from pathlib import Path
+
+from mcp_server_kicad import _cst, _shared
 
 IU_PER_MM = 10000
 
@@ -629,6 +638,166 @@ def _pad_units(lib) -> dict[str, set[int]]:
     return out
 
 
+def _pad_map(lib) -> dict[str, tuple[frozenset[int], frozenset[str]]]:
+    """{pad number: (units that draw it, electrical types)} of a library symbol (H-C1). Unit 0
+    is common to every unit, a sub-symbol whose name encodes no unit counts as 0, and body
+    styles fold into their unit."""
+    out: dict[str, tuple[set[int], set[str]]] = {}
+    for sub in lib.find_all("symbol"):
+        ids = _lib_unit_style(sub)
+        unit = ids[0] if ids else 0
+        for pin in sub.find_all("pin"):
+            units, types = out.setdefault(_child_text(pin, "number"), (set(), set()))
+            units.add(unit)
+            types.add(pin.atoms[1].text if len(pin.atoms) > 1 else "unspecified")
+    return {n: (frozenset(u), frozenset(t)) for n, (u, t) in out.items()}
+
+
+@dataclass(frozen=True)
+class SymRecord:
+    """What one placed symbol brings to the duplicate-reference check (H-C1)."""
+
+    refs: frozenset[str]  # its Reference property and every instance entry's reference
+    key: str  # the library symbol it names (lib_name, else lib_id)
+    pads: dict | None  # its definition's pad map; None when unresolved or derived
+    derived: bool
+    units: tuple[int, ...]
+
+
+def _record(node, libs: dict, maps: dict) -> SymRecord:
+    """*maps* memoises pad maps per library name across the symbols of one file."""
+    refs = {_property(node, "Reference") or "?"}
+    inst = node.find("instances")
+    for proj in inst.find_all("project") if inst is not None else ():
+        for path in proj.find_all("path"):
+            r = path.find("reference")
+            if r is not None and len(r.atoms) > 1:
+                refs.add(r.atoms[1].text)
+    key = _child_text(node, "lib_name") or _child_text(node, "lib_id")
+    lib = libs.get(key)
+    derived = lib is not None and lib.find("extends") is not None
+    pads = None
+    if lib is not None and not derived:
+        pads = maps.get(key)
+        if pads is None:
+            pads = maps[key] = _pad_map(lib)
+    return SymRecord(frozenset(refs), key, pads, derived, tuple(_entry_units(node)))
+
+
+def _lib_index(root) -> dict:
+    libs = root.find("lib_symbols")
+    out: dict = {}
+    for ls in libs.find_all("symbol") if libs is not None else ():
+        if len(ls.atoms) > 1:
+            out.setdefault(ls.atoms[1].text, ls)
+    return out
+
+
+def _children(root) -> tuple[str, ...]:
+    """The file names of a sheet's child sheets."""
+    return tuple(n for sh in root.find_all("sheet") if (n := _shared._sheet_file_cst(sh)))
+
+
+#: Facts of the sheet files read for the hierarchy: {blake2b of the bytes: (records, children)}.
+#: Keyed by content, so an edited file is never served stale; bounded, least recently used out;
+#: locked, because the server may run tools on worker threads.
+_FACTS: OrderedDict[bytes, tuple[tuple[SymRecord, ...], tuple[str, ...]]] = OrderedDict()
+_FACTS_MAX = 512
+_FACTS_LOCK = threading.Lock()
+
+
+def _file_facts(data: bytes) -> tuple[tuple[SymRecord, ...], tuple[str, ...]]:
+    digest = hashlib.blake2b(data, digest_size=16).digest()
+    with _FACTS_LOCK:
+        hit = _FACTS.get(digest)
+        if hit is not None:
+            _FACTS.move_to_end(digest)
+            return hit
+    root = _cst.parse(data).lists[0]
+    libs, maps = _lib_index(root), {}
+    facts = (tuple(_record(s, libs, maps) for s in root.find_all("symbol")), _children(root))
+    with _FACTS_LOCK:
+        _FACTS[digest] = facts
+        while len(_FACTS) > _FACTS_MAX:
+            _FACTS.popitem(last=False)
+    return facts
+
+
+def hierarchy_records(path: str | Path, here_root) -> list[tuple[str, SymRecord]]:
+    """Every placed symbol on the other sheets of this sheet's hierarchy, with its file (H-C1).
+
+    The walk starts at the project's root schematic beside this sheet when there is one
+    (_shared._find_root_schematic), else at this sheet, and resolves a sheet's file name against
+    its parent's directory, then the root's. Each file is read once, and this sheet's symbols
+    and children come from the tree being edited, never from disk. A missing sheet file is
+    skipped, as KiCad loads it empty; one that cannot be read or parsed refuses [dup_ref].
+    """
+    here = Path(path).resolve()
+    start = Path(_shared._find_root_schematic(str(path)) or path)
+    out: list[tuple[str, SymRecord]] = []
+    seen: set[Path] = set()
+    todo = [start]
+    while todo:
+        f = todo.pop()
+        rf = f.resolve()
+        if rf in seen:
+            continue
+        seen.add(rf)
+        if rf == here:
+            children = _children(here_root)
+        elif not f.is_file():
+            continue
+        else:
+            try:
+                records, children = _file_facts(f.read_bytes())
+            except Exception as e:  # noqa: BLE001 - any failure means the sheet is unknown
+                raise Refusal(
+                    "dup_ref",
+                    f"sheet {f.name} of this hierarchy could not be read ({type(e).__name__}),"
+                    " so the reference cannot be checked for uniqueness. Remedy: fix or remove"
+                    " that sheet; otherwise stop and report.",
+                ) from None
+            out += [(f.name, r) for r in records]
+        for name in children:
+            cands = [f.parent / name, start.parent / name]
+            todo.append(next((c for c in cands if c.exists()), cands[0]))
+    return out
+
+
+def _one_part(group: list[SymRecord]) -> str | None:
+    """None when the placed symbols sharing a reference are one part, else why not (H-C1): each
+    places one distinct unit, every definition resolves and is not derived, and the definitions
+    agree on which units draw each pad and with which electrical types."""
+    units = [r.units for r in group]
+    if not all(len(u) == 1 for u in units) or len({u[0] for u in units}) != len(units):
+        return "they do not each place a distinct unit"
+    for r in group:
+        if r.pads is None:
+            return f"library symbol '{r.key}' {'is derived' if r.derived else 'does not resolve'}"
+    first = group[0]
+    assert first.pads is not None
+    for r in group[1:]:
+        assert r.pads is not None
+        if r.pads == first.pads:
+            continue
+        differ = (set(r.pads) ^ set(first.pads)) or {
+            n for n in r.pads if r.pads[n] != first.pads[n]
+        }
+        num = min(differ, key=_pad_order)
+
+        def show(pads: dict) -> str:
+            if num not in pads:
+                return "no such pad"
+            u, t = pads[num]
+            return f"units {','.join(map(str, sorted(u)))} as {'/'.join(sorted(t))}"
+
+        return (
+            f"their library definitions disagree on pad {num} ('{first.key}': {show(first.pads)};"
+            f" '{r.key}': {show(r.pads)})"
+        )
+    return None
+
+
 def _overlaps(lines: list[Item]) -> list[tuple[Item, Item]]:
     """Pairs of same-layer lines (wire with wire, bus with bus) overlapping collinearly."""
     out = []
@@ -675,20 +844,19 @@ def _overlaps(lines: list[Item]) -> list[tuple[Item, Item]]:
 class Model:
     """One sheet's connectable items, with pins placed where KiCad draws them."""
 
-    def __init__(self, root):
+    def __init__(self, root, path: str | Path | None = None):
         self.root = root
+        self.path = path  # the sheet's file, for the hierarchy; None checks this sheet alone
+        self._hier: list[tuple[str, SymRecord]] | None = None
+        self._mine: list[tuple[None, SymRecord]] | None = None
         self.items: list[Item] = []
         self.syms: list[Sym] = []
         self.pads: dict[tuple[str, str], list[Item]] = {}
         self.placed: dict[str, set[int]] = {}  # units this sheet places per reference
         self.jumpers: list[list[Item]] = []
-        self.libs: dict = {}
+        self.libs: dict = _lib_index(root)
         self._dirty = True
         self._coarse: _Coarse | None = None
-        libs = root.find("lib_symbols")
-        for ls in libs.find_all("symbol") if libs is not None else ():
-            if len(ls.atoms) > 1:
-                self.libs.setdefault(ls.atoms[1].text, ls)
         for ch in root.lists:
             self._take(ch)
 
@@ -1028,6 +1196,38 @@ class Model:
                 f" here. Remedy: re-place {s.ref} {remedy}; otherwise stop and report.",
             )
 
+    def check_unique(self, ref: str) -> None:
+        """Refuse [dup_ref] unless every placed symbol in the hierarchy that can carry one of
+        *ref*'s references is a distinct unit of one part (H-C1, design 4.6). KiCad's netlist
+        knows a component by its reference, so same-numbered pads of symbols sharing one become
+        one pad."""
+        if self._mine is None:
+            maps: dict = {}
+            self._mine = [(None, _record(s.node, self.libs, maps)) for s in self.syms]
+        mine = self._mine
+        refs = frozenset().union(*(r.refs for (_f, r), s in zip(mine, self.syms) if s.ref == ref))
+        if self._hier is None:
+            self._hier = hierarchy_records(self.path, self.root) if self.path is not None else []
+        group = [(f, r) for f, r in mine + self._hier if r.refs & refs]
+        if len(group) <= 1:
+            return
+        why = _one_part([r for _f, r in group])
+        if why is None:
+            return
+        shown = "; ".join(
+            f"{'/'.join(sorted(r.refs))} ({r.key}, unit {','.join(map(str, r.units))}"
+            f"{', on ' + f if f else ''})"
+            for f, r in group[:6]
+        )
+        more = f" and {len(group) - 6} more" if len(group) > 6 else ""
+        raise Refusal(
+            "dup_ref",
+            f"reference {ref} is carried by {len(group)} placed symbols in this hierarchy that"
+            f" are not distinct units of one part ({shown}{more}): {why}; KiCad joins their pads"
+            " by reference. Remedy: give each part its own reference (annotate_schematic numbers"
+            " the ones ending in '?'), then call again; otherwise stop and report.",
+        )
+
     def members(self, it: Item) -> list[Item]:
         """Pins on the possible component of *it*."""
         cm = self.coarse()
@@ -1060,6 +1260,7 @@ class Model:
                     " per instance, so this sheet has no single pin geometry. Remedy: give every"
                     f" instance the same unit for {ref}, or wire it on a sheet used once.",
                 )
+        self.check_unique(ref)
         libs: list = []
         for s in syms:
             if all(s.lib is not lib for lib in libs):
@@ -1431,8 +1632,13 @@ def _wire_copy(m: Model, plan: WirePlan, c: Item, net: str, fixed: Point | None,
     )
 
 
-def plan_wire_pins(root, pins: list, net: str, direction: str, stub_length: float) -> WirePlan:
+def plan_wire_pins(
+    root, pins: list, net: str, direction: str, stub_length: float, path: str | None = None
+) -> WirePlan:
     """Decide wire_pins_to_net's edit on a parsed schematic root. Writes nothing.
+
+    *path* is the sheet's file, which places it in its hierarchy for the duplicate-reference
+    check; without it only this sheet is checked.
 
     In order: arguments; every pin resolved to a drawn pin; per pad, a no-op when the narrow
     view already puts it on *net*, else a refusal when the possible view carries another name;
@@ -1441,7 +1647,7 @@ def plan_wire_pins(root, pins: list, net: str, direction: str, stub_length: floa
     plan = WirePlan(net)
     try:
         L = check_args(net, direction, stub_length)
-        m = Model(root)
+        m = Model(root, path)
         m.check_loadable()
     except Refusal as e:
         plan.refuse(e.codes, e.text)

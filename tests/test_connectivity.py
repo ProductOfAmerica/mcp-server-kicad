@@ -632,3 +632,84 @@ def test_an_unloadable_symbol_is_reported_before_an_unresolved_one(tmp_path):
     _placed(root, "R1")[0].find("at").atoms[3].set_text("45")
     plan = C.plan_wire_pins(root, [{"reference": "R1", "pin": "1"}], "N", "auto", 2.54)
     assert plan.codes == ["unloadable"]
+
+
+# ---------------------------------------------------------------------------------------------
+# Duplicate references across the hierarchy (H-C1)
+# ---------------------------------------------------------------------------------------------
+
+
+def _two_sheets(tmp_path, child_ref="R2"):
+    """Root h.kicad_sch with R1 and a sheet for c.kicad_sch, which holds one resistor."""
+    from routing_fixtures import project_file, sheet
+
+    from mcp_server_kicad import project
+
+    root = fresh(tmp_path, "h")
+    child = str(tmp_path / "h" / "c.kicad_sch")
+    project.create_schematic(schematic_path=child)
+    project_file(tmp_path / "h", "h")
+    place(child, "R", child_ref, 101.6, 101.6)
+    sheet(root, child, "C", 152.4, 25.4)
+    place(root, "R", "R1", 101.6, 101.6)
+    return root, child
+
+
+def _plan_in(path, specs, net="N"):
+    pins = [{"reference": r, "pin": p} for r, p in specs]
+    return C.plan_wire_pins(_root(path), pins, net, "auto", 2.54, path)
+
+
+def test_the_hierarchy_is_read_for_the_reference_check(tmp_path):
+    root, _child = _two_sheets(tmp_path, child_ref="R1")
+    plan = _plan_in(root, [("R1", "1")])
+    assert plan.codes == ["dup_ref"] and "on c.kicad_sch" in plan.refusal()
+    assert not _plan(root, [("R1", "1")]).refused  # without the path, only this sheet is seen
+
+
+def test_an_edited_sheet_is_never_served_stale(tmp_path):
+    """Guard on the facts cache (new with the check): it is keyed by content, so renaming the
+    child's R2 to R1 between two calls is seen by the second."""
+    from routing_fixtures import rename_ref
+
+    root, child = _two_sheets(tmp_path)
+    assert not _plan_in(root, [("R1", "1")]).refused
+    rename_ref(child, "R2", "R1")
+    assert _plan_in(root, [("R1", "1")]).codes == ["dup_ref"]
+
+
+def test_a_missing_sheet_file_is_skipped(tmp_path):
+    """Guard: KiCad loads a missing sheet file empty, so it holds no reference."""
+    root, child = _two_sheets(tmp_path, child_ref="R1")
+    Path(child).unlink()
+    assert not _plan_in(root, [("R1", "1")]).refused
+
+
+@pytest.mark.no_kicad_validation
+def test_a_sheet_that_cannot_be_read_refuses(tmp_path):
+    """A child cut off mid-file: its references are unknown, so uniqueness is too. The truncated
+    sheet is the subject, which is why the output oracle is off."""
+    root, child = _two_sheets(tmp_path)
+    data = Path(child).read_bytes()
+    Path(child).write_bytes(data[: len(data) // 2])
+    plan = _plan_in(root, [("R1", "1")])
+    assert plan.codes == ["dup_ref"] and "c.kicad_sch of this hierarchy could not be read" in (
+        plan.refusal()
+    )
+
+
+def test_the_units_of_one_part_on_one_sheet_are_one_part(tmp_path):
+    """Guard: the 4011's four gates all carry U1, distinct units of one definition."""
+    assert not _plan(_4011(tmp_path), [("U1", "14")], net="RAIL").refused
+
+
+def test_the_reference_check_comes_after_units_disagree_and_before_the_lookup(tmp_path):
+    from routing_fixtures import add_instance, rename_ref
+
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    place(p, "R", "R2", 152.4, 101.6)
+    rename_ref(p, "R2", "R1")
+    assert _plan(p, [("R1", "no such pin")]).codes == ["dup_ref"]
+    add_instance(p, "R1", "/00000000-0000-0000-0000-00000000000a/0000000b", 2)
+    assert _plan(p, [("R1", "1")]).codes == ["units_disagree"]

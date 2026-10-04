@@ -23,6 +23,7 @@ cannot load.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -120,3 +121,30 @@ def test_stock_sheet_sweep(tmp_path_factory, rel, k):
             assert v.delivered, (ref, num, n, msg)
             found = model_disagreements(path)
             assert found == ([], []), (ref, num, n, found)
+
+
+@pytest.fixture(scope="module")
+def vme_wren(tmp_path_factory) -> Path:
+    base = demo_dir()
+    if base is None or not (base / "vme-wren" / "vme-wren.kicad_pro").is_file():
+        pytest.skip("KiCad's demos have no vme-wren project on this host")
+    dst = Path(tmp_path_factory.mktemp("vme")) / "vme-wren"
+    shutil.copytree(base / "vme-wren", dst)
+    return dst
+
+
+@pytest.mark.parametrize(
+    ("sheet", "ref"), [("fpga-hp-banks.kicad_sch", "IC14"), ("clocks.kicad_sch", "IC20")]
+)
+def test_one_part_placed_across_a_project_is_not_a_duplicate(vme_wren, sheet, ref):
+    """Guard against over-refusal (there was no reference check before). In KiCad 9.0.8's
+    vme-wren, IC14 is 20 symbols on 9 sheets under 4 library names, units 1 to 20 once each,
+    and IC20 is 2 symbols on clocks under 2 (counted 2026-10-04). The library copies differ in
+    name and bytes but agree on every pad, so each is one part. The walk parses the whole
+    project once, cold."""
+    path = vme_wren / sheet
+    if ref not in path.read_text(encoding="utf-8"):
+        pytest.skip(f"{ref} is not on this KiCad's {sheet}")
+    root = _cst.parse(path.read_bytes()).lists[0]
+    m = _connectivity.Model(root, str(path))
+    m.check_unique(ref)  # raises Refusal("dup_ref") if the group is not one part

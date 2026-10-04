@@ -23,6 +23,7 @@ from routing_fixtures import (
     place,
     power,
     project_file,
+    rename_ref,
     set_lib_name,
     set_unit,
     sheet,
@@ -45,15 +46,26 @@ def agrees(path, netlist=None) -> list:
     return netlist
 
 
-def wired(path, specs, n, **kw):
-    """call_wptn plus the netlist judge when kicad-cli is present. Returns (status, msg)."""
-    before = agrees(path) if _cli() else None
+def wired(path, specs, n, judge_on=None, **kw):
+    """call_wptn plus, when kicad-cli is present, the netlist judge of a write, on *judge_on*
+    (the root of a hierarchy) when given. Returns (status, msg).
+
+    A refusal or a no-op leaves the file byte-identical (call_wptn asserts it), so only a write
+    has a change to judge; judging an unchanged file measures the judge, which maps a pad listed
+    in two nets (a shared reference, say) to the first of them. A no-op is still held to its
+    claim that kicad-cli has the pad on N already.
+    """
+    on = judge_on or path
+    if _cli():
+        agrees(path)
+    before = nets(on) if _cli() else None
     status, msg = call_wptn(path, pins(*specs), n, **kw)
-    if before is not None:
-        verdict = judge(before, agrees(path), [set(specs)], n, wrote=status == "OK")
-        assert not verdict.wrong, (msg, verdict.problems())
-        if status != "REFUSED":
-            assert verdict.delivered, msg
+    if before is not None and status != "REFUSED":
+        agrees(path)
+        verdict = judge(before, nets(on), [set(specs)], n, wrote=status == "OK")
+        if status == "OK":
+            assert not verdict.wrong, (msg, verdict.problems())
+        assert verdict.delivered, msg
     return status, msg
 
 
@@ -760,3 +772,78 @@ def test_a_bad_net_name_refuses_before_the_cap_is_placed(tmp_path, bad):
     with pytest.raises(ToolError, match=rf"^\[validation\] {next(iter(bad))} "):
         _cap(p, **bad)
     assert open(p, "rb").read() == before
+
+
+# ---------------------------------------------------------------------------------------------
+# Duplicate references (design 4.6, H-C1)
+# ---------------------------------------------------------------------------------------------
+
+
+def _pi15(tmp_path, symbol: str, dup: str) -> str:
+    """PI-15 (m_edges 13, v10_dupref): two parts given one reference, the first's pin 1 tied to
+    R7:2 and the second's to R8:2."""
+    p = fresh(tmp_path)
+    a, b = (f"{symbol}1", f"{symbol}2")
+    place(p, symbol, a, 101.6, 101.6)
+    place(p, symbol, b, 127, 101.6)
+    place(p, "R", "R7", 93.98, 97.79, rot=90)  # R7:2 at (97.79, 97.79)
+    wire(p, 97.79, 97.79, 101.6, 97.79)
+    place(p, "R", "R8", 119.38, 97.79, rot=90)  # R8:2 at (123.19, 97.79)
+    wire(p, 123.19, 97.79, 127, 97.79)
+    rename_ref(p, a, dup)
+    rename_ref(p, b, dup)
+    return p
+
+
+@pytest.mark.parametrize(("symbol", "dup"), [("R", "R1"), ("R", "R?"), ("C", "C1"), ("C", "C?")])
+def test_pi15_two_parts_sharing_a_reference_are_refused(tmp_path, symbol, dup):
+    """PI-15. KiCad's netlist knows a part by its reference, so the two pin 1s are one pad:
+    wiring it put both on NDUP and merged R7's net with R8's."""
+    p = _pi15(tmp_path, symbol, dup)
+    status, msg = wired(p, [(dup, "1")], "NDUP")
+    assert status == "REFUSED" and msg.startswith("[dup_ref] "), msg
+
+
+def _mixed_parts(tmp_path) -> str:
+    """dupref mixed_parts_test: a 74LS00 placed as U1 unit 1 and a 74LS04 retagged U1 unit 2,
+    two different parts that look like two units of one. Both draw a pad 3."""
+    p = fresh(tmp_path)
+    place(p, "74LS00", "U1", 101.6, 101.6)
+    place(p, "74LS04", "U2", 152.4, 101.6)
+    set_unit(p, "U2", 2)
+    rename_ref(p, "U2", "U1")
+    return p
+
+
+@pytest.mark.parametrize("pad", ["1", "3"])
+def test_two_different_parts_sharing_a_reference_are_refused(tmp_path, pad):
+    """Distinct units are not enough: the definitions must agree on which unit draws each pad.
+    Pad 3 is the 74LS00's 1Y output and the 74LS04's 2A input; the old code wired both copies,
+    joining an output to an input."""
+    p = _mixed_parts(tmp_path)
+    status, msg = wired(p, [("U1", pad)], "N")
+    assert status == "REFUSED" and msg.startswith("[dup_ref] "), msg
+    assert "disagree on pad 2 ('74LS00': units 1 as input; '74LS04': units 1 as output)" in msg
+
+
+def test_a_reference_shared_with_another_sheet_is_refused(tmp_path):
+    """Two resistors annotated R1 on two sheets are one pad 1 to KiCad: wiring the root's copy
+    left that pad in two nets, N and the child's CHILD_NET."""
+    root, child = _hierarchy(tmp_path, "h")
+    place(child, "R", "R1", 101.6, 101.6)
+    stub(child, 101.6, 97.79, 0, -2.54, "CHILD_NET")
+    sheet(root, child, "C", 152.4, 25.4)
+    place(root, "R", "R1", 101.6, 101.6)
+    status, msg = wired(root, [("R1", "1")], "N")
+    assert status == "REFUSED" and msg.startswith("[dup_ref] "), msg
+    assert "on c.kicad_sch" in msg
+
+
+def test_units_of_one_part_on_two_sheets_are_accepted(tmp_path):
+    """Guard against over-refusal (there was no reference check before): U1's gates 1 and 2 sit
+    on two sheets as one part should, and a pin only its own gate draws is wired on either."""
+    root, child = _units_two_sheets(tmp_path)
+    status, msg = wired(root, [("U1", "1")], "A_IN")
+    assert status == "OK", msg
+    status, msg = wired(child, [("U1", "5")], "B_IN", judge_on=root)
+    assert status == "OK", msg

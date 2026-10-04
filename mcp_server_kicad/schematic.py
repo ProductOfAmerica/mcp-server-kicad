@@ -2016,7 +2016,9 @@ def _wire_pins(
     if not pins:
         return None
     tree, root, *_ = _open_sch_cst(schematic_path)
-    plan = _connectivity.plan_wire_pins(root, pins, label_text, direction, stub_length)
+    plan = _connectivity.plan_wire_pins(
+        root, pins, label_text, direction, stub_length, schematic_path
+    )
     if plan.refused:
         raise _WireRefused(plan)
     if not plan.wires and not plan.labels:

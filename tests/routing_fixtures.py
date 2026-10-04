@@ -247,6 +247,22 @@ def set_lib_name(path: str, ref: str, name: str) -> None:
     _edit(path, lambda root: _placed(root, ref)[0].find("lib_name").atoms[1].set_text(name))
 
 
+def rename_ref(path: str, old: str, new: str) -> None:
+    """Give the placed *old* the reference *new*: its Reference property and every instance
+    entry, the way two parts end up sharing one."""
+
+    def fn(root) -> None:
+        for s in _placed(root, old):
+            for q in s.find_all("property"):
+                if len(q.atoms) > 2 and q.atoms[1].text == "Reference":
+                    q.atoms[2].set_text(new)
+            for proj in s.find("instances").find_all("project"):
+                for path_node in proj.find_all("path"):
+                    path_node.find("reference").atoms[1].set_text(new)
+
+    _edit(path, fn)
+
+
 def add_instance(path: str, ref: str, inst_path: str, unit: int) -> None:
     """Give *ref* one more instance entry, at *inst_path* with *unit*: the shape a sheet used
     twice gives its symbols."""
