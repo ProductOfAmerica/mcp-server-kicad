@@ -391,3 +391,43 @@ def place_custom(path: str, lib: str, name: str, ref: str, x: float, y: float) -
         symbol_lib_path=lib,
         schematic_path=path,
     )
+
+
+def demo_dir() -> Path | None:
+    """KiCad's installed demos, found from the resolved kicad-cli, or None."""
+    from mcp_server_kicad._shared import _kicad_root
+
+    root = _kicad_root()
+    for sub in ("share/kicad/demos", "SharedSupport/demos"):
+        if root is not None and (root / sub).is_dir():
+            return root / sub
+    return None
+
+
+def standalone_copy(src, dst) -> str:
+    """A copy of one sheet of a KiCad project that kicad-cli exports on its own.
+
+    Each symbol's first instance path is pointed at this file's root and every other one at a
+    path that exists nowhere, so kicad-cli lists the sheet's unnamed nets (the routing pressure
+    test's standalone_copy). The Reference property is set to that first entry's reference,
+    which is the one kicad-cli then prints, so the model and the netlist name each pin alike.
+    """
+    tree = _cst.parse(Path(src).read_bytes())
+    root = tree.lists[0]
+    own = f"/{root.find('uuid').atoms[1].text}"
+    for s in root.find_all("symbol"):
+        inst = s.find("instances")
+        entries = (
+            [p for proj in inst.find_all("project") for p in proj.find_all("path")]
+            if inst is not None
+            else []
+        )
+        for i, path_node in enumerate(entries):
+            path_node.atoms[1].set_text(own if i == 0 else "/ffffffff-0000-0000-0000-000000000000")
+        ref = entries[0].find("reference") if entries else None
+        if ref is not None:
+            for q in s.find_all("property"):
+                if len(q.atoms) > 2 and q.atoms[1].text == "Reference":
+                    q.atoms[2].set_text(ref.atoms[1].text)
+    Path(dst).write_bytes(_cst.serialize(tree))
+    return str(dst)

@@ -4,14 +4,16 @@ Each case comes from the measurement harness behind docs/adr-routing-safety.md a
 case ID. A call is held to the write checks of routing_checks.call_wptn (one write that only
 adds wires and labels, byte identity on a refusal or a no-op, no junction, overlap or crossing)
 and, where kicad-cli is installed, to the netlist judge of netlist_oracle: no net merges,
-splits or is renamed, and the requested pad lands on the requested net.
+splits or is renamed, and the requested pad lands on the requested net. Wherever a fixture's
+netlist is exported anyway, the model's two views are also checked against it
+(netlist_oracle.model_disagreements), before and after the call.
 """
 
 from __future__ import annotations
 
 import pytest
 from conftest import netlist_nodes, requires_cli
-from netlist_oracle import judge, nets
+from netlist_oracle import judge, model_disagreements, nets
 from routing_checks import assert_only_added, call_wptn
 from routing_fixtures import (
     ORIENTED,
@@ -35,12 +37,20 @@ def pins(*specs):
     return [{"reference": r, "pin": p} for r, p in specs]
 
 
+def agrees(path, netlist=None) -> list:
+    """Assert the model's views agree with kicad-cli on *path*; returns the netlist used."""
+    netlist = nets(path) if netlist is None else netlist
+    found = model_disagreements(path, netlist)
+    assert found in (None, ([], [])), f"model and kicad-cli disagree: {found}"
+    return netlist
+
+
 def wired(path, specs, n, **kw):
     """call_wptn plus the netlist judge when kicad-cli is present. Returns (status, msg)."""
-    before = nets(path) if _cli() else None
+    before = agrees(path) if _cli() else None
     status, msg = call_wptn(path, pins(*specs), n, **kw)
     if before is not None:
-        verdict = judge(before, nets(path), [set(specs)], n, wrote=status == "OK")
+        verdict = judge(before, agrees(path), [set(specs)], n, wrote=status == "OK")
         assert not verdict.wrong, (msg, verdict.problems())
         if status != "REFUSED":
             assert verdict.delivered, msg
@@ -79,7 +89,7 @@ def test_twelve_orientations_wire_the_pin_kicad_draws(tmp_path):
             ref, x = f"{prefix}{i + 1}", 25.4 + 20.32 * i
             place(p, symbol, ref, x, y, rot=rot, mirror=mir)
             calls += [(ref, str(k + 1), x + dx, y + dy, d) for k, (dx, dy, d) in enumerate(ends)]
-    before = nets(p) if _cli() else None
+    before = agrees(p) if _cli() else None
     wrong = []
     for ref, num, ex, ey, d in calls:
         old = open(p, "rb").read()
@@ -95,7 +105,7 @@ def test_twelve_orientations_wire_the_pin_kicad_draws(tmp_path):
             wrong.append((ref, num, (sx, sy), got, (round(ex, 4), round(ey, 4)), d))
     assert wrong == [], wrong
     if before is not None:
-        after = nets(p)
+        after = agrees(p)
         on = {node: (name, frozenset(nodes)) for _c, name, _k, nodes in after for node in nodes}
         for ref, num, *_ in calls:
             name, nodes = on[(ref, num)]
@@ -486,8 +496,9 @@ def test_a_name_on_pads_at_two_points_is_refused(tmp_path):
 
 
 def _on(path) -> dict:
-    """{node: (printed name, nodes)} in the kicad-cli netlist of *path*."""
-    return {node: (name, nodes) for _c, name, _k, nodes in nets(path) for node in nodes}
+    """{node: (printed name, nodes)} in the kicad-cli netlist of *path*, after checking the
+    model against it."""
+    return {node: (name, nodes) for _c, name, _k, nodes in agrees(path) for node in nodes}
 
 
 def _hierarchy(tmp_path, name: str, child: str = "c") -> tuple[str, str]:
@@ -598,7 +609,7 @@ def test_hier14_a_pad_with_a_copy_on_another_sheet_is_refused(tmp_path, where, n
     The pad has a copy this sheet cannot see, so the call refuses."""
     root, child = _units_two_sheets(tmp_path)
     if _cli():
-        assert sum(("U1", "14") in nodes for *_x, nodes in nets(root)) == 2  # the premise
+        assert sum(("U1", "14") in nodes for *_x, nodes in agrees(root)) == 2  # the premise
     status, msg = call_wptn(root if where == "root" else child, pins(("U1", "14")), net)
     assert status == "REFUSED" and msg.startswith("[unit0_unplaced] "), msg
 

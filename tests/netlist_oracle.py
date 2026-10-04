@@ -23,6 +23,9 @@ test's judge, docs/adr-routing-safety.md):
 Only the kicad-cli reading. The routing design also judged an emulation of the KiCad 9 GUI's
 load-time cleanup, which merges collinear overlaps; this repo checks overlaps structurally
 instead (routing_checks.lint_new_geometry).
+
+``model_disagreements`` turns the same netlist on the routing model itself: the narrow view must
+join nothing kicad-cli keeps apart, and the possible view must hold every join kicad-cli makes.
 """
 
 from __future__ import annotations
@@ -212,3 +215,59 @@ def judge(
             delivered &= bare_name(after[j][1]) == n or was_n
     v.delivered = delivered
     return v
+
+
+def model_disagreements(path: str | Path, netlist: list[Net] | None = None):
+    """Where the routing model's views disagree with kicad-cli's netlist of the same file.
+
+    Returns (splits, misses), or None when the model refuses the whole sheet ([unloadable],
+    [derived]):
+
+    - splits: narrow components whose pins kicad-cli does not list on one common net, so the
+      narrow view joined pins a reader keeps apart and a no-op built on it could be false;
+    - misses: kicad-cli nets whose pins fall in two or more possible components, at least one
+      of which reaches nothing the tool refuses anyway, so a refusal built on the possible view
+      could be missing.
+
+    Pins are matched to netlist nodes by reference and pad number. Power symbols' pins (a
+    reference starting with "#") are not netlist nodes, and a pin with no node is skipped.
+    """
+    from mcp_server_kicad import _connectivity, _cst  # the judge above needs neither
+
+    root = _cst.parse(Path(path).read_bytes()).lists[0]
+    try:
+        m = _connectivity.Model(root)
+        m.check_loadable()
+    except _connectivity.Refusal:
+        return None
+    if netlist is None:
+        netlist = nets(path)
+    where: dict[Node, set[int]] = {}
+    for i, (_c, _n, _k, nodes) in enumerate(netlist):
+        for node in nodes:
+            where.setdefault(node, set()).add(i)
+    pins: dict[Node, list] = {}
+    for it in m.items:
+        if it.kind == "pin" and it.ref and not it.ref.startswith("#"):
+            pins.setdefault((it.ref, it.num or ""), []).append(it)
+    m.ensure()
+    narrow: dict[int, set[Node]] = {}
+    for node, its in pins.items():
+        if node in where:
+            for it in its:
+                narrow.setdefault(m._C.find(it.id), set()).add(node)
+    splits = [
+        sorted(nodes)
+        for nodes in narrow.values()
+        if len(nodes) > 1 and not set.intersection(*(where[n] for n in nodes))
+    ]
+    cm = m.coarse()
+    misses = []
+    for _c, name, _k, nodes in netlist:
+        comps: dict[int, set[Node]] = {}
+        for node in nodes:
+            for it in pins.get(node, ()):
+                comps.setdefault(cm.uf.find(it.id), set()).add(node)
+        if len(comps) > 1 and any(not cm.bad.get(r) for r in comps):
+            misses.append((name, [sorted(v) for v in comps.values()]))
+    return splits, misses
