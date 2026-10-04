@@ -1929,6 +1929,9 @@ LABEL_ROT: dict[Point, int] = {(1, 0): 0, (0, -1): 90, (-1, 0): 180, (0, 1): 270
 
 #: KiCad's 50 mil schematic grid, in IU.
 GRID = 12700
+#: The longest stub accepted, in mm: a stub is a short lead off its pin, and the bound keeps
+#: every coordinate written far inside what KiCad can store.
+MAX_STUB_MM = 1000
 #: Names KiCad gives unnamed nets. A label spelled like one collides with them.
 _AUTO_NAME = re.compile(r"^(Net|unconnected)-\(")
 _BUS_RANGE = re.compile(r"\[[^\]]*\.\.[^\]]*\]")
@@ -1985,6 +1988,11 @@ def check_args(net, direction, stub_length, param: str = "label_text") -> int:
         raise bad(f"stub_length must be a number of mm; got {stub_length!r}.")
     if not math.isfinite(stub_length) or stub_length <= 0:
         raise bad(f"stub_length must be a length greater than 0 mm; got {stub_length!r}.")
+    if stub_length > MAX_STUB_MM:
+        raise bad(
+            f"stub_length must be at most {MAX_STUB_MM} mm, a short lead off the pin; got"
+            f" {stub_length!r}."
+        )
     L = kiround(float(stub_length) * IU_PER_MM)
     if L % GRID:
         raise bad(
@@ -2255,9 +2263,9 @@ def plan_wire_pins(
     ports = [_desc(it) for it in m.items if it.kind == "sheetpin" and it.text == net]
     if ports:
         plan.notes.append(
-            "Note: " + "; ".join(ports) + " is a hierarchy port, not a name: KiCad joins it to a"
-            f" label '{net}' only when something on this sheet already carries '{net}', so do"
-            " not rely on the name to reach it; wire to it explicitly if that was the intent."
+            "Note: " + "; ".join(ports) + f" is a hierarchy port named '{net}' too. A label of"
+            " that name does not reliably connect to it, so wire to it explicitly if that was"
+            " the intent."
         )
     if mates:
         plan.notes.append(

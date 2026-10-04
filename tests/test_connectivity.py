@@ -219,6 +219,8 @@ _BAD_ARGS = [
     pytest.param({"stub_length": float("nan")}, id="stub_nan"),
     pytest.param({"stub_length": True}, id="stub_bool"),
     pytest.param({"stub_length": "2.54"}, id="stub_text"),
+    pytest.param({"stub_length": 1e305}, id="stub_overflow"),
+    pytest.param({"stub_length": 1270}, id="stub_absurd"),
 ]
 
 
@@ -990,3 +992,21 @@ def test_without_a_project_every_reference_a_part_could_carry_counts(tmp_path):
     stale_reference(p, "R2", "R1")
     assert _plan(p, [("R2", "1")]).codes == ["dup_ref"]
     assert _plan(p, [("R1", "1")]).codes == ["dup_ref"]
+
+
+def test_a_sheet_pin_of_the_same_name_is_not_said_to_join(tmp_path):
+    """The note said KiCad joins a label to a same-named sheet pin "when something on this
+    sheet already carries" the name; kicad-cli 9.0.8 joined it neither without nor with such a
+    label (found by review). It now only warns that the name does not reliably reach the port."""
+    from routing_fixtures import project_file, sheet
+
+    from mcp_server_kicad import project
+
+    p = _r1(tmp_path)
+    child = str(Path(p).parent / "c.kicad_sch")
+    project.create_schematic(schematic_path=child)
+    project_file(Path(p).parent, Path(p).stem)
+    sheet(p, child, "C", 152.4, 25.4, pins=[("N", "input", "left", 2)])
+    text = _plan(p, [("R1", "1")]).success()
+    assert "sheet pin 'N' of sheet 'C'" in text
+    assert "does not reliably connect to it" in text and "already carries" not in text
