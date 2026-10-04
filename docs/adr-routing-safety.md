@@ -243,3 +243,14 @@ Each slice appends an entry when it lands.
   [names] while its message names the remove_label call that clears it; netclass patterns in a
   .kicad_pro; and stacked pin numbers such as `[1-4]`, which resolve only as literal text. KiCad
   10 is checked by the macOS and Windows jobs only.
+
+  A review of the branch then found five defects, each fixed with a test that failed first. A
+  pad was identified by its symbol's Reference property while the reference check used the
+  reference KiCad reads at the live path, and KiCad's own smps-com demo carries a stale property
+  (R2 on eight resistors KiCad reads as R2 to R9), so one name could select several parts and
+  wire them as one pad; parts are now known by the references KiCad gives them. The touch rule
+  missed a bus entry's body at a stub end and a graphic line's end on a stub, both of which the
+  possible view joins, a gap the prototype had too. auto_place_decoupling_cap dropped its
+  wiring's notes, among them the decision-2 warning. The note for a same-named sheet pin claimed
+  a join kicad-cli 9.0.8 does not make. And a stub_length of 1e305 overflowed instead of
+  refusing; lengths are now bounded at 1000 mm.

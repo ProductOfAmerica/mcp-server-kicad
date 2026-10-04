@@ -110,7 +110,7 @@ nets silently.
 
 | Code | Meaning | Do this |
 |------|---------|---------|
-| `validation` | An argument is malformed: an empty or padded name, a leading `/`, `${`, a KiCad auto-name such as `Net-(...)`, bus syntax, an unknown direction, a stub not a multiple of 1.27 mm | Fix the argument |
+| `validation` | An argument is malformed: an empty or padded name, a leading `/`, `${`, a KiCad auto-name such as `Net-(...)`, bus syntax, an unknown direction, a stub not a multiple of 1.27 mm or over 1000 mm | Fix the argument |
 | `resolve` | The reference is not on this sheet, the pin does not exist, or a pin name matches pads at different points | Pass the pad numbers the message lists, or wire the pin on the sheet that holds its unit |
 | `names` | The pin's net already carries another name | If the pin belongs on that net, call again with that name; otherwise stop and report |
 | `touch` | Every stub and label position would touch something | Pass another `direction`, or move the part; otherwise stop and report |

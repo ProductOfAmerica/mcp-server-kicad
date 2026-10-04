@@ -1985,7 +1985,7 @@ def wire_pins_to_net(
         label_text: Net name (e.g. "GND", "VCC"), exactly as it should read: no surrounding
             spaces, no leading "/", no bus syntax, not a KiCad auto name such as "Net-(R1-1)"
         direction: Stub direction: "auto" (away from the symbol), "left", "right", "up", "down"
-        stub_length: Stub length in mm, a multiple of 1.27 (default 2.54)
+        stub_length: Stub length in mm, a multiple of 1.27 up to 1000 (default 2.54)
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     plan = _wire_pins(pins, label_text, direction, stub_length, schematic_path)
