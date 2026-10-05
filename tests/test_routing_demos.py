@@ -295,8 +295,8 @@ def test_a_call_on_vme_wren_stays_within_its_budget(vme_wren, sheet, ref, cold_s
     (the facts cache empty, as for a server's first call) and warm. Measured on 2026-10-04 on
     the development machine through the whole tool: IC20 on clocks 1.9 to 2.2 s cold and 0.6 s
     warm, and IC14 on fpga-hp-banks 3.4 to 3.7 s and 0.7 to 0.8 s, over two runs; these 50
-    capacitor pins on fpga-power 1.7 s and 0.8 s. Before the pre-filter a cold call took about
-    6.1 s whatever it asked. The bounds are about three times the measurements, for
+    capacitor pins on fpga-power 1.7 s and 0.8 s. Before the pre-filter a cold call took 6.1 to
+    6.7 s whatever it asked. The bounds are about three times the measurements, for
     slower CI machines; the parse count above is the precise guard.
     """
     path = vme_wren / sheet

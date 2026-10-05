@@ -117,9 +117,10 @@ only, the ones KiCad uses for this project's hierarchy.
 **Evidence** (dupref-report.md sections 3 to 5). Of the 63 calls where an earlier rule
 (byte-identical library entries) refused, 58 lift: 19 clean writes, 27 correct no-ops, and 12
 refused for other reasons the old refusal hid. The 4 true duplicates (probe PI-15) still refuse.
-The rule is stricter than KiCad in one synthetic case, two edited library variants of one chip;
-that costs refusals only, and no real sample reached it. KiCad's own netlist never joins copies of
-a pad and carries no part-identity judgement; its only one-part notion is ERC's
+The rule is stricter than KiCad in two synthetic cases (dupref-report.md section 4, cases A and
+B), edited library variants of one chip that differ in a pad's type or in the unit drawing it;
+that costs refusals only, and no real sample reached either. KiCad's own netlist never joins
+copies of a pad and carries no part-identity judgement; its only one-part notion is ERC's
 `different_unit_net`.
 
 The live-path refinement was not measured: a leftover reference on a dead instance path caused
@@ -185,6 +186,10 @@ scan and a budget test.
   9: a separate read-only check plus a release note.
 - add_wires and add_junctions still write junctions on unsplit wires, and add_label is
   unchecked. Separate issues.
+- Files edited by earlier versions of this repo may hold no-connect flags and wires at the
+  mirrored point the old transform gave a pin at rotation 90 or 270 with a mirror.
+  remove_no_connect now looks at the pin KiCad draws and will not find such a flag. An
+  inference, not measured; a read-only check could list them.
 
 ## Decisions (2026-10-04)
 
@@ -231,12 +236,13 @@ Each slice appends an entry when it lands.
     was not measured.
   Also in the slice: auto_place_decoupling_cap reports what a refused pin leaves on disk, and the
   hierarchy is parsed only where the bytes can hold what a call needs, so a cold call on
-  vme-wren takes 1.7 to 3.7 s of CPU where it took about 6.1 s. Measured along the way, with
-  kicad-cli 9.0.8: the model's two views agree with its netlist on all 93 demo sheets; on a
-  sweep of 42 sampled calls on three demo sheets, main wrote 5 wrong (3 named merges, 2 splits)
-  and failed the write checks 20 times, 2 of those among the 5, where this slice wrote none
-  wrong and passed every check; its ERC crashes on a sheet whose lib_name names no lib_symbols
-  entry; and it cannot load a symbol with jumper_pin_groups. IC14 on vme-wren is 20 symbols
+  vme-wren takes 1.7 to 3.7 s of CPU where it took 6.1 to 6.7 s (measured 2026-10-04; commit
+  8655b79). Measured along the way, with kicad-cli 9.0.8 (commit ef8e270): the model's two
+  views agree with its netlist on all 93 demo sheets; on a sweep of 42 sampled calls on three
+  demo sheets, main wrote 5 wrong (3 named merges, 2 splits) and failed the write checks 20
+  times, 2 of those among the 5, where this slice wrote none wrong and passed every check; its
+  ERC crashes on a sheet whose lib_name names no lib_symbols entry; and it cannot load a symbol
+  with jumper_pin_groups. IC14 on vme-wren is 20 symbols
   under 4 library names, not the 5 variants dupref-report.md counts. Left for later:
   connect_pins, get_net_connections and the composed auto_place_decoupling_cap (slices 2 and
   3); the `Net-(...)` label connect_pins still writes, which wire_pins_to_net then refuses as
@@ -277,3 +283,16 @@ Each slice appends an entry when it lands.
   and the no-connect tools taking a part's definition by lib_id alone, where KiCad and the model
   take the entry its lib_name names; they now share the model's rule (`lib_key`), and still find
   a part by its Reference property and draw its top-level unit.
+
+  A second review of the PR, with mutation testing, found more defects, each fixed with a test
+  that failed first, and one piece of dead code. A placed symbol whose library name lib_symbols
+  holds twice (a hand edit or a merge leaves that) was drawn from the first entry while KiCad
+  draws the last, and a wire was written to the wrong pad; such a symbol now refuses the whole
+  call, and the pin reads take the last entry as KiCad does. Names were compared as written, while
+  KiCad reads {slash} as "/" in library names and names a label's net by its unescaped text, so
+  KiCad's own pic_programmer demo had a net no call could reach; names and library keys are now
+  compared as KiCad reads them. Several messages claimed more than was true: the unit-0 refusal,
+  the count of pins wired, the remedy for a connect_pins label, a refused call's planned lines and
+  the decoupling cap's remedies and undo. The netlist judge passed a renamed user net inside the
+  join, and split names at their last "/". The touch rule's overlap check could never fire and
+  went.

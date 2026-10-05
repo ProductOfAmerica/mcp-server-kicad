@@ -1998,7 +1998,8 @@ def wire_pins_to_net(
     Args:
         pins: List of {"reference": "R1", "pin": "1"} dicts
         label_text: Net name (e.g. "GND", "VCC"), exactly as it should read: no surrounding
-            spaces, no leading "/", no bus syntax, not a KiCad auto name such as "Net-(R1-1)"
+            spaces, no leading "/", no text variable ("${...}"), no bus syntax, not a KiCad
+            auto name such as "Net-(R1-1)"
         direction: Stub direction: "auto" (away from the symbol), "left", "right", "up", "down"
         stub_length: Stub length in mm, a multiple of 1.27 up to 1000 (default 2.54)
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
