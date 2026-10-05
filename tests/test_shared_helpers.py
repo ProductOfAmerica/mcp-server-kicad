@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import uuid
 from pathlib import Path
@@ -18,7 +20,7 @@ from kiutils.items.common import Position
 from kiutils.items.fpitems import FpCircle, FpLine, FpRect
 from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_server_kicad import _cst, _shared
+from mcp_server_kicad import _cst, _shared, symbol
 from mcp_server_kicad._shared import (
     _atomic_write,
     _backup_for_external_write,
@@ -422,6 +424,44 @@ class TestAtomicWrite:
         _atomic_write(p, self.REPLACEMENT)
         assert stat.S_IMODE(p.stat().st_mode) == 0o640
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows has no mode bits beyond read-only")
+    def test_the_temp_is_owner_only_until_its_mode_is_set(self, tmp_path: Path, monkeypatch):
+        """Created at the umask's 0644, the temp could be opened by anyone in the
+        moment before the fchmod, and a descriptor opened then reads every byte
+        written after it. Measured with an inotify watcher: a whole 0600
+        schematic, in 5 of 300 edits. The fchmod is where the window closed, so
+        that is where the temp's mode is read."""
+        p = self._target(tmp_path)
+        p.chmod(0o600)
+        seen: list[int] = []
+        real = _shared.os.fchmod
+
+        def spy(fd, mode):
+            seen.append(stat.S_IMODE(os.fstat(fd).st_mode))
+            return real(fd, mode)
+
+        monkeypatch.setattr(_shared.os, "fchmod", spy)
+        old = os.umask(0o022)
+        try:
+            _atomic_write(p, self.REPLACEMENT)
+        finally:
+            os.umask(old)
+        assert seen, "the destination's mode was never carried"
+        assert all(m & 0o077 == 0 for m in seen), [oct(m) for m in seen]
+        assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows has no mode bits beyond read-only")
+    def test_a_new_file_keeps_the_umask_mode(self, tmp_path: Path):
+        """Owner-only is for a temp that is about to take a mode. A file that did
+        not exist has none to take, and stays what the umask makes it."""
+        p = tmp_path / "new.bin"
+        old = os.umask(0o022)
+        try:
+            _atomic_write(p, self.REPLACEMENT)
+        finally:
+            os.umask(old)
+        assert stat.S_IMODE(p.stat().st_mode) == 0o644
+
     @pytest.mark.no_kicad_validation
     def test_replaces_once_from_a_temp_that_is_not_a_kicad_file(self, tmp_path: Path, monkeypatch):
         """Two properties of the same call, so one spy answers both.
@@ -455,6 +495,229 @@ class TestAtomicWrite:
         assert re.fullmatch(
             rf"board\.kicad_sch\.{os.getpid()}\.[0-9a-f]{{8}}\.tmp", Path(src).name
         ), src
+
+
+# POSIX ACL xattr encoding (linux/posix_acl_xattr.h): a version word, then one
+# (tag, permissions, id) triple per entry, in tag order.
+_ACL_UNDEFINED_ID = 0xFFFFFFFF
+_USER_OBJ, _USER, _GROUP_OBJ, _MASK, _OTHER = 0x01, 0x02, 0x04, 0x10, 0x20
+
+
+def _acl(*entries: tuple[int, int, int]) -> bytes:
+    return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *e) for e in entries)
+
+
+def _named_reader_acl(uid: int) -> bytes:
+    """0640 to the mode bits, but the owning group's own entry is empty and
+    only one named user can read. The group bits are the MASK here, so a copy
+    that carries the mode without the ACL lets the whole group read."""
+    u = _ACL_UNDEFINED_ID
+    return _acl(
+        (_USER_OBJ, 6, u), (_USER, 4, uid), (_GROUP_OBJ, 0, u), (_MASK, 4, u), (_OTHER, 0, u)
+    )
+
+
+def _read_acl(p: Path | int) -> bytes | None:
+    try:
+        return os.getxattr(p, "system.posix_acl_access")
+    except OSError as exc:
+        if exc.errno == errno.ENODATA:
+            return None
+        raise
+
+
+@pytest.fixture()
+def acl_dir(tmp_path: Path) -> Path:
+    """tmp_path, where the filesystem takes POSIX ACLs; skipped elsewhere."""
+    if not hasattr(os, "setxattr"):
+        pytest.skip("POSIX ACLs are reachable from Python only on Linux")
+    probe = tmp_path / "probe"
+    probe.write_bytes(b"")
+    try:
+        os.setxattr(probe, "system.posix_acl_access", _named_reader_acl(os.getuid() + 1))
+    except OSError as exc:
+        if exc.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            pytest.skip(f"this filesystem takes no POSIX ACLs: {exc}")
+        raise
+    probe.unlink()
+    return tmp_path
+
+
+def _other_gid(d: Path) -> int:
+    """A group this process may give a file, other than the one a new file in
+    *d* gets: its own group on Linux, the directory's on macOS. Each candidate
+    is tried on a probe file first, because macOS lists implicit groups such as
+    everyone among a user's groups, and chown need not accept those."""
+    taken = {os.getegid(), d.stat().st_gid}
+    if os.geteuid() == 0:
+        return next(g for g in (4242, 4243, 4244) if g not in taken)
+    probe = d / "gid-probe"
+    probe.write_bytes(b"")
+    try:
+        for g in os.getgroups():
+            if g in taken:
+                continue
+            try:
+                os.chown(probe, -1, g)
+            except PermissionError:
+                continue
+            return g
+    finally:
+        probe.unlink()
+    pytest.skip("needs root, or membership of a second group")
+
+
+class TestAtomicWritePermissions:
+    """The replacement is a new inode, so whatever guards the original has to be
+    put on it again, and before the bytes are: the mode alone was, which on a
+    file with an ACL handed the owning group the ACL's mask, and the group
+    itself was never carried at all."""
+
+    ORIGINAL = b"(kicad_sch original)\n"
+    REPLACEMENT = b"(kicad_sch replacement)\n"
+
+    def _target(self, d: Path) -> Path:
+        p = d / "target.bin"
+        p.write_bytes(self.ORIGINAL)
+        return p
+
+    def test_an_access_acl_survives(self, acl_dir: Path):
+        p = self._target(acl_dir)
+        acl = _named_reader_acl(os.getuid() + 1)
+        os.setxattr(p, "system.posix_acl_access", acl)
+        _atomic_write(p, self.REPLACEMENT)
+        assert p.read_bytes() == self.REPLACEMENT
+        assert _read_acl(p) == acl, "the ACL was dropped, so its mask became group access"
+        assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
+    def test_the_temp_never_has_the_mode_without_the_acl(self, acl_dir: Path, monkeypatch):
+        """With an ACL the group bits are its mask, so a temp given the mode
+        before the ACL lets the whole owning group read for that moment, though
+        the ACL's own group entry is empty. A member of the group watching the
+        directory read the content of 137 of 1500 edits that way in one probe,
+        1423 in another. The temp is read through its descriptor after each
+        step that sets its bits."""
+        p = self._target(acl_dir)
+        acl = _named_reader_acl(os.getuid() + 1)
+        os.setxattr(p, "system.posix_acl_access", acl)
+        seen: list[tuple[str, int, bool]] = []
+
+        def watch(name, real):
+            def spy(fd, *args):
+                result = real(fd, *args)
+                if isinstance(fd, int):
+                    mode = stat.S_IMODE(os.fstat(fd).st_mode)
+                    seen.append((name, mode, _read_acl(fd) is not None))
+                return result
+
+            return spy
+
+        # _shared.os is the os module, so only after the setup's own setxattr.
+        monkeypatch.setattr(_shared.os, "fchmod", watch("fchmod", os.fchmod))
+        monkeypatch.setattr(_shared.os, "setxattr", watch("setxattr", os.setxattr))
+        _atomic_write(p, self.REPLACEMENT)
+        monkeypatch.undo()
+        assert {name for name, _, _ in seen} == {"fchmod", "setxattr"}, seen
+        leaks = [(name, oct(mode)) for name, mode, has_acl in seen if mode & 0o077 and not has_acl]
+        assert leaks == [], "the temp had the mode's group bits and no ACL to narrow them"
+        assert p.read_bytes() == self.REPLACEMENT
+        assert _read_acl(p) == acl
+        assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
+    def test_a_directory_default_acl_is_not_inherited(self, acl_dir: Path):
+        """The temp is created in the destination's directory and so takes that
+        directory's default ACL. A file that had no ACL must not come back with
+        one naming users who could not read it before."""
+        d = acl_dir / "shared"
+        d.mkdir()
+        p = self._target(d)
+        p.chmod(0o640)
+        # After the target exists, or the target inherits the default as well.
+        u = _ACL_UNDEFINED_ID
+        os.setxattr(
+            d,
+            "system.posix_acl_default",
+            _acl(
+                (_USER_OBJ, 7, u),
+                (_USER, 4, os.getuid() + 1),
+                (_GROUP_OBJ, 0, u),
+                (_MASK, 4, u),
+                (_OTHER, 0, u),
+            ),
+        )
+        assert _read_acl(p) is None
+        _atomic_write(p, self.REPLACEMENT)
+        assert _read_acl(p) is None, "the directory's default ACL was carried onto the file"
+        assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
+    def test_an_acl_that_cannot_be_set_refuses_with_the_file_intact(
+        self, acl_dir: Path, monkeypatch
+    ):
+        p = self._target(acl_dir)
+        acl = _named_reader_acl(os.getuid() + 1)
+        os.setxattr(p, "system.posix_acl_access", acl)
+
+        def refuse(*a, **k):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+
+        # _shared.os is the os module, so only after the setup's own setxattr.
+        monkeypatch.setattr(_shared.os, "setxattr", refuse)
+        with pytest.raises(OSError, match="unchanged") as exc:
+            _atomic_write(p, self.REPLACEMENT)
+        monkeypatch.undo()
+        assert str(p) in str(exc.value), "the message does not name the file"
+        assert ".tmp" not in str(exc.value), "the message names the temp"
+        assert p.read_bytes() == self.ORIGINAL
+        assert _read_acl(p) == acl
+        assert list(acl_dir.glob("*.tmp")) == [], "temp file left behind"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership")
+    def test_the_group_survives(self, tmp_path: Path):
+        gid = _other_gid(tmp_path)
+        p = self._target(tmp_path)
+        p.chmod(0o640)
+        os.chown(p, -1, gid)
+        _atomic_write(p, self.REPLACEMENT)
+        assert p.read_bytes() == self.REPLACEMENT
+        assert p.stat().st_gid == gid, "the file moved into this process's group"
+        assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership")
+    @pytest.mark.parametrize(
+        ("mode", "refused"),
+        [
+            pytest.param(0o640, True, id="0640-refused"),
+            pytest.param(0o644, False, id="0644-written"),
+            pytest.param(0o660, True, id="0660-refused"),
+            pytest.param(0o666, False, id="0666-written"),
+        ],
+    )
+    def test_a_group_that_cannot_be_carried(self, tmp_path: Path, monkeypatch, mode, refused):
+        """A group this process is not in cannot be given to the temp, which then
+        stays in this process's group. That opens the file to a different set of
+        people only where the group class grants more than other does, so only
+        then is the write refused; a 0644 file has nothing to give away."""
+        gid = _other_gid(tmp_path)
+        p = self._target(tmp_path)
+        p.chmod(mode)
+        os.chown(p, -1, gid)
+
+        def not_a_member(*a, **k):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+
+        monkeypatch.setattr(_shared.os, "fchown", not_a_member)
+        if refused:
+            with pytest.raises(OSError, match="unchanged") as exc:
+                _atomic_write(p, self.REPLACEMENT)
+            assert str(p) in str(exc.value)
+            assert f"group {gid}" in str(exc.value)
+            assert p.read_bytes() == self.ORIGINAL
+            assert p.stat().st_gid == gid
+        else:
+            _atomic_write(p, self.REPLACEMENT)
+            assert p.read_bytes() == self.REPLACEMENT
+        assert stat.S_IMODE(p.stat().st_mode) == mode
+        assert list(tmp_path.glob("*.tmp")) == [], "temp file left behind"
 
 
 class TestReadKicadBytes:
@@ -673,13 +936,164 @@ class TestBackupForExternalWrite:
         assert (tmp_path / "MyLib.pretty.bak" / "a.kicad_mod").read_bytes() == b"one"
         assert sorted(p.name for p in tmp_path.iterdir()) == ["MyLib.pretty", "MyLib.pretty.bak"]
 
+    @staticmethod
+    def _private_sym(tmp_path: Path) -> Path:
+        src = tmp_path / "lib.kicad_sym"
+        src.write_bytes(b"(kicad_symbol_lib private)\n")
+        src.chmod(0o600)
+        return src
+
+    @staticmethod
+    def _mode(p: Path) -> int:
+        return stat.S_IMODE(p.lstat().st_mode)
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows carries no mode, by decision")
+    def test_a_new_backup_takes_the_library_mode(self, tmp_path):
+        """The mode came from the destination, and a new .bak has none, so it got
+        the umask's 0644 beside a 0600 library."""
+        src = self._private_sym(tmp_path)
+        old = os.umask(0o022)
+        try:
+            dest = _backup_for_external_write(src, "symbol library")
+        finally:
+            os.umask(old)
+        assert dest.read_bytes() == src.read_bytes()
+        assert self._mode(dest) == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows carries no mode, by decision")
+    def test_a_refreshed_backup_is_tightened(self, tmp_path):
+        """And a refresh kept the old .bak's mode, so it never tightened."""
+        src = self._private_sym(tmp_path)
+        stale = tmp_path / "lib.kicad_sym.bak"
+        stale.write_bytes(b"older")
+        stale.chmod(0o644)
+        old = os.umask(0o022)
+        try:
+            _backup_for_external_write(src, "symbol library")
+        finally:
+            os.umask(old)
+        assert stale.read_bytes() == src.read_bytes()
+        assert self._mode(stale) == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows carries no mode, by decision")
+    def test_a_read_only_library_backs_up_twice(self, tmp_path):
+        """The stock libraries ship read-only, so their .bak is read-only now too.
+        On Windows that would make the next refresh fail, which is why no mode is
+        carried there; on POSIX the replace needs only the directory writable."""
+        src = self._private_sym(tmp_path)
+        src.chmod(0o444)
+        old = os.umask(0o022)
+        try:
+            _backup_for_external_write(src, "symbol library")
+            dest = _backup_for_external_write(src, "symbol library")
+        finally:
+            os.umask(old)
+            src.chmod(0o644)
+        assert self._mode(dest) == 0o444
+        assert dest.read_bytes() == src.read_bytes()
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows carries no mode, by decision")
+    def test_a_planted_backup_link_is_replaced_not_followed(self, tmp_path):
+        """The destination's mode was read through the destination's name, so a
+        .bak that was a link to a 0666 file gave the backup 0666."""
+        src = self._private_sym(tmp_path)
+        target = tmp_path / "elsewhere.txt"
+        target.write_bytes(b"not a backup")
+        target.chmod(0o666)
+        TestPlainLibraryTree._symlink(tmp_path / "lib.kicad_sym.bak", target)
+        dest = _backup_for_external_write(src, "symbol library")
+        assert not dest.is_symlink()
+        assert dest.read_bytes() == src.read_bytes()
+        assert self._mode(dest) == 0o600
+        assert target.read_bytes() == b"not a backup"
+        assert self._mode(target) == 0o666
+
+    def test_a_linked_library_file_is_refused(self, tmp_path):
+        """Followed, the link's target was copied to <link>.bak beside the link,
+        and the upgrade then replaced the link with a regular file and left the
+        target as it was."""
+        real = self._private_sym(tmp_path)
+        linked = tmp_path / "linked.kicad_sym"
+        TestPlainLibraryTree._symlink(linked, real)
+        with pytest.raises(ToolError, match="is a link") as exc:
+            _backup_for_external_write(linked, "symbol library")
+        assert str(linked) in str(exc.value)
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["lib.kicad_sym", "linked.kicad_sym"]
+
+    def test_upgrading_a_linked_symbol_library_runs_nothing(self, tmp_path, monkeypatch):
+        real = self._private_sym(tmp_path)
+        linked = tmp_path / "linked.kicad_sym"
+        TestPlainLibraryTree._symlink(linked, real)
+        monkeypatch.setattr(_shared, "_run_cli", lambda *a, **k: pytest.fail("kicad-cli was run"))
+        with pytest.raises(ToolError, match="is a link"):
+            symbol.upgrade_symbol_lib(str(linked))
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["lib.kicad_sym", "linked.kicad_sym"]
+        assert real.read_bytes() == b"(kicad_symbol_lib private)\n"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership")
+    def test_a_backup_takes_the_library_group(self, tmp_path):
+        src = self._private_sym(tmp_path)
+        src.chmod(0o640)
+        gid = _other_gid(tmp_path)
+        os.chown(src, -1, gid)
+        dest = _backup_for_external_write(src, "symbol library")
+        assert dest.stat().st_gid == gid
+        assert self._mode(dest) == 0o640
+
+    def test_a_backup_takes_the_library_acl(self, acl_dir: Path):
+        src = self._private_sym(acl_dir)
+        acl = _named_reader_acl(os.getuid() + 1)
+        os.setxattr(src, "system.posix_acl_access", acl)
+        dest = _backup_for_external_write(src, "symbol library")
+        assert _read_acl(dest) == acl
+        assert self._mode(dest) == 0o640
+
+    @pytest.mark.skipif(os.name == "nt", reason="Python 3.10 on Windows ignores mkdir's mode")
+    def test_the_staging_copy_is_owner_only_while_it_fills(self, tmp_path, monkeypatch):
+        """copytree made the staging directory at the umask's 0755 and each file
+        at 0644, and applied the library's own modes only after the bytes were
+        in. A descriptor opened in that window kept reading. So the staging
+        root's mode is read at the moment each file in it is created, through
+        the open both copiers use."""
+        pretty = tmp_path / "MyLib.pretty"
+        pretty.mkdir()
+        (pretty / "a.kicad_mod").write_bytes(b'(footprint "a")')
+        (pretty / "b.kicad_mod").write_bytes(b'(footprint "b")')
+        pretty.chmod(0o750)
+        seen: list[int] = []
+        real_open = open
+
+        def spy(file, mode="r", *args, **kwargs):
+            if not isinstance(file, int) and mode in ("wb", "xb"):
+                root = Path(file).parent
+                if root.name.endswith(".tmp"):
+                    seen.append(stat.S_IMODE(root.stat().st_mode))
+            return real_open(file, mode, *args, **kwargs)
+
+        # Both modules look open up in their own globals before the builtins, and
+        # between them they create every file a copy holds.
+        monkeypatch.setattr(_shared, "open", spy, raising=False)
+        monkeypatch.setattr(shutil, "open", spy, raising=False)
+        old = os.umask(0o022)
+        try:
+            dest = _backup_for_external_write(pretty, "footprint library")
+        finally:
+            os.umask(old)
+            monkeypatch.undo()
+        assert len(seen) == 2, f"expected one file creation per footprint, saw {seen}"
+        assert all(m & 0o077 == 0 for m in seen), [oct(m) for m in seen]
+        assert self._mode(dest) == 0o750, "the .bak no longer takes the library's mode"
+        assert (dest / "a.kicad_mod").read_bytes() == b'(footprint "a")'
+
 
 class TestPlainLibraryTree:
     """A footprint library is copied twice before kicad-cli touches it, once for
     the .bak and once for the scratch copy, and copytree follows links. So a
-    library holding a link or a special file is refused, by name, before either
-    copy starts: a link to a device copies until the disk is full, and a link out
-    of the library carries whatever it points at into the .bak beside it.
+    library holding a link, a special file or a folder is refused, by name, before
+    either copy starts: a link to a device copies until the disk is full, and a
+    link out of the library carries whatever it points at into the .bak beside it.
+    The copies themselves never open a member through a link, and are checked
+    again once made, because the library can change after it was checked.
     """
 
     def _pretty(self, tmp_path: Path) -> Path:
@@ -764,6 +1178,160 @@ class TestPlainLibraryTree:
             _backup_for_external_write(pretty, "footprint library")
         monkeypatch.undo()
         assert self._beside(tmp_path, pretty) == ["Lib.pretty"], "the staging copy was left behind"
+
+    def test_a_folder_inside_is_refused_by_name(self, tmp_path, monkeypatch):
+        """KiCad reads only the files directly inside a .pretty, so a folder in
+        one holds nothing it loads, and a flat library leaves no folder for a
+        link to be swapped onto between the check and the copy or the write."""
+        pretty = self._pretty(tmp_path)
+        (pretty / "sub").mkdir()
+        (pretty / "sub" / "X.kicad_mod").write_bytes(b'(footprint "X")\n')
+        with pytest.raises(ToolError, match=r"sub, which is a folder"):
+            _backup_for_external_write(pretty, "footprint library")
+        assert self._beside(tmp_path, pretty) == ["Lib.pretty"]
+        monkeypatch.setattr(_shared, "_run_cli", lambda *a, **k: pytest.fail("kicad-cli was run"))
+        with pytest.raises(ToolError, match=r"sub, which is a folder"):
+            _upgrade_out_of_place(pretty, "footprint library", ["fp", "upgrade"])
+
+    @staticmethod
+    def _after_listing(monkeypatch, pretty: Path, actions: dict) -> list[int]:
+        """Run actions[n] just after the n-th listing of *pretty* has been read.
+
+        The first listing is _require_plain_tree's and the second is copytree's,
+        so an action on the second changes the library after everything that
+        looked at it has looked, and before anything has opened a file in it.
+        Returns the listings seen, so a test can show its swap really ran.
+        """
+        real = os.scandir
+        seen: list[int] = []
+
+        class Listed(list):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def scandir(path="."):
+            if isinstance(path, (str, os.PathLike)) and Path(path) == pretty:
+                seen.append(len(seen) + 1)
+                if seen[-1] in actions:
+                    with real(path) as it:
+                        entries = Listed(it)
+                    actions[seen[-1]]()
+                    return entries
+            return real(path)
+
+        monkeypatch.setattr(_shared.os, "scandir", scandir)
+        return seen
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows has no O_NOFOLLOW; the walk is its check")
+    @pytest.mark.parametrize("copy", ["backup", "scratch"])
+    @pytest.mark.parametrize("swap", ["file", "folder"])
+    def test_a_swap_after_the_listing_is_refused(self, tmp_path, monkeypatch, copy, swap):
+        """The walk before the copy binds nothing: copytree lists the library
+        again and opens each member by name. A member swapped for a link after
+        that listing was followed, and so was a folder swapped for one, so the
+        file outside the library came out in the .bak, or in the scratch copy
+        kicad-cli was handed. Now a link is never opened and a folder in a copy
+        is refused, and both are refused before the copy is used."""
+        pretty = self._pretty(tmp_path)
+        victim = pretty / "C_0402.kicad_mod"
+        victim.write_bytes(b'(footprint "C_0402")\n')
+        library = {p.name: p.read_bytes() for p in pretty.iterdir()}
+        secret = b"OUTSIDE THE LIBRARY\n"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.kicad_mod").write_bytes(secret)
+        previous = tmp_path / "Lib.pretty.bak"
+        if copy == "backup":
+            _backup_for_external_write(pretty, "footprint library")
+        kept = {p.name: p.read_bytes() for p in previous.iterdir()} if previous.exists() else {}
+        scratch_root = tmp_path / "scratch"
+        scratch_root.mkdir()
+        monkeypatch.setattr(_shared.tempfile, "tempdir", str(scratch_root))
+        monkeypatch.setattr(_shared, "_run_cli", lambda *a, **k: pytest.fail("kicad-cli was run"))
+
+        def link_file():
+            victim.unlink()
+            self._symlink(victim, outside / "secret.kicad_mod")
+
+        def add_folder():
+            (pretty / "sub").mkdir()
+
+        def link_folder():
+            (pretty / "sub").rmdir()
+            self._symlink(pretty / "sub", outside)
+
+        if swap == "file":
+            actions, swapped, refusal = {2: link_file}, victim, r"C_0402\.kicad_mod is now a link"
+        else:
+            actions, swapped = {1: add_folder, 2: link_folder}, pretty / "sub"
+            refusal = r"sub, which is a folder"
+        seen = self._after_listing(monkeypatch, pretty, actions)
+
+        with pytest.raises(ToolError, match=refusal):
+            if copy == "backup":
+                _backup_for_external_write(pretty, "footprint library")
+            else:
+                _upgrade_out_of_place(pretty, "footprint library", ["fp", "upgrade"])
+        monkeypatch.undo()
+
+        assert seen[:2] == [1, 2] and swapped.is_symlink(), "the swap never happened"
+        for name, body in library.items():
+            if name != victim.name:
+                assert (pretty / name).read_bytes() == body
+        if copy == "backup":
+            assert self._beside(tmp_path, pretty) == ["Lib.pretty", "Lib.pretty.bak"]
+            assert {p.name: p.read_bytes() for p in previous.iterdir()} == kept
+        else:
+            assert self._beside(tmp_path, pretty) == ["Lib.pretty"]
+            assert list(scratch_root.iterdir()) == [], "the scratch copy was left behind"
+        for d, _, files in os.walk(tmp_path):
+            for f in files:
+                p = Path(d) / f
+                if p != outside / "secret.kicad_mod" and not p.is_symlink():
+                    assert secret not in p.read_bytes(), f"{p} holds the outside file"
+        assert (outside / "secret.kicad_mod").read_bytes() == secret
+
+    @pytest.mark.skipif(os.name == "nt", reason="needs a symlink to a directory")
+    def test_the_write_back_never_resolves_a_folder_again(self, tmp_path, monkeypatch):
+        """Writing a changed footprint back resolved src/rel by name again, so a
+        folder in the library swapped for a link after every check carried the
+        write outside it: the upgraded bytes replaced a file the library does
+        not hold. Both checks are disabled here to stand in for a folder that
+        appeared after them, which leaves the write-back's own refusal."""
+        pretty = self._pretty(tmp_path)
+        (pretty / "sub").mkdir()
+        (pretty / "sub" / "X.kicad_mod").write_bytes(b'(footprint "X")\n')
+        before = {p: p.read_bytes() for p in pretty.rglob("*") if p.is_file()}
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "X.kicad_mod").write_bytes(b"NOT THE LIBRARY'S\n")
+        monkeypatch.setattr(_shared, "_require_plain_tree", lambda *a, **k: None)
+
+        def upgrade(args, check=True):
+            scratch = Path(args[-1])
+            for f in (scratch / "R_0603.kicad_mod", scratch / "sub" / "X.kicad_mod"):
+                f.write_bytes(f.read_bytes() + b"(upgraded)\n")
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        real_write = _shared._atomic_write
+
+        def swap_then_write(path, data, **kwargs):
+            if not (pretty / "sub").is_symlink():
+                shutil.rmtree(pretty / "sub")
+                self._symlink(pretty / "sub", outside)
+            return real_write(path, data, **kwargs)
+
+        monkeypatch.setattr(_shared, "_run_cli", upgrade)
+        monkeypatch.setattr(_shared, "_atomic_write", swap_then_write)
+        with pytest.raises(ToolError, match="gained a folder"):
+            _upgrade_out_of_place(pretty, "footprint library", ["fp", "upgrade"])
+        monkeypatch.undo()
+
+        assert (outside / "X.kicad_mod").read_bytes() == b"NOT THE LIBRARY'S\n"
+        assert {p: p.read_bytes() for p in pretty.rglob("*") if p.is_file()} == before
 
 
 def _completed(returncode: int, stdout: str = "", stderr: str = ""):

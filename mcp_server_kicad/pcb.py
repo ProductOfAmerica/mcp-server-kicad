@@ -288,6 +288,13 @@ _VIA_TPL = _cst.parse(
     b'\n\t\t(layers "F.Cu" "B.Cu")\n\t\t(net 0)\n\t\t(uuid "x")\n\t)'
 ).lists[0]
 
+#: Most vias add_thermal_vias places in one call. A heuristic, not a KiCad
+#: limit: real exposed-pad grids run about 3x3 to 10x10, and every via rescans
+#: the board before the one write, so the cost is grid size times board size.
+#: 256 measured 7.8 s on a KiCad 10 board of 1000 footprints (1.0 s on KiCad 9),
+#: where each via resolves its net by walking every pad and track.
+_MAX_THERMAL_VIAS = 256
+
 
 # Highest board format that carries a net table, so the highest one whose net
 # references may be numeric. Above it KiCad derives nets from usage and rebinds
@@ -776,6 +783,8 @@ def _read_fp_lib_table(
     project_dir: Path | None,
     depth: int = _LIB_TABLE_DEPTH,
     configured: dict | None = None,
+    *,
+    _memo: dict | None = None,
 ) -> dict:
     """nickname -> .pretty directory for the rows of one fp-lib-table.
 
@@ -790,10 +799,15 @@ def _read_fp_lib_table(
     malformed table answers empty rather than failing the tool, because the
     table is a hint about where libraries are and not the operation itself.
     *configured* is Configure Paths, read once per table and shared with the
-    tables it nests.
+    tables it nests. *_memo* holds the nested tables already read in this
+    traversal, keyed on the file's identity (device and inode) and depth left;
+    it is made per top-level call, never kept, so a live edit of a table stays
+    visible.
     """
     if configured is None:
         configured = _configured_vars()
+    if _memo is None:
+        _memo = {}
     try:
         tree = _cst.parse(path.read_bytes())
     except (OSError, SyntaxError):
@@ -813,7 +827,27 @@ def _read_fp_lib_table(
             continue
         if plugin == "table":
             if depth > 0 and Path(target).is_file():
-                nested = _read_fp_lib_table(Path(target), project_dir, depth - 1, configured)
+                # A nested table is parsed once per depth in this traversal.
+                # Unmemoised, a table naming itself in N rows was parsed
+                # 1+N+N^2+N^3 times (400 for seven rows). The key is the file
+                # (device and inode; realpath where a volume reports no inode),
+                # because a hard link, or a case variant on a case-insensitive
+                # volume, is a spelling realpath does not collapse: keyed on the
+                # path, 200 hard links still cost 601 parses (7.8 s). The depth
+                # is in the key because a table first reached with less depth
+                # left must not cut a deeper follow short, and a miss is tested
+                # by membership because a table with nothing servable answers {}.
+                try:
+                    st = os.stat(target)
+                except OSError:
+                    continue
+                ident = (st.st_dev, st.st_ino) if st.st_ino else os.path.realpath(target)
+                key = (ident, depth - 1)
+                if key not in _memo:
+                    _memo[key] = _read_fp_lib_table(
+                        Path(target), project_dir, depth - 1, configured, _memo=_memo
+                    )
+                nested = _memo[key]
                 for nick, pretty in nested.items():
                     table.setdefault(nick, pretty)
         elif plugin == "kicad" and Path(target).is_dir():
@@ -936,11 +970,12 @@ class _FpLibResolver:
     Content Manager installed, then KiCad's stock footprints under the
     kicad-cli install. update_pcb_from_schematic and place_footprint both
     resolve through one of these, so a hand-placed part and an imported one
-    name the same file. Each table is read at most once per resolver, and the
-    global table only once a local lookup has missed: the stock table's 155
-    nested rows cost about 15 ms to read, which a project library should not
-    pay for, and reading it per resolver rather than once per process keeps a
-    live edit of the table visible.
+    name the same file. The project and global tables are each read at most
+    once per resolver (a table they nest, once per level of nesting it is
+    reached at), and the global table only once a local lookup has missed: the
+    stock table's 155 nested rows cost about 15 ms to read, which a project
+    library should not pay for, and reading it per resolver rather than once
+    per process keeps a live edit of the table visible.
     """
 
     def __init__(self, project_dir: Path | None, search_dirs: list[str]) -> None:
@@ -2594,14 +2629,29 @@ def add_thermal_vias(
     Args:
         reference: Footprint reference (e.g. "U1", "R1")
         pad_number: Pad number to center vias on. If empty, auto-selects largest SMD pad.
-        rows: Number of rows in the via grid
-        cols: Number of columns in the via grid
+        rows: Number of rows in the via grid, at least 1. rows * cols is at most 256.
+        cols: Number of columns in the via grid, at least 1.
         spacing: Spacing between vias in mm
         via_size: Via annular ring diameter in mm
         via_drill: Via drill diameter in mm
         net_name: Net to assign to vias. If None, auto-detect from pad.
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
+    # Checked before the board is opened. Every via is built in memory before
+    # the one write, so an unbounded grid exhausted memory, and rows=10**18 with
+    # cols=0 passes any cap on the product yet spins in the row loop forever.
+    board = Path(pcb_path).name or "the board"
+    if rows < 1 or cols < 1:
+        raise ToolError(
+            f"A thermal via grid needs at least one row and one column, not rows={rows},"
+            f" cols={cols}. Nothing was written to {board}."
+        )
+    if rows * cols > _MAX_THERMAL_VIAS:
+        raise ToolError(
+            f"A {rows}x{cols} grid is {rows * cols} vias; add_thermal_vias places at most"
+            f" {_MAX_THERMAL_VIAS} in one call, and exposed-pad grids run about 3x3 to"
+            f" 10x10. Nothing was written to {board}."
+        )
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
     fp = _find_fp_cst(root, reference)

@@ -6,6 +6,8 @@ mcp_server_kicad._connectivity on its own, so a KiCad-free CI leg still exercise
 
 from __future__ import annotations
 
+import builtins
+import random
 from pathlib import Path
 
 import pytest
@@ -500,6 +502,133 @@ def test_joining_a_name_on_this_sheet_says_so(tmp_path):
     text = _plan(p, [("R1", "1")], net="GND").success()
     assert "'GND' joins on this sheet: power symbol #PWR01" in text
     assert "Warning" not in text
+
+
+def _sheet(*nodes: str):
+    """A sheet parsed from bytes, never written, so no kicad-cli check is involved."""
+    head = '(kicad_sch (version 20250114) (generator "eeschema") (uuid "u") (paper "A4")'
+    return _cst.parse(f"{head} (lib_symbols) {' '.join(nodes)})".encode()).lists[0]
+
+
+def _bounded(*args):
+    r = builtins.range(*args)
+    # len() itself raises OverflowError past sys.maxsize, which fails as fast.
+    if len(r) > 10_000:
+        raise AssertionError(f"the line index walks {len(r)} cells along one axis")
+    return r
+
+
+@pytest.mark.parametrize(
+    "line, on, off",
+    [
+        ("(xy 0 0) (xy 100000 100000)", "50000 50000", "50001 50000"),
+        # Mid-cell, so the margin keeps a straight line's box to one row, and a box counted
+        # short (no row at all) would send the line into the grid and trip the bound.
+        ("(xy 0 1.27) (xy 100000 1.27)", "50000 1.27", "50000 2.27"),
+        ("(xy 0 1.27) (xy 1e300 1.27)", "5e299 1.27", "5e299 2.27"),
+    ],
+    ids=["diagonal-100m", "horizontal-100m", "horizontal-1e300mm"],
+)
+def test_a_long_line_joins_its_points_without_filling_its_box(monkeypatch, line, on, off):
+    """The possible view put every line in each 2.54 mm cell of its bounding box, so one 100 m
+    diagonal in a downloaded sheet asked for 1.5 billion cells, and a huge coordinate made
+    even a straight line endless. A line too big for the grid is checked against every point
+    instead, by the same rule: the label on it joins, the one 1 mm off does not."""
+    monkeypatch.setattr(C, "range", _bounded, raising=False)
+    m = C.Model(
+        _sheet(f"(wire (pts {line}))", f'(label "ON" (at {on} 0))', f'(label "OFF" (at {off} 0))')
+    )
+    cm = m.coarse()
+    w, a, b = m.items
+    assert cm.uf.find(a.id) == cm.uf.find(w.id)
+    assert cm.uf.find(b.id) != cm.uf.find(w.id)
+
+
+def _mixed_sheet():
+    """Forty lines of every indexed kind, with points on them and within and beyond the margin
+    of them, so the line rule both joins and misses."""
+    rng = random.Random(17)
+    nodes, s = [], 12700
+    for i in range(40):
+        kind = rng.choice(["wire", "bus", "polyline", "bus_entry"])
+        x, y = rng.randrange(200) * s, rng.randrange(200) * s
+        dx, dy = rng.choice([(1, 0), (0, 1), (1, 1), (2, -1), (-3, 2)])
+        k = rng.randrange(1, 12)
+        x2, y2 = x + k * dx * s, y + k * dy * s
+        if kind == "bus_entry":
+            nodes.append(
+                f"(bus_entry (at {C.mm(x)} {C.mm(y)}) (size {C.mm(x2 - x)} {C.mm(y2 - y)}))"
+            )
+        else:
+            nodes.append(f"({kind} (pts (xy {C.mm(x)} {C.mm(y)}) (xy {C.mm(x2)} {C.mm(y2)})))")
+        for _ in range(3):
+            j = rng.randrange(k + 1)
+            px = x + j * dx * s + rng.randint(-C.TOL - 100, C.TOL + 100)
+            py = y + j * dy * s + rng.randint(-C.TOL - 100, C.TOL + 100)
+            at = f"(at {C.mm(px)} {C.mm(py)}"
+            nodes.append(
+                rng.choice(
+                    [f'(label "P{i}_{j}_{px}" {at} 0))', f"(junction {at}))", f"(no_connect {at}))"]
+                )
+            )
+    return _sheet(*nodes)
+
+
+def _components(root) -> list[list[int]]:
+    m = C.Model(root)
+    cm = m.coarse()
+    out: dict[int, list[int]] = {}
+    for it in m.items:
+        out.setdefault(cm.uf.find(it.id), []).append(it.id)
+    return sorted(out.values())
+
+
+@pytest.mark.parametrize(
+    "seg_cells, cells", [(0, 0), (8, 1 << 16), (1024, 40)], ids=["none", "per-line", "budget"]
+)
+def test_lines_kept_out_of_the_index_join_exactly_what_it_would(monkeypatch, seg_cells, cells):
+    """The grid is only a prefilter: with both caps at 0 every line is checked against every
+    point, and with either one low some lines are, and the components are the default's."""
+    root = _mixed_sheet()
+    want = _components(root)
+    assert any(len(c) > 1 for c in want) and any(len(c) == 1 for c in want)
+    monkeypatch.setattr(C, "_MAX_SEG_CELLS", seg_cells)
+    monkeypatch.setattr(C, "_MAX_CELLS", cells)
+    assert _components(root) == want
+
+
+def test_the_line_index_stops_filling_at_its_budget(monkeypatch):
+    """Lines each under the per-line cap still add up: 200 diagonals of 31 by 31 cells asked
+    the index for 192,200 cells from an 8 KB sheet. Past the sheet's budget the rest are
+    checked against every point, so the index walks no more than the budget, and a label on
+    the last line still joins it while one 1 mm off does not."""
+    # 0.1 mm apart along x is 0.07 mm square to the lines, past the margin, so none join.
+    s, span, n = 1000, 736600, 200
+    nodes = [
+        f"(wire (pts (xy {C.mm(i * s)} 0) (xy {C.mm(i * s + span)} {C.mm(span)})))"
+        for i in range(n)
+    ]
+    x, y = (n - 1) * s + span // 2, span // 2
+    nodes += [
+        f'(label "ON" (at {C.mm(x)} {C.mm(y)} 0))',
+        f'(label "OFF" (at {C.mm(x + 10000)} {C.mm(y)} 0))',
+    ]
+    m = C.Model(_sheet(*nodes))
+    assert n * 31 * 31 > 2 * C._MAX_CELLS  # the sheet asks for more than the bound below
+    walked = 0
+
+    def counting(*args):
+        nonlocal walked
+        r = builtins.range(*args)
+        walked += len(r)
+        return r
+
+    monkeypatch.setattr(C, "range", counting, raising=False)
+    cm = m.coarse()
+    assert walked < 2 * C._MAX_CELLS, f"the line index walks {walked} cells"
+    *w, a, b = m.items
+    assert cm.uf.find(a.id) == cm.uf.find(w[-1].id)
+    assert cm.uf.find(b.id) != cm.uf.find(w[-1].id)
 
 
 # ---------------------------------------------------------------------------------------------

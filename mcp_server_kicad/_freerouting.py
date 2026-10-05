@@ -131,9 +131,14 @@ def _cache_dir() -> Path:
 
 
 def find_jar() -> str | None:
-    """Find the Freerouting JAR. Returns path or None."""
+    """Find the Freerouting JAR. Returns path or None.
+
+    A relative FREEROUTING_JAR is ignored, as a relative KICAD_CLI_PATH is:
+    is_file() resolved it against the working directory and java then loaded
+    whatever jar of that name sat in the directory the server started in.
+    """
     env_jar = os.environ.get("FREEROUTING_JAR")
-    if env_jar and Path(env_jar).is_file():
+    if env_jar and os.path.isabs(env_jar) and Path(env_jar).is_file():
         return env_jar
 
     cached = _cache_dir() / "freerouting.jar"
@@ -185,7 +190,7 @@ def ensure_jar() -> tuple[str | None, str | None]:
         return None, (
             f"Failed to download Freerouting: {exc}. "
             "Download manually from https://github.com/freerouting/freerouting/releases "
-            "and set FREEROUTING_JAR environment variable."
+            "and set the FREEROUTING_JAR environment variable to its absolute path."
         )
 
     jar = find_jar()
@@ -264,6 +269,18 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
         env = {k: v for k, v in os.environ.items() if k != "PYTHONHOME"}
 
     kicad_python = os.environ.get("KICAD_PYTHON")
+    # KICAD_CLI_PATH's rule, so nothing launched here is relative to the
+    # working directory. Handed to subprocess unchanged, a bare name was
+    # searched for there before PATH on Windows, and "sub/python3" ran from it
+    # everywhere. A bare name goes through _find_on_path, which appends the
+    # ".exe" itself; any other relative value is ignored and discovery goes on.
+    if kicad_python and not os.path.isabs(kicad_python):
+        if os.path.basename(kicad_python) == kicad_python:
+            if os.name == "nt" and kicad_python.lower().endswith(".exe"):
+                kicad_python = kicad_python[: -len(".exe")]
+            kicad_python = _find_on_path(kicad_python)
+        else:
+            kicad_python = None
     if kicad_python:
         try:
             result = subprocess.run(

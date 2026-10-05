@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
+import stat
+import sys
 from pathlib import Path
 
 import conftest
@@ -20,6 +24,50 @@ def _first_sheet_uuid(schematic_path: str) -> str:
     uuid = Schematic.from_file(schematic_path).sheets[0].uuid
     assert uuid is not None
     return uuid
+
+
+# Sheetfile values naming something that is not a regular file. /dev/null stands in for
+# /dev/zero, which a regressed guard would read until memory ran out; /dev/null ends at
+# once. On Windows Path("/dev/null") does not exist, so that case would prove nothing.
+_NON_REGULAR = [
+    pytest.param("adir", id="directory"),
+    pytest.param(
+        "/dev/null",
+        id="device",
+        marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX device path"),
+    ),
+]
+
+
+@pytest.fixture
+def pointed_root(request, tmp_path: Path):
+    """A project root whose one sheet's Sheetfile names ``request.param``, not its child.
+
+    A relative ``adir`` is created as a directory and ``empty.kicad_sch`` as an empty
+    file. The root's own bytes are put back afterwards, so the kicad-cli oracle judges
+    what the tools wrote rather than this hand-made edit.
+    """
+    proj_dir = tmp_path / "proj"
+    project.create_project(directory=str(proj_dir), name="proj")
+    child = proj_dir / "child.kicad_sch"
+    project.create_schematic(schematic_path=str(child))
+    root = proj_dir / "proj.kicad_sch"
+    project.add_hierarchical_sheet(
+        parent_schematic_path=str(root),
+        sheet_name="Power",
+        sheet_file=str(child),
+        pins=[{"name": "VIN", "direction": "input"}],
+        project_path=str(proj_dir / "proj.kicad_pro"),
+    )
+    if request.param == "adir":
+        (proj_dir / "adir").mkdir()
+    elif request.param == "empty.kicad_sch":
+        (proj_dir / "empty.kicad_sch").write_bytes(b"")
+    original = root.read_bytes()
+    assert original.count(b'"child.kicad_sch"') == 1
+    root.write_bytes(original.replace(b'"child.kicad_sch"', f'"{request.param}"'.encode()))
+    yield root
+    root.write_bytes(original)
 
 
 class TestCreateProject:
@@ -509,6 +557,112 @@ class TestRemoveHierarchicalSheet:
         assert "Removed" in result
         assert "Kept child file" in result
         assert "still referenced" in result
+        assert child.exists()
+
+    def _point(self, parent: Path, sheet_file: str) -> bytes:
+        """Rewrite the parent's one Sheetfile naming child.kicad_sch; return the new bytes."""
+        data = parent.read_bytes()
+        assert data.count(b'"child.kicad_sch"') == 1
+        parent.write_bytes(data.replace(b'"child.kicad_sch"', f'"{sheet_file}"'.encode()))
+        return parent.read_bytes()
+
+    def test_delete_child_file_refuses_a_file_that_is_not_a_schematic(self, tmp_path: Path):
+        """Inside the parent's directory, Sheetfile could still name the project file."""
+        parent, child = self._make_parent_and_child(tmp_path)
+        self._add_sheet(parent, child, name="Power")
+        pro = tmp_path / "proj.kicad_pro"
+        pro.write_text("{}")
+        pointed = self._point(parent, "proj.kicad_pro")
+
+        with pytest.raises(ToolError, match="not a .kicad_sch file"):
+            project.remove_hierarchical_sheet(
+                name="Power", delete_child_file=True, parent_schematic_path=str(parent)
+            )
+
+        assert pro.read_text() == "{}"
+        assert parent.read_bytes() == pointed, "parent schematic must be untouched"
+
+    def test_delete_child_file_refuses_the_parent_itself(self, tmp_path: Path):
+        """A parent naming itself was unlinked, then rewritten on a fresh inode at the
+        umask's mode, so a private 0600 schematic came back readable by other users."""
+        parent, child = self._make_parent_and_child(tmp_path)
+        self._add_sheet(parent, child, name="Power")
+        original = parent.read_bytes()
+        pointed = self._point(parent, "root.kicad_sch")
+        parent.chmod(0o600)
+        before = parent.stat()
+
+        old_umask = os.umask(0o022)
+        try:
+            with pytest.raises(ToolError, match="parent schematic itself"):
+                project.remove_hierarchical_sheet(
+                    name="Power", delete_child_file=True, parent_schematic_path=str(parent)
+                )
+        finally:
+            os.umask(old_umask)
+
+        after = parent.stat()
+        assert parent.read_bytes() == pointed, "parent schematic must be untouched"
+        assert after.st_ino == before.st_ino
+        if sys.platform != "win32":
+            assert stat.S_IMODE(after.st_mode) == 0o600
+        # A sheet instancing its own file is recursive; the kicad-cli oracle gets the
+        # tool's output, not this test's hostile edit.
+        parent.write_bytes(original)
+
+    def test_delete_child_file_refuses_a_project_root(self, tmp_path: Path):
+        """A sub-sheet whose Sheetfile names the project's root schematic must not delete it."""
+        proj = tmp_path / "proj"
+        project.create_project(directory=str(proj), name="proj")
+        sub, child = proj / "sub.kicad_sch", proj / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(sub))
+        project.create_schematic(schematic_path=str(child))
+        self._add_sheet(sub, child, name="Power")
+        root = proj / "proj.kicad_sch"
+        root_bytes = root.read_bytes()
+        pointed = self._point(sub, "proj.kicad_sch")
+
+        with pytest.raises(ToolError, match="root schematic of a project"):
+            project.remove_hierarchical_sheet(
+                name="Power", delete_child_file=True, parent_schematic_path=str(sub)
+            )
+
+        assert root.read_bytes() == root_bytes
+        assert sub.read_bytes() == pointed, "parent schematic must be untouched"
+
+    @pytest.mark.parametrize(
+        "alias",
+        ["dot", "absolute", "symlink", "missing-dir-dotdot", "file-dotdot", "dotdot-symlink"],
+    )
+    def test_delete_child_file_keeps_a_child_still_referenced_by_another_spelling(
+        self, tmp_path: Path, alias: str
+    ):
+        """The other block's Sheetfile names the same file with different text. KiCad
+        squeezes '..' lexically, so the dotdot spellings name the child to KiCad even
+        though the kernel cannot walk them."""
+        parent, child = self._make_parent_and_child(tmp_path)
+        uuid1 = self._add_sheet(parent, child, name="Power1")
+        uuid2 = self._add_sheet(parent, child, name="Power2")
+        if alias == "dot":
+            file_name = "./child.kicad_sch"
+        elif alias == "absolute":
+            file_name = str(child)
+        elif alias == "missing-dir-dotdot":
+            file_name = "missing/../child.kicad_sch"
+        elif alias == "file-dotdot":
+            file_name = "child.kicad_sch/../child.kicad_sch"
+        else:
+            try:
+                (tmp_path / "link.kicad_sch").symlink_to(child)
+            except (OSError, NotImplementedError):
+                pytest.skip("symlinks are not available here")
+            file_name = "link.kicad_sch" if alias == "symlink" else "missing/../link.kicad_sch"
+        project.modify_hierarchical_sheet(uuid2, schematic_path=str(parent), file_name=file_name)
+
+        result = project.remove_hierarchical_sheet(
+            uuid=uuid1, delete_child_file=True, parent_schematic_path=str(parent)
+        )
+        assert "Kept child file" in result
         assert child.exists()
 
 
@@ -1089,6 +1243,56 @@ class TestListCrossSheetNets:
         assert "GND" in net_names
 
 
+@pytest.mark.parametrize(
+    "pointed_root",
+    [*_NON_REGULAR, pytest.param("empty.kicad_sch", id="empty")],
+    indirect=True,
+)
+class TestNonRegularChildSheet:
+    """Every read of a Sheetfile gated on exists() and then read the whole file, so a
+    directory raised a raw IsADirectoryError (PermissionError on Windows) and /dev/zero
+    grew the read until memory ran out. Each tool now treats such a sheet as missing.
+
+    The empty file stands in for a procfs pseudo-file such as /proc/self/pagemap: a
+    regular file of size 0 that streams without end, which is_file() alone let through.
+    An empty file ends at once, so a regressed guard fails here instead of hanging."""
+
+    def test_validate_hierarchy(self, pointed_root: Path):
+        result = project.validate_hierarchy(schematic_path=str(pointed_root))
+        assert [i["type"] for i in result.issues] == ["missing_file"]
+
+    def test_list_hierarchy(self, pointed_root: Path):
+        result = project.list_hierarchy(schematic_path=str(pointed_root))
+        assert "error" in result.sheets[0]
+
+    def test_get_sheet_info(self, pointed_root: Path):
+        result = project.get_sheet_info(
+            sheet_uuid=_first_sheet_uuid(str(pointed_root)), schematic_path=str(pointed_root)
+        )
+        assert result.component_count is None
+        assert [p["matched"] for p in result.pins] == [False]
+
+    def test_trace_hierarchical_net(self, pointed_root: Path):
+        result = project.trace_hierarchical_net(net_name="VIN", schematic_path=str(pointed_root))
+        assert [c["type"] for c in result.connections] == ["sheet_pin"]
+
+    def test_list_cross_sheet_nets(self, pointed_root: Path):
+        result = project.list_cross_sheet_nets(schematic_path=str(pointed_root))
+        assert [n["label_matched"] for n in result.hierarchical_nets] == [False]
+
+    def test_annotate_schematic(self, pointed_root: Path):
+        result = project.annotate_schematic(
+            schematic_path=str(pointed_root),
+            project_path=str(pointed_root.with_suffix(".kicad_pro")),
+        )
+        assert "No unannotated" in result
+
+    def test_flatten_hierarchy(self, pointed_root: Path):
+        out = pointed_root.parent / "flat.kicad_sch"
+        project.flatten_hierarchy(schematic_path=str(pointed_root), output_path=str(out))
+        assert out.is_file()
+
+
 class TestGetSymbolInstances:
     def test_returns_instances(self, tmp_path: Path):
         """get_symbol_instances should return symbol instance data from root schematic."""
@@ -1165,6 +1369,50 @@ class TestReorderSheetPages:
         )
         assert "Reordered" in result
 
+    def _three_sheets(self, tmp_path: Path) -> tuple[Path, list[str]]:
+        """A root with sheets A, B and C, and their UUIDs in file order."""
+        root = tmp_path / "root.kicad_sch"
+        project.create_schematic(schematic_path=str(root))
+        for n in ("a", "b", "c"):
+            child = tmp_path / f"{n}.kicad_sch"
+            project.create_schematic(schematic_path=str(child))
+            project.add_hierarchical_sheet(
+                parent_schematic_path=str(root),
+                sheet_name=n.upper(),
+                sheet_file=str(child),
+                pins=[],
+            )
+        uuids = [s.uuid for s in Schematic.from_file(str(root)).sheets]
+        assert len(uuids) == 3
+        return root, [u for u in uuids if u is not None]
+
+    def test_refuses_a_uuid_listed_twice(self, tmp_path: Path):
+        """[A, A] put A in two slots and pushed C, with its instances, off the end."""
+        root, (a, _, _) = self._three_sheets(tmp_path)
+        before = root.read_bytes()
+
+        with pytest.raises(ToolError, match="more than once"):
+            project.reorder_sheet_pages(page_order=[a, a], schematic_path=str(root))
+
+        assert root.read_bytes() == before
+
+    def test_refuses_a_listed_uuid_two_blocks_share(self, tmp_path: Path):
+        """With B carrying A's UUID, [C, A] wrote C, B, C and lost A."""
+        root, (a, b, c) = self._three_sheets(tmp_path)
+        data = root.read_bytes()
+        own = f'(uuid "{b}")'.encode()
+        assert data.count(own) == 1
+        root.write_bytes(data.replace(own, f'(uuid "{a}")'.encode()))
+        before = root.read_bytes()
+
+        with pytest.raises(ToolError, match="more than one sheet block"):
+            project.reorder_sheet_pages(page_order=[c, a], schematic_path=str(root))
+        assert root.read_bytes() == before
+
+        # Left out of page_order, the shared UUID is no obstacle and both blocks stay.
+        project.reorder_sheet_pages(page_order=[c], schematic_path=str(root))
+        assert [s.uuid for s in Schematic.from_file(str(root)).sheets] == [c, a, a]
+
 
 class TestDuplicateSheet:
     def test_duplicates_sheet(self, tmp_path: Path):
@@ -1199,6 +1447,30 @@ class TestDuplicateSheet:
         # The new sheet should reference a different file
         files = {s.fileName.value for s in sch2.sheets}
         assert len(files) == 2  # Two different files
+
+    @pytest.mark.parametrize(
+        "pointed_root",
+        [*_NON_REGULAR, pytest.param("empty.kicad_sch", id="empty")],
+        indirect=True,
+    )
+    def test_refuses_a_source_that_is_not_a_schematic_file(self, pointed_root: Path):
+        """copy2 streamed a device source into the project until the disk was full and
+        left the partial copy behind, which then blocked every retry."""
+        root = pointed_root
+        sheet_uuid = _first_sheet_uuid(str(root))
+        before = root.read_bytes()
+        listing = sorted(os.listdir(root.parent))
+
+        with pytest.raises(ToolError, match="not a regular file"):
+            project.duplicate_sheet(
+                sheet_uuid=sheet_uuid,
+                new_sheet_name="Power2",
+                schematic_path=str(root),
+                project_path=str(root.with_suffix(".kicad_pro")),
+            )
+
+        assert root.read_bytes() == before
+        assert sorted(os.listdir(root.parent)) == listing, "no copy may be left behind"
 
 
 @pytest.mark.skipif(not conftest.HAS_KICAD_CLI, reason="kicad-cli not found")
@@ -1334,6 +1606,58 @@ class TestFlattenHierarchy:
         flat_sch = Schematic.from_file(str(proj_dir / "flat.kicad_sch"))
         assert len(flat_sch.sheets) == 0
         assert len(flat_sch.schematicSymbols) >= 1
+
+    def _three_levels(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        """root -> child -> grand."""
+        root, child, grand = (tmp_path / f"{n}.kicad_sch" for n in ("root", "child", "grand"))
+        for p in (root, child, grand):
+            project.create_schematic(schematic_path=str(p))
+        for parent, sub in ((root, child), (child, grand)):
+            project.add_hierarchical_sheet(
+                parent_schematic_path=str(parent),
+                sheet_name=sub.stem,
+                sheet_file=str(sub),
+                pins=[],
+            )
+        return root, child, grand
+
+    def test_refuses_to_overwrite_a_nested_sheet(self, tmp_path: Path):
+        """The guard saw only the root and its own children, so a grandchild was replaced."""
+        root, _, grand = self._three_levels(tmp_path)
+        before = grand.read_bytes()
+
+        with pytest.raises(ToolError, match="part of the hierarchy"):
+            project.flatten_hierarchy(schematic_path=str(root), output_path=str(grand))
+
+        assert grand.read_bytes() == before
+
+    def test_refuses_a_nested_sheet_named_through_a_missing_directory(self, tmp_path: Path):
+        """KiCad squeezes 'zz/..' lexically, so the kernel's failed walk hid grand."""
+        root, child, grand = self._three_levels(tmp_path)
+        project.modify_hierarchical_sheet(
+            _first_sheet_uuid(str(child)),
+            schematic_path=str(child),
+            file_name="zz/../grand.kicad_sch",
+        )
+        before = grand.read_bytes()
+
+        with pytest.raises(ToolError, match="part of the hierarchy"):
+            project.flatten_hierarchy(schematic_path=str(root), output_path=str(grand))
+
+        assert grand.read_bytes() == before
+
+    def test_refuses_a_child_and_still_reflattens_to_the_same_output(self, tmp_path: Path):
+        root, child, _ = self._three_levels(tmp_path)
+        before = child.read_bytes()
+
+        with pytest.raises(ToolError, match="part of the hierarchy"):
+            project.flatten_hierarchy(schematic_path=str(root), output_path=str(child))
+        assert child.read_bytes() == before
+
+        # The hierarchy walk runs only once the output exists, as it does from here on.
+        project.flatten_hierarchy(schematic_path=str(root))
+        project.flatten_hierarchy(schematic_path=str(root))
+        assert (tmp_path / "root_flat.kicad_sch").is_file()
 
 
 @pytest.mark.no_kicad_validation
@@ -1826,3 +2150,162 @@ class TestRootSymbolInstanceSync:
         si_refs = sorted(si.reference for si in si_list)
         assert "R1" in si_refs
         assert "R2" in si_refs
+
+
+class TestRootSymbolInstanceRemoval:
+    """remove_component removes only the root rows that index the file it edited.
+
+    Kept out of TestRootSymbolInstanceSync, which switches the kicad-cli oracle off: nothing
+    these tests write is malformed, so the oracle judges every file they leave.
+    """
+
+    @staticmethod
+    def _project(tmp_path: Path) -> tuple[str, str]:
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        return str(proj_dir / "proj.kicad_sch"), str(proj_dir / "proj.kicad_pro")
+
+    @staticmethod
+    def _place_r(path: Path | str, reference: str, pro: str) -> str:
+        """Seed Device:R into *path* as test 10 does, place *reference*, return its UUID."""
+        from mcp_server_kicad import schematic
+
+        sch = Schematic.from_file(str(path))
+        sch.libSymbols.append(conftest.build_r_symbol())
+        sch.to_file()
+        schematic.place_component(
+            reference=reference,
+            value="10K",
+            lib_id="Device:R",
+            x=100,
+            y=100,
+            schematic_path=str(path),
+            project_path=pro,
+        )
+        (sym,) = Schematic.from_file(str(path)).schematicSymbols
+        assert sym.uuid is not None
+        return sym.uuid
+
+    @staticmethod
+    def _add_sheet(root: str, name: str, child: Path, pro: str) -> str:
+        """Add *child* as sheet *name*; return the sheet's "/{root}/{sheet}" prefix."""
+        project.add_hierarchical_sheet(
+            parent_schematic_path=root,
+            sheet_name=name,
+            sheet_file=str(child),
+            pins=[],
+            project_path=pro,
+        )
+        root_sch = Schematic.from_file(root)
+        sheet = next(s for s in root_sch.sheets if s.sheetName.value == name)
+        return f"/{root_sch.uuid}/{sheet.uuid}"
+
+    @staticmethod
+    def _rows(root: str) -> dict[str, str]:
+        """The root's symbol_instances, path to reference, read back through kiutils."""
+        return {si.path: si.reference for si in Schematic.from_file(root).symbolInstances}
+
+    def test_a_copied_sheet_file_keeps_the_original_sheets_row(self, tmp_path: Path):
+        """b.kicad_sch is a copy of a.kicad_sch made outside KiCad, so both hold R1 under one
+        UUID and the root indexes it under each sheet. Removing R1 from b deleted every row
+        ending in that UUID, a's included."""
+        from mcp_server_kicad import schematic
+
+        root, pro = self._project(tmp_path)
+        a, b = Path(root).with_name("a.kicad_sch"), Path(root).with_name("b.kicad_sch")
+        project.create_schematic(schematic_path=str(a))
+        sym = self._place_r(a, "R1", pro)
+        shutil.copy(a, b)
+        sheet_a = self._add_sheet(root, "A", a, pro)
+        sheet_b = self._add_sheet(root, "B", b, pro)
+        assert self._rows(root) == {f"{sheet_a}/{sym}": "R1", f"{sheet_b}/{sym}": "R1"}
+
+        schematic.remove_component(reference="R1", schematic_path=str(b))
+
+        assert self._rows(root) == {f"{sheet_a}/{sym}": "R1"}
+
+    def test_a_file_no_sheet_names_removes_no_row(self, tmp_path: Path):
+        """d.kicad_sch is a stray copy of c.kicad_sch that no sheet instances, so no row is
+        its. Removing R1 from d deleted c's row; now the root is not even rewritten."""
+        from mcp_server_kicad import schematic
+
+        root, pro = self._project(tmp_path)
+        c, d = Path(root).with_name("c.kicad_sch"), Path(root).with_name("d.kicad_sch")
+        project.create_schematic(schematic_path=str(c))
+        sheet = self._add_sheet(root, "C", c, pro)
+        sym = self._place_r(c, "R1", pro)
+        shutil.copy(c, d)
+        before = Path(root).read_bytes()
+        assert self._rows(root) == {f"{sheet}/{sym}": "R1"}
+
+        schematic.remove_component(reference="R1", schematic_path=str(d))
+
+        assert Path(root).read_bytes() == before
+
+    def test_a_root_symbol_keeps_a_sheets_row_with_its_uuid(self, tmp_path: Path):
+        """The root's own symbols sit directly under "/{root}". A sheet's row ending in the
+        same UUID belongs to another file, and suffix matching deleted it."""
+        from mcp_server_kicad._shared import _remove_root_symbol_instance
+
+        root, pro = self._project(tmp_path)
+        c = Path(root).with_name("c.kicad_sch")
+        project.create_schematic(schematic_path=str(c))
+        sheet = self._add_sheet(root, "C", c, pro)
+        sym = self._place_r(c, "R1", pro)
+        before = Path(root).read_bytes()
+        assert self._rows(root) == {f"{sheet}/{sym}": "R1"}
+
+        assert _remove_root_symbol_instance(root, "", sym) is False
+        assert Path(root).read_bytes() == before
+
+    def test_a_sheet_file_instanced_twice_loses_both_rows(self, tmp_path: Path):
+        """Guard on the binding: a reused sheet file holds one symbol at one path per sheet,
+        and every sheet naming the file counts, so neither row outlives the symbol.
+        add_hierarchical_sheet indexes only the first sheet naming a file, so the second row
+        is added here."""
+        from mcp_server_kicad import _cst, schematic
+        from mcp_server_kicad._shared import _upsert_entry
+
+        root, pro = self._project(tmp_path)
+        c = Path(root).with_name("c.kicad_sch")
+        project.create_schematic(schematic_path=str(c))
+        sym = self._place_r(c, "R1", pro)
+        sheet_1 = self._add_sheet(root, "C1", c, pro)
+        sheet_2 = self._add_sheet(root, "C2", c, pro)
+        tree = _cst.parse(Path(root).read_bytes())
+        _upsert_entry(tree.lists[0], f"{sheet_2}/{sym}", "R1", value="10K")
+        Path(root).write_bytes(_cst.serialize(tree))
+        assert set(self._rows(root)) == {f"{sheet_1}/{sym}", f"{sheet_2}/{sym}"}
+
+        schematic.remove_component(reference="R1", schematic_path=str(c))
+
+        assert self._rows(root) == {}
+
+    def test_a_kicad6_table_still_loses_the_removed_symbols_row(self, tmp_path: Path):
+        """Guard on the binding: KiCad 6 writes these paths without the root UUID, "/{sym}"
+        for a symbol on the root and "/{sheet}/{sym}" under a sheet (sch_sheet_path.cpp, 6.0).
+        Binding to the "/{root}" prefixes alone would strand both rows in the one format
+        whose table KiCad reads. Only the table is rewritten; the version stays the tools'."""
+        from mcp_server_kicad import _cst, schematic
+
+        root, pro = self._project(tmp_path)
+        c = Path(root).with_name("c.kicad_sch")
+        project.create_schematic(schematic_path=str(c))
+        sheet = self._add_sheet(root, "C", c, pro)
+        r1 = self._place_r(root, "R1", pro)
+        r2 = self._place_r(c, "R2", pro)
+        root_prefix = f"/{Schematic.from_file(root).uuid}"
+        tree = _cst.parse(Path(root).read_bytes())
+        for entry in tree.lists[0].find("symbol_instances").find_all("path"):
+            text = entry.atoms[1].text
+            assert text.startswith(f"{root_prefix}/")
+            entry.atoms[1].set_text(text[len(root_prefix) :])
+        Path(root).write_bytes(_cst.serialize(tree))
+        k6_sheet = sheet[len(root_prefix) :]
+        assert self._rows(root) == {f"/{r1}": "R1", f"{k6_sheet}/{r2}": "R2"}
+
+        schematic.remove_component(reference="R1", schematic_path=root)
+        assert self._rows(root) == {f"{k6_sheet}/{r2}": "R2"}
+
+        schematic.remove_component(reference="R2", schematic_path=str(c))
+        assert self._rows(root) == {}

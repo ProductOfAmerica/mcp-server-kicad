@@ -7,6 +7,8 @@ sym-lib-tables, hierarchical sheets, jobset execution, and version info.
 from __future__ import annotations
 
 import json
+import os
+from collections import Counter
 from pathlib import Path
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -100,6 +102,20 @@ def _find_sheet_cst(root, sheet_uuid: str):
         f"Sheet with UUID '{sheet_uuid}' not found."
         " Use list_schematic_sheets to see the sheets and their UUIDs."
     )
+
+
+def _sheet_file_nonempty(path: Path) -> bool:
+    """Whether a file a Sheetfile names is one this module will read.
+
+    A Sheetfile is document content. is_file() alone turns away a directory and a device
+    such as /dev/zero, but a procfs pseudo-file like /proc/self/pagemap is a regular file
+    of size 0 that streams without end, so the size has to be checked too. An empty file
+    is no schematic either, so nothing is lost by treating it as missing.
+    """
+    try:
+        return path.is_file() and path.stat().st_size > 0
+    except OSError:
+        return False
 
 
 _SHEET_TPL = _cst.parse(
@@ -478,10 +494,54 @@ def remove_hierarchical_sheet(
                 "not deleted and the sheet block was not removed. Re-run with "
                 "delete_child_file=False to remove the block on its own."
             )
-        # Check if any OTHER sheet still references this child file
-        other_refs = any(
-            _sheet_file_cst(s) == child_filename for j, s in enumerate(sheets) if j != matches[0]
-        )
+        # Inside the directory it can still name something that is no sheet of this parent:
+        # the board or the project file, the project's root schematic, or the parent itself,
+        # which was unlinked and then rewritten at the umask's mode on a fresh inode.
+        not_a_child = ""
+        if child_path.suffix.lower() != ".kicad_sch":
+            not_a_child = "is not a .kicad_sch file"
+        elif child_path.exists() and child_path.samefile(parent_schematic_path):
+            not_a_child = "is the parent schematic itself"
+        elif child_path.with_suffix(".kicad_pro").exists():
+            not_a_child = "is the root schematic of a project"
+        if not_a_child:
+            raise ToolError(
+                f"Sheet file '{child_filename}' {not_a_child}, so it was not deleted and the "
+                "sheet block was not removed. Re-run with delete_child_file=False to remove "
+                "the block on its own."
+            )
+
+        # Check if any OTHER sheet still references this child file. A different spelling
+        # of the same file ('./child.kicad_sch', an absolute path, a symlink) counts too.
+        def _names_child(s) -> bool:
+            sf = _sheet_file_cst(s) or ""
+            if not sf:
+                return False
+            if sf == child_filename:
+                return True
+            # KiCad squeezes '.' and '..' out of a sheet path lexically before opening it
+            # (wxFileName::MakeAbsolute normalizes with wxPATH_NORM_DOTS), while the kernel
+            # walks each component, so 'zz/../child.kicad_sch' with no zz, or
+            # 'child.kicad_sch/../child.kicad_sch', is the child to KiCad and missing to
+            # samefile. Compare the lexical path too, both as text and as a file.
+            lexical = Path(os.path.normpath(parent_dir / sf))
+            if lexical == Path(os.path.normpath(child_path)):
+                return True
+            if not child_path.exists():
+                return False
+            for cand in (parent_dir / sf, lexical):
+                try:
+                    if cand.samefile(child_path):
+                        return True
+                except (FileNotFoundError, NotADirectoryError):
+                    pass
+                except (OSError, ValueError):
+                    # This guards the package's only delete, so a block whose file cannot
+                    # be compared for any reason but its absence keeps the child.
+                    return True
+            return False
+
+        other_refs = any(_names_child(s) for j, s in enumerate(sheets) if j != matches[0])
         if other_refs:
             msg += f" Kept child file '{child_filename}' — still referenced by another sheet block."
         elif child_path.is_file():
@@ -636,7 +696,7 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
         existing_refs.update(_collect_refs_cst(hierarchy_root))
         for sheet in hierarchy_root.find_all("sheet"):
             child_path = root_dir / (_sheet_file_cst(sheet) or "")
-            if child_path.exists() and str(child_path.resolve()) != str(
+            if _sheet_file_nonempty(child_path) and str(child_path.resolve()) != str(
                 Path(schematic_path).resolve()
             ):
                 child_root = _cst.parse(child_path.read_bytes()).lists[0]
@@ -763,7 +823,10 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
         sheet_name = _sheet_name_cst(sheet) or ""
         file_name = _sheet_file_cst(sheet) or ""
         child_path = sch_dir / file_name
-        if not child_path.exists():
+        # Not exists(), here and at every other read of a Sheetfile: it is document
+        # content, and a directory, a device such as /dev/zero or a procfs pseudo-file,
+        # which read_bytes() never finishes, counts as a missing sheet.
+        if not _sheet_file_nonempty(child_path):
             issues.append(
                 {
                     "type": "missing_file",
@@ -879,7 +942,7 @@ def list_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyResult:
             "x": _numish(at.atoms[1].text),
             "y": _numish(at.atoms[2].text),
         }
-        if child_path.exists():
+        if _sheet_file_nonempty(child_path):
             child_root = _cst.parse(child_path.read_bytes()).lists[0]
             child_info["component_count"] = len(child_root.find_all("symbol"))
             child_info["label_count"] = len(child_root.find_all("label"))
@@ -921,7 +984,7 @@ def get_sheet_info(sheet_uuid: str, schematic_path: str = SCH_PATH) -> SheetInfo
     # Load child to check label matching
     child_labels: set[str] = set()
     child_info: dict = {}
-    if child_path.exists():
+    if _sheet_file_nonempty(child_path):
         child_root = _cst.parse(child_path.read_bytes()).lists[0]
         child_labels = {_node_text(hl) for hl in child_root.find_all("hierarchical_label")}
         child_info = {
@@ -997,7 +1060,7 @@ def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> Net
             )
             # Look inside child
             child_path = sch_dir / file_name
-            if child_path.exists():
+            if _sheet_file_nonempty(child_path):
                 child_root = _cst.parse(child_path.read_bytes()).lists[0]
                 hlabel_count = _count(child_root, "hierarchical_label")
                 if hlabel_count:
@@ -1025,7 +1088,7 @@ def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> Net
     for sheet in root.find_all("sheet"):
         file_name = _sheet_file_cst(sheet) or ""
         child_path = sch_dir / file_name
-        if child_path.exists():
+        if _sheet_file_nonempty(child_path):
             child_root = _cst.parse(child_path.read_bytes()).lists[0]
             glabel_count = _count(child_root, "global_label")
             if glabel_count:
@@ -1064,7 +1127,11 @@ def list_cross_sheet_nets(schematic_path: str = SCH_PATH) -> CrossSheetNetsResul
         sheet_name = _sheet_name_cst(sheet) or ""
         file_name = _sheet_file_cst(sheet) or ""
         child_path = sch_dir / file_name
-        child_root = _cst.parse(child_path.read_bytes()).lists[0] if child_path.exists() else None
+        child_root = (
+            _cst.parse(child_path.read_bytes()).lists[0]
+            if _sheet_file_nonempty(child_path)
+            else None
+        )
         hlabels = (
             {_node_text(hl) for hl in child_root.find_all("hierarchical_label")}
             if child_root is not None
@@ -1186,8 +1253,32 @@ def reorder_sheet_pages(
             f"Sheet UUIDs not found: {missing}."
             " Use list_schematic_sheets to see the sheets and their UUIDs."
         )
+    # The slots are filled from new_order, so a block listed twice took two slots and the
+    # last sheet fell off the end with its pins and instances: [A, A] over A, B, C wrote
+    # A, A, B. sheet_map also keeps only the last block per UUID, so two blocks sharing a
+    # listed UUID lost one of them even when page_order itself had no repeats.
+    name = Path(schematic_path).name
+    repeated = sorted(u for u, n in Counter(page_order).items() if n > 1)
+    if repeated:
+        raise ToolError(
+            f"Sheet UUIDs listed more than once in page_order: {repeated}. List each sheet"
+            f" once; {name} was not changed."
+        )
+    uuid_count = Counter(_node_uuid(s) for s in sheets)
+    shared = [u for u in page_order if uuid_count[u] > 1]
+    if shared:
+        raise ToolError(
+            f"Sheet UUIDs {shared} each belong to more than one sheet block in {name}, so"
+            " their order is ambiguous and the file was not changed. Leave them out of"
+            " page_order to keep those blocks where they are."
+        )
     new_order = [sheet_map[u] for u in page_order]
     new_order += [s for s in sheets if _node_uuid(s) not in page_order]
+    if len(new_order) != len(sheets) or {id(n) for n in new_order} != {id(s) for s in sheets}:
+        raise ToolError(
+            f"page_order would not keep every sheet block of {name} exactly once, so the"
+            " file was not changed."
+        )
     # Swap nodes in place, keeping each slot's leading whitespace where it was.
     slots = [i for i, c in enumerate(root.children) if c.kind == "list" and c.head == "sheet"]
     slot_seps = [root.children[i].sep for i in slots]
@@ -1237,8 +1328,15 @@ def duplicate_sheet(
     # Copy the child file
     src_path = sch_dir / source_file
     dst_path = sch_dir / new_file_name
-    if not src_path.exists():
-        raise ToolError(f"Source file not found: {src_path}")
+    # source_file is the document's Sheetfile. copy2 streams a device such as /dev/zero
+    # until the disk is full and leaves the partial copy behind, and a procfs pseudo-file
+    # like /proc/self/pagemap is a regular file of size 0 that streams the same way. An
+    # empty source is no schematic either, so all of them are refused before any write.
+    if not _sheet_file_nonempty(src_path):
+        raise ToolError(
+            f"Source file not found, empty, or not a regular file: {src_path}. Nothing was"
+            f" copied and {Path(schematic_path).name} was not changed."
+        )
     if dst_path.exists():
         # Called twice with the same name, this silently replaced the first
         # copy with the source sheet. Every other create in this module guards
@@ -1316,6 +1414,11 @@ def duplicate_sheet(
     return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
 
 
+# Distinct sheet files flatten_hierarchy walks when checking an existing output_path. Past
+# it the check cannot vouch for the output, so the tool refuses rather than write.
+_MAX_HIERARCHY_FILES = 4096
+
+
 @mcp.tool(annotations=_DESTRUCTIVE)
 def flatten_hierarchy(
     schematic_path: str = SCH_PATH,
@@ -1354,8 +1457,56 @@ def flatten_hierarchy(
     # ADR records that refuse-to-clobber in general needs an overwrite
     # parameter first.
     out = Path(output_path).resolve()
-    inputs = {Path(schematic_path).resolve()} | {(sch_dir / f).resolve() for f in child_files if f}
-    if out in inputs:
+    if not out.exists():
+        inputs = {Path(schematic_path).resolve()} | {
+            (sch_dir / f).resolve() for f in child_files if f
+        }
+        clash = out in inputs
+    else:
+        # Only an existing file can be lost, and the root and its own children are not the
+        # whole hierarchy: output_path naming a grandchild overwrote it. So walk every
+        # sheet. A sheet file resolves against its parent's directory, then the root's, and
+        # both are protected. One that cannot be read or parsed stays protected, though
+        # what lies below it is unknown.
+        def _real(p: Path) -> Path:
+            # Before Python 3.13 resolving a symlink loop raises RuntimeError; later
+            # versions return the path unresolved.
+            try:
+                return p.resolve()
+            except (OSError, RuntimeError):
+                return p.absolute()
+
+        inputs: set[Path] = set()
+        todo = [Path(schematic_path)]
+        while todo:
+            f = todo.pop()
+            rf = _real(f)
+            if rf in inputs:
+                continue
+            if len(inputs) >= _MAX_HIERARCHY_FILES:
+                raise ToolError(
+                    f"The hierarchy under {Path(schematic_path).name} names more than"
+                    f" {_MAX_HIERARCHY_FILES} sheet files, so output_path {out.name} could"
+                    " not be checked against them and nothing was written."
+                )
+            inputs.add(rf)
+            if not _sheet_file_nonempty(f):
+                continue
+            try:
+                sheet_root = _cst.parse(f.read_bytes()).lists[0]
+            except Exception:
+                continue
+            for s in sheet_root.find_all("sheet"):
+                name = _sheet_file_cst(s) or ""
+                if name:
+                    # KiCad squeezes '..' lexically, so 'zz/../grand.kicad_sch' with no zz
+                    # is a sheet to KiCad and missing to the kernel; protect both readings.
+                    cands = [f.parent / name, sch_dir / name]
+                    cands += [Path(os.path.normpath(c)) for c in cands]
+                    todo += [c for c in cands if c.exists()]
+        # samefile also catches a case-only alias on a case-insensitive filesystem.
+        clash = out in inputs or any(p.exists() and out.samefile(p) for p in inputs)
+    if clash:
         raise ToolError(
             f"output_path {out.name} is part of the hierarchy being flattened."
             " Choose a different output file."
@@ -1396,7 +1547,7 @@ def flatten_hierarchy(
     sheet_index = 0
     for child_file in child_files:
         child_path = sch_dir / child_file
-        if not child_path.exists():
+        if not _sheet_file_nonempty(child_path):
             continue
 
         child_root = _cst.parse(child_path.read_bytes()).lists[0]

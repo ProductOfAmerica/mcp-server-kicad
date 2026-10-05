@@ -1,5 +1,6 @@
 """Shared constants and helpers for KiCad MCP servers."""
 
+import errno
 import math
 import os
 import shutil
@@ -238,6 +239,26 @@ OUTPUT_DIR: str = _cfg["output_dir"]
 # enough that a tool call does not feel hung.
 _REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4)
 
+# The xattr Linux keeps a file's POSIX access ACL in. On such a file the mode's
+# group bits are the ACL's mask, not the owning group's entry, so carrying the
+# mode without the ACL hands the owning group whatever the mask allows.
+_POSIX_ACL = "system.posix_acl_access"
+
+# How a library file is opened when what is read from it lands somewhere else:
+# never through a final link, and O_NONBLOCK so that a FIFO answers the open at
+# once and is then refused by fstat rather than hanging the call. Windows has
+# neither flag; O_BINARY keeps its CRT from translating line endings.
+_READ_NO_FOLLOW = (
+    os.O_RDONLY
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+    | getattr(os, "O_BINARY", 0)
+)
+
+# What getxattr and removexattr answer for a file with no ACL (ENODATA), or on a
+# filesystem that has none (ENOTSUP; EOPNOTSUPP is the same number on Linux).
+_NO_ACL = (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP)
+
 
 #: KiCad's schematic editor offers only these four, and kicad-cli refuses to
 #: load a schematic carrying anything else.
@@ -300,16 +321,41 @@ def _read_kicad_bytes(path: str | Path, kind: str) -> bytes:
     return _require_kicad_path(path, kind).read_bytes()
 
 
-def _require_plain_tree(root: Path, kind: str) -> None:
-    """Refuse a library directory holding anything but files and directories.
+def _posix_acl(ref: int | Path) -> bytes | None:
+    """The POSIX access ACL of a path or descriptor, or None where it has none.
+
+    Only Linux exposes ACLs to the standard library, so elsewhere this is None.
+    """
+    if not hasattr(os, "getxattr"):
+        return None
+    try:
+        return os.getxattr(ref, _POSIX_ACL)
+    except OSError as exc:
+        if exc.errno in _NO_ACL:
+            return None
+        raise
+
+
+def _require_plain_tree(root: Path, kind: str, library: Path | None = None) -> None:
+    """Refuse a library directory holding anything but regular files.
 
     A footprint library is copied twice before kicad-cli sees it, once for the
     ``.bak`` and once for the scratch copy, and both are ``shutil.copytree``,
     which follows links. A link to a device copies until the disk is full, and
     a link out of the library carries whatever it points at into the ``.bak``
-    beside the library. Rather than judge which links are harmless, this walks
-    the tree first, follows nothing, and refuses any link, or anything that is
-    neither a regular file nor a directory, by name.
+    beside the library. Rather than judge which links are harmless, this lists
+    the library first, follows nothing, and refuses any link, or anything that
+    is not a regular file, by name.
+
+    A folder is refused too. KiCad lists a ``.pretty``'s own files and reads
+    none deeper (``FP_CACHE::Load`` at 9.0.9 and 10.0.6 is one non-recursive
+    ``wxDir`` pass, and its ``DeleteLibrary`` refuses "unexpected sub-folders"),
+    so a folder holds nothing KiCad would load, and a flat library leaves no
+    folder for a link to be swapped onto after this check, before the copy or
+    the write-back. The copies are checked again once made, with *library* as
+    the name the refusal gives: a folder swapped in after copytree listed the
+    library is copied with no link left to see, and this is what catches it,
+    inside a copy no other user can enter.
 
     The root itself must be a directory and not a link to one. A junction is a
     link too: Windows reports one as a plain directory unless its reparse tag
@@ -328,21 +374,72 @@ def _require_plain_tree(root: Path, kind: str) -> None:
         "The upgrade copies the whole library first and will not follow a link or"
         " read a special file, so nothing was written."
     )
+    name = library or root
     st = os.lstat(root)
     what = odd(st) or (None if stat.S_ISDIR(st.st_mode) else "not a directory")
     if what:
-        raise ToolError(f"The {kind} {root} is {what}. {why}")
-    pending = [root]
-    while pending:
-        with os.scandir(pending.pop()) as entries:
-            for entry in entries:
-                st = entry.stat(follow_symlinks=False)
-                what = odd(st)
-                if what:
-                    rel = Path(entry.path).relative_to(root)
-                    raise ToolError(f"The {kind} {root} contains {rel}, which is {what}. {why}")
-                if stat.S_ISDIR(st.st_mode):
-                    pending.append(Path(entry.path))
+        raise ToolError(f"The {kind} {name} is {what}. {why}")
+    with os.scandir(root) as entries:
+        for entry in entries:
+            st = entry.stat(follow_symlinks=False)
+            what = odd(st)
+            if what:
+                raise ToolError(f"The {kind} {name} contains {entry.name}, which is {what}. {why}")
+            if stat.S_ISDIR(st.st_mode):
+                raise ToolError(
+                    f"The {kind} {name} contains {entry.name}, which is a folder. KiCad reads"
+                    " only the files directly inside a library folder, and the upgrade will not"
+                    " copy one that holds a folder, so nothing was written."
+                )
+
+
+def _copy_plain_file(member: str, dst: str, library: Path, kind: str, *, keep: bool) -> None:
+    """copytree's copy_function for both copies of a footprint library.
+
+    _require_plain_tree checks the library before it is copied, but copytree
+    lists it again and then opens each member by name, so a member swapped for
+    a link in between was followed: copy2 read the link's target with the
+    user's permissions and the ``.bak`` kept its bytes. Here the member is read
+    only through a descriptor opened with `_READ_NO_FOLLOW`, which fstat must
+    call a regular file before a byte is read. Windows has no O_NOFOLLOW, so a
+    file swapped for a link there is still followed.
+
+    *keep* gives the copy copy2's times, ACL and mode, all taken from that same
+    descriptor, as the ``.bak`` needs. The scratch copy wants none of them (see
+    `_upgrade_out_of_place`). Every path written to is inside a directory no
+    other user can enter, so writing there by name is safe.
+    """
+    why = (
+        "The upgrade will not follow a link or read a special file, so it stopped"
+        " with the library unchanged."
+    )
+    name = Path(member).relative_to(library)
+    try:
+        fd = os.open(member, _READ_NO_FOLLOW)
+    except OSError as exc:
+        if exc.errno != errno.ELOOP:
+            raise
+        raise ToolError(
+            f"The {kind} {library} changed while it was being copied: {name} is now a link. {why}"
+        ) from exc
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ToolError(
+                f"The {kind} {library} changed while it was being copied: {name} is now not"
+                f" a regular file. {why}"
+            )
+        acl = _posix_acl(fd) if keep else None
+        with open(fd, "rb", closefd=False) as fsrc, open(dst, "xb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+    finally:
+        os.close(fd)
+    if keep:
+        # copystat's order: the ACL before the mode, which may be read-only.
+        os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
+        if acl is not None:
+            os.setxattr(dst, _POSIX_ACL, acl)
+        os.chmod(dst, stat.S_IMODE(st.st_mode))
 
 
 def _backup_for_external_write(path: str | Path, kind: str) -> Path:
@@ -367,8 +464,9 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
     read-only parent) would very likely have made the rewrite worse.
 
     A library directory goes through _require_plain_tree before anything is
-    copied, and a copy that fails part way is removed rather than left beside
-    the library, where nothing would ever come back for it.
+    copied and again once it is, and a copy that fails part way is removed
+    rather than left beside the library, where nothing would ever come back for
+    it. A library file that is a link, or not a regular file, is refused.
     """
     src = Path(path)
     dest = src.with_name(src.name + ".bak")
@@ -391,8 +489,23 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
                 if leftover.exists():
                     shutil.rmtree(leftover)
             had_old = dest.exists()
+            # Owner-only until the copy is whole. copytree made it at the
+            # umask's 0755 and copy2 each file at 0644, with the library's own
+            # modes applied only after the bytes were in, and a descriptor
+            # opened in that window kept reading. The final copystat still
+            # gives the .bak the library's mode. Exclusive, and before the try,
+            # for _atomic_write's reason: a name already taken is refused
+            # without the cleanup below deleting a directory this call did not
+            # make.
+            os.mkdir(staging, 0o700)
             try:
-                shutil.copytree(src, staging)
+                shutil.copytree(
+                    src,
+                    staging,
+                    dirs_exist_ok=True,
+                    copy_function=lambda m, d: _copy_plain_file(m, d, src, kind, keep=True),
+                )
+                _require_plain_tree(staging, kind, src)
                 # Retire the old backup rather than deleting it first. Deleting
                 # it first left a window in which NO backup existed at all: the
                 # copy was complete and safe, but a crash between the delete and
@@ -414,7 +527,34 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
             if had_old:
                 shutil.rmtree(retired, ignore_errors=True)
         else:
-            _atomic_write(dest, src.read_bytes())
+            # A link is refused, not followed. Followed, its target was copied
+            # to <link>.bak beside it, and the upgrade then replaced the link
+            # with a regular file and left the target as it was. The one
+            # descriptor is both what is read and where the .bak's permissions
+            # come from, so a link swapped in after the check is not followed
+            # either. Windows has no O_NOFOLLOW and checks the name first.
+            why = (
+                "The upgrade will not follow a link or read a special file, so nothing was written."
+            )
+            if os.name == "nt" and stat.S_ISLNK(os.lstat(src).st_mode):
+                raise ToolError(f"The {kind} {src} is a link. {why}")
+            try:
+                fd = os.open(src, _READ_NO_FOLLOW)
+            except OSError as exc:
+                if exc.errno != errno.ELOOP:
+                    raise
+                raise ToolError(f"The {kind} {src} is a link. {why}") from exc
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise ToolError(f"The {kind} {src} is not a regular file. {why}")
+                with open(fd, "rb", closefd=False) as f:
+                    data = f.read()
+                # The library's permissions, for a new .bak and a refreshed one
+                # alike. Taken from the destination, a new .bak got the umask's
+                # 0644 beside a 0600 library, and an old one never tightened.
+                _atomic_write(dest, data, like=fd)
+            finally:
+                os.close(fd)
     # shutil.Error is NOT an OSError: copytree aggregates per-file failures into
     # it, so catching OSError alone let a partly-failed tree copy out as a raw
     # traceback naming neither the tool nor the library.
@@ -459,8 +599,8 @@ def _upgrade_out_of_place(path: str | Path, kind: str, argv: list[str]) -> list[
     leaves some footprints upgraded and some not, with no file torn. That is
     the same boundary the ADR already draws for fan-out writes.
 
-    A library directory goes through _require_plain_tree before it is copied,
-    for the reason given there.
+    A library directory goes through _require_plain_tree before it is copied
+    and again once it is, for the reason given there.
     """
     src = Path(path)
     if src.is_dir():
@@ -471,7 +611,14 @@ def _upgrade_out_of_place(path: str | Path, kind: str, argv: list[str]) -> list[
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp) / src.name
         if src.is_dir():
-            shutil.copytree(src, scratch)
+            # The bytes only, as for a library file below; the temp directory
+            # is owner-only, so a refused copy is seen by no one and goes with it.
+            shutil.copytree(
+                src,
+                scratch,
+                copy_function=lambda m, d: _copy_plain_file(m, d, src, kind, keep=False),
+            )
+            _require_plain_tree(scratch, kind, src)
         else:
             # copyfile, not copy2: the stock libraries ship read-only and a
             # mode-preserving copy makes kicad-cli exit 2 with "Unable to save
@@ -503,6 +650,16 @@ def _upgrade_out_of_place(path: str | Path, kind: str, argv: list[str]) -> list[
                 f"The {kind} upgrade changed which files the library holds, so nothing was"
                 f" written and the original is untouched. Added: {gained or 'none'}."
                 f" Removed: {lost or 'none'}."
+            )
+        # Both copies were checked flat, so a path with a folder in it means the
+        # library changed during the upgrade. Writing it would resolve that
+        # folder by name again, and a link swapped onto it since would carry the
+        # write outside the library.
+        nested = sorted(str(p) for p in produced if len(p.parts) > 1)
+        if nested:
+            raise ToolError(
+                f"The {kind} gained a folder during the upgrade ({', '.join(nested)}),"
+                " so nothing was written and the original is untouched."
             )
         changed = []
         for rel in sorted(produced):
@@ -539,7 +696,7 @@ def _ensure_dir(path: str | Path, kind: str = "output directory") -> Path:
     return p
 
 
-def _atomic_write(path: str | Path, data: bytes) -> None:
+def _atomic_write(path: str | Path, data: bytes, *, like: int | None = None) -> None:
     """Write *data* to *path* through a temp file and a replace.
 
     The invariant this exists for: an edit we cannot complete leaves the file
@@ -548,6 +705,11 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
     file) leaves a truncated or empty file. Measured on NTFS with a concurrent
     reader, a plain write was observed torn 345 times in 800 reads, including
     reads of zero bytes; the same probe against this function saw 0 in 25,529.
+
+    The replacement keeps the destination's group, mode and POSIX access ACL,
+    or takes them from the open file *like* instead, which is how a ``.bak``
+    gets its library's. They are set on the temp before a byte is written, and
+    what cannot be carried without widening access is refused.
 
     Deliberately no fsync. What was measured is tearing, which the replace
     closes completely. fsync buys power-loss durability that nobody here has
@@ -561,18 +723,70 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
     # neither. The random part is what keeps two writers of one file in one
     # process apart; with the pid alone they shared a temp.
     tmp = p.with_name(f"{p.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    # Windows is left alone: its only mode is read-only, and a read-only temp
+    # is one Windows then refuses to delete.
+    carry = os.name != "nt" and (like is not None or p.exists())
     # Exclusive, and before the try: a create that fails, or finds the name
     # taken, has made nothing of this call's, and the cleanup below would
-    # otherwise delete a file this call did not create.
-    f = open(tmp, "xb")
+    # otherwise delete a file this call did not create. Owner-only when a mode
+    # is about to be carried: at the umask's 0644, anyone who opened the temp
+    # before the fchmod kept a descriptor that read every byte written after it
+    # (an inotify watcher read a whole 0600 schematic in 5 of 300 edits), and
+    # 0600 also masks off whatever a directory default ACL grants. A new file
+    # with nothing to carry keeps the umask's mode, as before.
+    created = 0o600 if carry else 0o666
+    f = open(tmp, "xb", opener=lambda name, flags: os.open(name, flags, created))
     try:
         with f:
-            if os.name != "nt" and p.exists():
-                # Otherwise a group-writable file comes back 0644. Set through
-                # the descriptor, so it lands on the file this call created.
-                # Windows is left alone: its only mode is read-only, and a
-                # read-only temp is one Windows then refuses to delete.
-                os.fchmod(f.fileno(), stat.S_IMODE(p.stat().st_mode))
+            if carry:
+                # Otherwise a group-writable file comes back 0644, in this
+                # process's group. Set through the descriptor, so it lands on
+                # the file this call created. In this order: chown clears
+                # setuid and setgid, so it precedes the fchmod; removexattr
+                # drops an ACL the temp inherited from a directory default and
+                # leaves it owner-only; the original's own ACL goes on before
+                # the mode, because the mode alone hands the group the ACL's
+                # mask (a member of the group that opened the temp in that gap
+                # read 137 of 1500 edits in one probe, 1423 in another); and the
+                # fchmod last, which with the ACL in place only restates it,
+                # plus setuid and setgid.
+                fd = f.fileno()
+                ref = p if like is None else like
+                try:
+                    st = os.stat(ref)
+                    mode = stat.S_IMODE(st.st_mode)
+                    acl = _posix_acl(ref)
+                    if os.fstat(fd).st_gid != st.st_gid:
+                        try:
+                            os.fchown(fd, -1, st.st_gid)
+                        except PermissionError:
+                            # Not a member of that group, so the temp stays in
+                            # this process's. That widens access only where the
+                            # group class grants more than other, and with an
+                            # ACL the group bits are its mask, so the same test
+                            # holds.
+                            if (mode >> 3) & 0o7 & ~(mode & 0o7):
+                                raise PermissionError(
+                                    errno.EPERM,
+                                    f"the original is in group {st.st_gid}, which this"
+                                    " process is not a member of, and in this process's own"
+                                    " group the new file would be open to people the"
+                                    " original shuts out",
+                                ) from None
+                    if hasattr(os, "removexattr"):
+                        try:
+                            os.removexattr(fd, _POSIX_ACL)
+                        except OSError as e:
+                            if e.errno not in _NO_ACL:
+                                raise
+                    if acl is not None:
+                        os.setxattr(fd, _POSIX_ACL, acl)
+                    os.fchmod(fd, mode)
+                except OSError as e:
+                    raise OSError(
+                        f"could not write {p} with the group and permissions it must keep:"
+                        f" {e.strerror or e}. The file is unchanged."
+                    ) from e
             f.write(data)
         for delay in _REPLACE_RETRY_DELAYS:
             try:
@@ -1218,9 +1432,16 @@ def _remove_root_symbol_instance(
 
     Returns True if an entry was removed, False otherwise.
     """
-    # Suffix matching needs no sheet lookup, only the root file itself
-    # (the kiutils version likewise removed stale entries even when the
-    # sheet block was gone from the root).
+    # Only rows under a prefix that instances *schematic_path* are removed:
+    # "/{root}" for the root itself, "/{root}/{sheet}" for every root sheet
+    # whose Sheetfile names it, and KiCad 6's form of each, which omits the
+    # root UUID. Matching on the symbol UUID alone also deleted another sheet
+    # file's row whenever the two files shared it, as a sheet file copied
+    # outside KiCad does. Stale rows now left in place: deeper KiCad 6 nested
+    # paths, rows whose sheet block is gone, and Sheetfile spellings other than
+    # the bare name. A row for a symbol that no longer exists is harmless, as
+    # KiCad matches live symbols by full path; a file no sheet names finds no
+    # prefix and removes nothing.
     root_path = _resolve_root(schematic_path, project_path)
     if root_path is None:
         root_path = _find_root_schematic(schematic_path)
@@ -1236,8 +1457,18 @@ def _remove_root_symbol_instance(
     si = root.find("symbol_instances")
     if si is None:
         return False
-    suffix = f"/{sym_uuid}"
-    matched = [e for e in si.find_all("path") if e.atoms[1].text.endswith(suffix)]
+    root_uuid = _node_uuid(root)
+    if root_path is None:
+        prefixes = [f"/{root_uuid}", ""]
+    else:
+        target_name = Path(schematic_path).name
+        prefixes = []
+        for sheet in root.find_all("sheet"):
+            if _sheet_file_cst(sheet) == target_name:
+                sheet_uuid = _node_uuid(sheet)
+                prefixes += [f"/{root_uuid}/{sheet_uuid}", f"/{sheet_uuid}"]
+    wanted = {(prefix, "/", sym_uuid) for prefix in prefixes}
+    matched = [e for e in si.find_all("path") if e.atoms[1].text.rpartition("/") in wanted]
     if not matched:
         return False
     for e in matched:

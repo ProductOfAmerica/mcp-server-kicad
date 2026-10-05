@@ -928,6 +928,58 @@ class TestAddThermalVias:
         # Should have picked one of the pads (both are same size)
         assert result.pad in ("1", "2")
 
+    def test_a_grid_out_of_bounds_is_refused_before_the_board_is_touched(
+        self, scratch_pcb, monkeypatch
+    ):
+        """An empty or negative dimension used to report success with nothing
+        added, and rows x cols had no ceiling: every via was built, each one
+        rescanning the board, before the one write. The stub fails the test the
+        moment a via is built, so a grid that slips past the check cannot run."""
+
+        def expanded(root, node):
+            raise AssertionError("grid expanded before its size was checked")
+
+        monkeypatch.setattr(pcb, "_splice_pcb_node", expanded)
+        before = scratch_pcb.read_bytes()
+        mtime = scratch_pcb.stat().st_mtime_ns
+        too_many = f"at most {pcb._MAX_THERMAL_VIAS} in one call"
+        empty = "at least one row and one column"
+        # (10**18, 0) spins rather than fails without the check, so it comes
+        # after the zero and negative cases that fail first.
+        for rows, cols, match in [
+            (10**6, 10**6, too_many),
+            (1, pcb._MAX_THERMAL_VIAS + 1, too_many),
+            (0, 3, empty),
+            (-1, 3, empty),
+            (10**6, 0, empty),
+            (10**18, 0, empty),
+        ]:
+            with pytest.raises(ToolError, match=match):
+                pcb.add_thermal_vias(
+                    "R1",
+                    pad_number="1",
+                    rows=rows,
+                    cols=cols,
+                    net_name="Net1",
+                    pcb_path=str(scratch_pcb),
+                )
+            assert scratch_pcb.read_bytes() == before
+        assert scratch_pcb.stat().st_mtime_ns == mtime
+        assert f"at most {pcb._MAX_THERMAL_VIAS}." in (pcb.add_thermal_vias.__doc__ or "")
+
+        # The cap itself is allowed; counted rather than inserted, to stay fast.
+        built: list = []
+        monkeypatch.setattr(pcb, "_splice_pcb_node", lambda root, node: built.append(node))
+        result = pcb.add_thermal_vias(
+            "R1",
+            pad_number="1",
+            rows=1,
+            cols=pcb._MAX_THERMAL_VIAS,
+            net_name="Net1",
+            pcb_path=str(scratch_pcb),
+        )
+        assert result.vias_added == len(built) == pcb._MAX_THERMAL_VIAS
+
 
 # ---------------------------------------------------------------------------
 # Helper: board with keepout zone and edge cuts for move/check tests

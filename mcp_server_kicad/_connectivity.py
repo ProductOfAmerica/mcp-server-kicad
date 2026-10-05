@@ -638,6 +638,14 @@ def _pin_hidden(p) -> bool:
 
 #: Line index cell for the possible view, IU (2.54 mm).
 _CELL = 25400
+#: A line whose box spans more cells is checked against every point: a box grows as span squared.
+_MAX_SEG_CELLS = 1024
+#: Cells the index fills per sheet before further lines are checked that way too, about 15 MiB
+#: at 232 B a cell (measured). The busiest of KiCad's own demo sheets fills 6,994 and no line
+#: of any of its 116 sheets spans more than 314, so real sheets stay entirely in the grid.
+#: Past it each further line costs a check per point, a steep cliff: a flat sheet of 9,000
+#: wires of 8 cells, 10% over, took 7.4 s here against 0.22 s with every line indexed.
+_MAX_CELLS = 1 << 16
 
 
 def _pad_order(num: str):
@@ -1517,18 +1525,29 @@ class Model:
                         for x, y, a in cell:
                             if a.id < b.id and _d2(x, y, u, v) <= TOL2:
                                 uf.union(a.id, b.id)
+        # The grid is only a prefilter, so a line kept out of it is checked against every point
+        # by the same rule. Coordinates are unbounded, and one 100 m diagonal's box is 1.5
+        # billion cells.
         cells: dict[Point, list[Item]] = {}
+        unindexed: list[Item] = []
+        filled = 0
         for ln in self.items:
             if ln.kind in _SEGS and (ln.x, ln.y) != (ln.x2, ln.y2):
-                for gx in range(
-                    (min(ln.x, ln.x2) - TOL) // _CELL, (max(ln.x, ln.x2) + TOL) // _CELL + 1
-                ):
-                    for gy in range(
-                        (min(ln.y, ln.y2) - TOL) // _CELL, (max(ln.y, ln.y2) + TOL) // _CELL + 1
-                    ):
+                x0, x1 = (min(ln.x, ln.x2) - TOL) // _CELL, (max(ln.x, ln.x2) + TOL) // _CELL
+                y0, y1 = (min(ln.y, ln.y2) - TOL) // _CELL, (max(ln.y, ln.y2) + TOL) // _CELL
+                n = (x1 - x0 + 1) * (y1 - y0 + 1)
+                if n > _MAX_SEG_CELLS or filled + n > _MAX_CELLS:
+                    unindexed.append(ln)
+                    continue
+                filled += n
+                for gx in range(x0, x1 + 1):
+                    for gy in range(y0, y1 + 1):
                         cells.setdefault((gx, gy), []).append(ln)
         for x, y, a in pts:  # a point within the margin of a line
             for ln in cells.get((x // _CELL, y // _CELL), ()):
+                if ln is not a and _within(x, y, ln.x, ln.y, ln.x2, ln.y2, TOL2):
+                    uf.union(a.id, ln.id)
+            for ln in unindexed:
                 if ln is not a and _within(x, y, ln.x, ln.y, ln.x2, ln.y2, TOL2):
                     uf.union(a.id, ln.id)
         for group in [*self.pads.values(), *self.jumpers]:
