@@ -517,7 +517,7 @@ def _named_reader_acl(uid: int) -> bytes:
     )
 
 
-def _read_acl(p: Path) -> bytes | None:
+def _read_acl(p: Path | int) -> bytes | None:
     try:
         return os.getxattr(p, "system.posix_acl_access")
     except OSError as exc:
@@ -576,6 +576,40 @@ class TestAtomicWritePermissions:
         _atomic_write(p, self.REPLACEMENT)
         assert p.read_bytes() == self.REPLACEMENT
         assert _read_acl(p) == acl, "the ACL was dropped, so its mask became group access"
+        assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
+    def test_the_temp_never_has_the_mode_without_the_acl(self, acl_dir: Path, monkeypatch):
+        """With an ACL the group bits are its mask, so a temp given the mode
+        before the ACL lets the whole owning group read for that moment, though
+        the ACL's own group entry is empty. A member of the group watching the
+        directory read the content of 137 of 1500 edits that way in one probe,
+        1423 in another. The temp is read through its descriptor after each
+        step that sets its bits."""
+        p = self._target(acl_dir)
+        acl = _named_reader_acl(os.getuid() + 1)
+        os.setxattr(p, "system.posix_acl_access", acl)
+        seen: list[tuple[str, int, bool]] = []
+
+        def watch(name, real):
+            def spy(fd, *args):
+                result = real(fd, *args)
+                if isinstance(fd, int):
+                    mode = stat.S_IMODE(os.fstat(fd).st_mode)
+                    seen.append((name, mode, _read_acl(fd) is not None))
+                return result
+
+            return spy
+
+        # _shared.os is the os module, so only after the setup's own setxattr.
+        monkeypatch.setattr(_shared.os, "fchmod", watch("fchmod", os.fchmod))
+        monkeypatch.setattr(_shared.os, "setxattr", watch("setxattr", os.setxattr))
+        _atomic_write(p, self.REPLACEMENT)
+        monkeypatch.undo()
+        assert {name for name, _, _ in seen} == {"fchmod", "setxattr"}, seen
+        leaks = [(name, oct(mode)) for name, mode, has_acl in seen if mode & 0o077 and not has_acl]
+        assert leaks == [], "the temp had the mode's group bits and no ACL to narrow them"
+        assert p.read_bytes() == self.REPLACEMENT
+        assert _read_acl(p) == acl
         assert stat.S_IMODE(p.stat().st_mode) == 0o640
 
     def test_a_directory_default_acl_is_not_inherited(self, acl_dir: Path):
