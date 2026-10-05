@@ -483,3 +483,22 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   full suite on that machine (KiCad 9.0.8) is 1220 passed, 23 skipped, twenty of the
   skips KiCad 10 tests; the KiCad 10 legs run only in the macOS and Windows jobs, from
   a `ci/**` push.
+
+- 2026-10-04: wire_pins_to_net's write path, rebuilt on a read-only model of the sheet
+  (`_connectivity.py`; decision record docs/adr-routing-safety.md). It still writes once through
+  `_atomic_write` and only adds wire and label nodes, and every refusal leaves the file
+  byte-identical. It writes no junctions any more: one on an unsplit wire's interior cuts that
+  wire in kicad-cli 9. The pin transform is fixed for every pin read, not only this tool's:
+  `_transform_pin_pos` mirrored before it rotated, KiCad rotates first, so at rotation 90 or 270
+  with a mirror, get_pin_positions, get_net_connections and the pin lookup behind connect_pins,
+  no_connect_pin and remove_no_connect all computed the true pin reflected through the symbol
+  origin. The slice-7 differential test above pinned the CST read to the kiutils one through
+  rotation and mirror and passed throughout, because both used that transform: it proved
+  agreement, not correctness. What catches it now compares with KiCad itself: a sweep of 12
+  orientations judged by kicad-cli's netlist, and a model-versus-netlist differential that runs
+  on whatever KiCad each CI runner carries. The tool also reads past the sheet it edits, and
+  only reads: the project's other sheets, for the duplicate-reference check, each parsed only
+  when its bytes can hold a sheet block or a reference the call asks about, and cached by a
+  digest of its content. auto_place_decoupling_cap still writes the cap and each pin separately;
+  when a pin is refused after the cap is on disk, it now says what is there and lists the calls
+  that remove it, all but a library symbol it copied into lib_symbols, which it says stays.

@@ -97,7 +97,34 @@ Follow existing spacing/wiring/naming conventions in the schematic.
 | Symbol not found | STOP. Do not fuzzy-match or substitute. Report the error. If a previously-verified symbol is missing, instruct the user to re-run from circuit-design to re-validate the BOM. |
 | Position outside page bounds | STOP. Report error. The plan's page calculation should have prevented this. Instruct the user to re-run schematic-plan. |
 | connect_pins fails | Try wire_pins_to_net for that connection. If that fails, report and continue with remaining wiring. |
+| `wire_pins_to_net` refuses | Act on the bracketed code, per the table below. |
 | ERC violations | Report violations. Invoke verification skill. |
+
+### `wire_pins_to_net` refusals
+
+A refused call writes nothing and lists every refused pin with a
+bracketed code, the obstacle and a remedy. Fix the cause and call
+again with the same pins. Never work around a refusal with `add_label`
+or `add_wires`: they check none of this, so they can merge or split
+nets silently.
+
+| Code | Meaning | Do this |
+|------|---------|---------|
+| `validation` | An argument is malformed: an empty or padded name, a leading `/`, `${`, a KiCad auto-name such as `Net-(...)`, bus syntax, an unknown direction, a stub not a multiple of 1.27 mm or over 1000 mm | Fix the argument |
+| `resolve` | The reference is not on this sheet, the pin does not exist, or a pin name matches pads at different points | Pass the pad numbers the message lists, or wire the pin on the sheet that holds its unit |
+| `names` | The pin's net already carries another name | If that name is a `Net-(...)` label `connect_pins` wrote, remove it with `remove_label` as the message says, then call again. If the pin belongs on the net, call again with its name as the message shows it; otherwise stop and report |
+| `touch` | Every stub and label position would touch something | Pass another `direction`, or move the part; otherwise stop and report |
+| `netclass` | Wiring would move a net into another net class | Stop and report |
+| `nc_type` | The pin is a no-connect type pin | Pick another pin |
+| `nc_flag` | The pin has a no-connect flag | If it should be connected, `remove_no_connect`, then call again |
+| `dup_ref` | Another part shares the reference somewhere in the hierarchy, or a sheet of the hierarchy cannot be read, so sharing cannot be ruled out | Give each part its own reference (`annotate_schematic` numbers `?` references), then call again. For an unreadable sheet, stop and report which one the message names |
+| `bus`, `bus_entry`, `sheet_pin`, `text_var`, `jumper`, `unit0_unplaced`, `units_disagree` | The pin's net may reach something this tool cannot judge | Stop and report |
+| `derived`, `unloadable` | A symbol on the sheet has pins KiCad's file does not define, or defines twice, or an angle KiCad cannot load | Stop and report |
+
+When `auto_place_decoupling_cap` meets one of these after placing the
+cap, its error says what it left on disk and the calls that remove it;
+any library symbol it copied into the file stays, and no net depends on
+it.
 
 ## Checklist (Plan Mode)
 
@@ -159,6 +186,15 @@ Y < 175mm.
 - A net connects 3 or more components that are not all adjacent
 - The net spans across functional stages
 - Power and ground rails — always use net labels, never daisy-chain
+
+What `wire_pins_to_net` writes: a short stub away from each pin with
+the label at its end, or the label on the pin end when the stub would
+touch something. It never writes a junction, and a pin already on the
+net is left alone. Read the result's notes: "new local net" means
+nothing on this sheet carried that name, so a power symbol or global
+label of that name elsewhere does not join it (use `add_power_symbol`
+or `add_global_label` to reach those); on a sheet used more than once,
+the wiring lands in every instance, and the note names each one.
 
 ## Power and Ground
 

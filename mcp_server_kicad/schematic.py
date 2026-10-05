@@ -2,14 +2,21 @@
 
 import difflib
 import json
-import math
 import re
 from pathlib import Path
 from typing import Literal
 
 from mcp.server.mcpserver.exceptions import ToolError
 
+import mcp_server_kicad._connectivity as _connectivity
 import mcp_server_kicad._cst as _cst
+from mcp_server_kicad._connectivity import (
+    _instance_units,
+    _sym_body_style_cst,
+    _sym_unit_cst,
+    not_drawn_message,
+    pin_matches,
+)
 from mcp_server_kicad._cst import _fill_at, _node_text, _node_xy, _num, _numish
 from mcp_server_kicad._shared import (
     _ADDITIVE,
@@ -174,31 +181,20 @@ def _transform_pin_pos(
 
     The outward angle is the direction away from the component body in
     schematic coordinates (0=right, 90=down/+Y, 180=left, 270=up/-Y).
+
+    KiCad's order: rotate, then mirror. This used to mirror first, which
+    for rotation 90 or 270 with a mirror reflects the pin through the symbol
+    origin, onto the other pin of a two-pin part. The arithmetic is the
+    routing model's integer transform (_connectivity.transform_mm), and the
+    pin reads take a placed symbol's definition by the model's rule
+    (_connectivity.lib_key), so they draw a pin where wire_pins_to_net wires
+    it. They still find a part by its Reference property and draw its
+    top-level unit, where the model takes the reference and unit KiCad reads
+    at the sheet's live instance path. The two differ where the property or
+    the top-level unit is not what KiCad reads there: a stale property, or a
+    reused sheet's other instances.
     """
-    angle_rad = math.radians(comp_angle_deg)
-
-    # Negate Y to convert from lib_symbol (Y-up) to schematic (Y-down)
-    py = -py
-
-    # Apply mirror and compute absolute pin angle (toward-body direction)
-    if mirror == "x":
-        py = -py
-        abs_pin_angle = pin_angle + comp_angle_deg
-    elif mirror == "y":
-        px = -px
-        abs_pin_angle = pin_angle + 180 + comp_angle_deg
-    else:
-        abs_pin_angle = -pin_angle + comp_angle_deg
-
-    # Apply rotation (KiCad rotates CW in the Y-down coordinate system)
-    cos_a = math.cos(angle_rad)
-    sin_a = math.sin(angle_rad)
-    final_x = cx + px * cos_a + py * sin_a
-    final_y = cy - px * sin_a + py * cos_a
-
-    # Outward direction (away from body)
-    outward = (abs_pin_angle + 180) % 360
-    return round(final_x, 4), round(final_y, 4), outward
+    return _connectivity.transform_mm(px, py, pin_angle, cx, cy, comp_angle_deg, mirror)
 
 
 def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, float]:
@@ -549,10 +545,11 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
         raise ToolError(f"{reference} not found." + _SEE_PLACED)
 
     lines: list[str] = []
+    libs = _connectivity.lib_index(root)
     for target in targets:
         lib_id = target.find("lib_id").atoms[1].text
         symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-        lib_sym = _find_lib_symbol_cst(root, lib_id)
+        lib_sym = libs.get(_connectivity.lib_key(target))
         if lib_sym is None:
             raise ToolError(f"Lib symbol for {reference} not found.")
 
@@ -560,8 +557,8 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
         cx = _numish(at.atoms[1].text)
         cy = _numish(at.atoms[2].text)
         angle_deg = _numish(at.atoms[3].text) if len(at.atoms) > 3 else 0
-        m = target.find("mirror")
-        mir = m.atoms[1].text if m is not None else None
+        # The mirror KiCad applies: one written before (at) is ignored on load.
+        mir = _connectivity.effective_mirror(target)
         unit = _sym_unit_cst(target)
 
         head = f"{reference} ({symbol_name}) @ ({cx}, {cy}) rot={angle_deg} mirror={mir}"
@@ -569,16 +566,10 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
 
         for unit_node in _instance_units(lib_sym, unit, _sym_body_style_cst(target)):
             for pin in unit_node.find_all("pin"):
-                pat = pin.find("at")
-                final_x, final_y, _ = _transform_pin_pos(
-                    float(pat.atoms[1].text),
-                    float(pat.atoms[2].text),
-                    float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0,
-                    cx,
-                    cy,
-                    angle_deg,
-                    mir,
-                )
+                try:
+                    final_x, final_y, _ = _connectivity.pin_point_mm(target, pin, reference)
+                except _connectivity.Refusal as e:
+                    raise ToolError(e.text) from None
                 number = pin.find("number")
                 name = pin.find("name")
                 lines.append(
@@ -642,33 +633,20 @@ def get_net_connections(
 
     # Find component pins at reachable positions
     connections = []
+    libs = _connectivity.lib_index(root)
     for sym in root.find_all("symbol"):
         ref = _sym_property_cst(sym, "Reference")
         if ref is None:
             continue
-        lib_id_node = sym.find("lib_id")
-        if lib_id_node is None:
-            continue
-        lib_sym = _find_lib_symbol_cst(root, lib_id_node.atoms[1].text)
+        lib_sym = libs.get(_connectivity.lib_key(sym))
         if lib_sym is None:
             continue
-        at = sym.find("at")
-        cx, cy = float(at.atoms[1].text), float(at.atoms[2].text)
-        comp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
-        m = sym.find("mirror")
-        mir = m.atoms[1].text if m is not None else None
         for unit in _instance_units(lib_sym, _sym_unit_cst(sym), _sym_body_style_cst(sym)):
             for pin in unit.find_all("pin"):
-                pat = pin.find("at")
-                px, py, _ = _transform_pin_pos(
-                    float(pat.atoms[1].text),
-                    float(pat.atoms[2].text),
-                    float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0,
-                    cx,
-                    cy,
-                    comp_angle,
-                    mir,
-                )
+                try:
+                    px, py, _ = _connectivity.pin_point_mm(sym, pin, ref)
+                except _connectivity.Refusal as e:
+                    raise ToolError(e.text) from None
                 number = pin.find("number")
                 name = pin.find("name")
                 for rx, ry in reachable:
@@ -1213,78 +1191,6 @@ def _find_sym_cst(root, reference: str):
     return found[0] if found else None
 
 
-def _sym_unit_cst(sym) -> int:
-    """Unit number of a placed symbol node.
-
-    One when the node carries no ``(unit N)``, which is how KiCad reads it
-    (``SCH_SYMBOL::Init``).
-    """
-    node = sym.find("unit")
-    if node is None or len(node.atoms) < 2:
-        return 1
-    try:
-        return int(node.atoms[1].text)
-    except ValueError:
-        return 1
-
-
-def _sym_body_style_cst(sym) -> int:
-    """Body style of a placed symbol node.
-
-    KiCad 10 writes ``(body_style N)`` on every placed symbol; KiCad 9 writes
-    ``(convert N)``, and only for a De Morgan alternate. Absent means 1.
-    """
-    node = sym.find("body_style")
-    if node is None:
-        node = sym.find("convert")
-    if node is None or len(node.atoms) < 2:
-        return 1
-    try:
-        return int(node.atoms[1].text)
-    except ValueError:
-        return 1
-
-
-def _lib_unit_style(unit_node) -> tuple[int, int] | None:
-    """The (unit, body style) a lib sub-symbol's name encodes, or None if none.
-
-    KiCad names them ``NAME_<unit>_<bodyStyle>``, and NAME itself may contain
-    underscores, so the two trailing fields are the ones to read.
-    """
-    atoms = unit_node.atoms
-    if len(atoms) < 2:
-        return None
-    parts = atoms[1].text.rsplit("_", 2)
-    if len(parts) != 3:
-        return None
-    try:
-        return int(parts[1]), int(parts[2])
-    except ValueError:
-        return None
-
-
-def _instance_units(lib_sym, unit: int, body_style: int = 1):
-    """The lib sub-symbols a placed instance of *unit* in *body_style* draws.
-
-    KiCad's rule (``LIB_SYMBOL::GetPins``): a sub-symbol is drawn when its
-    unit is this one or 0 and its body style is this one or 0, with 0 meaning
-    "common" on both axes. So a placed ``(unit 2)`` draws units 2 and 0 and
-    nothing else, and a De Morgan part placed in its normal style draws
-    ``_1_1`` but not ``_1_2``. Scanning every sub-symbol instead reports a
-    sibling unit's pins as this instance's own, at coordinates derived from
-    this instance's origin, and an alternate style's pins a second time.
-
-    A sub-symbol whose name encodes no unit is kept. KiCad's own parser
-    refuses such a name, so only a hand-built file carries one.
-    """
-    kept = []
-    for sub in lib_sym.find_all("symbol"):
-        ids = _lib_unit_style(sub)
-        if ids is None or (ids[0] in (unit, 0) and ids[1] in (body_style, 0)):
-            kept.append(sub)
-    return kept
-
-
 def _find_lib_symbol_cst(root, lib_id: str):
     """CST twin of _find_lib_symbol: bare and prefixed names both match."""
     bare = lib_id.split(":")[-1] if ":" in lib_id else lib_id
@@ -1297,36 +1203,22 @@ def _find_lib_symbol_cst(root, lib_id: str):
     return None
 
 
-def _pin_matches_cst(pin, pin_name: str) -> bool:
-    """True when a lib pin node's name or number is *pin_name*."""
-    name = pin.find("name")
-    number = pin.find("number")
-    return (name is not None and name.atoms[1].text == pin_name) or (
-        number is not None and number.atoms[1].text == pin_name
-    )
-
-
 def _drawn_pin_pos_cst(root, target, pin_name: str, reference: str):
     """Absolute (x, y, outward) of *pin_name* if the placed node *target* draws it.
 
     None when it does not: the pin is on another unit, or on this unit's
     other body style. Pin match is name-OR-number per pin in file order.
     """
-    lib_sym = _find_lib_symbol_cst(root, target.find("lib_id").atoms[1].text)
+    lib_sym = _connectivity.lib_index(root).get(_connectivity.lib_key(target))
     if lib_sym is None:
         raise ValueError(f"Lib symbol for {reference} not found")
-    at = target.find("at")
-    cx, cy = float(at.atoms[1].text), float(at.atoms[2].text)
-    comp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
-    m = target.find("mirror")
-    mir = m.atoms[1].text if m is not None else None
     for unit in _instance_units(lib_sym, _sym_unit_cst(target), _sym_body_style_cst(target)):
         for pin in unit.find_all("pin"):
-            if _pin_matches_cst(pin, pin_name):
-                pat = pin.find("at")
-                px, py = float(pat.atoms[1].text), float(pat.atoms[2].text)
-                pangle = float(pat.atoms[3].text) if len(pat.atoms) > 3 else 0
-                return _transform_pin_pos(px, py, pangle, cx, cy, comp_angle, mir)
+            if pin_matches(pin, pin_name):
+                try:
+                    return _connectivity.pin_point_mm(target, pin, reference)
+                except _connectivity.Refusal as e:
+                    raise ValueError(e.text) from None
     return None
 
 
@@ -1350,48 +1242,9 @@ def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float,
         pos = _drawn_pin_pos_cst(root, target, pin_name, reference)
         if pos is not None:
             return pos
-    lib_sym = _find_lib_symbol_cst(root, targets[0].find("lib_id").atoms[1].text)
-    subs = lib_sym.find_all("symbol") if lib_sym is not None else []
-    carriers = sorted(
-        {
-            ids
-            for sub in subs
-            if (ids := _lib_unit_style(sub)) is not None
-            and any(_pin_matches_cst(pin, pin_name) for pin in sub.find_all("pin"))
-        }
-    )
-    if not carriers:
-        raise ValueError(f"Pin '{pin_name}' not found on {reference}")
-    # Name the body style only where it is the thing that differs: the unit is
-    # here in its other style, or it is unit 0, which every placed unit draws.
-    # An unplaced unit is named as a unit, and placing it is then the remedy.
-    placed_units = {_sym_unit_cst(t) for t in targets}
-    styles_by_unit: dict[int, set[int]] = {}
-    for u, s in carriers:
-        styles_by_unit.setdefault(u, set()).add(s)
-
-    def _carrier(u: int, styles: set[int]) -> str:
-        style = "body style " + "/".join(map(str, sorted(styles)))
-        if u == 0:
-            return f"{style} (common to all units)"
-        return f"unit {u} {style}" if u in placed_units else f"unit {u}"
-
-    where = ", ".join(_carrier(u, styles) for u, styles in sorted(styles_by_unit.items()))
-    placed = ", ".join(
-        f"unit {_sym_unit_cst(t)}"
-        + (f" body style {_sym_body_style_cst(t)}" if _sym_body_style_cst(t) != 1 else "")
-        for t in targets
-    )
-    if any(u != 0 and u not in placed_units for u in styles_by_unit):
-        raise ValueError(
-            f"Pin '{pin_name}' of {reference} is on {where}, which is not placed on this sheet "
-            f"({reference} here: {placed}). Place that unit, or wire the pin on the sheet "
-            "that holds it."
-        )
-    raise ValueError(
-        f"Pin '{pin_name}' of {reference} is on {where}, which this sheet does not draw "
-        f"({reference} here: {placed}). Switch the placed symbol to that body style in KiCad."
-    )
+    lib_sym = _connectivity.lib_index(root).get(_connectivity.lib_key(targets[0]))
+    placed = [(_sym_unit_cst(t), _sym_body_style_cst(t)) for t in targets]
+    raise ValueError(not_drawn_message(reference, pin_name, lib_sym, placed))
 
 
 def _splice_lib_symbol_cst(root, node) -> None:
@@ -1983,6 +1836,17 @@ def auto_place_decoupling_cap(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
+    # The net names need nothing from the sheet, so they are checked before the first write.
+    # What the stubs will meet is known only once the cap is placed, and the cap and each pin
+    # are written separately, so a later refusal leaves the earlier writes on disk; it then says
+    # what they were and how to undo them.
+    for param, net in (("power_net", power_net), ("ground_net", ground_net)):
+        try:
+            _connectivity.check_args(net, "auto", 2.54, param=param)
+        except _connectivity.Refusal as e:
+            raise ToolError(
+                f"{_connectivity.tags(e.codes)} {e.text} Nothing was written."
+            ) from None
     result = place_component(
         lib_id=lib_id,
         reference=reference,
@@ -1994,24 +1858,41 @@ def auto_place_decoupling_cap(
         schematic_path=schematic_path,
         project_path=project_path,
     )
+    done = f"placed {reference}"
+    undo = [f"remove_component({reference!r})"]
+    notes: list[str] = []
+    pins = (("1", power_net, "up", "power_net"), ("2", ground_net, "down", "ground_net"))
+    for pin, net, direction, param in pins:
+        try:
+            plan = _wire_pins(
+                [{"reference": reference, "pin": pin}],
+                net,
+                direction,
+                2.54,
+                schematic_path,
+                param=param,
+                turns=False,  # each pin's direction is fixed here
+            )
+        except _WireRefused as e:
+            raise ToolError(
+                f"{_connectivity.tags(e.plan.codes)} auto_place_decoupling_cap {done}, but wiring"
+                f" pin {pin} to {net!r} was refused, and what it wrote stays on disk. To undo it:"
+                f" {', '.join(undo)}. Those remove what it placed and wired; any library symbol"
+                " it copied into lib_symbols stays, and no net depends on it.\n- "
+                + "\n- ".join(e.plan.lines)
+            ) from None
+        assert plan is not None  # one pin, so the file was read
+        notes += [n for n in plan.notes if n not in notes]
+        done += f" and wired pin {pin} to {net!r}"
+        mm = _connectivity.mm
+        undo += [
+            f"remove_wire({mm(a[0])}, {mm(a[1])}, {mm(b[0])}, {mm(b[1])})" for a, b in plan.wires
+        ]
+        undo += [f"remove_label({net!r}, {mm(lx)}, {mm(ly)})" for (lx, ly), _r in plan.labels]
 
-    # Wire pin 1 (top) to power net
-    wire_pins_to_net(
-        pins=[{"reference": reference, "pin": "1"}],
-        label_text=power_net,
-        direction="up",
-        schematic_path=schematic_path,
-    )
-
-    # Wire pin 2 (bottom) to ground net
-    wire_pins_to_net(
-        pins=[{"reference": reference, "pin": "2"}],
-        label_text=ground_net,
-        direction="down",
-        schematic_path=schematic_path,
-    )
-
-    return f"{result} | pin 1->{power_net} | pin 2->{ground_net}"
+    # The wiring's notes say, among other things, when a net name is new on this sheet: a
+    # power symbol or global label of that name elsewhere does not reach the cap.
+    return "\n".join([f"{result} | pin 1->{power_net} | pin 2->{ground_net}", *notes])
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -2085,127 +1966,111 @@ def remove_text(
 # High-level routing tools (4)
 # ---------------------------------------------------------------------------
 
-# Direction -> (dx_sign, dy_sign, label_rotation)
-_DIR_OFFSETS = {
-    "right": (1, 0, 0),
-    "left": (-1, 0, 180),
-    "up": (0, -1, 90),
-    "down": (0, 1, 270),
-}
-
-# Outward angle (math Y-down) -> cardinal direction name
-_ANGLE_TO_DIR = {0: "right", 90: "down", 180: "left", 270: "up"}
-
 
 @mcp.tool(annotations=_ADDITIVE)
 def wire_pins_to_net(
     pins: list[PinRefSpec],
     label_text: str,
-    direction: str = "auto",
+    direction: Literal["auto", "left", "right", "up", "down"] = "auto",
     stub_length: float = 2.54,
     schematic_path: str = SCH_PATH,
 ) -> str:
-    """Wire multiple component pins to the same net label.
+    """Put each listed pin on the net named label_text, or refuse and write nothing.
 
-    Wires each pin with a short stub and a shared net label, one file write.
+    Each pin gets a short wire stub pointing away from its symbol, with a net
+    label at the stub's end. When the stub would touch, overlap or cross
+    anything else on the sheet, or move a net into another net class, the
+    label goes on the pin end itself instead. No junction is ever written, and
+    a pin already on the net is left alone. The file is written once or not
+    at all.
+
+    The whole call is refused when any pin cannot be wired safely: its net may
+    already carry another name, it may reach something this tool cannot judge
+    (a bus, a sheet pin, a text variable, a copy of the pad on another sheet),
+    another part shares its reference, or every position is blocked. The
+    refusal lists every refused pin with a bracketed reason code such as
+    [names] or [touch], the obstacle, and a remedy. add_label and add_wires
+    check none of this, so they are no way around a refusal.
+
     It places no PWR_FLAG: whether a net needs one depends on every driver on
     the net, not on the pins in one call. Use add_power_symbol for that.
 
     Args:
         pins: List of {"reference": "R1", "pin": "1"} dicts
-        label_text: Net label text (e.g. "GND", "VCC")
-        direction: Wire direction: "auto", "left", "right", "up", "down"
-        stub_length: Wire stub length in mm (default 2.54)
+        label_text: Net name (e.g. "GND", "VCC"), exactly as it should read: no surrounding
+            spaces, no leading "/", no text variable ("${...}"), no bus syntax, not a KiCad
+            auto name such as "Net-(R1-1)"
+        direction: Stub direction: "auto" (away from the symbol), "left", "right", "up", "down"
+        stub_length: Stub length in mm, a multiple of 1.27 up to 1000 (default 2.54)
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
-    if not pins:
+    plan = _wire_pins(pins, label_text, direction, stub_length, schematic_path)
+    if plan is None:
         return f"Wired 0 pins to '{label_text}'."
+    if not plan.wires and not plan.labels:
+        return plan.no_change()
+    return plan.success()
+
+
+class _WireRefused(ToolError):
+    """wire_pins_to_net's refusal, with the plan kept for a caller that composes it."""
+
+    def __init__(self, plan: _connectivity.WirePlan):
+        super().__init__(plan.refusal())
+        self.plan = plan
+
+
+def _wire_pins(
+    pins: list[PinRefSpec],
+    label_text: str,
+    direction: str,
+    stub_length: float,
+    schematic_path: str,
+    param: str = "label_text",
+    turns: bool = True,
+) -> _connectivity.WirePlan | None:
+    """wire_pins_to_net's work: plan the edit, and write it when it adds anything.
+
+    Raises _WireRefused with the file untouched. None for an empty pin list, which reads no
+    file. *param* and *turns* fit the remedies to a caller with other parameters
+    (_connectivity.plan_wire_pins).
+    """
+    # Literal publishes the choices; this check is for direct Python callers, which pydantic
+    # never sees. It runs before the empty-list return so a bad call fails the same either way.
+    try:
+        _connectivity.check_args(label_text, direction, stub_length, param=param)
+    except _connectivity.Refusal as e:
+        plan = _connectivity.WirePlan(str(label_text))
+        plan.refuse(e.codes, e.text)
+        raise _WireRefused(plan) from None
+    if not pins:
+        return None
     tree, root, *_ = _open_sch_cst(schematic_path)
-    tol = 0.1
-    warnings = []
-    stub_endpoints = []
-    for pin_def in pins:
-        ref = pin_def["reference"]
-        pin_name = pin_def["pin"]
-        try:
-            px, py, outward = _get_pin_pos_cst(root, ref, pin_name)
-        except ValueError as e:
-            raise ToolError(f"Error wiring {ref}:{pin_name}: {e}") from e
-
-        if direction == "auto":
-            snapped = round(outward / 90) * 90 % 360
-            d = _ANGLE_TO_DIR[snapped]
-        else:
-            d = direction
-
-        dx_sign, dy_sign, label_rot = _DIR_OFFSETS[d]
-        end_x = round(px + dx_sign * stub_length, 4)
-        end_y = round(py + dy_sign * stub_length, 4)
-
-        # Check for stub collision with existing labels from different nets.
-        # If the chosen direction produces a stub that overlaps an existing
-        # label of a different net within stub_length along the same axis,
-        # try alternate directions to avoid a short circuit.
-        def _stub_collides(ex: float, ey: float) -> bool:
-            """True if endpoint (ex, ey) collides with a different-net label."""
-            for existing in root.find_all("label"):
-                if _node_text(existing) == label_text:
-                    continue
-                lx, ly = _node_xy(existing)
-                # Check if label is on the stub path (between pin and end)
-                if dx_sign != 0 and abs(ly - py) < tol:
-                    lo = min(px, ex)
-                    hi = max(px, ex)
-                    if lo - tol <= lx <= hi + tol:
-                        return True
-                if dy_sign != 0 and abs(lx - px) < tol:
-                    lo = min(py, ey)
-                    hi = max(py, ey)
-                    if lo - tol <= ly <= hi + tol:
-                        return True
-                # Check endpoint overlap
-                if abs(lx - ex) < tol and abs(ly - ey) < tol:
-                    return True
-            return False
-
-        if _stub_collides(end_x, end_y):
-            # Try alternate directions
-            resolved = False
-            for alt_d in _DIR_OFFSETS:
-                if alt_d == d:
-                    continue
-                adx, ady, alt_rot = _DIR_OFFSETS[alt_d]
-                alt_ex = round(px + adx * stub_length, 4)
-                alt_ey = round(py + ady * stub_length, 4)
-                if not _stub_collides(alt_ex, alt_ey):
-                    d = alt_d
-                    dx_sign, dy_sign, label_rot = adx, ady, alt_rot
-                    end_x, end_y = alt_ex, alt_ey
-                    resolved = True
-                    break
-            if not resolved:
-                warnings.append(
-                    f"{ref}:{pin_name} stub collides with existing net; no safe direction found"
-                )
-
-        # Wire stub
-        _splice_wire(root, px, py, end_x, end_y)
-        stub_endpoints.append((px, py))
-        stub_endpoints.append((end_x, end_y))
-        # Net label
-        label_node = _LABEL_TPL.copy()
-        label_node.atoms[1].set_text(label_text)
-        _fill_at(label_node, end_x, end_y, label_rot)
-        label_node.find("uuid").atoms[1].set_text(_gen_uuid())
-        _splice_sch_node(root, "label", label_node)
-
-    _auto_junctions_cst(root, stub_endpoints)
-
+    plan = _connectivity.plan_wire_pins(
+        root, pins, label_text, direction, stub_length, schematic_path, param=param, turns=turns
+    )
+    if plan.refused:
+        raise _WireRefused(plan)
+    if not plan.wires and not plan.labels:
+        return plan
+    for a, b in plan.wires:
+        node = _WIRE_TPL.copy()
+        for xy, (x, y) in zip(node.find("pts").find_all("xy"), (a, b)):
+            xy.atoms[1].set_text(_connectivity.mm(x))
+            xy.atoms[2].set_text(_connectivity.mm(y))
+        node.find("uuid").atoms[1].set_text(_gen_uuid())
+        _splice_sch_node(root, "wire", node)
+    for (x, y), rot in plan.labels:
+        node = _LABEL_TPL.copy()
+        node.atoms[1].set_text(label_text)
+        at = node.find("at")
+        at.atoms[1].set_text(_connectivity.mm(x))
+        at.atoms[2].set_text(_connectivity.mm(y))
+        at.atoms[3].set_text(str(rot))
+        node.find("uuid").atoms[1].set_text(_gen_uuid())
+        _splice_sch_node(root, "label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
-    msg = f"Wired {len(pins)} pins to '{label_text}'."
-    if warnings:
-        msg += " WARNINGS: " + "; ".join(warnings)
-    return msg
+    return plan
 
 
 @mcp.tool(annotations=_ADDITIVE)

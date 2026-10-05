@@ -25,7 +25,7 @@ from kiutils.items.common import Effects, Font, Position, Property
 from kiutils.items.schitems import Connection, LocalLabel, SchematicSymbol
 from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_server_kicad import _cst, schematic
+from mcp_server_kicad import _connectivity, _cst, schematic
 from mcp_server_kicad.models import (
     NetConnectionsResult,
     SchematicSummary,
@@ -681,11 +681,11 @@ class TestBodyStyles:
     def test_lib_unit_style_reads_the_trailing_fields(self) -> None:
         """Symbol names contain underscores, so unit and style are the last two fields."""
         node = _cst.parse(b'(symbol "SN74LVC2G17_2_1")').lists[0]
-        assert schematic._lib_unit_style(node) == (2, 1)
+        assert _connectivity._lib_unit_style(node) == (2, 1)
         node = _cst.parse(b'(symbol "74LS00_5_0")').lists[0]
-        assert schematic._lib_unit_style(node) == (5, 0)
+        assert _connectivity._lib_unit_style(node) == (5, 0)
         node = _cst.parse(b'(symbol "NotAUnitName")').lists[0]
-        assert schematic._lib_unit_style(node) is None
+        assert _connectivity._lib_unit_style(node) is None
 
     def test_instance_units_is_kicad_rule(self) -> None:
         """LIB_SYMBOL::GetPins: unit in (this, 0) and style in (this, 0), both at once.

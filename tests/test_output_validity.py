@@ -71,7 +71,17 @@ HOSTILE = ("banana", 37, -1)
 
 #: Parameters that name a closed set or a board-defined one. These are the ones
 #: where a wrong value reaches the file as a token rather than as escaped text.
-CONSTRAINED = {"layer", "layers", "rotation", "mirror", "shape", "format", "output_units"}
+CONSTRAINED = {
+    "layer",
+    "layers",
+    "rotation",
+    "mirror",
+    "shape",
+    "format",
+    "output_units",
+    "direction",
+    "stub_length",
+}
 
 #: Never mutate these: a path is not a token in the output, and a hostile path
 #: only proves the file-not-found error works.
@@ -134,6 +144,10 @@ def _sch_cases(tmp_path) -> list[tuple[Any, dict[str, Any]]]:
         ),
         (schematic.add_text, dict(text="note", x=70, y=50, schematic_path=s)),
         (schematic.move_component, dict(reference="R1", x=80, y=80, schematic_path=s)),
+        (
+            schematic.wire_pins_to_net,
+            dict(pins=[{"reference": "R1", "pin": "1"}], label_text="NW", schematic_path=s),
+        ),
         (
             schematic.add_power_symbol,
             dict(lib_id="power:GND", reference="#PWR01", x=90, y=90, schematic_path=s),

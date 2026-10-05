@@ -111,7 +111,7 @@ _NEEDS_A_TITLE = {
 
 
 #: Parameter names whose value set is closed and known ahead of time.
-_FIXED_CHOICE_PARAMS = {"format", "mirror", "output_units"}
+_FIXED_CHOICE_PARAMS = {"format", "mirror", "output_units", "direction"}
 
 
 def test_fixed_choice_params_publish_an_enum():

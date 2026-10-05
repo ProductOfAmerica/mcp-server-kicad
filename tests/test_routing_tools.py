@@ -150,7 +150,11 @@ class TestWirePinToLabel:
         assert label.position.angle == 0
 
     def test_auto_direction_rotated_90(self, tmp_path):
-        """TestPart at 90deg: IN pin outward should be up (-Y)."""
+        """TestPart at 90 deg: KiCad turns IN, which points left at 0 deg, to point down.
+
+        IN sits at (100, 105.08), below the body. This test used to assert "up", which is the
+        direction into the body: the old outward angle was wrong at 90 and 270 deg.
+        """
         path = _make_test_part_sch(tmp_path, rotation=90)
         schematic.wire_pins_to_net(
             pins=[{"reference": "U1", "pin": "IN"}],
@@ -160,10 +164,10 @@ class TestWirePinToLabel:
         )
         sch = reparse(path)
         label = next(lbl for lbl in sch.labels if lbl.text == "ROT90")
-        assert label.position.angle == 90  # up-pointing label
-        # Wire should go up: end_y < start_y
+        assert label.position.angle == 270  # down-pointing label
         wire = [g for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"][0]
-        assert wire.points[1].Y < wire.points[0].Y
+        assert (wire.points[0].X, wire.points[0].Y) == (100, 105.08)
+        assert wire.points[1].Y > wire.points[0].Y
 
     def test_auto_direction_mirror_x(self, tmp_path):
         """TestPart IN pin with mirror=x: outward should still be left."""
@@ -201,11 +205,9 @@ class TestWirePinToLabel:
         )
         sch = reparse(path)
         wire = [g for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"][0]
-        # Pin end is at exact pin position (not snapped); label end is snapped.
-        # The actual stub length may differ slightly from the requested value
-        # due to label-end grid snapping, but should be within one grid step.
+        # The stub runs exactly stub_length from the pin end: nothing is snapped.
         dx = abs(wire.points[1].X - wire.points[0].X)
-        assert abs(dx - 5.08) < 1.27
+        assert dx == pytest.approx(5.08)
 
     def test_bad_reference(self, scratch_sch):
         with pytest.raises(ToolError, match="not found"):
@@ -223,35 +225,29 @@ class TestWirePinToLabel:
                 schematic_path=str(scratch_sch),
             )
 
-    def test_avoids_conflicting_label(self, scratch_sch):
-        """Auto-redirect stub when a different net label would collide."""
-        # Wire R1 pin 1 to "NET_A"
+    def test_a_pin_already_on_another_named_net_is_refused(self, scratch_sch):
+        """R1:1 is on NET_A; wiring it to NET_B as well would join the two nets.
+
+        This test used to assert the opposite: that the second call "auto-redirected" its stub
+        and succeeded, with the two labels at different positions. Both labels were on R1:1's
+        net, so NET_A and NET_B became one net. The call now refuses and writes nothing.
+        """
+        path = str(scratch_sch)
         schematic.wire_pins_to_net(
             pins=[{"reference": "R1", "pin": "1"}],
             label_text="NET_A",
             direction="up",
-            schematic_path=str(scratch_sch),
+            schematic_path=path,
         )
-        # Wire R1 pin 1 again to "NET_B" (different net, same pin = same endpoint)
-        result = schematic.wire_pins_to_net(
-            pins=[{"reference": "R1", "pin": "1"}],
-            label_text="NET_B",
-            direction="up",
-            schematic_path=str(scratch_sch),
-        )
-        # Should succeed — collision auto-resolved by picking a different direction
-        assert "Wired" in result
-        # Verify both labels exist with different positions
-        sch = reparse(str(scratch_sch))
-        net_a = [lbl for lbl in sch.labels if lbl.text == "NET_A"]
-        net_b = [lbl for lbl in sch.labels if lbl.text == "NET_B"]
-        assert len(net_a) == 1
-        assert len(net_b) == 1
-        # Labels should NOT be at the same position (collision was avoided)
-        assert (
-            abs(net_a[0].position.X - net_b[0].position.X) > 0.1
-            or abs(net_a[0].position.Y - net_b[0].position.Y) > 0.1
-        )
+        before = scratch_sch.read_bytes()
+        with pytest.raises(ToolError, match=r"(?s)^\[names\] .*'NET_A'"):
+            schematic.wire_pins_to_net(
+                pins=[{"reference": "R1", "pin": "1"}],
+                label_text="NET_B",
+                direction="up",
+                schematic_path=path,
+            )
+        assert scratch_sch.read_bytes() == before
 
 
 def _make_two_parts_sch(tmp_path: Path) -> str:
@@ -593,9 +589,14 @@ class TestConnectPinsNoSnap:
 
 
 class TestStubCollision:
-    def test_avoids_stub_collision_different_nets(self, tmp_path):
-        """Two adjacent pins wired to different nets shouldn't collide."""
-        # Create schematic with R1 at (100,100) and R2 very close at (100,105.08)
+    def test_coincident_pins_cannot_go_to_different_nets(self, tmp_path):
+        """R1:2 and R2:1 share the point (100, 103.81), so KiCad joins them.
+
+        This test used to assert that wiring them to NET_A and then NET_B "avoided the
+        collision" because the two labels landed at different positions. They were one net,
+        so that merged NET_A and NET_B. The second call now refuses and writes nothing.
+        """
+        # R1 at (100, 100) and R2 at (100, 107.62): R1:2 and R2:1 coincide
         sch = new_schematic()
         sch.libSymbols.append(build_r_symbol())
         sch.schematicSymbols.append(place_r1(100, 100))
@@ -656,26 +657,15 @@ class TestStubCollision:
             direction="down",
             schematic_path=path,
         )
-        # Wire R2 pin 1 to NET_B (up — toward R1, could collide)
-        result = schematic.wire_pins_to_net(
-            pins=[{"reference": "R2", "pin": "1"}],
-            label_text="NET_B",
-            direction="up",
-            schematic_path=path,
-        )
-        assert "Wired" in result
-
-        # Verify the two labels are at different positions (collision avoided)
-        sch2 = reparse(path)
-        lbl_a = [lb for lb in sch2.labels if lb.text == "NET_A"]
-        lbl_b = [lb for lb in sch2.labels if lb.text == "NET_B"]
-        assert len(lbl_a) == 1
-        assert len(lbl_b) == 1
-        # They should not overlap
-        assert (
-            abs(lbl_a[0].position.X - lbl_b[0].position.X) > 0.1
-            or abs(lbl_a[0].position.Y - lbl_b[0].position.Y) > 0.1
-        )
+        before = Path(path).read_bytes()
+        with pytest.raises(ToolError, match=r"(?s)^\[names\] .*'NET_A'"):
+            schematic.wire_pins_to_net(
+                pins=[{"reference": "R2", "pin": "1"}],
+                label_text="NET_B",
+                direction="up",
+                schematic_path=path,
+            )
+        assert Path(path).read_bytes() == before
 
 
 # ===========================================================================
@@ -870,8 +860,15 @@ class TestAutoJunctions:
         )
         assert near_count == 1, f"Expected 1 junction near (100, 96.19), got {near_count}"
 
-    def test_wire_pins_to_net_auto_junction(self, tmp_path):
-        """wire_pins_to_net creates junction when stub crosses existing wire."""
+    def test_wire_pins_to_net_refuses_a_pin_end_on_a_wire_interior(self, tmp_path):
+        """R1:1 sits on the interior of an unlabelled wire, which in KiCad does not connect.
+
+        This test used to assert that wire_pins_to_net joins them with a junction. A junction on
+        an unsplit wire is read by kicad-cli 9, the reader behind netlist export, ERC and PCB
+        update, as cutting the wire (docs/adr-routing-safety.md). Without one, neither the stub
+        nor a label on the pin end can be placed without touching the wire, so the call refuses
+        and writes nothing.
+        """
         sch = new_schematic()
         sch.libSymbols.append(build_r_symbol())
 
@@ -894,21 +891,14 @@ class TestAutoJunctions:
         sch.to_file()
         sch_path = str(path)
 
-        # Wire R1 pin 1 to net "VCC". Pin 1 is at (100, 96.19).
-        # The pin endpoint is ON the existing wire — but at an interior point
-        # (the wire runs from x=90 to x=110, pin is at x=100).
-        # A junction should be auto-created at (100, 96.19).
-        schematic.wire_pins_to_net(
-            pins=[{"reference": "R1", "pin": "1"}],
-            label_text="VCC",
-            schematic_path=sch_path,
-        )
-
-        sch_after = reparse(sch_path)
-        junc_positions = [(j.position.X, j.position.Y) for j in sch_after.junctions]
-        assert any(abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02 for x, y in junc_positions), (
-            f"Expected junction near (100, 96.19), got {junc_positions}"
-        )
+        before = path.read_bytes()
+        with pytest.raises(ToolError, match=r"\[touch\]"):
+            schematic.wire_pins_to_net(
+                pins=[{"reference": "R1", "pin": "1"}],
+                label_text="VCC",
+                schematic_path=sch_path,
+            )
+        assert path.read_bytes() == before
 
 
 # ===========================================================================

@@ -121,6 +121,11 @@ call. Do not make separate calls for individual pins on the same net.
 Wiring order follows table order top-to-bottom; list power nets
 before signal nets.
 
+Each pin belongs to exactly one row. `wire_pins_to_net` refuses a pin
+whose net already carries another name, and `connect_pins` labels the
+net it makes, so a pin listed in two net rows, or in a `connect_pins`
+row and a net row, stops the build.
+
 ```markdown
 ## Wiring
 | Order | Net | Tool | Pins |
