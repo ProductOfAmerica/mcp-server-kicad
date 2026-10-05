@@ -1861,16 +1861,25 @@ def auto_place_decoupling_cap(
     done = f"placed {reference}"
     undo = [f"remove_component({reference!r})"]
     notes: list[str] = []
-    for pin, net, direction in (("1", power_net, "up"), ("2", ground_net, "down")):
+    pins = (("1", power_net, "up", "power_net"), ("2", ground_net, "down", "ground_net"))
+    for pin, net, direction, param in pins:
         try:
             plan = _wire_pins(
-                [{"reference": reference, "pin": pin}], net, direction, 2.54, schematic_path
+                [{"reference": reference, "pin": pin}],
+                net,
+                direction,
+                2.54,
+                schematic_path,
+                param=param,
+                turns=False,  # each pin's direction is fixed here
             )
         except _WireRefused as e:
             raise ToolError(
                 f"{_connectivity.tags(e.plan.codes)} auto_place_decoupling_cap {done}, but wiring"
                 f" pin {pin} to {net!r} was refused, and what it wrote stays on disk. To undo it:"
-                f" {', '.join(undo)}.\n- " + "\n- ".join(e.plan.lines)
+                f" {', '.join(undo)}. Those remove what it placed and wired; any library symbol"
+                " it copied into lib_symbols stays, and no net depends on it.\n- "
+                + "\n- ".join(e.plan.lines)
             ) from None
         assert plan is not None  # one pin, so the file was read
         notes += [n for n in plan.notes if n not in notes]
@@ -2016,16 +2025,19 @@ def _wire_pins(
     direction: str,
     stub_length: float,
     schematic_path: str,
+    param: str = "label_text",
+    turns: bool = True,
 ) -> _connectivity.WirePlan | None:
     """wire_pins_to_net's work: plan the edit, and write it when it adds anything.
 
     Raises _WireRefused with the file untouched. None for an empty pin list, which reads no
-    file.
+    file. *param* and *turns* fit the remedies to a caller with other parameters
+    (_connectivity.plan_wire_pins).
     """
     # Literal publishes the choices; this check is for direct Python callers, which pydantic
     # never sees. It runs before the empty-list return so a bad call fails the same either way.
     try:
-        _connectivity.check_args(label_text, direction, stub_length)
+        _connectivity.check_args(label_text, direction, stub_length, param=param)
     except _connectivity.Refusal as e:
         plan = _connectivity.WirePlan(str(label_text))
         plan.refuse(e.codes, e.text)
@@ -2034,7 +2046,7 @@ def _wire_pins(
         return None
     tree, root, *_ = _open_sch_cst(schematic_path)
     plan = _connectivity.plan_wire_pins(
-        root, pins, label_text, direction, stub_length, schematic_path
+        root, pins, label_text, direction, stub_length, schematic_path, param=param, turns=turns
     )
     if plan.refused:
         raise _WireRefused(plan)

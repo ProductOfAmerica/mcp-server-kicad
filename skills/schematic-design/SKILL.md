@@ -112,7 +112,7 @@ nets silently.
 |------|---------|---------|
 | `validation` | An argument is malformed: an empty or padded name, a leading `/`, `${`, a KiCad auto-name such as `Net-(...)`, bus syntax, an unknown direction, a stub not a multiple of 1.27 mm or over 1000 mm | Fix the argument |
 | `resolve` | The reference is not on this sheet, the pin does not exist, or a pin name matches pads at different points | Pass the pad numbers the message lists, or wire the pin on the sheet that holds its unit |
-| `names` | The pin's net already carries another name | If the pin belongs on that net, call again with that name; otherwise stop and report |
+| `names` | The pin's net already carries another name | If that name is a `Net-(...)` label `connect_pins` wrote, remove it with `remove_label` as the message says, then call again. If the pin belongs on the net, call again with its name as the message shows it; otherwise stop and report |
 | `touch` | Every stub and label position would touch something | Pass another `direction`, or move the part; otherwise stop and report |
 | `netclass` | Wiring would move a net into another net class | Stop and report |
 | `nc_type` | The pin is a no-connect type pin | Pick another pin |
@@ -122,7 +122,9 @@ nets silently.
 | `derived`, `unloadable` | A symbol on the sheet has pins KiCad's file does not define, or an angle KiCad cannot load | Stop and report |
 
 When `auto_place_decoupling_cap` meets one of these after placing the
-cap, its error says what it left on disk and which calls undo it.
+cap, its error says what it left on disk and the calls that remove it;
+any library symbol it copied into the file stays, and no net depends on
+it.
 
 ## Checklist (Plan Mode)
 

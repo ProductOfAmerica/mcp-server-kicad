@@ -222,6 +222,7 @@ _BAD_ARGS = [
     pytest.param({"stub_length": "2.54"}, id="stub_text"),
     pytest.param({"stub_length": 1e305}, id="stub_overflow"),
     pytest.param({"stub_length": 1270}, id="stub_absurd"),
+    pytest.param({"stub_length": 10**400}, id="stub_huge_int"),
 ]
 
 
@@ -430,6 +431,39 @@ def test_a_join_only_the_possible_view_sees_is_wired_explicitly(tmp_path):
     plan = _plan(p, [("R1", "1")])
     assert not plan.refused and plan.labels
     assert "possibly reached 'N' already" in plan.lines[0]
+
+
+def test_a_pin_on_n_through_this_calls_label_is_not_counted_as_wired(tmp_path):
+    """The routing review's e8_misc: R2:1 joins R1:1 by a wire, so R1:1's new label puts it on N
+    with nothing written for it, and the head counted it among the pins wired."""
+    p = _r1(tmp_path)
+    place(p, "R", "R2", 127, 101.6)
+    wire(p, 101.6, 97.79, 127, 97.79)
+    plan = _plan(p, [("R1", "1"), ("R2", "1")])
+    assert plan.wired == 1 and plan.success().startswith("Wired 1 pins to 'N'.")
+    assert "R2:1: already on 'N' via label 'N' at (101.6, 95.25), added by this call" in plan.lines
+
+
+def test_a_names_refusal_on_a_connect_pins_label_leads_with_remove_label(tmp_path):
+    """The review's repro_names_auto: the remedy said to pass the name the net carries, and a
+    connect_pins label's Net-(...) name is one validation refuses, so the route that works,
+    remove_label and call again, comes first, and alone when no other name is on the net."""
+    p = _named(tmp_path)
+    label(p, "Net-(R1-1)", 88.9, 97.79)
+    text = _plan(p, [("R1", "1")], net="SIG").refusal()
+    assert "Remedy: 'Net-(R1-1)' looks like the label connect_pins writes" in text, text
+    assert "remove_label('Net-(R1-1)', 88.9, 97.79)" in text
+    assert "pass that name" not in text
+
+
+def test_a_refusal_marks_the_pins_it_did_not_refuse_as_not_written(tmp_path):
+    """The review's repro_names_auto: a refusal listed R2:1's stub as if drawn."""
+    p = _named(tmp_path)
+    label(p, "OTHER", 88.9, 97.79)
+    place(p, "R", "R2", 152.4, 101.6)
+    text = _plan(p, [("R1", "1"), ("R2", "1")]).refusal()
+    line = next(x for x in text.splitlines() if x.startswith("- R2:1:"))
+    assert line.endswith("(planned only; not written)"), line
 
 
 def test_net_mates_are_reported(tmp_path):
@@ -646,6 +680,17 @@ def test_a_unit0_pad_of_a_part_not_fully_placed_here_is_refused(tmp_path):
     place(p, "4011", "U1", 101.6, 101.6)
     assert _plan(p, [("U1", "14")]).codes == ["unit0_unplaced"]
     assert not _plan(p, [("U1", "1")]).refused  # only unit 1 draws pad 1
+
+
+def test_a_common_pad_refusal_claims_no_copy_it_cannot_know(tmp_path):
+    """The routing review's e9_unit0: with only unit 1 of the 4011 placed anywhere, pad 14 has
+    one copy, here, and kicad-cli lists one U1:14 node; the refusal said the pad has copies this
+    sheet cannot see. It now says what is known: any other unit placed elsewhere draws one."""
+    p = fresh(tmp_path)
+    place(p, "4011", "U1", 101.6, 101.6)
+    text = _plan(p, [("U1", "14")]).refusal()
+    assert "has copies this sheet cannot see" not in text, text
+    assert "any such unit placed on another sheet draws a copy of the pad there" in text, text
 
 
 def test_a_pad_also_drawn_by_a_unit_not_placed_here_is_refused(tmp_path):

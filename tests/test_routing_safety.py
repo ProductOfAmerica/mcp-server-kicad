@@ -902,6 +902,29 @@ def test_a_refused_pin_2_says_what_pin_1_got(tmp_path):
     assert _counts(p) == {"C5": 0, "wire": 1, "label": 0}
 
 
+def test_the_cap_refusal_speaks_in_its_own_parameters_and_says_what_stays(tmp_path):
+    """The routing review's repro_undo: the cap's refusal forwarded wire_pins_to_net's remedies,
+    "pass another direction" and "pass that name as label_text", which this tool has no
+    parameters for, and its undo calls left the copied lib_symbols entry behind (357 bytes
+    became 2,385) without saying so."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    p = fresh(tmp_path)
+    wire(p, 95, 105.41, 110, 105.41)  # through C5:2's end: [touch]
+    with pytest.raises(ToolError) as e:
+        _cap(p)
+    msg = str(e.value)
+    assert "direction" not in msg, msg
+    assert "any library symbol it copied into lib_symbols stays" in msg, msg
+
+    q = fresh(tmp_path, "q")
+    label(q, "OTHER", 101.6, 105.41)  # on C5:2's end: [names]
+    with pytest.raises(ToolError) as e:
+        _cap(q)
+    msg = str(e.value)
+    assert "pass that name as ground_net" in msg and "label_text" not in msg, msg
+
+
 def test_the_cap_passes_on_its_wirings_notes(tmp_path):
     """The result ended at "pin 1->VCC | pin 2->GND" and dropped what the wiring reported, so
     it never said that nothing on the sheet carried VCC or GND: on a sub-sheet the cap then sits

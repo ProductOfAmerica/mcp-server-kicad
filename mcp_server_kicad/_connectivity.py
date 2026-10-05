@@ -412,7 +412,8 @@ _UNHANDLED = {
     ),
     "unit0_unplaced": (
         "a pad also drawn by a unit not placed on this sheet",
-        "the pad has copies this sheet cannot see",
+        "any such unit placed on another sheet draws a copy of the pad there, which this sheet"
+        " cannot see",
         "place every unit that draws that pad on this sheet, or wire it where they are",
     ),
     "units_disagree": (
@@ -2076,7 +2077,7 @@ def check_args(net, direction, stub_length, param: str = "label_text") -> int:
         raise bad(f"direction must be one of auto, left, right, up, down; got {direction!r}.")
     if isinstance(stub_length, bool) or not isinstance(stub_length, (int, float)):
         raise bad(f"stub_length must be a number of mm; got {stub_length!r}.")
-    if not math.isfinite(stub_length) or stub_length <= 0:
+    if (isinstance(stub_length, float) and not math.isfinite(stub_length)) or stub_length <= 0:
         raise bad(f"stub_length must be a length greater than 0 mm; got {stub_length!r}.")
     if stub_length > MAX_STUB_MM:
         raise bad(
@@ -2104,6 +2105,7 @@ class WirePlan:
     codes: list[str] = field(default_factory=list)
     notes: list[str] = field(default_factory=list)
     wired: int = 0
+    planned: list[int] = field(default_factory=list)  # lines describing geometry to be written
 
     @property
     def refused(self) -> bool:
@@ -2115,9 +2117,13 @@ class WirePlan:
         self.lines.append(f"{tags(codes)} {text}")
 
     def refusal(self) -> str:
+        lines = [
+            f"{line} (planned only; not written)" if i in self.planned else line
+            for i, line in enumerate(self.lines)
+        ]
         return (
             f"{tags(self.codes)} wire_pins_to_net refused the whole call; nothing was"
-            " written.\n- " + "\n- ".join(self.lines)
+            " written.\n- " + "\n- ".join(lines)
         )
 
     def success(self) -> str:
@@ -2176,25 +2182,32 @@ def _pad_conflict(m: Model, copies: list[Item]) -> Refusal | None:
     )
 
 
-def _names_refusal(other: list[tuple[Item, str]], net: str) -> Refusal:
-    text = (
-        f"its net possibly carries {_names_text(other)}; putting it on '{net}' could merge that"
-        f" net with '{net}', and two named nets are never joined here. Remedy: if the pin belongs"
-        " on that net, pass that name as label_text; otherwise stop and report."
-    )
+def _names_refusal(other: list[tuple[Item, str]], net: str, param: str) -> Refusal:
+    remedies = []
     auto = [it for it, t in other if it.kind == "label" and _AUTO_NAME.match(unescape(t))]
-    for it in auto[:1]:
+    for it in auto[:1]:  # validation refuses its name, so removing it is the way through
         t = it.text or ""
-        text += (
-            f" {unescape(t)!r} looks like the label connect_pins writes; to name this net"
+        remedies.append(
+            f"{unescape(t)!r} looks like the label connect_pins writes; to name this net"
             f" yourself, remove it with remove_label({t!r}, {mm(it.x)}, {mm(it.y)}) and call"
-            " again."
+            " again"
         )
-    return Refusal("names", text)
+    if any(not _AUTO_NAME.match(unescape(t)) for _it, t in other):
+        remedies.append(f"if the pin belongs on that net, pass that name as {param}")
+    return Refusal(
+        "names",
+        f"its net possibly carries {_names_text(other)}; putting it on '{net}' could merge that"
+        f" net with '{net}', and two named nets are never joined here. Remedy: "
+        + "; ".join(remedies)
+        + "; otherwise stop and report.",
+    )
 
 
-def _wire_copy(m: Model, plan: WirePlan, c: Item, net: str, fixed: Point | None, L: int) -> str:
-    """Geometry for one drawn pin: the outward stub, else a label on the pin end."""
+def _wire_copy(
+    m: Model, plan: WirePlan, c: Item, net: str, fixed: Point | None, L: int, turns: bool
+) -> str:
+    """Geometry for one drawn pin: the outward stub, else a label on the pin end. *turns* says
+    the caller can pass another direction."""
     d = fixed or c.out
     if d not in LABEL_ROT:
         raise Refusal(
@@ -2228,18 +2241,28 @@ def _wire_copy(m: Model, plan: WirePlan, c: Item, net: str, fixed: Point | None,
     raise Refusal(
         ["touch" if why else "netclass" for why in (why_stub, why_label)],
         f"stub {dname} blocked: {why_stub or cls_stub}; label on the pin blocked:"
-        f" {why_label or cls_label}. Remedy: move the part or the obstacle, or pass another"
-        " direction; otherwise stop and report.",
+        f" {why_label or cls_label}. Remedy: move the part or the obstacle"
+        + (", or pass another direction" if turns else "")
+        + "; otherwise stop and report.",
     )
 
 
 def plan_wire_pins(
-    root, pins: list, net: str, direction: str, stub_length: float, path: str | None = None
+    root,
+    pins: list,
+    net: str,
+    direction: str,
+    stub_length: float,
+    path: str | None = None,
+    param: str = "label_text",
+    turns: bool = True,
 ) -> WirePlan:
     """Decide wire_pins_to_net's edit on a parsed schematic root. Writes nothing.
 
     *path* is the sheet's file, which places it in its hierarchy for the duplicate-reference
-    check; without it only this sheet is checked.
+    check; without it only this sheet is checked. *param* names the net argument in remedies,
+    and *turns* says whether the caller can pass another direction, for callers whose own
+    parameters differ.
 
     In order: arguments; every pin resolved to a drawn pin; per pad, a no-op when the narrow
     view already puts it on *net*, else a refusal when the possible view carries another name;
@@ -2247,7 +2270,7 @@ def plan_wire_pins(
     """
     plan = WirePlan(net)
     try:
-        L = check_args(net, direction, stub_length)
+        L = check_args(net, direction, stub_length, param=param)
         m = Model(root, path)
         m.check_loadable()
     except Refusal as e:
@@ -2318,7 +2341,7 @@ def plan_wire_pins(
         named = m.coarse().names_of(copies[0])  # every copy of a pad is one possible component
         other = [e for e in named if e[1] != key]
         if other:
-            e = _names_refusal(other, net)
+            e = _names_refusal(other, net, param)
             plan.refuse(e.codes, f"{tag}: {e.text}")
             continue
         ready.append((tag, copies, next((it for it, t in named if t == key), None)))
@@ -2326,13 +2349,16 @@ def plan_wire_pins(
     joins = [_desc(it) for it in m.items if it.name == key and not it.new]
     for tag, copies, hint in ready:
         parts = []
+        drew = False
         try:
             for c in copies:
                 via = m.narrow_names(c).get(key)  # an earlier copy or pad may have joined it
                 if via:
-                    parts.append(f"{where(copies, c)}already on '{net}' via {_desc(via[0])}")
+                    new = ", added by this call" if via[0].new else ""
+                    parts.append(f"{where(copies, c)}already on '{net}' via {_desc(via[0])}{new}")
                     continue
-                parts.append(where(copies, c) + _wire_copy(m, plan, c, net, fixed, L))
+                parts.append(where(copies, c) + _wire_copy(m, plan, c, net, fixed, L, turns))
+                drew = True
         except Refusal as e:
             plan.refuse(e.codes, f"{tag}: {where(copies, c)}{e.text}")
             continue
@@ -2342,8 +2368,9 @@ def plan_wire_pins(
                 f" (it possibly reached '{net}' already, via {_desc(hint)}, which not every"
                 " KiCad reader joins; wired explicitly)"
             )
+        plan.planned.append(len(plan.lines))
         plan.lines.append(f"{tag}: {text}")
-        plan.wired += 1
+        plan.wired += drew
 
     if joins:
         plan.notes.append(f"'{net}' joins on this sheet: " + "; ".join(joins[:6]) + ".")
