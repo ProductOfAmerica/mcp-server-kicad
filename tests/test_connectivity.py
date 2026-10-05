@@ -522,8 +522,10 @@ def _bounded(*args):
     "line, on, off",
     [
         ("(xy 0 0) (xy 100000 100000)", "50000 50000", "50001 50000"),
-        ("(xy 0 0) (xy 100000 0)", "50000 0", "50000 1"),
-        ("(xy 0 0) (xy 1e300 0)", "5e299 0", "5e299 1"),
+        # Mid-cell, so the margin keeps a straight line's box to one row, and a box counted
+        # short (no row at all) would send the line into the grid and trip the bound.
+        ("(xy 0 1.27) (xy 100000 1.27)", "50000 1.27", "50000 2.27"),
+        ("(xy 0 1.27) (xy 1e300 1.27)", "5e299 1.27", "5e299 2.27"),
     ],
     ids=["diagonal-100m", "horizontal-100m", "horizontal-1e300mm"],
 )
