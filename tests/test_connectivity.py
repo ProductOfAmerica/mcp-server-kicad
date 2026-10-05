@@ -819,6 +819,31 @@ def test_a_pin_on_a_unit_not_drawn_here_names_the_unit_kicad_draws(tmp_path):
     assert "(U1 here: unit 2)" in text and "Place that unit" in text, text
 
 
+def test_a_sheet_file_in_a_symlink_loop_counts_as_missing(tmp_path):
+    """Resolving a symlink loop raises (RuntimeError before Python 3.13, OSError after), and the
+    walk resolved sheet paths outside its error handling, so the call died with a raw error.
+    No reader can open such a file, so it is a missing sheet, which KiCad loads empty."""
+    import os
+
+    root, _child = _two_sheets(tmp_path)
+    tree = _root(root)
+    for q in tree.find("sheet").find_all("property"):
+        if q.atoms[1].text == "Sheetfile":
+            q.atoms[2].set_text("loop.kicad_sch")
+    Path(root).write_bytes(_cst.serialize(tree))
+    d = Path(root).parent
+    try:
+        os.symlink("loop2.kicad_sch", d / "loop.kicad_sch")
+        os.symlink("loop.kicad_sch", d / "loop2.kicad_sch")
+    except OSError as e:
+        pytest.skip(f"cannot create symlinks here: {e}")
+    try:
+        assert not _plan_in(root, [("R1", "1")]).refused
+    finally:  # the autouse kicad-cli check reads every .kicad_sch here, and cannot read these
+        (d / "loop.kicad_sch").unlink()
+        (d / "loop2.kicad_sch").unlink()
+
+
 def test_the_project_is_found_from_a_sheet_in_a_subdirectory(tmp_path):
     """The project file sits a directory above the sheet (RoyalBlue54L-Feather's sch/ layout),
     so its live path is found only by looking up."""

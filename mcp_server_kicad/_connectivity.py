@@ -892,6 +892,16 @@ def _project_roots(path: Path) -> list[Path]:
 _LEAF = SheetFacts("", _ON_SYMBOL_VERSION, (), (), ())
 
 
+def _real(p: Path) -> Path:
+    """*p* resolved, or made absolute when it cannot be: resolving a symlink loop raises
+    (RuntimeError before Python 3.13, OSError after). No reader can open such a file, KiCad
+    included, so it then counts as a missing sheet."""
+    try:
+        return p.resolve()
+    except (OSError, RuntimeError):
+        return p.absolute()
+
+
 def hierarchy(path: str | Path, here: SheetFacts) -> Hierarchy:
     """Walk this sheet's project for the reference and unit rules (H-C1, design 4.6).
 
@@ -903,12 +913,12 @@ def hierarchy(path: str | Path, here: SheetFacts) -> Hierarchy:
     it holds is unknown.
     """
     path = Path(path)
-    me = path.resolve()
+    me = _real(path)
     cache: dict[Path, tuple[bytes | None, SheetFacts] | None] = {me: (None, here)}
     bad: list[str] = []
 
     def facts(f: Path) -> SheetFacts | None:
-        rf = f.resolve()
+        rf = _real(f)
         if rf not in cache:
             try:
                 if not f.is_file():
@@ -939,9 +949,7 @@ def hierarchy(path: str | Path, here: SheetFacts) -> Hierarchy:
         if top is None or top is _LEAF or top.version < _ON_SYMBOL_VERSION:
             continue
         found: dict[Path, list[str]] = {}
-        stack: list[tuple[Path, str, tuple[Path, ...]]] = [
-            (root, f"/{top.uuid}", (root.resolve(),))
-        ]
+        stack: list[tuple[Path, str, tuple[Path, ...]]] = [(root, f"/{top.uuid}", (_real(root),))]
         n = 0
         while stack and n < _MAX_INSTANCES:
             f, kpath, chain = stack.pop()
@@ -952,8 +960,9 @@ def hierarchy(path: str | Path, here: SheetFacts) -> Hierarchy:
             n += 1
             for su, name in ff.children:
                 c = child_of(f, root.parent, name)
-                if c.resolve() not in chain:  # KiCad refuses a sheet that contains itself
-                    stack.append((c, f"{kpath}/{su}", (*chain, c.resolve())))
+                rc = _real(c)
+                if rc not in chain:  # KiCad refuses a sheet that contains itself
+                    stack.append((c, f"{kpath}/{su}", (*chain, rc)))
         if stack or me not in found:
             continue
         error = _unreadable(bad)
@@ -966,7 +975,7 @@ def hierarchy(path: str | Path, here: SheetFacts) -> Hierarchy:
     others, legacy = [], {}
     while todo:
         f, base = todo.pop()
-        rf = f.resolve()
+        rf = _real(f)
         if rf in seen:
             continue
         seen.add(rf)
