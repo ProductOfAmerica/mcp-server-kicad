@@ -288,6 +288,13 @@ _VIA_TPL = _cst.parse(
     b'\n\t\t(layers "F.Cu" "B.Cu")\n\t\t(net 0)\n\t\t(uuid "x")\n\t)'
 ).lists[0]
 
+#: Most vias add_thermal_vias places in one call. A heuristic, not a KiCad
+#: limit: real exposed-pad grids run about 3x3 to 10x10, and every via rescans
+#: the board before the one write, so the cost is grid size times board size.
+#: 256 measured 7.8 s on a KiCad 10 board of 1000 footprints (1.0 s on KiCad 9),
+#: where each via resolves its net by walking every pad and track.
+_MAX_THERMAL_VIAS = 256
+
 
 # Highest board format that carries a net table, so the highest one whose net
 # references may be numeric. Above it KiCad derives nets from usage and rebinds
@@ -2612,14 +2619,29 @@ def add_thermal_vias(
     Args:
         reference: Footprint reference (e.g. "U1", "R1")
         pad_number: Pad number to center vias on. If empty, auto-selects largest SMD pad.
-        rows: Number of rows in the via grid
-        cols: Number of columns in the via grid
+        rows: Number of rows in the via grid, at least 1. rows * cols is at most 256.
+        cols: Number of columns in the via grid, at least 1.
         spacing: Spacing between vias in mm
         via_size: Via annular ring diameter in mm
         via_drill: Via drill diameter in mm
         net_name: Net to assign to vias. If None, auto-detect from pad.
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
+    # Checked before the board is opened. Every via is built in memory before
+    # the one write, so an unbounded grid exhausted memory, and rows=10**18 with
+    # cols=0 passes any cap on the product yet spins in the row loop forever.
+    board = Path(pcb_path).name or "the board"
+    if rows < 1 or cols < 1:
+        raise ToolError(
+            f"A thermal via grid needs at least one row and one column, not rows={rows},"
+            f" cols={cols}. Nothing was written to {board}."
+        )
+    if rows * cols > _MAX_THERMAL_VIAS:
+        raise ToolError(
+            f"A {rows}x{cols} grid is {rows * cols} vias; add_thermal_vias places at most"
+            f" {_MAX_THERMAL_VIAS} in one call, and exposed-pad grids run about 3x3 to"
+            f" 10x10. Nothing was written to {board}."
+        )
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
     fp = _find_fp_cst(root, reference)
