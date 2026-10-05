@@ -7,6 +7,7 @@ kicad-cli and KiCad's Python with pcbnew.
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from xml.etree.ElementTree import ParseError
@@ -19,7 +20,7 @@ import mcp_server_kicad._cst as _cst
 from mcp_server_kicad import _netlist_import as ni
 from mcp_server_kicad import pcb
 from mcp_server_kicad._freerouting import find_pcbnew_python
-from mcp_server_kicad._shared import _kicad_root, _resolve_system_lib, _run_cli
+from mcp_server_kicad._shared import _kicad_cli_major, _kicad_root, _resolve_system_lib, _run_cli
 from mcp_server_kicad.models import UpdatePcbResult
 
 NETLIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -93,6 +94,7 @@ FIELDS_XML = """<?xml version="1.0" encoding="UTF-8"?>
       <footprint>Resistor_SMD:R_0603_1608Metric</footprint>
       <fields>
         <field name="MPN">ERJ-3EKF1002V</field>
+        <field name="Component Class">Power</field>
         <field name="Footprint">Resistor_SMD:R_0603_1608Metric</field>
         <field name="Datasheet" />
         <field name="Description">Resistor</field>
@@ -197,14 +199,16 @@ class TestParseNetlist:
 
     def test_fields_flags_and_sheet_linkage(self, tmp_path):
         """What KiCad's own update copies besides Reference, Value and the
-        library id: the fields (Reference, Value and Footprint excluded, the
-        empty Datasheet kept), the DNP / BOM / board flags, and the sheet the
-        symbol sits on."""
+        library id: the fields (Reference, Value, Footprint and Component Class
+        excluded, the empty Datasheet kept), the footprint filters, the DNP /
+        BOM / board flags, and the sheet the symbol sits on."""
         p = tmp_path / "fields.xml"
         p.write_text(FIELDS_XML)
         components, _ = ni.parse_netlist(str(p))
         r1, r2, c1 = components
         assert r1["fields"] == {"MPN": "ERJ-3EKF1002V", "Datasheet": "", "Description": "Resistor"}
+        assert r1["fp_filters"] == "R_*" and r2["fp_filters"] == ""
+        assert r1["exclude_from_pos_files"] is None, "no <design><tool>: not a KiCad 10 netlist"
         assert (r1["dnp"], r1["exclude_from_bom"], r1["exclude_from_board"]) == (False,) * 3
         assert (r1["sheetname"], r1["sheetfile"]) == ("/", "probe.kicad_sch")
         assert r2["fields"] == {"Datasheet": "", "Description": ""}
@@ -218,7 +222,30 @@ class TestParseNetlist:
         r1, j1 = components
         assert r1["fields"] == {} and r1["sheetfile"] == "" and r1["sheetname"] == "/"
         assert (r1["dnp"], r1["exclude_from_bom"], r1["exclude_from_board"]) == (False,) * 3
+        assert r1["fp_filters"] == "" and r1["exclude_from_pos_files"] is None
         assert j1["sheetname"] == "/sub/"
+
+    def test_kicad_10_says_whether_a_symbol_is_in_the_position_files(self, tmp_path):
+        """KiCad 10's exporter marks a symbol excluded from position files and
+        its update sets and clears the footprint's flag from the marker. KiCad
+        9 writes no marker, so a KiCad 9 netlist answers None and the flag
+        stays the board's own."""
+
+        def netlist(tool: str) -> list[dict]:
+            p = tmp_path / "pos.xml"
+            p.write_text(
+                f'<export version="E"><design><tool>Eeschema {tool}</tool></design>'
+                '<components><comp ref="H1"><value>MountingHole</value>'
+                '<property name="exclude_from_pos_files"/></comp>'
+                '<comp ref="R1"><value>10K</value></comp></components>'
+                "<nets/></export>"
+            )
+            return ni.parse_netlist(str(p))[0]
+
+        h1, r1 = netlist("10.0.6")
+        assert (h1["exclude_from_pos_files"], r1["exclude_from_pos_files"]) == (True, False)
+        h1, r1 = netlist("9.0.9")
+        assert h1["exclude_from_pos_files"] is None and r1["exclude_from_pos_files"] is None
 
 
 class TestResolvePretty:
@@ -316,18 +343,116 @@ class TestFpLibTables:
         monkeypatch.setenv("HOME_LIBS", str(home))
         monkeypatch.setenv("KICAD_CONFIG_HOME", str(config))
         monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: 9)
+        monkeypatch.setenv("KICAD_DOCUMENTS_HOME", str(tmp_path / "docs"))
+        # The install's stock footprints, where Personal also exists: the
+        # global row wins over stock, for the import and place_footprint alike.
+        root = tmp_path / "root"
+        (root / "share/kicad/footprints/Personal.pretty").mkdir(parents=True)
+        (root / "share/kicad/footprints/Stock.pretty").mkdir()
+        monkeypatch.setattr(pcb, "_kicad_root", lambda: root)
 
-        project_table, global_table = pcb._fp_lib_tables(proj)
-        assert project_table == {"Resistor_SMD": str(proj / "Resistor_SMD.pretty")}
-        assert global_table == {
+        board = str(proj / "b.kicad_pcb")
+        resolver = pcb._FpLibResolver(proj, pcb._fp_search_dirs(board))
+        assert resolver.project_table == {"Resistor_SMD": str(proj / "Resistor_SMD.pretty")}
+        assert resolver.global_table == {
             "Resistor_SMD": str(stock / "Resistor_SMD.pretty"),
             "Personal": str(home / "Personal.pretty"),
         }
-        board = str(proj / "b.kicad_pcb")
+        assert resolver.resolve("Resistor_SMD") == str(proj / "Resistor_SMD.pretty")
+        assert resolver.resolve("Personal") == str(home / "Personal.pretty")
+        assert resolver.resolve("Stock") == str(root / "share/kicad/footprints/Stock.pretty")
         assert pcb._resolve_pretty_dir("Resistor_SMD", board) == str(proj / "Resistor_SMD.pretty")
         assert pcb._resolve_pretty_dir("Personal", board) == str(home / "Personal.pretty")
+        assert pcb._resolve_pretty_dir("Stock", board) == resolver.resolve("Stock")
         with pytest.raises(Exception, match="3 fp-lib-table row"):
             pcb._resolve_pretty_dir("Nope", board)
+
+    def test_the_global_table_is_read_only_after_the_local_lookups_miss(
+        self, tmp_path, monkeypatch
+    ):
+        """A project library or one beside the board answers without the
+        global table being read at all (about 15 ms for the stock table's 155
+        nested rows), and a miss reads it once per resolver."""
+        proj = tmp_path / "proj"
+        (proj / "Mine.pretty").mkdir(parents=True)
+        (proj / "Beside.pretty").mkdir()
+        (proj / "fp-lib-table").write_bytes(_table([_row("Mine", "${KIPRJMOD}/Mine.pretty")]))
+        reads: list[str] = []
+
+        def counted():
+            reads.append("global")
+            return None
+
+        monkeypatch.setattr(pcb, "_global_fp_lib_table", counted)
+        monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: None)
+        resolver = pcb._FpLibResolver(proj, pcb._fp_search_dirs(str(proj / "b.kicad_pcb")))
+        assert resolver.resolve("Mine") == str(proj / "Mine.pretty")
+        assert resolver.resolve("Beside") == str(proj / "Beside.pretty")
+        assert reads == []
+        assert resolver.resolve("Nope") is None and resolver.resolve("Nope2") is None
+        assert reads == ["global"]
+
+    def test_configure_paths_and_pcm_libraries_resolve(self, tmp_path, monkeypatch):
+        """Two kinds of global row KiCad resolves and the table file alone
+        cannot: a ${VAR} set in Preferences > Configure Paths (kicad_common.json,
+        the OS environment winning), and the libraries the Plugin and Content
+        Manager installed, which KiCad adds while loading the table from
+        ${KICAD<N>_3RD_PARTY}/footprints/<package>/<lib>.pretty, a root it
+        computes at run time, as <prefix><lib> unless the table already has
+        the nickname."""
+        config = tmp_path / "config" / "9.0"
+        config.mkdir(parents=True)
+        mine = tmp_path / "mine" / "Mine.pretty"
+        mine.mkdir(parents=True)
+        override = tmp_path / "override" / "Over.pretty"
+        override.mkdir(parents=True)
+        docs = tmp_path / "docs"
+        pkg = docs / "9.0" / "3rdparty" / "footprints" / "com_github_x_pkg"
+        (pkg / "Pkg.pretty").mkdir(parents=True)
+        (pkg / "Also.pretty").mkdir()
+        (pkg / "notes.pretty").write_text("a file, not a library")
+        (docs / "9.0" / "3rdparty" / "footprints" / "Loose.pretty").mkdir()
+        own = tmp_path / "own" / "Pkg.pretty"
+        own.mkdir(parents=True)
+        configured = {
+            "MYLIBS": str(tmp_path / "mine"),
+            "KICAD9_FOOTPRINT_DIR": str(override.parent),
+        }
+        (config / "kicad_common.json").write_text(json.dumps({"environment": {"vars": configured}}))
+        (config / "fp-lib-table").write_bytes(
+            _table(
+                [
+                    _row("Mine", "${MYLIBS}/Mine.pretty"),
+                    _row("Over", "${KICAD9_FOOTPRINT_DIR}/Over.pretty"),
+                    _row("PCM_Pkg", "${OWN}/Pkg.pretty"),
+                ]
+            )
+        )
+        monkeypatch.setenv("KICAD_CONFIG_HOME", str(tmp_path / "config"))
+        monkeypatch.setenv("KICAD_DOCUMENTS_HOME", str(docs))
+        monkeypatch.setenv("OWN", str(own.parent))
+        for name in ("MYLIBS", "KICAD9_FOOTPRINT_DIR", "KICAD9_3RD_PARTY"):
+            monkeypatch.delenv(name, raising=False)
+        monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: 9)
+
+        assert pcb._kicad_var("MYLIBS", None) == str(tmp_path / "mine")
+        assert pcb._kicad_var("KICAD9_3RD_PARTY", None) == str(docs / "9.0" / "3rdparty")
+        monkeypatch.setenv("MYLIBS", str(tmp_path / "elsewhere"))
+        assert pcb._kicad_var("MYLIBS", None) == str(tmp_path / "elsewhere"), "the environment wins"
+        monkeypatch.delenv("MYLIBS")
+
+        assert pcb._FpLibResolver(None, []).global_table == {
+            "Mine": str(mine),
+            "Over": str(override),
+            "PCM_Pkg": str(own),
+            "PCM_Also": str(pkg / "Also.pretty"),
+        }, "the table's own PCM_Pkg row keeps its nickname; Loose.pretty is in no package"
+
+        (config / "kicad.json").write_text(json.dumps({"pcm": {"lib_prefix": "X_"}}))
+        assert pcb._FpLibResolver(None, []).global_table["X_Pkg"] == str(pkg / "Pkg.pretty")
+        (config / "kicad.json").write_text(json.dumps({"pcm": {"lib_auto_add": False}}))
+        table = pcb._FpLibResolver(None, []).global_table
+        assert "X_Pkg" not in table and "PCM_Also" not in table and table["PCM_Pkg"] == str(own)
 
     def test_no_kicad_cli_means_no_global_table(self, monkeypatch):
         monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: None)
@@ -349,28 +474,30 @@ class TestFpLibTables:
 
 _FP = (
     b'(footprint "Resistor_SMD:R_0603_1608Metric"\n\t\t(layer "F.Cu")\n\t\t(uuid "a")'
-    b'\n\t\t(at 10 10 90)\n\t\t(path "/x")\n\t\t(descr "d")'
+    b'\n\t\t(at 10 10 90)\n\t\t(descr "d")'
     b'\n\t\t(property "Reference" "R1"\n\t\t\t(at 0 -1.43 0)\n\t\t\t(layer "F.SilkS")'
     b'\n\t\t\t(uuid "b")\n\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 1 1)'
     b"\n\t\t\t\t\t(thickness 0.15)\n\t\t\t\t)\n\t\t\t)\n\t\t)"
     b'\n\t\t(property "Description" "Resistor SMD 0603"\n\t\t\t(at 0 0 0)\n\t\t\t(layer "F.Fab")'
     b'\n\t\t\t(hide yes)\n\t\t\t(uuid "c")\n\t\t\t(effects\n\t\t\t\t(font'
     b"\n\t\t\t\t\t(size 1.27 1.27)\n\t\t\t\t)\n\t\t\t)\n\t\t)"
-    b'\n\t\t(attr smd)\n\t\t(pad "1" smd roundrect\n\t\t\t(at -0.825 0 90)\n\t\t\t(size 0.8 0.95)'
+    b'\n\t\t(path "/x")\n\t\t(attr smd)'
+    b'\n\t\t(pad "1" smd roundrect\n\t\t\t(at -0.825 0 90)\n\t\t\t(size 0.8 0.95)'
     b'\n\t\t\t(layers "F.Cu" "F.Paste" "F.Mask")\n\t\t\t(uuid "e")\n\t\t)\n\t)'
 )
 
 
 class TestFootprintSync:
-    """Fields, attributes and sheet linkage onto one footprint node, as bytes."""
+    """Fields, filters, attributes and sheet linkage onto one footprint node, as bytes."""
 
     def _fp(self):
         return _cst.parse(_FP).lists[0]
 
-    def test_a_new_field_is_hidden_on_fab_and_cancels_the_rotation(self):
+    def test_a_new_field_is_hidden_on_fab_at_the_footprint_s_angle(self):
         fp = self._fp()
         comp = {
             "fields": {"MPN": "ERJ", "Description": "Resistor"},
+            "fp_filters": "R_*",
             "sheetname": "/",
             "sheetfile": "e.kicad_sch",
             "dnp": True,
@@ -379,14 +506,20 @@ class TestFootprintSync:
         assert pcb._sync_fp_from_component(fp, comp)
         out = _cst.serialize(fp)
         assert (
-            b'(property "MPN" "ERJ"\n\t\t\t(at 0 0 270)\n\t\t\t(unlocked yes)'
+            b'(property "MPN" "ERJ"\n\t\t\t(at 0 0 90)\n\t\t\t(unlocked yes)'
             b'\n\t\t\t(layer "F.Fab")\n\t\t\t(hide yes)'
-        ) in out, "the footprint sits at 90, so the field reads upright at 270"
+        ) in out, "the footprint sits at 90, and KiCad writes a new field at the footprint's angle"
         assert b'(property "Description" "Resistor"\n\t\t\t(at 0 0 0)' in out, (
             "an existing field changes its text in place and keeps its position"
         )
-        assert b'(path "/x")\n\t\t(sheetname "/")\n\t\t(sheetfile "e.kicad_sch")\n\t\t(descr' in out
-        assert b"(attr smd exclude_from_bom dnp)" in out
+        assert b'(property ki_fp_filters "R_*")\n\t\t(path "/x")' in out, (
+            "filters just before the path"
+        )
+        assert out.index(b'"MPN"') < out.index(b"ki_fp_filters"), "user fields before the filters"
+        assert (
+            b'(path "/x")\n\t\t(sheetname "/")\n\t\t(sheetfile "e.kicad_sch")'
+            b"\n\t\t(attr smd exclude_from_bom dnp)"
+        ) in out
         assert out.count(b"(uuid ") == 5, "the new field carries a uuid of its own"
         assert not pcb._sync_fp_from_component(fp, comp), "a second pass changes nothing"
         cleared = dict(comp, dnp=False, exclude_from_bom=False)
@@ -394,6 +527,29 @@ class TestFootprintSync:
         assert b"(attr smd)" in _cst.serialize(fp)
         assert pcb._sync_fp_from_component(fp, dict(cleared, fields={})) is False
         assert b'(property "MPN" "ERJ"' in _cst.serialize(fp), "a field that left the symbol stays"
+        assert pcb._sync_fp_from_component(fp, dict(cleared, fp_filters="", sheetfile=""))
+        out = _cst.serialize(fp)
+        assert b"ki_fp_filters" not in out and b"(sheetfile" not in out, (
+            "filters and sheet linkage are whatever the netlist says, empty included"
+        )
+
+    def test_a_field_s_angle_is_the_absolute_one_kicad_stores(self):
+        """Measured on a board KiCad's own update wrote: a footprint at -90
+        carries its new field at 270 and one at 90 at 90. The writer stores a
+        text's absolute board angle and the parser reads it back as such; a
+        180-degree sample cannot tell this from a cancelling angle."""
+        fp = self._fp()
+        _cst._fill_at(fp, 10, 10, -90)
+        assert pcb._sync_fp_fields(fp, {"MPN": "x"})
+        assert b'(property "MPN" "x"\n\t\t\t(at 0 0 270)' in _cst.serialize(fp)
+
+    def test_a_new_field_lands_before_the_filters_on_a_board_kicad_wrote(self):
+        fp = self._fp()
+        pcb._set_fp_filters(fp, "R_*")
+        assert pcb._sync_fp_fields(fp, {"MPN": "x"})
+        out = _cst.serialize(fp)
+        assert out.index(b'"Description"') < out.index(b'"MPN"') < out.index(b"ki_fp_filters")
+        assert out.index(b"ki_fp_filters") < out.index(b"(path ")
 
     def test_board_owned_attributes_are_kept_in_kicad_s_order(self):
         fp = self._fp()
@@ -408,13 +564,44 @@ class TestFootprintSync:
             fp
         )
 
-    def test_a_back_side_footprint_gets_fields_on_b_fab(self):
+    def test_a_hand_ordered_attr_is_left_alone_until_a_flag_changes(self):
+        fp = self._fp()
+        attr = fp.find("attr")
+        node = _cst.parse(b"(attr dnp through_hole)").lists[0]
+        node.sep = attr.sep
+        fp.children[fp.children.index(attr)] = node
+        before = _cst.serialize(fp)
+        assert not pcb._sync_fp_attributes(fp, dnp=True, exclude_from_bom=False)
+        assert _cst.serialize(fp) == before, "same flags: not rewritten, not reported"
+        assert pcb._sync_fp_attributes(fp, dnp=False, exclude_from_bom=False)
+        assert b"(attr through_hole)" in _cst.serialize(fp)
+
+    def test_the_position_file_flag_follows_a_kicad_10_netlist_and_stays_on_9(self):
+        fp = self._fp()
+        attr = fp.find("attr")
+        node = _cst.parse(b"(attr smd exclude_from_pos_files)").lists[0]
+        node.sep = attr.sep
+        fp.children[fp.children.index(attr)] = node
+        assert not pcb._sync_fp_attributes(fp, False, False), "KiCad 9: the board's own flag"
+        assert not pcb._sync_fp_attributes(fp, False, False, exclude_from_pos_files=True)
+        assert pcb._sync_fp_attributes(fp, False, False, exclude_from_pos_files=False)
+        assert b"(attr smd)" in _cst.serialize(fp)
+        assert pcb._sync_fp_attributes(fp, True, False, exclude_from_pos_files=True)
+        assert b"(attr smd exclude_from_pos_files dnp)" in _cst.serialize(fp)
+        comp = {"fields": {}, "dnp": True, "exclude_from_pos_files": None}
+        assert not pcb._sync_fp_from_component(fp, comp), "None keeps the token as found"
+
+    def test_a_back_side_footprint_gets_mirrored_fields_on_b_fab(self):
         fp = self._fp()
         fp.find("layer").atoms[1].set_text("B.Cu")
         assert pcb._sync_fp_fields(fp, {"MPN": "x"})
+        out = _cst.serialize(fp)
         assert (
-            b'(property "MPN" "x"\n\t\t\t(at 0 0 270)\n\t\t\t(unlocked yes)\n\t\t\t(layer "B.Fab")'
-            in (_cst.serialize(fp))
+            b'(property "MPN" "x"\n\t\t\t(at 0 0 90)\n\t\t\t(unlocked yes)\n\t\t\t(layer "B.Fab")'
+            in out
+        )
+        assert b"(thickness 0.15)\n\t\t\t\t)\n\t\t\t\t(justify mirror)\n\t\t\t)\n\t\t)" in out, (
+            "KiCad's StyleFromSettings mirrors a text on a back layer"
         )
 
     def test_an_attribute_less_footprint_gains_one_only_when_flagged(self):
@@ -768,8 +955,22 @@ def _set_symbol_flags(sch: str, reference: str, **flags: bool) -> None:
             for p in sym.find_all("property")
         ):
             for key, value in flags.items():
-                sym.find(key).atoms[1].set_text("yes" if value else "no")
+                node = sym.find(key)
+                if node is None:
+                    # KiCad 10's in_pos_files: a file this server wrote has no
+                    # such token, and KiCad 10 reads its absence as yes.
+                    node = _cst.parse(f"({key} yes)".encode()).lists[0]
+                    sym.insert_after(sym.find("dnp"), node)
+                node.atoms[1].set_text("yes" if value else "no")
     path.write_bytes(_cst.serialize(tree))
+
+
+def _netlist_components(sch: str) -> dict[str, dict]:
+    """The schematic's components as kicad-cli exports them: the oracle for
+    what KiCad's own update would copy verbatim."""
+    out = Path(sch).with_name("oracle.xml")
+    _run_cli(["sch", "export", "netlist", "--format", "kicadxml", "--output", str(out), sch])
+    return {c["ref"]: c for c in ni.parse_netlist(str(out))[0]}
 
 
 def _position_refs(pcb_path: str, *flags: str) -> set[str]:
@@ -795,7 +996,12 @@ class TestUpdatePcbFieldsE2E:
         board = Board.from_file(pcb_path)  # kiutils reads the result back as an oracle
         by_ref = {f.properties.get("Reference"): f for f in board.footprints}
         assert by_ref["R1"].properties["MPN"] == "ERJ-3EKF1002V"
-        assert by_ref["R1"].properties["Datasheet"] == ""
+        # Verbatim from the symbol, as KiCad's own update copies it: Device:R's
+        # Datasheet is "~" in KiCad 9's library and "" in KiCad 10's.
+        assert (
+            by_ref["R1"].properties["Datasheet"]
+            == _netlist_components(sch)["R1"]["fields"]["Datasheet"]
+        )
         assert "MPN" not in by_ref["R2"].properties
         assert by_ref["R2"].attributes.excludeFromBom is True
         assert by_ref["R1"].attributes.excludeFromBom is False
@@ -803,6 +1009,8 @@ class TestUpdatePcbFieldsE2E:
         assert b"(attr smd exclude_from_bom dnp)" in raw
         assert raw.count(b'(sheetname "/")') == 2 and raw.count(b'(sheetfile "e2e.kicad_sch")') == 2
         assert b'(property "MPN" "ERJ-3EKF1002V"\n\t\t\t(at 0 0 0)\n\t\t\t(unlocked yes)' in raw
+        assert raw.count(b'(property ki_fp_filters "R_*")') == 2, "the symbol's footprint filters"
+        assert raw.index(b'"MPN"') < raw.index(b"ki_fp_filters"), "user fields before the filters"
         # DNP through KiCad itself: the position export drops R2 only when asked to.
         assert {"R1", "R2"} <= _position_refs(pcb_path)
         assert "R2" not in _position_refs(pcb_path, "--exclude-dnp")
@@ -841,6 +1049,28 @@ class TestUpdatePcbFieldsE2E:
         assert "R2" in _position_refs(pcb_path, "--exclude-dnp"), "KiCad itself sees it cleared"
         r1 = next(f for f in list_pcb_footprints(pcb_path=pcb_path) if f.reference == "R1")
         assert (r1.x, r1.y) == (42, 24), "the user's placement is not the schematic's to move"
+
+    def test_kicad_10_s_position_file_box_reaches_the_footprint(self, tmp_path):
+        """KiCad 10's netlist marks "Exclude from position files" and its update
+        sets and clears the footprint's flag from it; so does this import, with
+        KiCad's own position export as the oracle. KiCad 9's netlist has no
+        marker, so there the flag stays the board's own (unit-tested above)."""
+        from mcp_server_kicad.pcb import update_pcb_from_schematic
+
+        if (_kicad_cli_major() or 0) < 10:
+            pytest.skip("KiCad 10's in_pos_files box; KiCad 9 has none")
+        sch, pcb_path = _make_project(tmp_path)
+        _set_symbol_flags(sch, "R1", in_pos_files=False)
+        result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
+        assert sorted(result.added) == ["R1", "R2"]
+        raw = Path(pcb_path).read_bytes()
+        assert b"(attr smd exclude_from_pos_files)" in raw and raw.count(b"(attr smd)") == 1
+        assert _position_refs(pcb_path) == {"R2"}, "KiCad's own export leaves R1 out"
+        _set_symbol_flags(sch, "R1", in_pos_files=True)
+        result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
+        assert result.fields_updated == ["R1"]
+        assert b"exclude_from_pos_files" not in Path(pcb_path).read_bytes()
+        assert _position_refs(pcb_path) == {"R1", "R2"}
 
     def test_an_off_board_symbol_is_never_placed_and_its_footprint_goes_stale(self, tmp_path):
         from mcp_server_kicad.pcb import list_pcb_footprints, update_pcb_from_schematic

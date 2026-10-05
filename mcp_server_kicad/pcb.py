@@ -586,7 +586,7 @@ def _regen_uuids(node) -> None:
 _LIB_TABLE_DEPTH = 3
 
 #: The install subtree each KiCad path variable names, for an install found
-#: through the resolved kicad-cli when the environment does not define it.
+#: through the resolved kicad-cli when nothing else defines the variable.
 _KICAD_VAR_DIRS = {
     "FOOTPRINT": "footprints",
     "TEMPLATE": "template",
@@ -595,19 +595,113 @@ _KICAD_VAR_DIRS = {
 }
 
 
-def _kicad_var(name: str, project_dir: Path | None) -> str | None:
+def _kicad_config_dirs() -> list[Path]:
+    """KiCad's settings directories for the running kicad-cli, most likely first.
+
+    KICAD_CONFIG_HOME when set, else ~/.config/kicad (XDG_CONFIG_HOME honoured)
+    on Linux, ~/Library/Preferences/kicad on macOS and %APPDATA%/kicad on
+    Windows, each with a <major>.<minor> subdirectory. The minor is taken as 0
+    (a nightly's <major>.99 is also tried) and the unversioned directory last,
+    for a KICAD_CONFIG_HOME laid out without one. No kicad-cli means no opinion
+    and an empty list.
+    """
+    major = _kicad_cli_major()
+    if major is None:
+        return []
+    configured = os.environ.get("KICAD_CONFIG_HOME")
+    if configured:
+        base = Path(configured)
+    elif sys.platform == "win32":
+        appdata = os.environ.get("APPDATA")
+        if not appdata:
+            return []
+        base = Path(appdata) / "kicad"
+    elif sys.platform == "darwin":
+        base = Path.home() / "Library/Preferences/kicad"
+    else:
+        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "kicad"
+    return [base / f"{major}.0", *sorted(base.glob(f"{major}.*")), base]
+
+
+def _kicad_config_file(name: str) -> Path | None:
+    """The first of KiCad's settings directories holding *name*, or None."""
+    for folder in _kicad_config_dirs():
+        path = folder / name
+        if path.is_file():
+            return path
+    return None
+
+
+def _global_fp_lib_table() -> Path | None:
+    """The user's global fp-lib-table for the running KiCad, or None."""
+    return _kicad_config_file("fp-lib-table")
+
+
+def _kicad_settings(name: str) -> dict:
+    """One of KiCad's JSON settings files (kicad_common.json, kicad.json) as a
+    dict, or {} when it is missing or unreadable: a setting that cannot be read
+    means its default, never a failed tool."""
+    path = _kicad_config_file(name)
+    if path is None:
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _configured_vars() -> dict[str, str]:
+    """The path variables set in Preferences > Configure Paths.
+
+    KiCad keeps them in kicad_common.json under environment.vars. The OS
+    environment wins over them when both define a name, which _kicad_var
+    honours by asking the environment first.
+    """
+    environment = _kicad_settings("kicad_common.json").get("environment")
+    variables = environment.get("vars") if isinstance(environment, dict) else None
+    if not isinstance(variables, dict):
+        return {}
+    return {str(key): str(value) for key, value in variables.items() if value}
+
+
+def _kicad_documents_home() -> Path:
+    """Where KiCad keeps the user's own data (projects, 3rd-party packages):
+    KICAD_DOCUMENTS_HOME when set, else Documents/KiCad on Windows and macOS
+    and the XDG data home's kicad directory on Linux."""
+    configured = os.environ.get("KICAD_DOCUMENTS_HOME")
+    if configured:
+        return Path(configured)
+    if sys.platform in ("win32", "darwin"):
+        return Path.home() / "Documents" / "KiCad"
+    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "kicad"
+
+
+def _kicad_var(name: str, project_dir: Path | None, configured: dict | None = None) -> str | None:
     """A KiCad path variable's value, or None when nothing defines it.
 
-    KIPRJMOD is the project directory. Anything else comes from the environment
-    first, which is where KiCad itself and a Guix or Nix profile set them, and
-    otherwise from the install the resolved kicad-cli belongs to for the
-    versioned KICAD<N>_FOOTPRINT_DIR family and the KiCad 5 spelling KISYSMOD.
+    KIPRJMOD is the project directory. Anything else is resolved as KiCad
+    resolves it: the OS environment first, which is where KiCad itself and a
+    Guix or Nix profile set them, then Preferences > Configure Paths
+    (*configured*, read from kicad_common.json when not given), then KiCad's
+    own defaults for its predefined variables: <documents>/<N>.0/3rdparty for
+    KICAD<N>_3RD_PARTY, the root the Plugin and Content Manager installs into,
+    which KiCad computes at run time and never writes anywhere, and the install
+    the resolved kicad-cli belongs to for the versioned KICAD<N>_FOOTPRINT_DIR
+    family and the KiCad 5 spelling KISYSMOD.
     """
     if name == "KIPRJMOD":
         return str(project_dir) if project_dir is not None else None
     env = os.environ.get(name)
     if env:
         return env
+    if configured is None:
+        configured = _configured_vars()
+    if configured.get(name):
+        return configured[name]
+    third_party = re.fullmatch(r"KICAD(\d+)_3RD_PARTY", name)
+    if third_party:
+        return str(_kicad_documents_home() / f"{third_party.group(1)}.0" / "3rdparty")
     matched = re.fullmatch(r"KICAD\d*_(FOOTPRINT|TEMPLATE|SYMBOL|3DMODEL)_DIR", name)
     kind = matched.group(1) if matched else ("FOOTPRINT" if name == "KISYSMOD" else None)
     root = _kicad_root()
@@ -620,11 +714,13 @@ def _kicad_var(name: str, project_dir: Path | None) -> str | None:
     return None
 
 
-def _expand_lib_uri(uri: str, project_dir: Path | None) -> str | None:
+def _expand_lib_uri(
+    uri: str, project_dir: Path | None, configured: dict | None = None
+) -> str | None:
     """*uri* with every ${VAR} expanded, or None when one of them is undefined."""
 
     def expand(match: re.Match) -> str:
-        value = _kicad_var(match.group(1), project_dir)
+        value = _kicad_var(match.group(1), project_dir, configured)
         if value is None:
             raise KeyError(match.group(1))
         return value
@@ -635,7 +731,12 @@ def _expand_lib_uri(uri: str, project_dir: Path | None) -> str | None:
         return None
 
 
-def _read_fp_lib_table(path: Path, project_dir: Path | None, depth: int = _LIB_TABLE_DEPTH) -> dict:
+def _read_fp_lib_table(
+    path: Path,
+    project_dir: Path | None,
+    depth: int = _LIB_TABLE_DEPTH,
+    configured: dict | None = None,
+) -> dict:
     """nickname -> .pretty directory for the rows of one fp-lib-table.
 
     Only rows this package can serve are returned: type KiCad with a directory
@@ -648,7 +749,11 @@ def _read_fp_lib_table(path: Path, project_dir: Path | None, depth: int = _LIB_T
     how KiCad 10's global table reaches the stock libraries. An unreadable or
     malformed table answers empty rather than failing the tool, because the
     table is a hint about where libraries are and not the operation itself.
+    *configured* is Configure Paths, read once per table and shared with the
+    tables it nests.
     """
+    if configured is None:
+        configured = _configured_vars()
     try:
         tree = _cst.parse(path.read_bytes())
     except (OSError, SyntaxError):
@@ -663,12 +768,12 @@ def _read_fp_lib_table(path: Path, project_dir: Path | None, depth: int = _LIB_T
         if row.find("disabled") is not None:
             continue
         plugin = kind.atoms[1].text.lower() if kind is not None and len(kind.atoms) > 1 else "kicad"
-        target = _expand_lib_uri(uri.atoms[1].text, project_dir)
+        target = _expand_lib_uri(uri.atoms[1].text, project_dir, configured)
         if target is None:
             continue
         if plugin == "table":
             if depth > 0 and Path(target).is_file():
-                nested = _read_fp_lib_table(Path(target), project_dir, depth - 1)
+                nested = _read_fp_lib_table(Path(target), project_dir, depth - 1, configured)
                 for nick, pretty in nested.items():
                     table.setdefault(nick, pretty)
         elif plugin == "kicad" and Path(target).is_dir():
@@ -676,36 +781,35 @@ def _read_fp_lib_table(path: Path, project_dir: Path | None, depth: int = _LIB_T
     return table
 
 
-def _global_fp_lib_table() -> Path | None:
-    """The user's global fp-lib-table for the running KiCad, or None.
+def _pcm_footprint_libs(configured: dict | None = None) -> dict[str, str]:
+    """nickname -> .pretty for the footprint libraries the Plugin and Content
+    Manager installed, as KiCad adds them to the global table.
 
-    KiCad keeps it under its versioned settings directory: KICAD_CONFIG_HOME
-    when set, else ~/.config/kicad (XDG_CONFIG_HOME honoured) on Linux,
-    ~/Library/Preferences/kicad on macOS and %APPDATA%/kicad on Windows, each
-    with a <major>.<minor> subdirectory. The minor is taken as 0 (a nightly's
-    <major>.99 is also tried) and the unversioned directory last, for a
-    KICAD_CONFIG_HOME laid out without one. No kicad-cli means no opinion.
+    KiCad never writes these rows to the fp-lib-table file. With "auto add" on
+    (pcm.lib_auto_add in kicad.json, the default) it scans
+    ${KICAD<N>_3RD_PARTY}/footprints/<package>/<lib>.pretty while loading the
+    global table and inserts each as <prefix><lib> (pcm.lib_prefix, default
+    PCM_), a row already in the table keeping its nickname. The same scan, one
+    level under each package, is done here; the caller merges it under the
+    file's own rows.
     """
     major = _kicad_cli_major()
     if major is None:
-        return None
-    configured = os.environ.get("KICAD_CONFIG_HOME")
-    if configured:
-        base = Path(configured)
-    elif sys.platform == "win32":
-        appdata = os.environ.get("APPDATA")
-        if not appdata:
-            return None
-        base = Path(appdata) / "kicad"
-    elif sys.platform == "darwin":
-        base = Path.home() / "Library/Preferences/kicad"
-    else:
-        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / "kicad"
-    for folder in (base / f"{major}.0", *sorted(base.glob(f"{major}.*")), base):
-        table = folder / "fp-lib-table"
-        if table.is_file():
-            return table
-    return None
+        return {}
+    pcm = _kicad_settings("kicad.json").get("pcm")
+    pcm = pcm if isinstance(pcm, dict) else {}
+    if pcm.get("lib_auto_add", True) is False:
+        return {}
+    prefix = str(pcm.get("lib_prefix", "PCM_"))
+    root = _kicad_var(f"KICAD{major}_3RD_PARTY", None, configured)
+    packages = Path(root) / "footprints" if root else None
+    if packages is None or not packages.is_dir():
+        return {}
+    libs: dict[str, str] = {}
+    for package in sorted(p for p in packages.iterdir() if p.is_dir()):
+        for pretty in sorted(p for p in package.glob("*.pretty") if p.is_dir()):
+            libs.setdefault(prefix + pretty.name[: -len(".pretty")], str(pretty))
+    return libs
 
 
 def _project_dir(pcb_path: str, schematic_path: str = "", project_path: str = "") -> Path | None:
@@ -721,62 +825,101 @@ def _project_dir(pcb_path: str, schematic_path: str = "", project_path: str = ""
     return dirs[0] if dirs else None
 
 
-def _fp_lib_tables(project_dir: Path | None) -> tuple[dict, dict]:
-    """(project table, global table) as nickname -> .pretty maps.
+def _fp_search_dirs(*paths: str) -> list[str]:
+    """The directories searched for <nickname>.pretty between the project's
+    table and the global one: the directory of each given file (the board,
+    and the schematic for the import), then KICAD_FP_LIB, which may name a
+    .pretty itself (searched together with its parent) or a directory holding
+    several. They come before the global table, as they always have in this
+    package, so a library beside the board shadows a global row of the same
+    nickname."""
+    dirs = dict.fromkeys(str(Path(p).resolve().parent) for p in paths if p)
+    if FP_LIB_PATH:
+        fp_lib = Path(FP_LIB_PATH)
+        for d in [fp_lib.parent, fp_lib] if fp_lib.suffix == ".pretty" else [fp_lib]:
+            dirs.setdefault(str(d))
+    return list(dirs)
 
-    The pair is kept apart because the two sit at different points of the
-    search: a project's own table is what KiCad itself would use for that
-    nickname and comes first; the global table comes after the libraries beside
-    the board and KICAD_FP_LIB, which this package has always let shadow a
-    nickname, and before the stock libraries most of its rows point at anyway.
+
+class _FpLibResolver:
+    """Footprint library nickname -> .pretty directory, in KiCad's order.
+
+    The project's own fp-lib-table (${KIPRJMOD} is *project_dir*), then
+    <nickname>.pretty under each of *search_dirs* (see _fp_search_dirs), then
+    the user's global fp-lib-table together with the libraries the Plugin and
+    Content Manager installed, then KiCad's stock footprints under the
+    kicad-cli install. update_pcb_from_schematic and place_footprint both
+    resolve through one of these, so a hand-placed part and an imported one
+    name the same file. Each table is read at most once per resolver, and the
+    global table only once a local lookup has missed: the stock table's 155
+    nested rows cost about 15 ms to read, which a project library should not
+    pay for, and reading it per resolver rather than once per process keeps a
+    live edit of the table visible.
     """
-    project: dict = {}
-    if project_dir is not None and (project_dir / "fp-lib-table").is_file():
-        project = _read_fp_lib_table(project_dir / "fp-lib-table", project_dir)
-    global_path = _global_fp_lib_table()
-    global_table = _read_fp_lib_table(global_path, project_dir) if global_path else {}
-    return project, global_table
+
+    def __init__(self, project_dir: Path | None, search_dirs: list[str]) -> None:
+        self.project_dir = project_dir
+        self.search_dirs = list(search_dirs)
+        self._project: dict | None = None
+        self._global: dict | None = None
+
+    @property
+    def project_table(self) -> dict:
+        if self._project is None:
+            table = self.project_dir / "fp-lib-table" if self.project_dir is not None else None
+            self._project = (
+                _read_fp_lib_table(table, self.project_dir)
+                if table is not None and table.is_file()
+                else {}
+            )
+        return self._project
+
+    @property
+    def global_table(self) -> dict:
+        if self._global is None:
+            configured = _configured_vars()
+            path = _global_fp_lib_table()
+            table = (
+                _read_fp_lib_table(path, self.project_dir, configured=configured) if path else {}
+            )
+            for nick, pretty in _pcm_footprint_libs(configured).items():
+                table.setdefault(nick, pretty)
+            self._global = table
+        return self._global
+
+    @property
+    def stock_dirs(self) -> list[str]:
+        root = _kicad_root()
+        subs = ("share/kicad/footprints", "SharedSupport/footprints")
+        return [str(root / sub) for sub in subs if (root / sub).is_dir()] if root else []
+
+    def resolve(self, nickname: str) -> str | None:
+        return (
+            self.project_table.get(nickname)
+            or _resolve_pretty(nickname, self.search_dirs)
+            or self.global_table.get(nickname)
+            or _resolve_pretty(nickname, self.stock_dirs)
+        )
 
 
 def _resolve_pretty_dir(library: str, pcb_path: str = "") -> str:
     """A .pretty directory from a nickname or a path.
 
-    Searched in the order the netlist import searches, so a footprint placed by
-    hand and the same footprint placed from a schematic resolve to the same
-    file: the project's own fp-lib-table beside the board, the project's .pretty
-    dirs beside the board, the configured KICAD_FP_LIB, the user's global
-    fp-lib-table, then KiCad's stock footprints.
+    A nickname goes through _FpLibResolver, the order update_pcb_from_schematic
+    uses, so a footprint placed by hand and the same footprint placed from a
+    schematic resolve to the same file.
     """
     direct = Path(library)
     if direct.is_dir():
         return str(direct)
-    project_table, global_table = _fp_lib_tables(_project_dir(pcb_path) if pcb_path else None)
-    if library in project_table:
-        return project_table[library]
-    candidates: list[Path] = []
-    if pcb_path:
-        candidates.append(Path(pcb_path).resolve().parent)
-    if FP_LIB_PATH:
-        # KICAD_FP_LIB may name a .pretty itself or a directory holding several.
-        fp_lib = Path(FP_LIB_PATH)
-        candidates += [fp_lib.parent, fp_lib] if fp_lib.suffix == ".pretty" else [fp_lib]
-    for base in candidates:
-        cand = base / f"{library}.pretty"
-        if cand.is_dir():
-            return str(cand)
-    if library in global_table:
-        return global_table[library]
-    root = _kicad_root()
-    stock = [root / "share/kicad/footprints", root / "SharedSupport/footprints"] if root else []
-    for base in stock:
-        cand = base / f"{library}.pretty"
-        if cand.is_dir():
-            return str(cand)
-    candidates += stock
-    searched = (
-        ", ".join(str(c) for c in candidates) or "nowhere: no board and no libraries configured"
-    )
-    tables = len(project_table) + len(global_table)
+    project_dir = _project_dir(pcb_path) if pcb_path else None
+    resolver = _FpLibResolver(project_dir, _fp_search_dirs(pcb_path))
+    hit = resolver.resolve(library)
+    if hit:
+        return hit
+    searched = ", ".join([*resolver.search_dirs, *resolver.stock_dirs])
+    searched = searched or "nowhere: no board and no libraries configured"
+    tables = len(resolver.project_table) + len(resolver.global_table)
     raise ToolError(
         f"Footprint library {library!r} not found. Looked for {library}.pretty in: {searched};"
         f" {tables} fp-lib-table row(s) name other libraries."
@@ -785,10 +928,14 @@ def _resolve_pretty_dir(library: str, pcb_path: str = "") -> str:
 
 
 #: A footprint field as KiCad's own Update PCB from Schematic adds one, measured
-#: on a board it wrote: hidden, on the fabrication layer of the footprint's
-#: side, at the footprint's origin, kept upright (unlocked) at a 1 mm/0.15 mm
-#: text style, with an angle that cancels the footprint's own rotation so the
-#: text reads at 0 degrees in board space.
+#: on boards it wrote and checked against its source: hidden, on the fabrication
+#: layer of the footprint's side, at the footprint's origin and at the
+#: footprint's own angle (the writer stores a text's absolute board angle, so
+#: the field turns with the footprint; the 180-degree sample this was first
+#: measured on is the one angle that cannot tell this from a cancelling angle,
+#: and KiCad's code rules the cancelling one out), with (unlocked yes), which
+#: is Keep Upright OFF and not a free-to-rotate flag, at a 1 mm/0.15 mm text
+#: style, and mirrored when it lands on the back.
 _FP_FIELD_TPL = _cst.parse(
     b'(property "N" "V"\n\t\t\t(at 0 0 0)\n\t\t\t(unlocked yes)\n\t\t\t(layer "F.Fab")'
     b'\n\t\t\t(hide yes)\n\t\t\t(uuid "x")\n\t\t\t(effects\n\t\t\t\t(font'
@@ -809,10 +956,13 @@ _ATTR_ORDER = (
     "allow_soldermask_bridges",
 )
 
-#: The attributes the schematic owns. KiCad's update sets both from the symbol
-#: every time, so clearing a box in the schematic clears the flag on the board;
-#: every other token (the mounting type, position-file and courtyard choices) is
-#: the board's own and is left exactly as found.
+#: The attributes every netlist lets the schematic own. KiCad's update sets both
+#: from the symbol every time, so clearing a box in the schematic clears the flag
+#: on the board. exclude_from_pos_files joins them only when the netlist carries
+#: KiCad 10's marker for it (parse_netlist answers a bool then, None on a KiCad 9
+#: netlist, which has no such marker); every other token (the mounting type,
+#: board_only, the courtyard and solder-mask choices) is the board's own and is
+#: left exactly as found.
 _SYMBOL_OWNED_ATTRS = ("exclude_from_bom", "dnp")
 
 
@@ -828,16 +978,25 @@ def _fp_property_node(fp, key: str):
     return None
 
 
+def _insert_fp_field(fp, node) -> None:
+    """Splice a new field in where KiCad's writer puts user fields: after the
+    last (property "..." ...) and before (property ki_fp_filters ...), which the
+    writer emits last of the properties, just ahead of (path ...)."""
+    props = [p for p in fp.find_all("property") if p.atoms[1].text != "ki_fp_filters"]
+    fp.insert_after(props[-1] if props else fp.find("at"), node)
+
+
 def _sync_fp_fields(fp, fields: dict) -> bool:
     """Every symbol field onto the footprint; True when any text moved.
 
     A field the footprint already carries (Datasheet and Description come with
     the library footprint, and a user field from an earlier import) is updated
-    in place, keeping its position, layer and style. A new one is appended
-    after the last property in the template KiCad uses. Nothing is removed: a
-    field that left the symbol stays on the footprint, which is also what a
+    in place, keeping its position, layer and style. A new one is added in the
+    template KiCad uses, where its writer puts user fields. Nothing is removed:
+    a field that left the symbol stays on the footprint, which is also what a
     footprint keeps of its own library fields (measured: KiLib_Generator
-    survives KiCad's own update), and removing text the user may have placed
+    survives KiCad's own update, whose "Remove footprint fields not found in
+    symbols" box is off by default), and removing text the user may have placed
     is not something an import should do unasked.
     """
     changed = False
@@ -852,22 +1011,34 @@ def _sync_fp_fields(fp, fields: dict) -> bool:
         node.atoms[1].set_text(name)
         node.atoms[2].set_text(value)
         node.find("uuid").atoms[1].set_text(_gen_uuid())
+        angle = _fp_rotation(fp) % 360
+        if angle:
+            node.find("at").atoms[3].set_text(_num(angle))
         if _fp_layer(fp).startswith("B."):
+            # KiCad's StyleFromSettings mirrors a text on a back layer, so the
+            # field reads from the back like the library's own texts do after a
+            # flip. Laid out as the writer lays it out, under the font.
             node.find("layer").atoms[1].set_text("B.Fab")
-        cancel = (-_fp_rotation(fp)) % 360
-        if cancel:
-            node.find("at").atoms[3].set_text(_num(cancel))
-        props = fp.find_all("property")
-        fp.insert_after(props[-1] if props else fp.find("at"), node)
+            mirror = _cst.parse(b"(justify mirror)").lists[0]
+            node.find("effects").append_child(mirror, b"\n\t\t\t\t")
+        _insert_fp_field(fp, node)
         changed = True
     return changed
 
 
 def _set_fp_sheet(fp, head: str, value: str) -> bool:
-    """(sheetname ...) or (sheetfile ...), set or inserted after (path ...)."""
-    if not value:
-        return False
+    """(sheetname ...) or (sheetfile ...) set to what the netlist says.
+
+    Set in place, inserted after (path ...) when new, and removed when the
+    netlist's value is empty: KiCad's update assigns the value as it is and its
+    writer leaves an empty one out.
+    """
     existing = fp.find(head)
+    if not value:
+        if existing is None:
+            return False
+        fp.remove_child(existing)
+        return True
     if existing is not None:
         if existing.atoms[1].text == value:
             return False
@@ -880,19 +1051,53 @@ def _set_fp_sheet(fp, head: str, value: str) -> bool:
     return True
 
 
-def _sync_fp_attributes(fp, dnp: bool, exclude_from_bom: bool) -> bool:
-    """The symbol-owned (attr ...) tokens follow the symbol; True when they moved."""
+def _set_fp_filters(fp, value: str) -> bool:
+    """(property ki_fp_filters "...") set to the symbol's footprint filters.
+
+    KiCad's update copies them onto the footprint (SetFilters) and its writer
+    emits them as the last property, which in a footprint it wrote puts them
+    just before (path ...); they are left out when empty. The same here, so a
+    symbol without filters clears them.
+    """
+    node = _fp_property_node(fp, "ki_fp_filters")
+    if not value:
+        if node is None:
+            return False
+        fp.remove_child(node)
+        return True
+    if node is not None:
+        if node.atoms[2].text == value:
+            return False
+        node.atoms[2].set_text(value)
+        return True
+    node = _cst.parse(b'(property ki_fp_filters "x")').lists[0]
+    node.atoms[2].set_text(value)
+    _insert_fp_field(fp, node)
+    return True
+
+
+def _sync_fp_attributes(
+    fp, dnp: bool, exclude_from_bom: bool, exclude_from_pos_files: bool | None = None
+) -> bool:
+    """The symbol-owned (attr ...) tokens follow the symbol; True when they moved.
+
+    exclude_from_pos_files is None when the netlist does not say (KiCad 9
+    writes no marker for it), and the token is then the board's own, kept as
+    found. The tokens are compared as a set, so a footprint whose (attr ...) a
+    hand or another tool ordered differently is left alone until a flag
+    actually changes, and only then rewritten in KiCad's order.
+    """
     attr = fp.find("attr")
     tokens = [a.text for a in attr.atoms[1:]] if attr is not None else []
-    wanted = [tok for tok in tokens if tok not in _SYMBOL_OWNED_ATTRS]
-    if exclude_from_bom:
-        wanted.append("exclude_from_bom")
-    if dnp:
-        wanted.append("dnp")
+    owned = dict(zip(_SYMBOL_OWNED_ATTRS, (exclude_from_bom, dnp)))
+    if exclude_from_pos_files is not None:
+        owned["exclude_from_pos_files"] = exclude_from_pos_files
+    wanted = [tok for tok in tokens if tok not in owned]
+    wanted += [tok for tok, on in owned.items() if on]
+    if set(wanted) == set(tokens):
+        return False
     ordered = [tok for tok in _ATTR_ORDER if tok in wanted]
     ordered += [tok for tok in wanted if tok not in _ATTR_ORDER]
-    if ordered == tokens:
-        return False
     if attr is not None and not ordered:
         fp.remove_child(attr)
         return True
@@ -907,14 +1112,21 @@ def _sync_fp_attributes(fp, dnp: bool, exclude_from_bom: bool) -> bool:
 
 
 def _sync_fp_from_component(fp, comp: dict) -> bool:
-    """Fields, sheet linkage and the symbol-owned attributes of one netlist
-    component onto its footprint. Reference, Value, the library id and the
-    path are the caller's; this is everything else KiCad's own update copies.
-    True when anything changed."""
+    """Fields, footprint filters, sheet linkage and the symbol-owned attributes
+    of one netlist component onto its footprint. Reference, Value, the library
+    id and the path are the caller's; this is the rest of what KiCad's own
+    update copies, short of the component class (dropped with the names KiCad
+    handles apart, see _netlist_import) and KiCad 10's variant overrides,
+    which are not applied. True when anything changed."""
     changed = _sync_fp_fields(fp, comp.get("fields", {}))
+    changed = _set_fp_filters(fp, comp.get("fp_filters", "")) or changed
     changed = _set_fp_sheet(fp, "sheetname", comp.get("sheetname", "")) or changed
     changed = _set_fp_sheet(fp, "sheetfile", comp.get("sheetfile", "")) or changed
-    flags = (comp.get("dnp", False), comp.get("exclude_from_bom", False))
+    flags = (
+        comp.get("dnp", False),
+        comp.get("exclude_from_bom", False),
+        comp.get("exclude_from_pos_files"),
+    )
     return _sync_fp_attributes(fp, *flags) or changed
 
 
@@ -1443,7 +1655,8 @@ def place_footprint(
             .pretty directory. A nickname is resolved as update_pcb_from_schematic
             resolves it: the project's fp-lib-table beside the board, .pretty
             directories beside the board, KICAD_FP_LIB, the user's global
-            fp-lib-table, then KiCad's stock footprints. Optional; omit for a
+            fp-lib-table (with the libraries the Plugin and Content Manager
+            installed), then KiCad's stock footprints. Optional; omit for a
             pad-less marker.
         footprint: Footprint name within that library (e.g. "R_0805_2012Metric").
             Required when library is given.
@@ -2103,25 +2316,6 @@ def fill_zones(pcb_path: str = PCB_PATH) -> FillZonesResult:
     return FillZonesResult(zones_filled=filled, status="ok")
 
 
-def _netlist_lib_dirs(schematic_path: str, pcb_path: str) -> list[str]:
-    """Footprint library search dirs: project .pretty dirs, KICAD_FP_LIB, stock libs."""
-    dirs: list[str] = []
-    parents = dict.fromkeys(str(Path(p).resolve().parent) for p in (schematic_path, pcb_path))
-    for parent in parents:
-        for pretty in sorted(Path(parent).glob("*.pretty")):
-            if pretty.is_dir():
-                dirs.append(str(pretty))
-    if FP_LIB_PATH and Path(FP_LIB_PATH).is_dir():
-        dirs.append(FP_LIB_PATH)
-    root = _kicad_root()
-    if root:
-        for sub in ("share/kicad/footprints", "SharedSupport/footprints"):
-            cand = root / sub
-            if cand.is_dir():
-                dirs.append(str(cand))
-    return dirs
-
-
 @mcp.tool(annotations=_ADDITIVE)
 def update_pcb_from_schematic(
     schematic_path: str = SCH_PATH,
@@ -2142,32 +2336,41 @@ def update_pcb_from_schematic(
     produces them (local labels sheet-prefixed, e.g. "/SIG"); read them
     with list_pcb_nets.
 
-    Everything KiCad's own update copies from the symbol follows it here.
-    The Value. Every other symbol field, as hidden text on the fabrication
-    layer of the footprint's side: Datasheet and Description are updated
-    where the library footprint put them, a new field is added at the
-    footprint's origin reading upright, and a field that left the symbol
-    stays on the footprint (KiCad keeps a footprint's library fields the
-    same way, and text the user may have placed is not an import's to
-    remove). The DNP and "In BOM" boxes, set and cleared on the footprint's
-    attributes, while the board's own flags (mounting type, position-file
-    and courtyard choices) stay as found. The sheet name and file, and the
-    path that links the footprint to its symbol. A symbol with "On board"
-    unticked is never placed and is listed in excluded_from_board; a
-    footprint it left behind is reported stale like any other. Existing
-    footprints whose fields, flags or sheet linkage moved are listed in
+    What KiCad's own update copies from the symbol follows it here, with
+    two exceptions named below. The Value. Every other symbol field, as hidden
+    text on the fabrication layer of the footprint's side: Datasheet and
+    Description are updated where the library footprint put them, a new field
+    is added at the footprint's origin at the footprint's own angle (mirrored
+    on the back), and a field that left the symbol stays on the footprint
+    (KiCad keeps a footprint's library fields the same way, and text the
+    user may have placed is not an import's to remove). The symbol's
+    footprint filters, as KiCad's (property ki_fp_filters ...). The DNP and
+    "In BOM" boxes, set and cleared on the footprint's attributes; on a
+    KiCad 10 netlist "Exclude from position files" too, while on KiCad 9,
+    whose netlist has no such marker, that flag stays the board's own, as
+    the mounting type, board_only and the courtyard choice always do. The
+    sheet name and file, and the path that links the footprint to its
+    symbol. A symbol with "On board" unticked is never placed and is listed
+    in excluded_from_board; a footprint it left behind is reported stale like
+    any other. Not copied: the Component Class field, which KiCad assigns as
+    a component class rather than a field (dropped here), and KiCad 10's
+    variant overrides, which are not applied. Existing footprints whose
+    fields, filters, flags or sheet linkage moved are listed in
     fields_updated; a second run that changes nothing writes nothing.
 
     A footprint's library nickname is resolved the way KiCad resolves it:
     the project's own fp-lib-table first (beside the .kicad_pro, or beside
-    the board or the schematic when none is named; ${KIPRJMOD}, the
-    ${KICAD*_FOOTPRINT_DIR} family and the other KiCad path variables
-    expand from the environment or the kicad-cli install), then .pretty
-    directories beside the board and the schematic, then KICAD_FP_LIB,
-    then the user's global fp-lib-table, then KiCad's stock footprints. A
-    nickname none of those know is reported in skipped as
-    footprint_lib_not_found. place_footprint reads the same tables, so a
-    hand-placed part and an imported one resolve to the same file.
+    the board or the schematic when none is named), then .pretty directories
+    beside the board and the schematic, then KICAD_FP_LIB, then the user's
+    global fp-lib-table together with the libraries the Plugin and Content
+    Manager installed, then KiCad's stock footprints. ${KIPRJMOD}, the
+    variables of Preferences > Configure Paths (kicad_common.json), the
+    ${KICAD*_3RD_PARTY} and ${KICAD*_FOOTPRINT_DIR} families and the other
+    KiCad path variables expand as KiCad expands them: the environment
+    first, then the configured value, then KiCad's own default. A nickname
+    none of those know is reported in skipped as footprint_lib_not_found.
+    place_footprint resolves through the same code, so a hand-placed part
+    and an imported one resolve to the same file.
 
     Requires kicad-cli. It no longer needs KiCad's pcbnew Python bindings.
 
@@ -2216,9 +2419,9 @@ def update_pcb_from_schematic(
         summary = _apply_netlist_cst(
             netlist_path,
             pcb_file,
-            _netlist_lib_dirs(schematic_path, pcb_file),
+            _fp_search_dirs(schematic_path, pcb_file),
             delete_stale,
-            _fp_lib_tables(_project_dir(pcb_file, sch_target, project_path)),
+            _project_dir(pcb_file, sch_target, project_path),
         )
     return UpdatePcbResult(**summary)
 
@@ -2839,12 +3042,13 @@ def _apply_netlist_cst(
     pcb_path: str,
     lib_dirs: list[str],
     delete_stale: bool = False,
-    lib_tables: tuple[dict, dict] | None = None,
+    project_dir: Path | None = None,
 ) -> dict:
     """Apply a parsed netlist to a board through the substrate. Returns a summary.
 
-    lib_tables is the (project, global) pair from _fp_lib_tables; a nickname is
-    looked up in the project table, then in lib_dirs, then in the global table.
+    A footprint's library nickname goes through _FpLibResolver: the project's
+    fp-lib-table under project_dir, then lib_dirs, then the global table, then
+    the stock footprints, the order place_footprint uses as well.
 
     Replaces _netlist_import.apply(), which was the last pcbnew.SaveBoard
     writing a user's own board. What that cost is measured in
@@ -2859,7 +3063,7 @@ def _apply_netlist_cst(
     """
     components, nets = _parse_netlist(netlist_path)
     summary = _new_summary()
-    project_table, global_table = lib_tables or ({}, {})
+    resolver = _FpLibResolver(project_dir, lib_dirs)
 
     # A symbol with "On board" unticked is not on this board, which is what
     # KiCad's own update does with it: never placed, and a footprint it left
@@ -2896,7 +3100,7 @@ def _apply_netlist_cst(
             summary["skipped"].append({"ref": ref, "reason": "no_footprint_assigned"})
             continue
         lib, name = fpid.split(":", 1)
-        pretty = project_table.get(lib) or _resolve_pretty(lib, lib_dirs) or global_table.get(lib)
+        pretty = resolver.resolve(lib)
         if pretty is None:
             summary["skipped"].append({"ref": ref, "reason": f"footprint_lib_not_found:{lib}"})
             continue
@@ -2936,7 +3140,7 @@ def _apply_netlist_cst(
             if locked is not None:
                 node.insert_after(node.find("at"), locked.copy())
             # After placement and the flip, so a new field takes the final
-            # side and cancels the final rotation.
+            # side and the final angle.
             _sync_fp_from_component(node, comp)
             root.children[root.children.index(existing)] = node
             node.sep = existing.sep

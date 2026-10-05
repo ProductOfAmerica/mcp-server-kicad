@@ -18,16 +18,19 @@ import xml.etree.ElementTree as ET
 
 #: Netlist fields the updater does not copy as footprint fields: Reference and
 #: Value are the footprint's own text items and are set directly, Footprint is
-#: the library id the footprint was copied from. KiCad's own
-#: BOARD_NETLIST_UPDATER erases the same three before it compares fields.
-_FIELDS_HANDLED_APART = frozenset({"Reference", "Value", "Footprint"})
+#: the library id the footprint was copied from, and Component Class is what
+#: KiCad assigns as the footprint's component class rather than a field (this
+#: package drops it). KiCad's own BOARD_NETLIST_UPDATER erases the same four
+#: before it compares fields.
+_FIELDS_HANDLED_APART = frozenset({"Reference", "Value", "Footprint", "Component Class"})
 
 
 def parse_netlist(path: str) -> tuple[list[dict], list[dict]]:
     """Parse a kicad-cli XML netlist into (components, nets).
 
-    components: [{ref, value, footprint, path, fields, dnp, exclude_from_bom,
-    exclude_from_board, sheetname, sheetfile}] — footprint "" when unassigned;
+    components: [{ref, value, footprint, path, fields, fp_filters, dnp,
+    exclude_from_bom, exclude_from_board, exclude_from_pos_files, sheetname,
+    sheetfile}] — footprint "" when unassigned;
     path is the sheetpath+symbol KIID chain for GUI F8 linkage. A multi-unit
     symbol's <tstamps> lists every unit's KIID, space-separated, and the path
     takes the first one, as KiCad's own update does: a footprint has one
@@ -35,19 +38,25 @@ def parse_netlist(path: str) -> tuple[list[dict], list[dict]]:
     cannot parse, so it gave the footprint a fresh random KIID on every load
     and the footprint was linked to no unit at all.
 
-    fields is what KiCad's own update copies onto the footprint: every entry
-    of the component's <fields> except Reference, Value and Footprint, which
-    the updater handles on their own (Reference and Value are the footprint's
-    own text items, Footprint is the library id). Measured on kicad-cli 10.0.6:
-    the list always carries Footprint, Datasheet and Description, empty or
-    not, plus the symbol's user fields, so Datasheet and Description reach the
-    footprint even when blank, as the GUI leaves them. The three flags come
-    from the <property> markers the exporter writes only when set:
-    exclude_from_bom and dnp for the symbol's "In BOM" and "DNP" boxes,
-    exclude_from_board for "On board" unticked, which KiCad's update treats as
-    "not on this board". sheetname is the <sheetpath names> ("/" at the root)
-    and sheetfile the Sheetfile property; both land on the footprint as the
-    (sheetname ...) and (sheetfile ...) children KiCad writes.
+    fields is what KiCad's own update copies onto the footprint as fields:
+    every entry of the component's <fields> except the four in
+    _FIELDS_HANDLED_APART. Measured on kicad-cli 10.0.6: the list always
+    carries Footprint, Datasheet and Description, empty or not, plus the
+    symbol's user fields, so Datasheet and Description reach the footprint
+    even when blank, as the GUI leaves them. fp_filters is the ki_fp_filters
+    property, the symbol's footprint filters, which KiCad copies onto the
+    footprint too ("" when the symbol has none). The flags come from the
+    <property> markers the exporter writes only when set: exclude_from_bom
+    and dnp for the symbol's "In BOM" and "DNP" boxes, exclude_from_board for
+    "On board" unticked, which KiCad's update treats as "not on this board".
+    exclude_from_pos_files is a bool only for a netlist KiCad 10 or later
+    wrote (the <design><tool> says which), whose exporter marks a symbol with
+    "Exclude from position files" ticked and whose update sets and clears the
+    footprint's flag from it; KiCad 9 has no such marker, so there the value
+    is None and the flag stays the board's own. sheetname is the <sheetpath
+    names> ("/" at the root) and sheetfile the Sheetfile property; both land
+    on the footprint as the (sheetname ...) and (sheetfile ...) children KiCad
+    writes.
     nets: [{name, nodes: [(ref, pin), ...]}] — the netlist @code is ignored;
     net names are the only identity that survives onto the board.
     """
@@ -55,6 +64,10 @@ def parse_netlist(path: str) -> tuple[list[dict], list[dict]]:
     # dir moments earlier (never attacker-supplied), and this module must stay
     # stdlib-only (see the module docstring), so defusedxml is not an option.
     root = ET.parse(path).getroot()
+    # "Eeschema 10.0.6": the netlist's own writer, which decides whether the
+    # exclude_from_pos_files marker can exist at all (KiCad 10 and later).
+    tool_major = (root.findtext("./design/tool") or "").rsplit(" ", 1)[-1].split(".")[0]
+    pos_files_marked = tool_major.isdigit() and int(tool_major) >= 10
     components = []
     for comp in root.findall("./components/comp"):
         sheetpath = comp.find("sheetpath")
@@ -74,9 +87,13 @@ def parse_netlist(path: str) -> tuple[list[dict], list[dict]]:
                 "footprint": comp.findtext("footprint") or "",
                 "path": (prefix.rstrip("/") + "/" + tstamp) if tstamp else "",
                 "fields": fields,
+                "fp_filters": markers.get("ki_fp_filters", ""),
                 "dnp": "dnp" in markers,
                 "exclude_from_bom": "exclude_from_bom" in markers,
                 "exclude_from_board": "exclude_from_board" in markers,
+                "exclude_from_pos_files": (
+                    ("exclude_from_pos_files" in markers) if pos_files_marked else None
+                ),
                 "sheetname": (sheetpath.get("names") or "/") if sheetpath is not None else "/",
                 "sheetfile": markers.get("Sheetfile", ""),
             }

@@ -349,16 +349,22 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   only when the box is ticked; the sheet is `<sheetpath names="/">` at the root plus a
   `Sheetfile` property. The board side on a footprint KiCad's own update wrote (the
   torque block's INA821, placed at 180 degrees): a user field lands as a hidden
-  `(property ...)` on the footprint's F.Fab at `(at 0 0 180)`, so its angle cancels the
-  footprint's and the text reads upright, `(unlocked yes)`, size 1 by 1, thickness
-  0.15; Datasheet and Description are updated in place where the library footprint
+  `(property ...)` on the footprint's F.Fab at `(at 0 0 180)`, which is the footprint's
+  own angle (the first reading of this sample, "cancels the footprint's angle", was
+  wrong: 180 is the one angle that cannot tell the two apart, and the 2026-10-05 entry
+  below has the measurement that does), `(unlocked yes)`, which is Keep Upright OFF and
+  not a free-rotation flag (the parser's own comment: "unlocked" is not the opposite of
+  "locked"), size 1 by 1, thickness 0.15; Datasheet and Description are updated in
+  place where the library footprint
   put them; `path`, `sheetname` and `sheetfile` follow the symbol; `(attr smd)` keeps
   the mounting type; the library's own KiLib_Generator field survives; Footprint is
   not a footprint field. `_FP_FIELD_TPL` is that measured node, `_ATTR_ORDER` is the
   writer's token order in pcb_io_kicad_sexpr.cpp, and `_SYMBOL_OWNED_ATTRS` names the
-  two tokens the schematic owns, so clearing a box clears the flag while
-  `board_only`, `exclude_from_pos_files` and `allow_missing_courtyard` stay the
-  board's. One decision is recorded so it is not re-litigated: a field that left the
+  two tokens the schematic owns on every netlist, so clearing a box clears the flag
+  while `board_only` and `allow_missing_courtyard` stay the board's;
+  `exclude_from_pos_files` is the board's on a KiCad 9 netlist and the symbol's on a
+  KiCad 10 one (second 2026-10-04 entry). One decision is recorded so it is not re-litigated:
+  a field that left the
   symbol is NOT removed from the footprint. KiCad itself keeps a footprint's library
   fields through its update, and a property the user placed by hand is text an import
   has no business deleting unasked; the cost is a stale field the user can delete,
@@ -376,7 +382,8 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   table, then the directories this package has always searched (`.pretty` beside the
   board and schematic, `KICAD_FP_LIB`), then the global table, then the stock
   footprints, and `place_footprint` now walks the same list so a hand-placed part and
-  an imported one resolve to one file. Only rows the package can serve are returned:
+  an imported one resolve to one file (the first cut did not quite: see the second 2026-10-04
+  entry). Only rows the package can serve are returned:
   type KiCad, enabled, `${VAR}` expanded, directory present; `${KIPRJMOD}` is the
   `.kicad_pro`'s directory (`_project_dir`, falling back to the first of the board's
   and schematic's directories that holds a table or a project), every other variable
@@ -391,3 +398,51 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   Gates: the two fields E2E tests (new, edited and cleared, idempotent on the second
   run) and the table E2E test turn red without the three sync calls or the table
   lookup; a second import that changes nothing is still byte-identical.
+
+- 2026-10-04, after review: the review of the entry above (upstream PR #67) against KiCad's source
+  at 9.0.9 and 10.0.6 found the model right in its bones and wrong in four details,
+  each re-measured here before the fix. (1) A new field takes the footprint's own
+  angle, not its negation: KiCad's updater places the field at the footprint origin
+  and calls `Rotate(fpPos, fpOrientation)`, and the writer stores the text's absolute
+  board angle. Measured on a KiCad-written board: footprints at 90 carry their new
+  fields at 90 and footprints at -90 at 270; the INA821 at 180 was the one sample that
+  could not distinguish the two. `_sync_fp_fields` now writes `rotation % 360`.
+  (2) `(unlocked yes)` is Keep Upright OFF, which is why the field turns with the
+  footprint at all. (3) A new field on the back is mirrored: `StyleFromSettings` sets
+  mirrored for a back layer (reached through the updater's `aCheckSide = true`), so
+  the field's effects gain `(justify mirror)`, laid out under the font as the writer
+  lays it out; measured with pcbnew 10.0.6 on a flipped footprint. (4) On KiCad 10 the
+  schematic owns `exclude_from_pos_files` as well: the exporter writes an
+  `exclude_from_pos_files` marker for a symbol with "Exclude from position files"
+  ticked (measured: kicad-cli 10.0.6 on a symbol with `(in_pos_files no)`) and the
+  updater sets and clears the flag from it, so a stock mounting hole, whose symbol is
+  in position files and whose footprint is not, loses the flag under KiCad 10's F8.
+  KiCad 9 writes no marker, so joining the token to `_SYMBOL_OWNED_ATTRS` outright
+  would clear every library's flag there. `parse_netlist` therefore reads the netlist's
+  own `<design><tool>` and answers a bool for KiCad 10 or later and None otherwise, and
+  `_sync_fp_attributes` treats None as "the board's own". Also from the review: the
+  import and `place_footprint` searched in different orders (the import's directory
+  list ended with the stock footprints, so stock came before the global table there
+  and after it in `place_footprint`; a global row shadowing a stock nickname resolved
+  to two files). Both now go through `_FpLibResolver`, one non-raising resolver in
+  the documented order that reads each table at most once and the global one only
+  after the local lookups miss (about 15 ms per read of the stock table's 155 nested
+  rows, measured by the reviewer). `_kicad_var` learned the two kinds of global row it
+  dropped: variables from Preferences > Configure Paths, which KiCad keeps in
+  `kicad_common.json` with the OS environment winning, and `${KICAD<N>_3RD_PARTY}`,
+  whose default KiCad computes at run time (`<documents>/<N>.0/3rdparty`,
+  `KICAD_DOCUMENTS_HOME` honoured) and never writes to the table; with it,
+  `_pcm_footprint_libs` emulates the scan KiCad runs while loading the global table
+  when `pcm.lib_auto_add` is on, adding `<package>/<lib>.pretty` as
+  `<pcm.lib_prefix><lib>` under the file's own rows. Smaller corrections: `Component
+  Class` joins the names the updater handles apart (KiCad assigns it as a component
+  class, not a field; dropped here); the symbol's `ki_fp_filters` is copied as
+  `(property ki_fp_filters "...")` just before `(path ...)`, where KiCad's writer puts
+  it, and a new user field is inserted before it rather than after; `(sheetname ...)`,
+  `(sheetfile ...)` and the filters are set to whatever the netlist says, an empty
+  value removing the node as KiCad's writer leaves an empty one out; and
+  `_sync_fp_attributes` compares the token set, so a hand-ordered `(attr ...)` is left
+  alone and unreported until a flag changes. Still not applied: KiCad 10's variant
+  overrides. Gate: the KiCad 9 `suite` job, which this round's test expectation
+  (Device:R's Datasheet is `"~"` in KiCad 9's library, `""` in KiCad 10's; the test now
+  compares against the exported netlist) had kept from running past its first assert.
