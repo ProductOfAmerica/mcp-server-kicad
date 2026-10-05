@@ -1243,11 +1243,19 @@ class TestListCrossSheetNets:
         assert "GND" in net_names
 
 
-@pytest.mark.parametrize("pointed_root", _NON_REGULAR, indirect=True)
+@pytest.mark.parametrize(
+    "pointed_root",
+    [*_NON_REGULAR, pytest.param("empty.kicad_sch", id="empty")],
+    indirect=True,
+)
 class TestNonRegularChildSheet:
     """Every read of a Sheetfile gated on exists() and then read the whole file, so a
     directory raised a raw IsADirectoryError (PermissionError on Windows) and /dev/zero
-    grew the read until memory ran out. Each tool now treats such a sheet as missing."""
+    grew the read until memory ran out. Each tool now treats such a sheet as missing.
+
+    The empty file stands in for a procfs pseudo-file such as /proc/self/pagemap: a
+    regular file of size 0 that streams without end, which is_file() alone let through.
+    An empty file ends at once, so a regressed guard fails here instead of hanging."""
 
     def test_validate_hierarchy(self, pointed_root: Path):
         result = project.validate_hierarchy(schematic_path=str(pointed_root))
