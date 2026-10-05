@@ -800,8 +800,9 @@ def _read_fp_lib_table(
     table is a hint about where libraries are and not the operation itself.
     *configured* is Configure Paths, read once per table and shared with the
     tables it nests. *_memo* holds the nested tables already read in this
-    traversal, keyed on real path and depth left; it is made per top-level
-    call, never kept, so a live edit of a table stays visible.
+    traversal, keyed on the file's identity (device and inode) and depth left;
+    it is made per top-level call, never kept, so a live edit of a table stays
+    visible.
     """
     if configured is None:
         configured = _configured_vars()
@@ -828,11 +829,20 @@ def _read_fp_lib_table(
             if depth > 0 and Path(target).is_file():
                 # A nested table is parsed once per depth in this traversal.
                 # Unmemoised, a table naming itself in N rows was parsed
-                # 1+N+N^2+N^3 times (400 for seven rows). The depth is in the
-                # key because a table first reached with less depth left must
-                # not cut a deeper follow short, and a miss is tested by
-                # membership because a table with nothing servable answers {}.
-                key = (os.path.realpath(target), depth - 1)
+                # 1+N+N^2+N^3 times (400 for seven rows). The key is the file
+                # (device and inode; realpath where a volume reports no inode),
+                # because a hard link, or a case variant on a case-insensitive
+                # volume, is a spelling realpath does not collapse: keyed on the
+                # path, 200 hard links still cost 601 parses (7.8 s). The depth
+                # is in the key because a table first reached with less depth
+                # left must not cut a deeper follow short, and a miss is tested
+                # by membership because a table with nothing servable answers {}.
+                try:
+                    st = os.stat(target)
+                except OSError:
+                    continue
+                ident = (st.st_dev, st.st_ino) if st.st_ino else os.path.realpath(target)
+                key = (ident, depth - 1)
                 if key not in _memo:
                     _memo[key] = _read_fp_lib_table(
                         Path(target), project_dir, depth - 1, configured, _memo=_memo

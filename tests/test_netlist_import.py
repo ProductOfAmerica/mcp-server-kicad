@@ -555,6 +555,34 @@ class TestFpLibTables:
             assert resolver.resolve("Nope") is None
         assert len(parses) <= pcb._LIB_TABLE_DEPTH + 1
 
+    def test_a_table_named_through_hard_links_is_parsed_once_per_depth(self, tmp_path, monkeypatch):
+        """Seven rows each naming a hard link of the project table. realpath
+        leaves every link its own path, so a memo keyed on the path still
+        parsed it 1+3*7 = 22 times (400 with no memo), and N links cost 1+3N
+        parses of N rows each. Keyed on the file, each depth is parsed once
+        whatever the spelling."""
+        proj = tmp_path / "proj"
+        proj.mkdir()
+        rows = [_row(f"t{i}", f"${{KIPRJMOD}}/h{i}", kind="Table") for i in range(7)]
+        (proj / "fp-lib-table").write_bytes(_table(rows))
+        try:
+            for i in range(7):
+                os.link(proj / "fp-lib-table", proj / f"h{i}")
+        except (OSError, NotImplementedError) as exc:
+            pytest.skip(f"no hard links here: {exc}")
+        monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: None)
+        parses: list[int] = []
+        parse = _cst.parse
+
+        def counted(data):
+            parses.append(len(data))
+            return parse(data)
+
+        monkeypatch.setattr(pcb._cst, "parse", counted)
+        resolver = pcb._FpLibResolver(proj, pcb._fp_search_dirs(str(proj / "b.kicad_pcb")))
+        assert resolver.resolve("Nope") is None
+        assert len(parses) <= pcb._LIB_TABLE_DEPTH + 1
+
     def test_a_table_first_reached_shallow_is_still_followed_deep(self, tmp_path, monkeypatch):
         """C is reached first through B with one level left, where its chain to
         E is cut short, then straight from A with two, where it reaches E. A
