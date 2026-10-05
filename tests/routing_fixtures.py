@@ -435,6 +435,24 @@ def sheet(
     return where
 
 
+def duplicate_r_swapped(path: str) -> None:
+    """A second lib_symbols entry named "R" after the first, pins 1 and 2 swapped: what a hand
+    edit or a git merge can leave. KiCad 9.0.8 and 10.0.6 draw the last one
+    (SCH_SCREEN::AddLibSymbol replaces an earlier entry of the same name)."""
+
+    def fn(root) -> None:
+        libs = root.find("lib_symbols")
+        first = next(s for s in libs.find_all("symbol") if s.atoms[1].text == "R")
+        dup = first.copy()
+        for sub in dup.find_all("symbol"):
+            for pin in sub.find_all("pin"):
+                num = pin.find("number").atoms[1]
+                num.set_text({"1": "2", "2": "1"}[num.text])
+        libs.insert_after(first, dup)
+
+    _edit(path, fn)
+
+
 def place_units(path: str, symbol: str, ref: str, placements) -> None:
     """One multi-unit part: placements [(unit, x, y), ...], the first placed by place_component
     and the rest cloned from it with their own unit, position and uuids, the way KiCad stores

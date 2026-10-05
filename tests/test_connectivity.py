@@ -670,6 +670,36 @@ def test_a_derived_library_entry_refuses_the_whole_call(tmp_path):
     assert plan.codes == ["derived"] and "is derived" in plan.refusal()
 
 
+def test_a_library_symbol_named_twice_refuses_the_whole_call(tmp_path):
+    """The routing review's e3b_duplib_swap: the model drew R1 from the first of two entries
+    named "R" and KiCad from the last, so "Wired R1:1" put R1's pad 2 on N in kicad-cli 9.0.8.
+    Which entry the file meant is unknown, so the call refuses."""
+    from routing_fixtures import duplicate_r_swapped
+
+    p = _r1(tmp_path)
+    duplicate_r_swapped(p)
+    plan = _plan(p, [("R1", "1")])
+    assert plan.codes == ["derived"]
+    assert "holds 2 entries named 'R'" in plan.refusal()
+
+
+@pytest.mark.parametrize(("lib_name", "entry"), [("A{slash}B", "A/B"), ("A/B", "A{slash}B")])
+def test_a_slash_escape_in_a_library_name_reads_as_kicad_reads_it(tmp_path, lib_name, entry):
+    """The routing review's e7_libslash: KiCad's parser reads {slash} as '/' in lib_symbols
+    names, unit names, lib_name and lib_id (9.0.8 and 10.0.6 sch_io_kicad_sexpr_parser.cpp), so
+    these name one symbol. The model compared the raw text and refused the whole call
+    [derived]."""
+    p = _r1(tmp_path)
+    data = Path(p).read_bytes()
+    for old in (b'(symbol "R"', b'(symbol "R_0_1"', b'(symbol "R_1_1"'):
+        assert data.count(old) == 1, old
+        data = data.replace(old, old.replace(b'"R', b'"' + entry.encode()))
+    data = data.replace(b'(lib_name "R")', b'(lib_name "%s")' % lib_name.encode(), 1)
+    Path(p).write_bytes(data)
+    plan = _plan(p, [("R1", "1")])
+    assert not plan.refused, plan.refusal()
+
+
 def test_an_unloadable_symbol_is_reported_before_an_unresolved_one(tmp_path):
     """Guard on the order of the whole-call checks (the [derived] check is new, so this passed
     before it)."""

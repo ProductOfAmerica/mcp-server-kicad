@@ -400,6 +400,24 @@ def test_the_read_tools_draw_a_part_from_the_entry_kicad_does(tmp_path):
 
 
 @requires_cli
+def test_the_read_tools_draw_a_part_named_twice_from_the_last_entry(tmp_path):
+    """Two lib_symbols entries named "R", pins swapped in the second: KiCad 9.0.8 and 10.0.6
+    keep the last (SCH_SCREEN::AddLibSymbol), so R1's pin 1 is where the first entry draws pin
+    2. The read tools took the first entry. A label where get_pin_positions puts R1's pin 1
+    must put R1:1 on that label's net."""
+    from routing_fixtures import duplicate_r_swapped
+
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    duplicate_r_swapped(p)
+    (x, y) = _reported(p, {"R1"})[("R1", "1")]
+    assert (x, y) == (101.6, 105.41)
+    schematic.add_label("P1", x, y, schematic_path=p)
+    on = {name.lstrip("/"): sorted(nodes) for _c, name, _k, nodes in nets(p)}
+    assert on.get("P1") == [("R1", "1")], on
+
+
+@requires_cli
 def test_connect_pins_reaches_a_pin_of_a_renamed_entry(tmp_path):
     p = _renamed_entry(tmp_path)
     before = nets(p)

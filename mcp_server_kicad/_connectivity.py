@@ -21,7 +21,7 @@ import hashlib
 import math
 import re
 import threading
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -717,21 +717,36 @@ def _record(node, libs: dict, maps: dict) -> SymRecord:
     )
 
 
+def _lib_name(text: str) -> str:
+    """A library symbol name as KiCad's parser keeps it: {slash} reads as '/' in lib_symbols
+    names, lib_name and lib_id alike (9.0.8 and 10.0.6 sch_io_kicad_sexpr_parser.cpp)."""
+    return text.replace("{slash}", "/")
+
+
 def lib_key(node) -> str:
     """The lib_symbols name KiCad draws placed symbol *node* from: its lib_name when present,
     else its lib_id, matched exactly with no fallback (9.0.8 sch_screen.cpp
     UpdateLocalLibSymbolLinks, sch_symbol.cpp GetSchSymbolLibraryName)."""
-    return _child_text(node, "lib_name") or _child_text(node, "lib_id")
+    return _lib_name(_child_text(node, "lib_name") or _child_text(node, "lib_id"))
+
+
+def _lib_entries(root):
+    libs = root.find("lib_symbols")
+    for ls in libs.find_all("symbol") if libs is not None else ():
+        if len(ls.atoms) > 1:
+            yield _lib_name(ls.atoms[1].text), ls
 
 
 def lib_index(root) -> dict:
-    """The sheet's lib_symbols entries by name, for lookups by lib_key."""
-    libs = root.find("lib_symbols")
-    out: dict = {}
-    for ls in libs.find_all("symbol") if libs is not None else ():
-        if len(ls.atoms) > 1:
-            out.setdefault(ls.atoms[1].text, ls)
-    return out
+    """The sheet's lib_symbols entries by name, for lookups by lib_key. Of two entries with one
+    name the later wins, as SCH_SCREEN::AddLibSymbol replaces the earlier (9.0.8, 10.0.6)."""
+    return dict(_lib_entries(root))
+
+
+def lib_repeats(root) -> dict[str, int]:
+    """Names lib_symbols holds more than once, with how many times."""
+    counts = Counter(name for name, _ls in _lib_entries(root))
+    return {name: n for name, n in counts.items() if n > 1}
 
 
 @dataclass(frozen=True)
@@ -1137,6 +1152,7 @@ class Model:
         self.jumpers: list[list[Item]] = []
         self.areas: list[list[Point]] = []  # rule area outlines
         self.libs: dict = lib_index(root)
+        self.lib_repeats = lib_repeats(root)
         self._dirty = True
         self._coarse: _Coarse | None = None
         maps: dict = {}
@@ -1478,9 +1494,20 @@ class Model:
         return out
 
     def check_loadable(self) -> None:
-        """A derived or unresolved symbol anywhere on the sheet refuses the whole call: its pins
-        are unknown, and KiCad stacks an unresolved symbol's pins at its origin (PI-17)."""
+        """A derived, unresolved or twice-defined symbol anywhere on the sheet refuses the whole
+        call: its pins are unknown, and KiCad stacks an unresolved symbol's pins at its origin
+        (PI-17)."""
         for s in self.syms:
+            if s.key in self.lib_repeats:
+                # KiCad draws the last entry; which one the file meant is unknown.
+                raise Refusal(
+                    "derived",
+                    f"{s.ref} uses library symbol '{s.key}', and this file's lib_symbols holds"
+                    f" {self.lib_repeats[s.key]} entries named '{s.key}', as a hand edit or a"
+                    " merge can leave. KiCad draws the last of them, but which one the file"
+                    " meant is unknown, so its pins are too. Remedy: open and save the sheet in"
+                    " KiCad, which keeps only the entry it draws; otherwise stop and report.",
+                )
             if s.derived:
                 what = "is derived and was never flattened into this file"
                 remedy = "with place_component from a non-derived library symbol"
