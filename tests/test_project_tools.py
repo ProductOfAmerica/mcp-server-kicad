@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import stat
 import sys
 from pathlib import Path
@@ -2141,3 +2142,162 @@ class TestRootSymbolInstanceSync:
         si_refs = sorted(si.reference for si in si_list)
         assert "R1" in si_refs
         assert "R2" in si_refs
+
+
+class TestRootSymbolInstanceRemoval:
+    """remove_component removes only the root rows that index the file it edited.
+
+    Kept out of TestRootSymbolInstanceSync, which switches the kicad-cli oracle off: nothing
+    these tests write is malformed, so the oracle judges every file they leave.
+    """
+
+    @staticmethod
+    def _project(tmp_path: Path) -> tuple[str, str]:
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        return str(proj_dir / "proj.kicad_sch"), str(proj_dir / "proj.kicad_pro")
+
+    @staticmethod
+    def _place_r(path: Path | str, reference: str, pro: str) -> str:
+        """Seed Device:R into *path* as test 10 does, place *reference*, return its UUID."""
+        from mcp_server_kicad import schematic
+
+        sch = Schematic.from_file(str(path))
+        sch.libSymbols.append(conftest.build_r_symbol())
+        sch.to_file()
+        schematic.place_component(
+            reference=reference,
+            value="10K",
+            lib_id="Device:R",
+            x=100,
+            y=100,
+            schematic_path=str(path),
+            project_path=pro,
+        )
+        (sym,) = Schematic.from_file(str(path)).schematicSymbols
+        assert sym.uuid is not None
+        return sym.uuid
+
+    @staticmethod
+    def _add_sheet(root: str, name: str, child: Path, pro: str) -> str:
+        """Add *child* as sheet *name*; return the sheet's "/{root}/{sheet}" prefix."""
+        project.add_hierarchical_sheet(
+            parent_schematic_path=root,
+            sheet_name=name,
+            sheet_file=str(child),
+            pins=[],
+            project_path=pro,
+        )
+        root_sch = Schematic.from_file(root)
+        sheet = next(s for s in root_sch.sheets if s.sheetName.value == name)
+        return f"/{root_sch.uuid}/{sheet.uuid}"
+
+    @staticmethod
+    def _rows(root: str) -> dict[str, str]:
+        """The root's symbol_instances, path to reference, read back through kiutils."""
+        return {si.path: si.reference for si in Schematic.from_file(root).symbolInstances}
+
+    def test_a_copied_sheet_file_keeps_the_original_sheets_row(self, tmp_path: Path):
+        """b.kicad_sch is a copy of a.kicad_sch made outside KiCad, so both hold R1 under one
+        UUID and the root indexes it under each sheet. Removing R1 from b deleted every row
+        ending in that UUID, a's included."""
+        from mcp_server_kicad import schematic
+
+        root, pro = self._project(tmp_path)
+        a, b = Path(root).with_name("a.kicad_sch"), Path(root).with_name("b.kicad_sch")
+        project.create_schematic(schematic_path=str(a))
+        sym = self._place_r(a, "R1", pro)
+        shutil.copy(a, b)
+        sheet_a = self._add_sheet(root, "A", a, pro)
+        sheet_b = self._add_sheet(root, "B", b, pro)
+        assert self._rows(root) == {f"{sheet_a}/{sym}": "R1", f"{sheet_b}/{sym}": "R1"}
+
+        schematic.remove_component(reference="R1", schematic_path=str(b))
+
+        assert self._rows(root) == {f"{sheet_a}/{sym}": "R1"}
+
+    def test_a_file_no_sheet_names_removes_no_row(self, tmp_path: Path):
+        """d.kicad_sch is a stray copy of c.kicad_sch that no sheet instances, so no row is
+        its. Removing R1 from d deleted c's row; now the root is not even rewritten."""
+        from mcp_server_kicad import schematic
+
+        root, pro = self._project(tmp_path)
+        c, d = Path(root).with_name("c.kicad_sch"), Path(root).with_name("d.kicad_sch")
+        project.create_schematic(schematic_path=str(c))
+        sheet = self._add_sheet(root, "C", c, pro)
+        sym = self._place_r(c, "R1", pro)
+        shutil.copy(c, d)
+        before = Path(root).read_bytes()
+        assert self._rows(root) == {f"{sheet}/{sym}": "R1"}
+
+        schematic.remove_component(reference="R1", schematic_path=str(d))
+
+        assert Path(root).read_bytes() == before
+
+    def test_a_root_symbol_keeps_a_sheets_row_with_its_uuid(self, tmp_path: Path):
+        """The root's own symbols sit directly under "/{root}". A sheet's row ending in the
+        same UUID belongs to another file, and suffix matching deleted it."""
+        from mcp_server_kicad._shared import _remove_root_symbol_instance
+
+        root, pro = self._project(tmp_path)
+        c = Path(root).with_name("c.kicad_sch")
+        project.create_schematic(schematic_path=str(c))
+        sheet = self._add_sheet(root, "C", c, pro)
+        sym = self._place_r(c, "R1", pro)
+        before = Path(root).read_bytes()
+        assert self._rows(root) == {f"{sheet}/{sym}": "R1"}
+
+        assert _remove_root_symbol_instance(root, "", sym) is False
+        assert Path(root).read_bytes() == before
+
+    def test_a_sheet_file_instanced_twice_loses_both_rows(self, tmp_path: Path):
+        """Guard on the binding: a reused sheet file holds one symbol at one path per sheet,
+        and every sheet naming the file counts, so neither row outlives the symbol.
+        add_hierarchical_sheet indexes only the first sheet naming a file, so the second row
+        is added here."""
+        from mcp_server_kicad import _cst, schematic
+        from mcp_server_kicad._shared import _upsert_entry
+
+        root, pro = self._project(tmp_path)
+        c = Path(root).with_name("c.kicad_sch")
+        project.create_schematic(schematic_path=str(c))
+        sym = self._place_r(c, "R1", pro)
+        sheet_1 = self._add_sheet(root, "C1", c, pro)
+        sheet_2 = self._add_sheet(root, "C2", c, pro)
+        tree = _cst.parse(Path(root).read_bytes())
+        _upsert_entry(tree.lists[0], f"{sheet_2}/{sym}", "R1", value="10K")
+        Path(root).write_bytes(_cst.serialize(tree))
+        assert set(self._rows(root)) == {f"{sheet_1}/{sym}", f"{sheet_2}/{sym}"}
+
+        schematic.remove_component(reference="R1", schematic_path=str(c))
+
+        assert self._rows(root) == {}
+
+    def test_a_kicad6_table_still_loses_the_removed_symbols_row(self, tmp_path: Path):
+        """Guard on the binding: KiCad 6 writes these paths without the root UUID, "/{sym}"
+        for a symbol on the root and "/{sheet}/{sym}" under a sheet (sch_sheet_path.cpp, 6.0).
+        Binding to the "/{root}" prefixes alone would strand both rows in the one format
+        whose table KiCad reads. Only the table is rewritten; the version stays the tools'."""
+        from mcp_server_kicad import _cst, schematic
+
+        root, pro = self._project(tmp_path)
+        c = Path(root).with_name("c.kicad_sch")
+        project.create_schematic(schematic_path=str(c))
+        sheet = self._add_sheet(root, "C", c, pro)
+        r1 = self._place_r(root, "R1", pro)
+        r2 = self._place_r(c, "R2", pro)
+        root_prefix = f"/{Schematic.from_file(root).uuid}"
+        tree = _cst.parse(Path(root).read_bytes())
+        for entry in tree.lists[0].find("symbol_instances").find_all("path"):
+            text = entry.atoms[1].text
+            assert text.startswith(f"{root_prefix}/")
+            entry.atoms[1].set_text(text[len(root_prefix) :])
+        Path(root).write_bytes(_cst.serialize(tree))
+        k6_sheet = sheet[len(root_prefix) :]
+        assert self._rows(root) == {f"/{r1}": "R1", f"{k6_sheet}/{r2}": "R2"}
+
+        schematic.remove_component(reference="R1", schematic_path=root)
+        assert self._rows(root) == {f"{k6_sheet}/{r2}": "R2"}
+
+        schematic.remove_component(reference="R2", schematic_path=str(c))
+        assert self._rows(root) == {}

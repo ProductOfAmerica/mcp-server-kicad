@@ -1432,9 +1432,16 @@ def _remove_root_symbol_instance(
 
     Returns True if an entry was removed, False otherwise.
     """
-    # Suffix matching needs no sheet lookup, only the root file itself
-    # (the kiutils version likewise removed stale entries even when the
-    # sheet block was gone from the root).
+    # Only rows under a prefix that instances *schematic_path* are removed:
+    # "/{root}" for the root itself, "/{root}/{sheet}" for every root sheet
+    # whose Sheetfile names it, and KiCad 6's form of each, which omits the
+    # root UUID. Matching on the symbol UUID alone also deleted another sheet
+    # file's row whenever the two files shared it, as a sheet file copied
+    # outside KiCad does. Stale rows now left in place: deeper KiCad 6 nested
+    # paths, rows whose sheet block is gone, and Sheetfile spellings other than
+    # the bare name. A row for a symbol that no longer exists is harmless, as
+    # KiCad matches live symbols by full path; a file no sheet names finds no
+    # prefix and removes nothing.
     root_path = _resolve_root(schematic_path, project_path)
     if root_path is None:
         root_path = _find_root_schematic(schematic_path)
@@ -1450,8 +1457,18 @@ def _remove_root_symbol_instance(
     si = root.find("symbol_instances")
     if si is None:
         return False
-    suffix = f"/{sym_uuid}"
-    matched = [e for e in si.find_all("path") if e.atoms[1].text.endswith(suffix)]
+    root_uuid = _node_uuid(root)
+    if root_path is None:
+        prefixes = [f"/{root_uuid}", ""]
+    else:
+        target_name = Path(schematic_path).name
+        prefixes = []
+        for sheet in root.find_all("sheet"):
+            if _sheet_file_cst(sheet) == target_name:
+                sheet_uuid = _node_uuid(sheet)
+                prefixes += [f"/{root_uuid}/{sheet_uuid}", f"/{sheet_uuid}"]
+    wanted = {(prefix, "/", sym_uuid) for prefix in prefixes}
+    matched = [e for e in si.find_all("path") if e.atoms[1].text.rpartition("/") in wanted]
     if not matched:
         return False
     for e in matched:
