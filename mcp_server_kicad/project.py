@@ -1298,8 +1298,15 @@ def duplicate_sheet(
     # Copy the child file
     src_path = sch_dir / source_file
     dst_path = sch_dir / new_file_name
-    if not src_path.exists():
-        raise ToolError(f"Source file not found: {src_path}")
+    # source_file is the document's Sheetfile. copy2 streams a device such as /dev/zero
+    # until the disk is full and leaves the partial copy behind, and a procfs pseudo-file
+    # like /proc/self/pagemap is a regular file of size 0 that streams the same way. An
+    # empty source is no schematic either, so all of them are refused before any write.
+    if not src_path.is_file() or src_path.stat().st_size == 0:
+        raise ToolError(
+            f"Source file not found, empty, or not a regular file: {src_path}. Nothing was"
+            f" copied and {Path(schematic_path).name} was not changed."
+        )
     if dst_path.exists():
         # Called twice with the same name, this silently replaced the first
         # copy with the source sheet. Every other create in this module guards

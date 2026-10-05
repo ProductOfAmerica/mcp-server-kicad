@@ -1430,6 +1430,30 @@ class TestDuplicateSheet:
         files = {s.fileName.value for s in sch2.sheets}
         assert len(files) == 2  # Two different files
 
+    @pytest.mark.parametrize(
+        "pointed_root",
+        [*_NON_REGULAR, pytest.param("empty.kicad_sch", id="empty")],
+        indirect=True,
+    )
+    def test_refuses_a_source_that_is_not_a_schematic_file(self, pointed_root: Path):
+        """copy2 streamed a device source into the project until the disk was full and
+        left the partial copy behind, which then blocked every retry."""
+        root = pointed_root
+        sheet_uuid = _first_sheet_uuid(str(root))
+        before = root.read_bytes()
+        listing = sorted(os.listdir(root.parent))
+
+        with pytest.raises(ToolError, match="not a regular file"):
+            project.duplicate_sheet(
+                sheet_uuid=sheet_uuid,
+                new_sheet_name="Power2",
+                schematic_path=str(root),
+                project_path=str(root.with_suffix(".kicad_pro")),
+            )
+
+        assert root.read_bytes() == before
+        assert sorted(os.listdir(root.parent)) == listing, "no copy may be left behind"
+
 
 @pytest.mark.skipif(not conftest.HAS_KICAD_CLI, reason="kicad-cli not found")
 class TestExportHierarchicalNetlist:
