@@ -177,8 +177,9 @@ def pin_matches(pin, label: str) -> bool:
     )
 
 
-def not_drawn_message(reference: str, label: str, lib_sym, targets) -> str:
-    """Why no symbol placed on this sheet as *reference* draws pin *label*.
+def not_drawn_message(reference: str, label: str, lib_sym, placed: list[tuple[int, int]]) -> str:
+    """Why no symbol placed on this sheet as *reference* draws pin *label*. *placed* holds the
+    (unit, body style) each placement is drawn with.
 
     Names the unit that draws it when that unit is not placed here, or the body style when that
     is what differs, or says the pin does not exist.
@@ -197,7 +198,7 @@ def not_drawn_message(reference: str, label: str, lib_sym, targets) -> str:
     # Name the body style only where it is the thing that differs: the unit is
     # here in its other style, or it is unit 0, which every placed unit draws.
     # An unplaced unit is named as a unit, and placing it is then the remedy.
-    placed_units = {_sym_unit_cst(t) for t in targets}
+    placed_units = {u for u, _style in placed}
     styles_by_unit: dict[int, set[int]] = {}
     for u, s in carriers:
         styles_by_unit.setdefault(u, set()).add(s)
@@ -209,20 +210,16 @@ def not_drawn_message(reference: str, label: str, lib_sym, targets) -> str:
         return f"unit {u} {style}" if u in placed_units else f"unit {u}"
 
     where = ", ".join(_carrier(u, styles) for u, styles in sorted(styles_by_unit.items()))
-    placed = ", ".join(
-        f"unit {_sym_unit_cst(t)}"
-        + (f" body style {_sym_body_style_cst(t)}" if _sym_body_style_cst(t) != 1 else "")
-        for t in targets
-    )
+    here = ", ".join(f"unit {u}" + (f" body style {b}" if b != 1 else "") for u, b in placed)
     if any(u != 0 and u not in placed_units for u in styles_by_unit):
         return (
             f"Pin '{label}' of {reference} is on {where}, which is not placed on this sheet "
-            f"({reference} here: {placed}). Place that unit, or wire the pin on the sheet "
+            f"({reference} here: {here}). Place that unit, or wire the pin on the sheet "
             "that holds it."
         )
     return (
         f"Pin '{label}' of {reference} is on {where}, which this sheet does not draw "
-        f"({reference} here: {placed}). Switch the placed symbol to that body style in KiCad."
+        f"({reference} here: {here}). Switch the placed symbol to that body style in KiCad."
     )
 
 
@@ -1608,19 +1605,23 @@ class Model:
         for s in syms:
             if all(s.lib is not lib for lib in libs):
                 libs.append(s.lib)
-        numbers: dict[str, str] = {}  # number -> its name, over every unit of every definition
+        # Every pad number, and the numbers each pin name is drawn under, over every unit of every
+        # definition: one number can be drawn twice under two names (KiCad's 74278, pad 6).
+        numbers: set[str] = set()
+        named: dict[str, set[str]] = {}
         for lib in libs:
             for sub in lib.find_all("symbol"):
                 for pin in sub.find_all("pin"):
-                    numbers.setdefault(_child_text(pin, "number"), _child_text(pin, "name"))
+                    num = _child_text(pin, "number")
+                    numbers.add(num)
+                    named.setdefault(_child_text(pin, "name"), set()).add(num)
+        placed = [(u, s.style) for s in syms for u in s.units]  # as KiCad draws them
         if label in numbers:
             nums = [label]
         else:
-            nums = sorted((n for n, name in numbers.items() if name == label), key=_pad_order)
+            nums = sorted(named.get(label, ()), key=_pad_order)
             if not nums:
-                raise Refusal(
-                    "resolve", not_drawn_message(ref, label, syms[0].lib, [s.node for s in syms])
-                )
+                raise Refusal("resolve", not_drawn_message(ref, label, syms[0].lib, placed))
             if len(nums) > 1 and not self._stacked(ref, nums):
                 where = "; ".join(
                     f"pad {n} at " + ", ".join(pt((c.x, c.y)) for c in self.pads.get((ref, n), []))
@@ -1637,9 +1638,7 @@ class Model:
         for n in nums:
             copies = self.pads.get((ref, n), [])
             if not copies:
-                raise Refusal(
-                    "resolve", not_drawn_message(ref, n, syms[0].lib, [s.node for s in syms])
-                )
+                raise Refusal("resolve", not_drawn_message(ref, n, syms[0].lib, placed))
             out.append((n, copies))
         return out
 

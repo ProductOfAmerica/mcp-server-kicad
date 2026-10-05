@@ -534,6 +534,33 @@ def test_a_name_on_pads_at_two_points_is_refused(tmp_path):
     assert "pad 3 at (96.52, 101.6)" in msg and "pad 5 at (106.68, 101.6)" in msg
 
 
+def test_a_pad_drawn_under_two_names_is_found_by_either(tmp_path):
+    """The routing pressure test's X1c (x_duplicate_numbers): pad 1 is drawn twice in one unit,
+    named A and A2, as KiCad's own 74278 draws pad 6 as Y4 and ~{P1}. Asked for by its second
+    name, the pad was refused as not drawn here, because resolution kept only the first name
+    of each pad number. Both copies of pad 1 are wired."""
+    from routing_fixtures import custom_lib, place_custom
+
+    p = fresh(tmp_path)
+    lib = custom_lib(
+        tmp_path,
+        "DUP",
+        [
+            ("1", "A", "passive", -5.08, 0, 0, False),
+            ("1", "A2", "passive", -5.08, -2.54, 0, False),
+            ("2", "B", "passive", 5.08, 0, 180, False),
+        ],
+    )
+    place_custom(p, lib, "DUP", "U1", 101.6, 101.6)
+    before = nets(p) if _cli() else None
+    status, msg = call_wptn(p, pins(("U1", "A2")), "N")
+    assert status == "OK", msg
+    assert "(96.52, 101.6)" in msg and "(96.52, 104.14)" in msg, msg
+    if before is not None:
+        v = judge(before, nets(p), [{("U1", "1")}], "N")
+        assert v.delivered and not v.wrong, v.problems()
+
+
 # ---------------------------------------------------------------------------------------------
 # Outright refusals (design 4.3): nets this tool cannot judge
 # ---------------------------------------------------------------------------------------------

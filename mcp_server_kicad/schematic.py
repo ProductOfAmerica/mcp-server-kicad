@@ -1238,7 +1238,8 @@ def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float,
         if pos is not None:
             return pos
     lib_sym = _find_lib_symbol_cst(root, targets[0].find("lib_id").atoms[1].text)
-    raise ValueError(not_drawn_message(reference, pin_name, lib_sym, targets))
+    placed = [(_sym_unit_cst(t), _sym_body_style_cst(t)) for t in targets]
+    raise ValueError(not_drawn_message(reference, pin_name, lib_sym, placed))
 
 
 def _splice_lib_symbol_cst(root, node) -> None:

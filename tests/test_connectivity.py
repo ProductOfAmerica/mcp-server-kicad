@@ -798,6 +798,27 @@ def test_a_dead_entry_does_not_count(tmp_path):
     assert _plan(child, [("U1", "1")]).codes == ["units_disagree"]  # no path: every entry
 
 
+def test_a_pin_on_a_unit_not_drawn_here_names_the_unit_kicad_draws(tmp_path):
+    """The routing pressure test's PI-06 (unit_instances/4a): U1's live entry is unit 2 under a
+    top-level (unit 1). KiCad draws unit 2, so pin 1 is refused, and the refusal named the
+    top-level unit as the one placed here and advised switching the body style."""
+    from routing_fixtures import _edit, _placed
+
+    _root, child = _with_dead_entry(tmp_path)
+
+    def live_unit_2(root) -> None:
+        (u1,) = _placed(root, "U1")
+        for path_node in u1.find("instances").find("project").find_all("path"):
+            if path_node.atoms[1].text != DEAD:
+                path_node.find("unit").atoms[1].set_text("2")
+
+    _edit(child, live_unit_2)
+    plan = _plan_in(child, [("U1", "1")])
+    assert plan.codes == ["resolve"]
+    text = plan.refusal()
+    assert "(U1 here: unit 2)" in text and "Place that unit" in text, text
+
+
 def test_the_project_is_found_from_a_sheet_in_a_subdirectory(tmp_path):
     """The project file sits a directory above the sheet (RoyalBlue54L-Feather's sch/ layout),
     so its live path is found only by looking up."""
