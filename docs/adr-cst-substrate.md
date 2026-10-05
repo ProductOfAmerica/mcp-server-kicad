@@ -503,55 +503,71 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   when a pin is refused after the cap is on disk, it now says what is there and lists the calls
   that remove it, all but a library symbol it copied into lib_symbols, which it says stays.
 
-- 2026-10-05: what a write leaves behind now has the original's access, and the library
-  upgrades copy nothing through a link. `_atomic_write` creates its temp owner-only (0600)
-  whenever it is about to carry permissions: at the umask's 0644 a reader could open it before
-  the `fchmod` and keep reading every byte written after, and an inotify watcher read a whole
-  0600 schematic in 5 of 300 edits. A file that did not exist still gets the umask's mode. On
-  the open descriptor, in this order, it then carries the group (`fchown`, which clears setuid
-  and setgid and so goes first), removes any access ACL the temp inherited from a directory
-  default, sets the mode, and puts back the original's POSIX access ACL
-  (`system.posix_acl_access`, Linux only). Before this, a file whose ACL denied its own group
-  (`group::---`, `mask::r--`, 0640) came back with no ACL, so the mask became group read; the
-  group was never carried, so a `root:4242` file at 0640 came back `root:0`; and a file with no
-  ACL in a directory with a default one came back naming the default's users. A group this
-  process is not in cannot be carried, and the write is refused only where the group class
-  grants more than other does, since then a different set of people would gain access; a 0644
-  file outside the process's groups is written as before. Any failure of these steps raises
-  naming the destination and saying it is unchanged, and the temp is removed. One keyword,
-  `like`, takes an open file to copy all of this from instead of the destination: the symbol
-  library's `.bak` uses it, so a new `.bak` beside a 0600 library is 0600 (it was 0644) and a
-  refreshed one tightens (it kept its own mode, or a planted link target's). Windows still
-  carries nothing, for the 2026-10-02 reason. The symbol library itself is opened once with
-  `O_NOFOLLOW | O_NONBLOCK` and must be a regular file by `fstat`; a link is refused where it
-  used to be read through, backed up beside the link and then replaced by a regular file with
-  its target left as it was. Windows, which has no `O_NOFOLLOW`, checks `lstat` first. The
-  footprint library's staging directory is made with `os.mkdir(staging, 0o700)`, before the
-  copy's `try` and never with `exist_ok`, and the copy fills it with `dirs_exist_ok=True`; it
-  was 0755 with 0644 files until the last `copystat`. Both copies of a `.pretty` now go through
-  `_copy_plain_file`, which reads each member only through such a descriptor, so a member
-  swapped for a link after `copytree` listed the library is refused rather than copied (the
-  pre-walk bound nothing: `copy2` reopened the member by name). The `.bak` copy keeps `copy2`'s
-  times, mode and access ACL, taken from the descriptor; the scratch copy takes bytes only. And
-  a footprint library must be flat. KiCad reads none deeper (`FP_CACHE::Load` at 9.0.9 and
-  10.0.6 is one non-recursive `wxDir` pass; `DeleteLibrary` refuses "unexpected sub-folders"),
-  so `_require_plain_tree` refuses a folder by name, and runs again on each finished copy,
-  because a folder swapped for a link after the listing is recursed into with no link left to
-  see; that copy is in a directory no other user can enter and is removed before the refusal.
-  The write-back refuses any path with a folder in it before writing anything, so there is no
-  ancestor left to swap: a library folder swapped for a link to an outside directory had the
-  upgraded bytes written into that directory. Not closed: Windows DACLs and macOS ACLs, which
-  the standard library cannot read; other xattrs (SELinux labels, `user.*`, NFSv4 ACLs), and
-  the `.bak` members no longer get the `user.*` ones `copy2` copied; the owner, which a non-root
-  process cannot carry; the `.pretty` tree's group, and a default ACL on the library's parent,
-  still inherited by the `.bak` tree; a swap of the library root itself, which needs write
-  access to its parent; and the single-file upgrade branch, whose `copyfile` into the scratch
-  still follows a link swapped in after the backup. On Python 3.12.4 and later on Windows,
-  `mkdir(0o700)` gives the staging directory an owner-only DACL that the `.bak` keeps, narrower
-  than the library's; the Windows job runs 3.10, where the mode is ignored, so that is untested.
-  Gates: 22 of the 25 new tests in `test_shared_helpers.py` failed against the code before
-  this change and pass after it; the other three guard what must not change (a new file's
-  umask mode, and the two group cases that are still written). They pass as root and as an
-  unprivileged user, who skips the six group tests unless in a second group. The refusal was
-  also run for real as `nobody` against a 0640 file in a group it is not in: refused, the file
-  byte-identical and still 0640 in its group, while the 0644 file beside it was written.
+- 2026-10-05: what `_atomic_write` leaves behind now has the original's access. Its temp is
+  created owner-only (0600) whenever it is about to carry permissions: at the umask's 0644 a
+  reader could open it before the `fchmod` and keep reading every byte written after, and an
+  inotify watcher read a whole 0600 schematic in 5 of 300 edits. A file that did not exist
+  still gets the umask's mode. On the open descriptor, in this order, it then carries the group
+  (`fchown`, which clears setuid and setgid and so goes before the mode), removes any access ACL
+  the temp inherited from a directory default, puts back the original's POSIX access ACL
+  (`system.posix_acl_access`, Linux only), and sets the mode. The ACL goes on before the mode
+  because on such a file the mode's group bits are the ACL's mask: set first, the mode left the
+  temp in the original's group with no ACL to narrow it, and a process in that group watching
+  the directory read the content of 137 of 1500 edits in one probe and 1423 in another, against
+  none with the ACL first. With the ACL in place the `fchmod` only restates it, plus setuid and
+  setgid. Before this, a file whose ACL denied its own group (`group::---`, `mask::r--`, 0640)
+  came back with no ACL, so the mask became group read; the group was never carried, so a
+  `root:4242` file at 0640 came back `root:0`; and a file with no ACL in a directory with a
+  default one came back naming the default's users. A group this process is not in cannot be
+  carried, and the write is refused only where the group class grants more than other does,
+  since then a different set of people would gain access; a 0644 file outside the process's
+  groups is written as before. Any failure of these steps raises naming the destination and
+  saying it is unchanged, and the temp is removed. Windows still carries nothing, for the
+  2026-10-02 reason. Not closed: Windows DACLs and macOS ACLs, which the standard library cannot
+  read; other xattrs (SELinux labels, `user.*`, NFSv4 ACLs); and the owner, which a non-root
+  process cannot carry.
+
+- 2026-10-05: the symbol library's `.bak` takes the library's permissions and never follows a
+  link. `_atomic_write` gains one keyword, `like`, an open file to take the group, mode and
+  access ACL from instead of the destination, through the steps of the entry above. The backup
+  passes the library's own descriptor, so a new `.bak` beside a 0600 library is 0600 (it was
+  0644) and a refreshed one tightens (it kept its own mode, or a planted link target's). That
+  descriptor is opened once with `O_NOFOLLOW | O_NONBLOCK` and must be a regular file by
+  `fstat`, so a link is refused where it used to be read through, backed up beside the link
+  and then replaced by a regular file with its target left as it was. Windows, which has no
+  `O_NOFOLLOW`, checks `lstat` first and carries no mode. Not closed: the upgrade's scratch
+  copy of a library file (`copyfile` in `_upgrade_out_of_place`) still follows a link swapped
+  in after the backup.
+
+- 2026-10-05: a footprint library is copied where no other user can read it and never through a
+  link, and it must be flat. The `.bak`'s staging directory is made with
+  `os.mkdir(staging, 0o700)`, before the copy's `try` and never with `exist_ok`, and the copy
+  fills it with `dirs_exist_ok=True`; it was 0755 with 0644 files until the last `copystat`.
+  Both copies of a `.pretty` now go through `_copy_plain_file`, which reads each member only
+  through a descriptor opened as the symbol library's is, so a member swapped for a link after
+  `copytree` listed the library is refused rather than copied (the pre-walk bound nothing:
+  `copy2` reopened the member by name). The `.bak` copy keeps `copy2`'s times, mode and access
+  ACL, taken from the descriptor; the scratch copy takes bytes only. KiCad reads nothing deeper
+  than a library's own files (`FP_CACHE::Load` at 9.0.9 and 10.0.6 is one non-recursive `wxDir`
+  pass; `DeleteLibrary` refuses "unexpected sub-folders"), so `_require_plain_tree` refuses a
+  folder by name, and runs again on each finished copy, because a folder swapped for a link
+  after the listing is recursed into with no link left to see; that copy is in a directory no
+  other user can enter and is removed before the refusal. A `.pretty` holding a folder, such as
+  one cloned as its own git repository, upgraded before and is now refused. The write-back
+  refuses any path with a folder in it before writing anything, so there is no ancestor left to
+  swap: a library folder swapped for a link to an outside directory had the upgraded bytes
+  written into that directory. Not closed: on Windows, which has no `O_NOFOLLOW`, a member
+  swapped for a file link after the listing is still read through into the `.bak`, and the
+  re-check cannot see it because the copy is a regular file; the `.bak` members no longer get
+  the `user.*` xattrs or the file flags (`chflags`, macOS) that `copy2` copied; the `.pretty`
+  tree's group, and a default ACL on the library's parent, still inherited by the `.bak` tree;
+  and a swap of the library root itself, which needs write access to its parent. On Python
+  3.12.4 and later on Windows, `mkdir(0o700)` gives the staging directory an owner-only DACL
+  that the `.bak` keeps, narrower than the library's; the Windows job runs 3.10, where the mode
+  is ignored, so that is untested. Gates for these three entries: 23 of the 26 new tests in
+  `test_shared_helpers.py` failed against the code before them and pass after; the other three
+  guard what must not change (a new file's umask mode, and the two group cases that are still
+  written). They pass as root and as an unprivileged user, who skips the six group tests unless
+  in a second group. The refusal was also run for real as `nobody` against a 0640 file in a
+  group it is not in: refused, the file byte-identical and still 0640 in its group, while the
+  0644 file beside it was written.
