@@ -185,8 +185,14 @@ def _transform_pin_pos(
     KiCad's order: rotate, then mirror. This used to mirror first, which
     for rotation 90 or 270 with a mirror reflects the pin through the symbol
     origin, onto the other pin of a two-pin part. The arithmetic is the
-    routing model's integer transform (_connectivity.transform_mm), so every
-    pin read agrees with what wire_pins_to_net wires.
+    routing model's integer transform (_connectivity.transform_mm), and the
+    pin reads take a placed symbol's definition by the model's rule
+    (_connectivity.lib_key), so they draw a pin where wire_pins_to_net wires
+    it. They still find a part by its Reference property and draw its
+    top-level unit, where the model takes the reference and unit KiCad reads
+    at the sheet's live instance path. The two differ where the property or
+    the top-level unit is not what KiCad reads there: a stale property, or a
+    reused sheet's other instances.
     """
     return _connectivity.transform_mm(px, py, pin_angle, cx, cy, comp_angle_deg, mirror)
 
@@ -539,10 +545,11 @@ def get_pin_positions(reference: str, schematic_path: str = SCH_PATH) -> str:
         raise ToolError(f"{reference} not found." + _SEE_PLACED)
 
     lines: list[str] = []
+    libs = _connectivity.lib_index(root)
     for target in targets:
         lib_id = target.find("lib_id").atoms[1].text
         symbol_name = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-        lib_sym = _find_lib_symbol_cst(root, lib_id)
+        lib_sym = libs.get(_connectivity.lib_key(target))
         if lib_sym is None:
             raise ToolError(f"Lib symbol for {reference} not found.")
 
@@ -626,14 +633,12 @@ def get_net_connections(
 
     # Find component pins at reachable positions
     connections = []
+    libs = _connectivity.lib_index(root)
     for sym in root.find_all("symbol"):
         ref = _sym_property_cst(sym, "Reference")
         if ref is None:
             continue
-        lib_id_node = sym.find("lib_id")
-        if lib_id_node is None:
-            continue
-        lib_sym = _find_lib_symbol_cst(root, lib_id_node.atoms[1].text)
+        lib_sym = libs.get(_connectivity.lib_key(sym))
         if lib_sym is None:
             continue
         for unit in _instance_units(lib_sym, _sym_unit_cst(sym), _sym_body_style_cst(sym)):
@@ -1204,7 +1209,7 @@ def _drawn_pin_pos_cst(root, target, pin_name: str, reference: str):
     None when it does not: the pin is on another unit, or on this unit's
     other body style. Pin match is name-OR-number per pin in file order.
     """
-    lib_sym = _find_lib_symbol_cst(root, target.find("lib_id").atoms[1].text)
+    lib_sym = _connectivity.lib_index(root).get(_connectivity.lib_key(target))
     if lib_sym is None:
         raise ValueError(f"Lib symbol for {reference} not found")
     for unit in _instance_units(lib_sym, _sym_unit_cst(target), _sym_body_style_cst(target)):
@@ -1237,7 +1242,7 @@ def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float,
         pos = _drawn_pin_pos_cst(root, target, pin_name, reference)
         if pos is not None:
             return pos
-    lib_sym = _find_lib_symbol_cst(root, targets[0].find("lib_id").atoms[1].text)
+    lib_sym = _connectivity.lib_index(root).get(_connectivity.lib_key(targets[0]))
     placed = [(_sym_unit_cst(t), _sym_body_style_cst(t)) for t in targets]
     raise ValueError(not_drawn_message(reference, pin_name, lib_sym, placed))
 

@@ -698,7 +698,7 @@ def _instance_entries(node) -> tuple[tuple[str, str, int], ...]:
 
 def _record(node, libs: dict, maps: dict) -> SymRecord:
     """*maps* memoises pad maps per library name across the symbols of one file."""
-    key = _child_text(node, "lib_name") or _child_text(node, "lib_id")
+    key = lib_key(node)
     lib = libs.get(key)
     derived = lib is not None and lib.find("extends") is not None
     pads = None
@@ -717,7 +717,15 @@ def _record(node, libs: dict, maps: dict) -> SymRecord:
     )
 
 
-def _lib_index(root) -> dict:
+def lib_key(node) -> str:
+    """The lib_symbols name KiCad draws placed symbol *node* from: its lib_name when present,
+    else its lib_id, matched exactly with no fallback (9.0.8 sch_screen.cpp
+    UpdateLocalLibSymbolLinks, sch_symbol.cpp GetSchSymbolLibraryName)."""
+    return _child_text(node, "lib_name") or _child_text(node, "lib_id")
+
+
+def lib_index(root) -> dict:
+    """The sheet's lib_symbols entries by name, for lookups by lib_key."""
     libs = root.find("lib_symbols")
     out: dict = {}
     for ls in libs.find_all("symbol") if libs is not None else ():
@@ -740,7 +748,7 @@ class SheetFacts:
 def sheet_facts(root, records: tuple[SymRecord, ...] | None = None) -> SheetFacts:
     """The facts of a parsed sheet; *records* when the caller has them already."""
     if records is None:
-        libs, maps = _lib_index(root), {}
+        libs, maps = lib_index(root), {}
         records = tuple(_record(s, libs, maps) for s in root.find_all("symbol"))
     try:
         version = int(_child_text(root, "version", "0"))
@@ -1119,7 +1127,7 @@ class Model:
         self.placed: dict[str, set[int]] = {}  # units this sheet places per reference
         self.jumpers: list[list[Item]] = []
         self.areas: list[list[Point]] = []  # rule area outlines
-        self.libs: dict = _lib_index(root)
+        self.libs: dict = lib_index(root)
         self._dirty = True
         self._coarse: _Coarse | None = None
         maps: dict = {}
@@ -1213,8 +1221,7 @@ class Model:
             ref = rec.at(self.own_path)[0]
             refs = rec.every_ref(h.legacy.get(rec.uuid, ())) | {ref}
         value = _property(node, "Value") or ""
-        # KiCad resolves lib_name when present, else lib_id, by exact name, with no fallback.
-        key = _child_text(node, "lib_name") or _child_text(node, "lib_id")
+        key = lib_key(node)
         s = Sym(node, ref, value, key, self.libs.get(key), refs)
         self.syms.append(s)
         if s.lib is None or s.derived:

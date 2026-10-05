@@ -357,6 +357,57 @@ def test_connect_pins_joins_the_pins_kicad_draws(tmp_path):
     assert v.delivered and not v.wrong, v.problems()
 
 
+def _renamed_entry(tmp_path) -> str:
+    """R1 drawn from an embedded entry R_1, named by its lib_name, whose pins sit 5.08 mm from
+    the origin where the stock R entry beside it has them at 3.81 mm: the shape KiCad saves
+    when one placed copy of a symbol differs from its library."""
+    from routing_fixtures import _edit, set_lib_name
+
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    place(p, "R", "R9", 152.4, 152.4)
+
+    def add_r_1(root) -> None:
+        libs = root.find("lib_symbols")
+        r = next(s for s in libs.find_all("symbol") if s.atoms[1].text == "R")
+        entry = r.copy()
+        entry.atoms[1].set_text("R_1")
+        for sub in entry.find_all("symbol"):
+            sub.atoms[1].set_text("R_1" + sub.atoms[1].text[1:])  # R_1_1 -> R_1_1_1
+            for pin in sub.find_all("pin"):
+                at = pin.find("at")
+                at.atoms[2].set_text("5.08" if float(at.atoms[2].text) > 0 else "-5.08")
+        libs.insert_after(r, entry)
+
+    _edit(p, add_r_1)
+    set_lib_name(p, "R1", "R_1")
+    return p
+
+
+def test_the_read_tools_draw_a_part_from_the_entry_kicad_does(tmp_path):
+    """KiCad draws a placed symbol from the lib_symbols entry its lib_name names. The read
+    tools matched on lib_id alone, so they read R1's pins from the stock R entry, 1.27 mm off
+    the R_1 pins that wire_pins_to_net wires."""
+    p = _renamed_entry(tmp_path)
+    m = _connectivity.Model(_cst.parse(Path(p).read_bytes()).lists[0])
+    model = {
+        (it.ref, it.num): (round(it.x / 1e4, 2), round(it.y / 1e4, 2))
+        for it in m.items
+        if it.kind == "pin" and it.ref == "R1"
+    }
+    assert model == {("R1", "1"): (101.6, 96.52), ("R1", "2"): (101.6, 106.68)}
+    assert _reported(p, {"R1"}) == model
+
+
+@requires_cli
+def test_connect_pins_reaches_a_pin_of_a_renamed_entry(tmp_path):
+    p = _renamed_entry(tmp_path)
+    before = nets(p)
+    schematic.connect_pins("R1", "1", "R9", "1", schematic_path=p)
+    v = judge(before, nets(p), [{("R1", "1"), ("R9", "1")}], None)
+    assert v.delivered and not v.wrong, v.problems()
+
+
 def test_get_net_connections_names_the_pin_kicad_draws(tmp_path):
     p = fresh(tmp_path)
     place(p, "R", "R1", 101.6, 101.6, rot=270, mirror="x")
