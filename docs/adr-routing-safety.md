@@ -254,3 +254,22 @@ Each slice appends an entry when it lands.
   wiring's notes, among them the decision-2 warning. The note for a same-named sheet pin claimed
   a join kicad-cli 9.0.8 does not make. And a stub_length of 1e305 overflowed instead of
   refusing; lengths are now bounded at 1000 mm.
+
+  The pressure test's harness then ran the branch as a design on the prototype's 4,816 inputs,
+  each write judged in both readings (the gate; `pr57pt\coarse\dupref\gate_x_final2.json`). It
+  found four more defects, each fixed with a test that failed first: a stub_length under
+  0.00005 mm rounded to 0 and passed validation; a placed alternate was counted as possibly
+  naming the net by either name, although KiCad's source (sch_pin.cpp, 9.0.8 and 10.0.6) takes
+  the type from the alternate and the name only from the library pin, and six DEC-15 calls were
+  refused for it; resolution kept only the first name of a pad number, so the 74278's pad 6,
+  drawn as Y4 and as ~{P1}, could not be asked for by the second; and a refusal for a unit not
+  drawn here named the symbol's top-level unit rather than the one KiCad draws at the live
+  path. After them: no write judged wrong except five where the harness keyed a stacked pin
+  name (U1:VSS) instead of its pads, all clean and delivered when re-judged by pad number; no
+  false no-op except DEC-23 and two replays of those same calls; refusal rates at or below the
+  prototype's except probeC, 31.5% against 30.0%, where all 11 extra refusals are stub lengths
+  that are not multiples of 1.27 mm; and no planned pin left off its net by the adaptive
+  policies, as with the prototype, while the skill policies left fewer off (26 of 147 against
+  40; 169 of 1,196 against 302). The first full pass ran on 4f9861a; the later commits were run
+  only on the inputs they can reach (scan_fix_reach.py and scan_multiname.py list them), and on
+  the adaptive policies, whose refusal parsing the gate's first adapter had broken.
