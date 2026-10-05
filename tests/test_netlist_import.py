@@ -7,6 +7,7 @@ kicad-cli and KiCad's Python with pcbnew.
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import shutil
@@ -511,6 +512,38 @@ class TestKicadDocumentsHome:
         default = pcb._kicad_var(f"KICAD{major}_3RD_PARTY", None, configured={})
         assert default is not None
         assert sorted(docs.rglob("3rdparty")) == [Path(default)]
+
+    @pytest.mark.skipif(os.name != "nt", reason="the shell's Documents folder is a Windows notion")
+    def test_windows_documents_is_the_folder_the_shell_names(self, monkeypatch):
+        """KiCad asks wxWidgets, which asks the shell (SHGetFolderPath with
+        CSIDL_PERSONAL), so OneDrive folder backup and folder redirection move
+        it, and ~/Documents follows neither. The oracle is .NET's
+        Environment.GetFolderPath, which puts the same question to the shell
+        through code of its own."""
+        # Base64 keeps the answer clear of the console code page, and of the
+        # Console.OutputEncoding setter, which throws where there is no console.
+        script = (
+            "[Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes("
+            "[Environment]::GetFolderPath('MyDocuments')))"
+        )
+        out = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            check=True,
+            timeout=60,
+        )
+        documents = Path(base64.b64decode(out.stdout.strip()).decode("utf-8"))
+        monkeypatch.delenv("KICAD_DOCUMENTS_HOME", raising=False)
+        assert pcb._kicad_documents_home() == documents / "KiCad"
+
+    def test_a_shell_that_cannot_answer_falls_back_to_home_documents(self, monkeypatch):
+        def no_answer():
+            raise OSError("no Documents folder from the shell")
+
+        monkeypatch.setattr("sys.platform", "win32")
+        monkeypatch.setattr(pcb, "_windows_documents_dir", no_answer)
+        monkeypatch.delenv("KICAD_DOCUMENTS_HOME", raising=False)
+        assert pcb._kicad_documents_home() == Path.home() / "Documents" / pcb._KICAD_PATH_STR
 
 
 _FP = (

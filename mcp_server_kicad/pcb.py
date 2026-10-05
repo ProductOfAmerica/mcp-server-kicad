@@ -670,19 +670,46 @@ def _configured_vars() -> dict[str, str]:
     return {str(key): str(value) for key, value in variables.items() if value}
 
 
+def _windows_documents_dir() -> Path:
+    """The Documents folder the Windows shell names, which is the one KiCad uses.
+
+    KiCad asks wxWidgets, whose GetDocumentsDir on Windows is
+    SHGetFolderPath(CSIDL_PERSONAL, SHGFP_TYPE_CURRENT) in wx 3.2.8, the
+    version KiCad 9.0.8 ships there. That follows OneDrive folder backup and
+    folder redirection, which move Documents away from ~/Documents. Raises
+    OSError when the shell has no answer, and anywhere but Windows.
+    """
+    if sys.platform != "win32":
+        raise OSError("the shell's Documents folder is a Windows notion")
+    import ctypes
+
+    path = ctypes.create_unicode_buffer(260)  # MAX_PATH
+    # CSIDL_PERSONAL (5) at SHGFP_TYPE_CURRENT (0), the question wx asks.
+    status = ctypes.windll.shell32.SHGetFolderPathW(None, 5, None, 0, path)
+    if status != 0 or not path.value:
+        raise OSError("the shell named no Documents folder")
+    return Path(path.value)
+
+
 def _kicad_documents_home() -> Path:
     """Where KiCad keeps the user's own data (projects, 3rd-party packages),
     short of the version folder: KiCad's PATHS::getUserDocumentPath.
 
     The base is KICAD_DOCUMENTS_HOME when set, else the platform's documents
-    folder (~/Documents on Windows and macOS, the XDG data home on Linux), and
-    KiCad appends its own folder name (_KICAD_PATH_STR) to either. So
+    folder (the shell's on Windows, falling back to ~/Documents when it has no
+    answer; ~/Documents on macOS; the XDG data home on Linux), and KiCad
+    appends its own folder name (_KICAD_PATH_STR) to either. So
     KICAD_DOCUMENTS_HOME=D puts the packages under D/KiCad/<N>.0/3rdparty on
     Windows, not D/<N>.0/3rdparty.
     """
     base = os.environ.get("KICAD_DOCUMENTS_HOME")
     if not base:
-        if sys.platform in ("win32", "darwin"):
+        if sys.platform == "win32":
+            try:
+                base = _windows_documents_dir()
+            except OSError:
+                base = Path.home() / "Documents"
+        elif sys.platform == "darwin":
             base = Path.home() / "Documents"
         else:
             base = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share"
