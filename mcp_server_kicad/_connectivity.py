@@ -1994,7 +1994,7 @@ def check_args(net, direction, stub_length, param: str = "label_text") -> int:
             f" {stub_length!r}."
         )
     L = kiround(float(stub_length) * IU_PER_MM)
-    if L % GRID:
+    if L == 0 or L % GRID:
         raise bad(
             f"stub_length {stub_length!r} mm is not a multiple of 1.27 mm, the 50 mil grid KiCad"
             " schematics use, and an off-grid stub end can land a hair from a grid item and"

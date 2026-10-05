@@ -216,6 +216,7 @@ _BAD_ARGS = [
     pytest.param({"stub_length": 0}, id="stub_zero"),
     pytest.param({"stub_length": -2.54}, id="stub_negative"),
     pytest.param({"stub_length": 2.5401}, id="stub_off_grid"),
+    pytest.param({"stub_length": 4e-05}, id="stub_rounds_to_zero"),
     pytest.param({"stub_length": float("nan")}, id="stub_nan"),
     pytest.param({"stub_length": True}, id="stub_bool"),
     pytest.param({"stub_length": "2.54"}, id="stub_text"),
