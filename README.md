@@ -407,7 +407,7 @@ Ransomware protection, Allow an app through Controlled folder access.
 | `add_keepout_zone` | Create a keep-out zone restricting tracks, vias, pads, pours, or footprints |
 | `fill_zones` | Fill all copper zones on the board |
 | `set_net_class` | Create or update a net class with design rules |
-| `update_pcb_from_schematic` | Import or sync the schematic netlist onto the board (footprints and pad nets) |
+| `update_pcb_from_schematic` | Import or sync the schematic netlist onto the board: footprints, their fields and footprint filters, DNP and BOM flags (position-file flag too on KiCad 10), sheet linkage and pad nets; libraries through the project's and the user's `fp-lib-table` |
 
 **Analysis and export**
 

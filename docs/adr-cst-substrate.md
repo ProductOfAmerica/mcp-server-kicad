@@ -335,3 +335,151 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   now one `place_component` call, which also ends its two-write sequence (symbol, then
   flag) that could leave half the change on disk. Callers place a flag with
   `add_power_symbol` and lib_id `power:PWR_FLAG`, on the nets that need one.
+
+- 2026-10-04: the netlist import carries what KiCad's own update carries, and
+  footprint libraries are resolved through the `fp-lib-table` files KiCad reads. Until
+  now `update_pcb_from_schematic` copied a footprint's Reference, Value, library id,
+  path and pad nets and nothing else, so a board it built differed from one KiCad's
+  F8 built in every field, every DNP and BOM flag and every sheet link, and a nickname
+  that only the project's table knew was reported `footprint_lib_not_found`. Both
+  halves were measured before they were written. The netlist side on kicad-cli 10.0.6:
+  a component's `<fields>` always lists Footprint, Datasheet and Description, empty or
+  not, plus the symbol's user fields; the three boxes arrive as value-less
+  `<property name="dnp"/>`, `exclude_from_bom` and `exclude_from_board` markers written
+  only when the box is ticked; the sheet is `<sheetpath names="/">` at the root plus a
+  `Sheetfile` property. The board side on a footprint KiCad's own update wrote (the
+  torque block's INA821, placed at 180 degrees): a user field lands as a hidden
+  `(property ...)` on the footprint's F.Fab at `(at 0 0 180)`, which is the footprint's
+  own angle (the first reading of this sample, "cancels the footprint's angle", was
+  wrong: 180 is the one angle that cannot tell the two apart, and the second 2026-10-04
+  entry below has the measurement that does), `(unlocked yes)`, which is Keep Upright OFF and
+  not a free-rotation flag (the parser's own comment: "unlocked" is not the opposite of
+  "locked"), size 1 by 1, thickness 0.15; Datasheet and Description are updated in
+  place where the library footprint
+  put them; `path`, `sheetname` and `sheetfile` follow the symbol; `(attr smd)` keeps
+  the mounting type; the library's own KiLib_Generator field survives; Footprint is
+  not a footprint field. `_FP_FIELD_TPL` is that measured node, `_ATTR_ORDER` is the
+  writer's token order in pcb_io_kicad_sexpr.cpp, and `_SYMBOL_OWNED_ATTRS` names the
+  two tokens the schematic owns on every netlist, so clearing a box clears the flag
+  while `board_only` and `allow_missing_courtyard` stay the board's;
+  `exclude_from_pos_files` is the board's on a KiCad 9 netlist and the symbol's on a
+  KiCad 10 one (second 2026-10-04 entry). One decision is recorded so it is not re-litigated:
+  a field that left the
+  symbol is NOT removed from the footprint. KiCad itself keeps a footprint's library
+  fields through its update, and a property the user placed by hand is text an import
+  has no business deleting unasked; the cost is a stale field the user can delete,
+  against the alternative of destroying placed text. A symbol with "On board" unticked
+  is what KiCad's update treats as not on this board: never placed, listed in
+  `excluded_from_board`, its pins skipped in the pad pass without a warning, and a
+  footprint it left behind reported stale like any other. The oracle for DNP is KiCad,
+  not the bytes: `kicad-cli pcb export pos --exclude-dnp` drops exactly the flagged
+  footprint and keeps it again once the box is cleared. A first draft of that test
+  asserted `b"dnp" not in raw` and failed on a board with every flag cleared, because
+  the board's own setup carries `hidednponfab`, `sketchdnponfab` and `crossoutdnponfab`;
+  the assertion now names the attribute. On libraries: `_fp_lib_tables` is the one
+  reader of `fp-lib-table`, returning the project table and the global table apart
+  because they sit at different points of the search. KiCad's order is the project's
+  table, then the directories this package has always searched (`.pretty` beside the
+  board and schematic, `KICAD_FP_LIB`), then the global table, then the stock
+  footprints, and `place_footprint` now walks the same list so a hand-placed part and
+  an imported one resolve to one file (the first cut did not quite: see the second 2026-10-04
+  entry). Only rows the package can serve are returned:
+  type KiCad, enabled, `${VAR}` expanded, directory present; `${KIPRJMOD}` is the
+  `.kicad_pro`'s directory (`_project_dir`, falling back to the first of the board's
+  and schematic's directories that holds a table or a project), every other variable
+  comes from the environment first and then from the resolved kicad-cli's install for
+  the `KICAD<N>_FOOTPRINT_DIR` family. Measured on KiCad 10.0.6: the global table under
+  `~/.config/kicad/10.0/` is a single `(type "Table")` row pointing at
+  `${KICAD10_TEMPLATE_DIR}/fp-lib-table`, whose 155 rows use `${KICAD10_FOOTPRINT_DIR}`,
+  so the reader follows one level of `Table` rows (`_LIB_TABLE_DEPTH`). An unreadable
+  or malformed table answers empty rather than failing the tool, since the table is a
+  hint about where libraries live and not the operation itself, and the refusal still
+  names every directory searched plus how many table rows named other libraries.
+  Gates: the two fields E2E tests (new, edited and cleared, idempotent on the second
+  run) and the table E2E test turn red without the three sync calls or the table
+  lookup; a second import that changes nothing is still byte-identical.
+
+- 2026-10-04, after review: the review of the entry above (upstream PR #67) against KiCad's source
+  at 9.0.9 and 10.0.6 found the model right in its bones and wrong in four details,
+  each re-measured here before the fix. (1) A new field takes the footprint's own
+  angle, not its negation: KiCad's updater places the field at the footprint origin
+  and calls `Rotate(fpPos, fpOrientation)`, and the writer stores the text's absolute
+  board angle. Measured on a KiCad-written board: footprints at 90 carry their new
+  fields at 90 and footprints at -90 at 270; the INA821 at 180 was the one sample that
+  could not distinguish the two. `_sync_fp_fields` now writes `rotation % 360`.
+  (2) `(unlocked yes)` is Keep Upright OFF, which is why the field turns with the
+  footprint at all. (3) A new field on the back is mirrored: `StyleFromSettings` sets
+  mirrored for a back layer (reached through the updater's `aCheckSide = true`), so
+  the field's effects gain `(justify mirror)`, laid out under the font as the writer
+  lays it out; measured with pcbnew 10.0.6 on a flipped footprint. (4) On KiCad 10 the
+  schematic owns `exclude_from_pos_files` as well: the exporter writes an
+  `exclude_from_pos_files` marker for a symbol with "Exclude from position files"
+  ticked (measured: kicad-cli 10.0.6 on a symbol with `(in_pos_files no)`) and the
+  updater sets and clears the flag from it, so a stock mounting hole, whose symbol is
+  in position files and whose footprint is not, loses the flag under KiCad 10's F8.
+  KiCad 9 writes no marker, so joining the token to `_SYMBOL_OWNED_ATTRS` outright
+  would clear every library's flag there. `parse_netlist` therefore reads the netlist's
+  own `<design><tool>` and answers a bool for KiCad 10 or later and None otherwise, and
+  `_sync_fp_attributes` treats None as "the board's own". Also from the review: the
+  import and `place_footprint` searched in different orders (the import's directory
+  list ended with the stock footprints, so stock came before the global table there
+  and after it in `place_footprint`; a global row shadowing a stock nickname resolved
+  to two files). Both now go through `_FpLibResolver`, one non-raising resolver in
+  the documented order that reads each table at most once and the global one only
+  after the local lookups miss (about 15 ms per read of the stock table's 155 nested
+  rows, measured by the reviewer). `_kicad_var` learned the two kinds of global row it
+  dropped: variables from Preferences > Configure Paths, which KiCad keeps in
+  `kicad_common.json` with the OS environment winning, and `${KICAD<N>_3RD_PARTY}`,
+  whose default KiCad computes at run time (`<documents>/KiCad/<N>.0/3rdparty`, the
+  folder `kicad` on Linux, with `KICAD_DOCUMENTS_HOME` standing in for `<documents>`)
+  and never writes to the table; with it,
+  `_pcm_footprint_libs` emulates the scan KiCad runs while loading the global table
+  when `pcm.lib_auto_add` is on, adding `<package>/<lib>.pretty` as
+  `<pcm.lib_prefix><lib>` under the file's own rows (KiCad's own scan is wider and
+  stricter; the next entry matches it). Smaller corrections: `Component
+  Class` joins the names the updater handles apart (KiCad assigns it as a component
+  class, not a field; dropped here); the symbol's `ki_fp_filters` is copied as
+  `(property ki_fp_filters "...")` just before `(path ...)`, where KiCad's writer puts
+  it, and a new user field is inserted before it rather than after; `(sheetname ...)`,
+  `(sheetfile ...)` and the filters are set to whatever the netlist says, an empty
+  value removing the node as KiCad's writer leaves an empty one out; and
+  `_sync_fp_attributes` compares the token set, so a hand-ordered `(attr ...)` is left
+  alone and unreported until a flag changes. Still not applied: KiCad 10's variant
+  overrides. Gate: the KiCad 9 `suite` job, which this round's test expectation
+  (Device:R's Datasheet is `"~"` in KiCad 9's library, `""` in KiCad 10's; the test now
+  compares against the exported netlist) had kept from running past its first assert.
+
+- 2026-10-04, review follow-ups: what the review of the two entries above still asked
+  for, made on top of the author's commits. The lint failure was one pyright error, the
+  key type pyright inferred for `owned` in `_sync_fp_attributes`, now annotated. The
+  default of `${KICAD<N>_3RD_PARTY}` lost a folder whenever `KICAD_DOCUMENTS_HOME` was
+  set: `PATHS::getUserDocumentPath` appends `KICAD_PATH_STR` ("KiCad" on Windows and
+  macOS, "kicad" elsewhere) after the override exactly as after the documents folder,
+  and `_KICAD_PATH_STR` now mirrors it. That was measured as well as read, because
+  `PGM_BASE::InitPgm` creates the folder as kicad-cli starts: `kicad-cli version` with
+  `KICAD_DOCUMENTS_HOME=<docs>` created `<docs>/KiCad/9.0/3rdparty` on Windows (9.0.8)
+  where the code computed `<docs>/9.0/3rdparty`, and that run is now a test on every
+  runner with KiCad installed. On Windows the documents folder is the shell's, not
+  `~/Documents`: KiCad's `GetDocumentsPath` is wxWidgets' `GetDocumentsDir`, which in
+  the wx 3.2.8 a KiCad 9.0.8 install carries is `SHGetFolderPath(CSIDL_PERSONAL,
+  SHGFP_TYPE_CURRENT)`, and that follows OneDrive folder backup and folder redirection;
+  `_windows_documents_dir` makes the same call and falls back to `~/Documents`. On a
+  machine with OneDrive folder backup on, the shell and PowerShell's
+  `[Environment]::GetFolderPath('MyDocuments')` both answer
+  `%USERPROFILE%\OneDrive\Documents` where the code had `%USERPROFILE%\Documents`. The
+  same machine sets `KICAD_DOCUMENTS_HOME` in the user's environment, and KiCad 9's own
+  Preferences > Configure Paths shows `KICAD9_3RD_PARTY` as
+  `%LOCALAPPDATA%\KiCad\KiCad\9.0\3rdparty\`, which is what `_kicad_var` now computes;
+  before these fixes it computed `%LOCALAPPDATA%\KiCad\9.0\3rdparty`. The PCM scan
+  follows KiCad's traversers (`PCM_FP_LIB_TRAVERSER` at 9.0.9, `PCM_LIB_TRAVERSER` at
+  10.0.6) instead of approximating them: a `.pretty` at any depth inside a package; a
+  library whose unexpanded `${KICAD<N>_3RD_PARTY}/footprints/...` URI is already a row
+  left as that row has it; a taken nickname numbered `_1`, `_2`; both checks counting
+  disabled rows, which `_lib_table_rows` reads. The approximation had a false positive
+  the review did not list: a PCM library the user had disabled still resolved here,
+  under its `PCM_` nickname. KiCad 9 adds these rows in memory at every load and KiCad
+  10 also saves the table, so "KiCad never writes these rows" held for 9 only. Gates:
+  every new test failed against the code before its fix and passes after it, and the
+  full suite on that machine (KiCad 9.0.8) is 1220 passed, 23 skipped, twenty of the
+  skips KiCad 10 tests; the KiCad 10 legs run only in the macOS and Windows jobs, from
+  a `ci/**` push.
