@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import stat
+import sys
 from pathlib import Path
 
 import conftest
@@ -509,6 +512,103 @@ class TestRemoveHierarchicalSheet:
         assert "Removed" in result
         assert "Kept child file" in result
         assert "still referenced" in result
+        assert child.exists()
+
+    def _point(self, parent: Path, sheet_file: str) -> bytes:
+        """Rewrite the parent's one Sheetfile naming child.kicad_sch; return the new bytes."""
+        data = parent.read_bytes()
+        assert data.count(b'"child.kicad_sch"') == 1
+        parent.write_bytes(data.replace(b'"child.kicad_sch"', f'"{sheet_file}"'.encode()))
+        return parent.read_bytes()
+
+    def test_delete_child_file_refuses_a_file_that_is_not_a_schematic(self, tmp_path: Path):
+        """Inside the parent's directory, Sheetfile could still name the project file."""
+        parent, child = self._make_parent_and_child(tmp_path)
+        self._add_sheet(parent, child, name="Power")
+        pro = tmp_path / "proj.kicad_pro"
+        pro.write_text("{}")
+        pointed = self._point(parent, "proj.kicad_pro")
+
+        with pytest.raises(ToolError, match="not a .kicad_sch file"):
+            project.remove_hierarchical_sheet(
+                name="Power", delete_child_file=True, parent_schematic_path=str(parent)
+            )
+
+        assert pro.read_text() == "{}"
+        assert parent.read_bytes() == pointed, "parent schematic must be untouched"
+
+    def test_delete_child_file_refuses_the_parent_itself(self, tmp_path: Path):
+        """A parent naming itself was unlinked, then rewritten on a fresh inode at the
+        umask's mode, so a private 0600 schematic came back readable by other users."""
+        parent, child = self._make_parent_and_child(tmp_path)
+        self._add_sheet(parent, child, name="Power")
+        original = parent.read_bytes()
+        pointed = self._point(parent, "root.kicad_sch")
+        parent.chmod(0o600)
+        before = parent.stat()
+
+        old_umask = os.umask(0o022)
+        try:
+            with pytest.raises(ToolError, match="parent schematic itself"):
+                project.remove_hierarchical_sheet(
+                    name="Power", delete_child_file=True, parent_schematic_path=str(parent)
+                )
+        finally:
+            os.umask(old_umask)
+
+        after = parent.stat()
+        assert parent.read_bytes() == pointed, "parent schematic must be untouched"
+        assert after.st_ino == before.st_ino
+        if sys.platform != "win32":
+            assert stat.S_IMODE(after.st_mode) == 0o600
+        # A sheet instancing its own file is recursive; the kicad-cli oracle gets the
+        # tool's output, not this test's hostile edit.
+        parent.write_bytes(original)
+
+    def test_delete_child_file_refuses_a_project_root(self, tmp_path: Path):
+        """A sub-sheet whose Sheetfile names the project's root schematic must not delete it."""
+        proj = tmp_path / "proj"
+        project.create_project(directory=str(proj), name="proj")
+        sub, child = proj / "sub.kicad_sch", proj / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(sub))
+        project.create_schematic(schematic_path=str(child))
+        self._add_sheet(sub, child, name="Power")
+        root = proj / "proj.kicad_sch"
+        root_bytes = root.read_bytes()
+        pointed = self._point(sub, "proj.kicad_sch")
+
+        with pytest.raises(ToolError, match="root schematic of a project"):
+            project.remove_hierarchical_sheet(
+                name="Power", delete_child_file=True, parent_schematic_path=str(sub)
+            )
+
+        assert root.read_bytes() == root_bytes
+        assert sub.read_bytes() == pointed, "parent schematic must be untouched"
+
+    @pytest.mark.parametrize("alias", ["dot", "absolute", "symlink"])
+    def test_delete_child_file_keeps_a_child_still_referenced_by_another_spelling(
+        self, tmp_path: Path, alias: str
+    ):
+        """The other block's Sheetfile names the same file with different text."""
+        parent, child = self._make_parent_and_child(tmp_path)
+        uuid1 = self._add_sheet(parent, child, name="Power1")
+        uuid2 = self._add_sheet(parent, child, name="Power2")
+        if alias == "dot":
+            file_name = "./child.kicad_sch"
+        elif alias == "absolute":
+            file_name = str(child)
+        else:
+            try:
+                (tmp_path / "link.kicad_sch").symlink_to(child)
+            except (OSError, NotImplementedError):
+                pytest.skip("symlinks are not available here")
+            file_name = "link.kicad_sch"
+        project.modify_hierarchical_sheet(uuid2, schematic_path=str(parent), file_name=file_name)
+
+        result = project.remove_hierarchical_sheet(
+            uuid=uuid1, delete_child_file=True, parent_schematic_path=str(parent)
+        )
+        assert "Kept child file" in result
         assert child.exists()
 
 

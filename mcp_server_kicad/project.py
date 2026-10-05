@@ -479,10 +479,43 @@ def remove_hierarchical_sheet(
                 "not deleted and the sheet block was not removed. Re-run with "
                 "delete_child_file=False to remove the block on its own."
             )
-        # Check if any OTHER sheet still references this child file
-        other_refs = any(
-            _sheet_file_cst(s) == child_filename for j, s in enumerate(sheets) if j != matches[0]
-        )
+        # Inside the directory it can still name something that is no sheet of this parent:
+        # the board or the project file, the project's root schematic, or the parent itself,
+        # which was unlinked and then rewritten at the umask's mode on a fresh inode.
+        not_a_child = ""
+        if child_path.suffix.lower() != ".kicad_sch":
+            not_a_child = "is not a .kicad_sch file"
+        elif child_path.exists() and child_path.samefile(parent_schematic_path):
+            not_a_child = "is the parent schematic itself"
+        elif child_path.with_suffix(".kicad_pro").exists():
+            not_a_child = "is the root schematic of a project"
+        if not_a_child:
+            raise ToolError(
+                f"Sheet file '{child_filename}' {not_a_child}, so it was not deleted and the "
+                "sheet block was not removed. Re-run with delete_child_file=False to remove "
+                "the block on its own."
+            )
+
+        # Check if any OTHER sheet still references this child file. A different spelling
+        # of the same file ('./child.kicad_sch', an absolute path, a symlink) counts too.
+        def _names_child(s) -> bool:
+            sf = _sheet_file_cst(s) or ""
+            if not sf:
+                return False
+            if sf == child_filename:
+                return True
+            if not child_path.exists():
+                return False
+            try:
+                return (parent_dir / sf).samefile(child_path)
+            except (FileNotFoundError, NotADirectoryError):
+                return False
+            except (OSError, ValueError):
+                # This guards the package's only delete, so a block whose file cannot be
+                # compared for any reason but its absence keeps the child.
+                return True
+
+        other_refs = any(_names_child(s) for j, s in enumerate(sheets) if j != matches[0])
         if other_refs:
             msg += f" Kept child file '{child_filename}' — still referenced by another sheet block."
         elif child_path.is_file():
