@@ -1041,9 +1041,11 @@ class TestBackupForExternalWrite:
 class TestPlainLibraryTree:
     """A footprint library is copied twice before kicad-cli touches it, once for
     the .bak and once for the scratch copy, and copytree follows links. So a
-    library holding a link or a special file is refused, by name, before either
-    copy starts: a link to a device copies until the disk is full, and a link out
-    of the library carries whatever it points at into the .bak beside it.
+    library holding a link, a special file or a folder is refused, by name, before
+    either copy starts: a link to a device copies until the disk is full, and a
+    link out of the library carries whatever it points at into the .bak beside it.
+    The copies themselves never open a member through a link, and are checked
+    again once made, because the library can change after it was checked.
     """
 
     def _pretty(self, tmp_path: Path) -> Path:
@@ -1128,6 +1130,160 @@ class TestPlainLibraryTree:
             _backup_for_external_write(pretty, "footprint library")
         monkeypatch.undo()
         assert self._beside(tmp_path, pretty) == ["Lib.pretty"], "the staging copy was left behind"
+
+    def test_a_folder_inside_is_refused_by_name(self, tmp_path, monkeypatch):
+        """KiCad reads only the files directly inside a .pretty, so a folder in
+        one holds nothing it loads, and a flat library leaves no folder for a
+        link to be swapped onto between the check and the copy or the write."""
+        pretty = self._pretty(tmp_path)
+        (pretty / "sub").mkdir()
+        (pretty / "sub" / "X.kicad_mod").write_bytes(b'(footprint "X")\n')
+        with pytest.raises(ToolError, match=r"sub, which is a folder"):
+            _backup_for_external_write(pretty, "footprint library")
+        assert self._beside(tmp_path, pretty) == ["Lib.pretty"]
+        monkeypatch.setattr(_shared, "_run_cli", lambda *a, **k: pytest.fail("kicad-cli was run"))
+        with pytest.raises(ToolError, match=r"sub, which is a folder"):
+            _upgrade_out_of_place(pretty, "footprint library", ["fp", "upgrade"])
+
+    @staticmethod
+    def _after_listing(monkeypatch, pretty: Path, actions: dict) -> list[int]:
+        """Run actions[n] just after the n-th listing of *pretty* has been read.
+
+        The first listing is _require_plain_tree's and the second is copytree's,
+        so an action on the second changes the library after everything that
+        looked at it has looked, and before anything has opened a file in it.
+        Returns the listings seen, so a test can show its swap really ran.
+        """
+        real = os.scandir
+        seen: list[int] = []
+
+        class Listed(list):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def scandir(path="."):
+            if isinstance(path, (str, os.PathLike)) and Path(path) == pretty:
+                seen.append(len(seen) + 1)
+                if seen[-1] in actions:
+                    with real(path) as it:
+                        entries = Listed(it)
+                    actions[seen[-1]]()
+                    return entries
+            return real(path)
+
+        monkeypatch.setattr(_shared.os, "scandir", scandir)
+        return seen
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows has no O_NOFOLLOW; the walk is its check")
+    @pytest.mark.parametrize("copy", ["backup", "scratch"])
+    @pytest.mark.parametrize("swap", ["file", "folder"])
+    def test_a_swap_after_the_listing_is_refused(self, tmp_path, monkeypatch, copy, swap):
+        """The walk before the copy binds nothing: copytree lists the library
+        again and opens each member by name. A member swapped for a link after
+        that listing was followed, and so was a folder swapped for one, so the
+        file outside the library came out in the .bak, or in the scratch copy
+        kicad-cli was handed. Now a link is never opened and a folder in a copy
+        is refused, and both are refused before the copy is used."""
+        pretty = self._pretty(tmp_path)
+        victim = pretty / "C_0402.kicad_mod"
+        victim.write_bytes(b'(footprint "C_0402")\n')
+        library = {p.name: p.read_bytes() for p in pretty.iterdir()}
+        secret = b"OUTSIDE THE LIBRARY\n"
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "secret.kicad_mod").write_bytes(secret)
+        previous = tmp_path / "Lib.pretty.bak"
+        if copy == "backup":
+            _backup_for_external_write(pretty, "footprint library")
+        kept = {p.name: p.read_bytes() for p in previous.iterdir()} if previous.exists() else {}
+        scratch_root = tmp_path / "scratch"
+        scratch_root.mkdir()
+        monkeypatch.setattr(_shared.tempfile, "tempdir", str(scratch_root))
+        monkeypatch.setattr(_shared, "_run_cli", lambda *a, **k: pytest.fail("kicad-cli was run"))
+
+        def link_file():
+            victim.unlink()
+            self._symlink(victim, outside / "secret.kicad_mod")
+
+        def add_folder():
+            (pretty / "sub").mkdir()
+
+        def link_folder():
+            (pretty / "sub").rmdir()
+            self._symlink(pretty / "sub", outside)
+
+        if swap == "file":
+            actions, swapped, refusal = {2: link_file}, victim, r"C_0402\.kicad_mod is now a link"
+        else:
+            actions, swapped = {1: add_folder, 2: link_folder}, pretty / "sub"
+            refusal = r"sub, which is a folder"
+        seen = self._after_listing(monkeypatch, pretty, actions)
+
+        with pytest.raises(ToolError, match=refusal):
+            if copy == "backup":
+                _backup_for_external_write(pretty, "footprint library")
+            else:
+                _upgrade_out_of_place(pretty, "footprint library", ["fp", "upgrade"])
+        monkeypatch.undo()
+
+        assert seen[:2] == [1, 2] and swapped.is_symlink(), "the swap never happened"
+        for name, body in library.items():
+            if name != victim.name:
+                assert (pretty / name).read_bytes() == body
+        if copy == "backup":
+            assert self._beside(tmp_path, pretty) == ["Lib.pretty", "Lib.pretty.bak"]
+            assert {p.name: p.read_bytes() for p in previous.iterdir()} == kept
+        else:
+            assert self._beside(tmp_path, pretty) == ["Lib.pretty"]
+            assert list(scratch_root.iterdir()) == [], "the scratch copy was left behind"
+        for d, _, files in os.walk(tmp_path):
+            for f in files:
+                p = Path(d) / f
+                if p != outside / "secret.kicad_mod" and not p.is_symlink():
+                    assert secret not in p.read_bytes(), f"{p} holds the outside file"
+        assert (outside / "secret.kicad_mod").read_bytes() == secret
+
+    @pytest.mark.skipif(os.name == "nt", reason="needs a symlink to a directory")
+    def test_the_write_back_never_resolves_a_folder_again(self, tmp_path, monkeypatch):
+        """Writing a changed footprint back resolved src/rel by name again, so a
+        folder in the library swapped for a link after every check carried the
+        write outside it: the upgraded bytes replaced a file the library does
+        not hold. Both checks are disabled here to stand in for a folder that
+        appeared after them, which leaves the write-back's own refusal."""
+        pretty = self._pretty(tmp_path)
+        (pretty / "sub").mkdir()
+        (pretty / "sub" / "X.kicad_mod").write_bytes(b'(footprint "X")\n')
+        before = {p: p.read_bytes() for p in pretty.rglob("*") if p.is_file()}
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (outside / "X.kicad_mod").write_bytes(b"NOT THE LIBRARY'S\n")
+        monkeypatch.setattr(_shared, "_require_plain_tree", lambda *a, **k: None)
+
+        def upgrade(args, check=True):
+            scratch = Path(args[-1])
+            for f in (scratch / "R_0603.kicad_mod", scratch / "sub" / "X.kicad_mod"):
+                f.write_bytes(f.read_bytes() + b"(upgraded)\n")
+            return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
+
+        real_write = _shared._atomic_write
+
+        def swap_then_write(path, data, **kwargs):
+            if not (pretty / "sub").is_symlink():
+                shutil.rmtree(pretty / "sub")
+                self._symlink(pretty / "sub", outside)
+            return real_write(path, data, **kwargs)
+
+        monkeypatch.setattr(_shared, "_run_cli", upgrade)
+        monkeypatch.setattr(_shared, "_atomic_write", swap_then_write)
+        with pytest.raises(ToolError, match="gained a folder"):
+            _upgrade_out_of_place(pretty, "footprint library", ["fp", "upgrade"])
+        monkeypatch.undo()
+
+        assert (outside / "X.kicad_mod").read_bytes() == b"NOT THE LIBRARY'S\n"
+        assert {p: p.read_bytes() for p in pretty.rglob("*") if p.is_file()} == before
 
 
 def _completed(returncode: int, stdout: str = "", stderr: str = ""):

@@ -336,16 +336,26 @@ def _posix_acl(ref: int | Path) -> bytes | None:
         raise
 
 
-def _require_plain_tree(root: Path, kind: str) -> None:
-    """Refuse a library directory holding anything but files and directories.
+def _require_plain_tree(root: Path, kind: str, library: Path | None = None) -> None:
+    """Refuse a library directory holding anything but regular files.
 
     A footprint library is copied twice before kicad-cli sees it, once for the
     ``.bak`` and once for the scratch copy, and both are ``shutil.copytree``,
     which follows links. A link to a device copies until the disk is full, and
     a link out of the library carries whatever it points at into the ``.bak``
-    beside the library. Rather than judge which links are harmless, this walks
-    the tree first, follows nothing, and refuses any link, or anything that is
-    neither a regular file nor a directory, by name.
+    beside the library. Rather than judge which links are harmless, this lists
+    the library first, follows nothing, and refuses any link, or anything that
+    is not a regular file, by name.
+
+    A folder is refused too. KiCad lists a ``.pretty``'s own files and reads
+    none deeper (``FP_CACHE::Load`` at 9.0.9 and 10.0.6 is one non-recursive
+    ``wxDir`` pass, and its ``DeleteLibrary`` refuses "unexpected sub-folders"),
+    so a folder holds nothing KiCad would load, and a flat library leaves no
+    folder for a link to be swapped onto after this check, before the copy or
+    the write-back. The copies are checked again once made, with *library* as
+    the name the refusal gives: a folder swapped in after copytree listed the
+    library is copied with no link left to see, and this is what catches it,
+    inside a copy no other user can enter.
 
     The root itself must be a directory and not a link to one. A junction is a
     link too: Windows reports one as a plain directory unless its reparse tag
@@ -364,21 +374,72 @@ def _require_plain_tree(root: Path, kind: str) -> None:
         "The upgrade copies the whole library first and will not follow a link or"
         " read a special file, so nothing was written."
     )
+    name = library or root
     st = os.lstat(root)
     what = odd(st) or (None if stat.S_ISDIR(st.st_mode) else "not a directory")
     if what:
-        raise ToolError(f"The {kind} {root} is {what}. {why}")
-    pending = [root]
-    while pending:
-        with os.scandir(pending.pop()) as entries:
-            for entry in entries:
-                st = entry.stat(follow_symlinks=False)
-                what = odd(st)
-                if what:
-                    rel = Path(entry.path).relative_to(root)
-                    raise ToolError(f"The {kind} {root} contains {rel}, which is {what}. {why}")
-                if stat.S_ISDIR(st.st_mode):
-                    pending.append(Path(entry.path))
+        raise ToolError(f"The {kind} {name} is {what}. {why}")
+    with os.scandir(root) as entries:
+        for entry in entries:
+            st = entry.stat(follow_symlinks=False)
+            what = odd(st)
+            if what:
+                raise ToolError(f"The {kind} {name} contains {entry.name}, which is {what}. {why}")
+            if stat.S_ISDIR(st.st_mode):
+                raise ToolError(
+                    f"The {kind} {name} contains {entry.name}, which is a folder. KiCad reads"
+                    " only the files directly inside a library folder, and the upgrade will not"
+                    " copy one that holds a folder, so nothing was written."
+                )
+
+
+def _copy_plain_file(member: str, dst: str, library: Path, kind: str, *, keep: bool) -> None:
+    """copytree's copy_function for both copies of a footprint library.
+
+    _require_plain_tree checks the library before it is copied, but copytree
+    lists it again and then opens each member by name, so a member swapped for
+    a link in between was followed: copy2 read the link's target with the
+    user's permissions and the ``.bak`` kept its bytes. Here the member is read
+    only through a descriptor opened with `_READ_NO_FOLLOW`, which fstat must
+    call a regular file before a byte is read. Windows has no O_NOFOLLOW, so a
+    file swapped for a link there is still followed.
+
+    *keep* gives the copy copy2's times, ACL and mode, all taken from that same
+    descriptor, as the ``.bak`` needs. The scratch copy wants none of them (see
+    `_upgrade_out_of_place`). Every path written to is inside a directory no
+    other user can enter, so writing there by name is safe.
+    """
+    why = (
+        "The upgrade will not follow a link or read a special file, so it stopped"
+        " with the library unchanged."
+    )
+    name = Path(member).relative_to(library)
+    try:
+        fd = os.open(member, _READ_NO_FOLLOW)
+    except OSError as exc:
+        if exc.errno != errno.ELOOP:
+            raise
+        raise ToolError(
+            f"The {kind} {library} changed while it was being copied: {name} is now a link. {why}"
+        ) from exc
+    try:
+        st = os.fstat(fd)
+        if not stat.S_ISREG(st.st_mode):
+            raise ToolError(
+                f"The {kind} {library} changed while it was being copied: {name} is now not"
+                f" a regular file. {why}"
+            )
+        acl = _posix_acl(fd) if keep else None
+        with open(fd, "rb", closefd=False) as fsrc, open(dst, "xb") as fdst:
+            shutil.copyfileobj(fsrc, fdst)
+    finally:
+        os.close(fd)
+    if keep:
+        # copystat's order: the ACL before the mode, which may be read-only.
+        os.utime(dst, ns=(st.st_atime_ns, st.st_mtime_ns))
+        if acl is not None:
+            os.setxattr(dst, _POSIX_ACL, acl)
+        os.chmod(dst, stat.S_IMODE(st.st_mode))
 
 
 def _backup_for_external_write(path: str | Path, kind: str) -> Path:
@@ -403,9 +464,9 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
     read-only parent) would very likely have made the rewrite worse.
 
     A library directory goes through _require_plain_tree before anything is
-    copied, and a copy that fails part way is removed rather than left beside
-    the library, where nothing would ever come back for it. A library file that
-    is a link, or not a regular file, is refused.
+    copied and again once it is, and a copy that fails part way is removed
+    rather than left beside the library, where nothing would ever come back for
+    it. A library file that is a link, or not a regular file, is refused.
     """
     src = Path(path)
     dest = src.with_name(src.name + ".bak")
@@ -438,7 +499,13 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
             # make.
             os.mkdir(staging, 0o700)
             try:
-                shutil.copytree(src, staging, dirs_exist_ok=True)
+                shutil.copytree(
+                    src,
+                    staging,
+                    dirs_exist_ok=True,
+                    copy_function=lambda m, d: _copy_plain_file(m, d, src, kind, keep=True),
+                )
+                _require_plain_tree(staging, kind, src)
                 # Retire the old backup rather than deleting it first. Deleting
                 # it first left a window in which NO backup existed at all: the
                 # copy was complete and safe, but a crash between the delete and
@@ -532,8 +599,8 @@ def _upgrade_out_of_place(path: str | Path, kind: str, argv: list[str]) -> list[
     leaves some footprints upgraded and some not, with no file torn. That is
     the same boundary the ADR already draws for fan-out writes.
 
-    A library directory goes through _require_plain_tree before it is copied,
-    for the reason given there.
+    A library directory goes through _require_plain_tree before it is copied
+    and again once it is, for the reason given there.
     """
     src = Path(path)
     if src.is_dir():
@@ -544,7 +611,14 @@ def _upgrade_out_of_place(path: str | Path, kind: str, argv: list[str]) -> list[
     with tempfile.TemporaryDirectory() as tmp:
         scratch = Path(tmp) / src.name
         if src.is_dir():
-            shutil.copytree(src, scratch)
+            # The bytes only, as for a library file below; the temp directory
+            # is owner-only, so a refused copy is seen by no one and goes with it.
+            shutil.copytree(
+                src,
+                scratch,
+                copy_function=lambda m, d: _copy_plain_file(m, d, src, kind, keep=False),
+            )
+            _require_plain_tree(scratch, kind, src)
         else:
             # copyfile, not copy2: the stock libraries ship read-only and a
             # mode-preserving copy makes kicad-cli exit 2 with "Unable to save
@@ -576,6 +650,16 @@ def _upgrade_out_of_place(path: str | Path, kind: str, argv: list[str]) -> list[
                 f"The {kind} upgrade changed which files the library holds, so nothing was"
                 f" written and the original is untouched. Added: {gained or 'none'}."
                 f" Removed: {lost or 'none'}."
+            )
+        # Both copies were checked flat, so a path with a folder in it means the
+        # library changed during the upgrade. Writing it would resolve that
+        # folder by name again, and a link swapped onto it since would carry the
+        # write outside the library.
+        nested = sorted(str(p) for p in produced if len(p.parts) > 1)
+        if nested:
+            raise ToolError(
+                f"The {kind} gained a folder during the upgrade ({', '.join(nested)}),"
+                " so nothing was written and the original is untouched."
             )
         changed = []
         for rel in sorted(produced):
