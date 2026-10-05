@@ -351,8 +351,8 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   torque block's INA821, placed at 180 degrees): a user field lands as a hidden
   `(property ...)` on the footprint's F.Fab at `(at 0 0 180)`, which is the footprint's
   own angle (the first reading of this sample, "cancels the footprint's angle", was
-  wrong: 180 is the one angle that cannot tell the two apart, and the 2026-10-05 entry
-  below has the measurement that does), `(unlocked yes)`, which is Keep Upright OFF and
+  wrong: 180 is the one angle that cannot tell the two apart, and the second 2026-10-04
+  entry below has the measurement that does), `(unlocked yes)`, which is Keep Upright OFF and
   not a free-rotation flag (the parser's own comment: "unlocked" is not the opposite of
   "locked"), size 1 by 1, thickness 0.15; Datasheet and Description are updated in
   place where the library footprint
@@ -435,7 +435,8 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   and never writes to the table; with it,
   `_pcm_footprint_libs` emulates the scan KiCad runs while loading the global table
   when `pcm.lib_auto_add` is on, adding `<package>/<lib>.pretty` as
-  `<pcm.lib_prefix><lib>` under the file's own rows. Smaller corrections: `Component
+  `<pcm.lib_prefix><lib>` under the file's own rows (KiCad's own scan is wider and
+  stricter; the next entry matches it). Smaller corrections: `Component
   Class` joins the names the updater handles apart (KiCad assigns it as a component
   class, not a field; dropped here); the symbol's `ki_fp_filters` is copied as
   `(property ki_fp_filters "...")` just before `(path ...)`, where KiCad's writer puts
@@ -447,3 +448,38 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   overrides. Gate: the KiCad 9 `suite` job, which this round's test expectation
   (Device:R's Datasheet is `"~"` in KiCad 9's library, `""` in KiCad 10's; the test now
   compares against the exported netlist) had kept from running past its first assert.
+
+- 2026-10-04, review follow-ups: what the review of the two entries above still asked
+  for, made on top of the author's commits. The lint failure was one pyright error, the
+  key type pyright inferred for `owned` in `_sync_fp_attributes`, now annotated. The
+  default of `${KICAD<N>_3RD_PARTY}` lost a folder whenever `KICAD_DOCUMENTS_HOME` was
+  set: `PATHS::getUserDocumentPath` appends `KICAD_PATH_STR` ("KiCad" on Windows and
+  macOS, "kicad" elsewhere) after the override exactly as after the documents folder,
+  and `_KICAD_PATH_STR` now mirrors it. That was measured as well as read, because
+  `PGM_BASE::InitPgm` creates the folder as kicad-cli starts: `kicad-cli version` with
+  `KICAD_DOCUMENTS_HOME=<docs>` created `<docs>/KiCad/9.0/3rdparty` on Windows (9.0.8)
+  where the code computed `<docs>/9.0/3rdparty`, and that run is now a test on every
+  runner with KiCad installed. On Windows the documents folder is the shell's, not
+  `~/Documents`: KiCad's `GetDocumentsPath` is wxWidgets' `GetDocumentsDir`, which in
+  the wx 3.2.8 a KiCad 9.0.8 install carries is `SHGetFolderPath(CSIDL_PERSONAL,
+  SHGFP_TYPE_CURRENT)`, and that follows OneDrive folder backup and folder redirection;
+  `_windows_documents_dir` makes the same call and falls back to `~/Documents`. On a
+  machine with OneDrive folder backup on, the shell and PowerShell's
+  `[Environment]::GetFolderPath('MyDocuments')` both answer
+  `%USERPROFILE%\OneDrive\Documents` where the code had `%USERPROFILE%\Documents`. The
+  same machine sets `KICAD_DOCUMENTS_HOME` in the user's environment, and KiCad 9's own
+  Preferences > Configure Paths shows `KICAD9_3RD_PARTY` as
+  `%LOCALAPPDATA%\KiCad\KiCad\9.0\3rdparty\`, which is what `_kicad_var` now computes;
+  before these fixes it computed `%LOCALAPPDATA%\KiCad\9.0\3rdparty`. The PCM scan
+  follows KiCad's traversers (`PCM_FP_LIB_TRAVERSER` at 9.0.9, `PCM_LIB_TRAVERSER` at
+  10.0.6) instead of approximating them: a `.pretty` at any depth inside a package; a
+  library whose unexpanded `${KICAD<N>_3RD_PARTY}/footprints/...` URI is already a row
+  left as that row has it; a taken nickname numbered `_1`, `_2`; both checks counting
+  disabled rows, which `_lib_table_rows` reads. The approximation had a false positive
+  the review did not list: a PCM library the user had disabled still resolved here,
+  under its `PCM_` nickname. KiCad 9 adds these rows in memory at every load and KiCad
+  10 also saves the table, so "KiCad never writes these rows" held for 9 only. Gates:
+  every new test failed against the code before its fix and passes after it, and the
+  full suite on that machine (KiCad 9.0.8) is 1220 passed, 23 skipped, twenty of the
+  skips KiCad 10 tests; the KiCad 10 legs run only in the macOS and Windows jobs, from
+  a `ci/**` push.
