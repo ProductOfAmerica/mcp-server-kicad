@@ -1,5 +1,6 @@
 """Shared constants and helpers for KiCad MCP servers."""
 
+import errno
 import math
 import os
 import shutil
@@ -238,6 +239,15 @@ OUTPUT_DIR: str = _cfg["output_dir"]
 # enough that a tool call does not feel hung.
 _REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4)
 
+# The xattr Linux keeps a file's POSIX access ACL in. On such a file the mode's
+# group bits are the ACL's mask, not the owning group's entry, so carrying the
+# mode without the ACL hands the owning group whatever the mask allows.
+_POSIX_ACL = "system.posix_acl_access"
+
+# What getxattr and removexattr answer for a file with no ACL (ENODATA), or on a
+# filesystem that has none (ENOTSUP; EOPNOTSUPP is the same number on Linux).
+_NO_ACL = (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP)
+
 
 #: KiCad's schematic editor offers only these four, and kicad-cli refuses to
 #: load a schematic carrying anything else.
@@ -298,6 +308,21 @@ def _read_kicad_bytes(path: str | Path, kind: str) -> bytes:
     rather than 84 checks that have to stay in step.
     """
     return _require_kicad_path(path, kind).read_bytes()
+
+
+def _posix_acl(ref: int | Path) -> bytes | None:
+    """The POSIX access ACL of a path or descriptor, or None where it has none.
+
+    Only Linux exposes ACLs to the standard library, so elsewhere this is None.
+    """
+    if not hasattr(os, "getxattr"):
+        return None
+    try:
+        return os.getxattr(ref, _POSIX_ACL)
+    except OSError as exc:
+        if exc.errno in _NO_ACL:
+            return None
+        raise
 
 
 def _require_plain_tree(root: Path, kind: str) -> None:
@@ -549,6 +574,10 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
     reader, a plain write was observed torn 345 times in 800 reads, including
     reads of zero bytes; the same probe against this function saw 0 in 25,529.
 
+    The replacement keeps the destination's group, mode and POSIX access ACL.
+    They are set on the temp before a byte is written, and what cannot be
+    carried without widening access is refused.
+
     Deliberately no fsync. What was measured is tearing, which the replace
     closes completely. fsync buys power-loss durability that nobody here has
     measured a need for, at the cost of flushing the drive on every edit. Add it
@@ -561,18 +590,66 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
     # neither. The random part is what keeps two writers of one file in one
     # process apart; with the pid alone they shared a temp.
     tmp = p.with_name(f"{p.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    # Windows is left alone: its only mode is read-only, and a read-only temp
+    # is one Windows then refuses to delete.
+    carry = os.name != "nt" and p.exists()
     # Exclusive, and before the try: a create that fails, or finds the name
     # taken, has made nothing of this call's, and the cleanup below would
-    # otherwise delete a file this call did not create.
-    f = open(tmp, "xb")
+    # otherwise delete a file this call did not create. Owner-only when a mode
+    # is about to be carried: at the umask's 0644, anyone who opened the temp
+    # before the fchmod kept a descriptor that read every byte written after it
+    # (an inotify watcher read a whole 0600 schematic in 5 of 300 edits), and
+    # 0600 also masks off whatever a directory default ACL grants. A new file
+    # with nothing to carry keeps the umask's mode, as before.
+    created = 0o600 if carry else 0o666
+    f = open(tmp, "xb", opener=lambda name, flags: os.open(name, flags, created))
     try:
         with f:
-            if os.name != "nt" and p.exists():
-                # Otherwise a group-writable file comes back 0644. Set through
-                # the descriptor, so it lands on the file this call created.
-                # Windows is left alone: its only mode is read-only, and a
-                # read-only temp is one Windows then refuses to delete.
-                os.fchmod(f.fileno(), stat.S_IMODE(p.stat().st_mode))
+            if carry:
+                # Otherwise a group-writable file comes back 0644, in this
+                # process's group. Set through the descriptor, so it lands on
+                # the file this call created. In this order: chown clears
+                # setuid and setgid, so it precedes the fchmod; removexattr
+                # drops an ACL the temp inherited from a directory default, and
+                # leaves its mask in the group bits, which the fchmod then
+                # overwrites; and the original's own ACL goes on last, over the
+                # mode it agrees with.
+                fd = f.fileno()
+                try:
+                    st = p.stat()
+                    mode = stat.S_IMODE(st.st_mode)
+                    acl = _posix_acl(p)
+                    if os.fstat(fd).st_gid != st.st_gid:
+                        try:
+                            os.fchown(fd, -1, st.st_gid)
+                        except PermissionError:
+                            # Not a member of that group, so the temp stays in
+                            # this process's. That widens access only where the
+                            # group class grants more than other, and with an
+                            # ACL the group bits are its mask, so the same test
+                            # holds.
+                            if (mode >> 3) & 0o7 & ~(mode & 0o7):
+                                raise PermissionError(
+                                    errno.EPERM,
+                                    f"the original is in group {st.st_gid}, which this"
+                                    " process is not a member of, and in this process's own"
+                                    " group the new file would be open to people the"
+                                    " original shuts out",
+                                ) from None
+                    if hasattr(os, "removexattr"):
+                        try:
+                            os.removexattr(fd, _POSIX_ACL)
+                        except OSError as e:
+                            if e.errno not in _NO_ACL:
+                                raise
+                    os.fchmod(fd, mode)
+                    if acl is not None:
+                        os.setxattr(fd, _POSIX_ACL, acl)
+                except OSError as e:
+                    raise OSError(
+                        f"could not write {p} with the group and permissions it must keep:"
+                        f" {e.strerror or e}. The file is unchanged."
+                    ) from e
             f.write(data)
         for delay in _REPLACE_RETRY_DELAYS:
             try:

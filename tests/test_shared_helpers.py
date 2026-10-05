@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import re
 import shutil
 import stat
+import struct
 import subprocess
 import uuid
 from pathlib import Path
@@ -422,6 +424,44 @@ class TestAtomicWrite:
         _atomic_write(p, self.REPLACEMENT)
         assert stat.S_IMODE(p.stat().st_mode) == 0o640
 
+    @pytest.mark.skipif(os.name == "nt", reason="Windows has no mode bits beyond read-only")
+    def test_the_temp_is_owner_only_until_its_mode_is_set(self, tmp_path: Path, monkeypatch):
+        """Created at the umask's 0644, the temp could be opened by anyone in the
+        moment before the fchmod, and a descriptor opened then reads every byte
+        written after it. Measured with an inotify watcher: a whole 0600
+        schematic, in 5 of 300 edits. The fchmod is where the window closed, so
+        that is where the temp's mode is read."""
+        p = self._target(tmp_path)
+        p.chmod(0o600)
+        seen: list[int] = []
+        real = _shared.os.fchmod
+
+        def spy(fd, mode):
+            seen.append(stat.S_IMODE(os.fstat(fd).st_mode))
+            return real(fd, mode)
+
+        monkeypatch.setattr(_shared.os, "fchmod", spy)
+        old = os.umask(0o022)
+        try:
+            _atomic_write(p, self.REPLACEMENT)
+        finally:
+            os.umask(old)
+        assert seen, "the destination's mode was never carried"
+        assert all(m & 0o077 == 0 for m in seen), [oct(m) for m in seen]
+        assert stat.S_IMODE(p.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows has no mode bits beyond read-only")
+    def test_a_new_file_keeps_the_umask_mode(self, tmp_path: Path):
+        """Owner-only is for a temp that is about to take a mode. A file that did
+        not exist has none to take, and stays what the umask makes it."""
+        p = tmp_path / "new.bin"
+        old = os.umask(0o022)
+        try:
+            _atomic_write(p, self.REPLACEMENT)
+        finally:
+            os.umask(old)
+        assert stat.S_IMODE(p.stat().st_mode) == 0o644
+
     @pytest.mark.no_kicad_validation
     def test_replaces_once_from_a_temp_that_is_not_a_kicad_file(self, tmp_path: Path, monkeypatch):
         """Two properties of the same call, so one spy answers both.
@@ -455,6 +495,183 @@ class TestAtomicWrite:
         assert re.fullmatch(
             rf"board\.kicad_sch\.{os.getpid()}\.[0-9a-f]{{8}}\.tmp", Path(src).name
         ), src
+
+
+# POSIX ACL xattr encoding (linux/posix_acl_xattr.h): a version word, then one
+# (tag, permissions, id) triple per entry, in tag order.
+_ACL_UNDEFINED_ID = 0xFFFFFFFF
+_USER_OBJ, _USER, _GROUP_OBJ, _MASK, _OTHER = 0x01, 0x02, 0x04, 0x10, 0x20
+
+
+def _acl(*entries: tuple[int, int, int]) -> bytes:
+    return struct.pack("<I", 2) + b"".join(struct.pack("<HHI", *e) for e in entries)
+
+
+def _named_reader_acl(uid: int) -> bytes:
+    """0640 to the mode bits, but the owning group's own entry is empty and
+    only one named user can read. The group bits are the MASK here, so a copy
+    that carries the mode without the ACL lets the whole group read."""
+    u = _ACL_UNDEFINED_ID
+    return _acl(
+        (_USER_OBJ, 6, u), (_USER, 4, uid), (_GROUP_OBJ, 0, u), (_MASK, 4, u), (_OTHER, 0, u)
+    )
+
+
+def _read_acl(p: Path) -> bytes | None:
+    try:
+        return os.getxattr(p, "system.posix_acl_access")
+    except OSError as exc:
+        if exc.errno == errno.ENODATA:
+            return None
+        raise
+
+
+@pytest.fixture()
+def acl_dir(tmp_path: Path) -> Path:
+    """tmp_path, where the filesystem takes POSIX ACLs; skipped elsewhere."""
+    if not hasattr(os, "setxattr"):
+        pytest.skip("POSIX ACLs are reachable from Python only on Linux")
+    probe = tmp_path / "probe"
+    probe.write_bytes(b"")
+    try:
+        os.setxattr(probe, "system.posix_acl_access", _named_reader_acl(os.getuid() + 1))
+    except OSError as exc:
+        if exc.errno in (errno.ENOTSUP, errno.EOPNOTSUPP):
+            pytest.skip(f"this filesystem takes no POSIX ACLs: {exc}")
+        raise
+    probe.unlink()
+    return tmp_path
+
+
+def _other_gid(d: Path) -> int:
+    """A group this process may give a file, other than the one a new file in
+    *d* gets: its own group on Linux, the directory's on macOS."""
+    taken = {os.getegid(), d.stat().st_gid}
+    if os.geteuid() == 0:
+        return next(g for g in (4242, 4243, 4244) if g not in taken)
+    others = [g for g in os.getgroups() if g not in taken]
+    if not others:
+        pytest.skip("needs root, or membership of a second group")
+    return others[0]
+
+
+class TestAtomicWritePermissions:
+    """The replacement is a new inode, so whatever guards the original has to be
+    put on it again, and before the bytes are: the mode alone was, which on a
+    file with an ACL handed the owning group the ACL's mask, and the group
+    itself was never carried at all."""
+
+    ORIGINAL = b"(kicad_sch original)\n"
+    REPLACEMENT = b"(kicad_sch replacement)\n"
+
+    def _target(self, d: Path) -> Path:
+        p = d / "target.bin"
+        p.write_bytes(self.ORIGINAL)
+        return p
+
+    def test_an_access_acl_survives(self, acl_dir: Path):
+        p = self._target(acl_dir)
+        acl = _named_reader_acl(os.getuid() + 1)
+        os.setxattr(p, "system.posix_acl_access", acl)
+        _atomic_write(p, self.REPLACEMENT)
+        assert p.read_bytes() == self.REPLACEMENT
+        assert _read_acl(p) == acl, "the ACL was dropped, so its mask became group access"
+        assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
+    def test_a_directory_default_acl_is_not_inherited(self, acl_dir: Path):
+        """The temp is created in the destination's directory and so takes that
+        directory's default ACL. A file that had no ACL must not come back with
+        one naming users who could not read it before."""
+        d = acl_dir / "shared"
+        d.mkdir()
+        p = self._target(d)
+        p.chmod(0o640)
+        # After the target exists, or the target inherits the default as well.
+        u = _ACL_UNDEFINED_ID
+        os.setxattr(
+            d,
+            "system.posix_acl_default",
+            _acl(
+                (_USER_OBJ, 7, u),
+                (_USER, 4, os.getuid() + 1),
+                (_GROUP_OBJ, 0, u),
+                (_MASK, 4, u),
+                (_OTHER, 0, u),
+            ),
+        )
+        assert _read_acl(p) is None
+        _atomic_write(p, self.REPLACEMENT)
+        assert _read_acl(p) is None, "the directory's default ACL was carried onto the file"
+        assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
+    def test_an_acl_that_cannot_be_set_refuses_with_the_file_intact(
+        self, acl_dir: Path, monkeypatch
+    ):
+        p = self._target(acl_dir)
+        acl = _named_reader_acl(os.getuid() + 1)
+        os.setxattr(p, "system.posix_acl_access", acl)
+
+        def refuse(*a, **k):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+
+        # _shared.os is the os module, so only after the setup's own setxattr.
+        monkeypatch.setattr(_shared.os, "setxattr", refuse)
+        with pytest.raises(OSError, match="unchanged") as exc:
+            _atomic_write(p, self.REPLACEMENT)
+        monkeypatch.undo()
+        assert str(p) in str(exc.value), "the message does not name the file"
+        assert ".tmp" not in str(exc.value), "the message names the temp"
+        assert p.read_bytes() == self.ORIGINAL
+        assert _read_acl(p) == acl
+        assert list(acl_dir.glob("*.tmp")) == [], "temp file left behind"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership")
+    def test_the_group_survives(self, tmp_path: Path):
+        gid = _other_gid(tmp_path)
+        p = self._target(tmp_path)
+        p.chmod(0o640)
+        os.chown(p, -1, gid)
+        _atomic_write(p, self.REPLACEMENT)
+        assert p.read_bytes() == self.REPLACEMENT
+        assert p.stat().st_gid == gid, "the file moved into this process's group"
+        assert stat.S_IMODE(p.stat().st_mode) == 0o640
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership")
+    @pytest.mark.parametrize(
+        ("mode", "refused"),
+        [
+            pytest.param(0o640, True, id="0640-refused"),
+            pytest.param(0o644, False, id="0644-written"),
+            pytest.param(0o660, True, id="0660-refused"),
+            pytest.param(0o666, False, id="0666-written"),
+        ],
+    )
+    def test_a_group_that_cannot_be_carried(self, tmp_path: Path, monkeypatch, mode, refused):
+        """A group this process is not in cannot be given to the temp, which then
+        stays in this process's group. That opens the file to a different set of
+        people only where the group class grants more than other does, so only
+        then is the write refused; a 0644 file has nothing to give away."""
+        gid = _other_gid(tmp_path)
+        p = self._target(tmp_path)
+        p.chmod(mode)
+        os.chown(p, -1, gid)
+
+        def not_a_member(*a, **k):
+            raise PermissionError(errno.EPERM, "Operation not permitted")
+
+        monkeypatch.setattr(_shared.os, "fchown", not_a_member)
+        if refused:
+            with pytest.raises(OSError, match="unchanged") as exc:
+                _atomic_write(p, self.REPLACEMENT)
+            assert str(p) in str(exc.value)
+            assert f"group {gid}" in str(exc.value)
+            assert p.read_bytes() == self.ORIGINAL
+            assert p.stat().st_gid == gid
+        else:
+            _atomic_write(p, self.REPLACEMENT)
+            assert p.read_bytes() == self.REPLACEMENT
+        assert stat.S_IMODE(p.stat().st_mode) == mode
+        assert list(tmp_path.glob("*.tmp")) == [], "temp file left behind"
 
 
 class TestReadKicadBytes:
