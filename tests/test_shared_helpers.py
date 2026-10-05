@@ -545,14 +545,26 @@ def acl_dir(tmp_path: Path) -> Path:
 
 def _other_gid(d: Path) -> int:
     """A group this process may give a file, other than the one a new file in
-    *d* gets: its own group on Linux, the directory's on macOS."""
+    *d* gets: its own group on Linux, the directory's on macOS. Each candidate
+    is tried on a probe file first, because macOS lists implicit groups such as
+    everyone among a user's groups, and chown need not accept those."""
     taken = {os.getegid(), d.stat().st_gid}
     if os.geteuid() == 0:
         return next(g for g in (4242, 4243, 4244) if g not in taken)
-    others = [g for g in os.getgroups() if g not in taken]
-    if not others:
-        pytest.skip("needs root, or membership of a second group")
-    return others[0]
+    probe = d / "gid-probe"
+    probe.write_bytes(b"")
+    try:
+        for g in os.getgroups():
+            if g in taken:
+                continue
+            try:
+                os.chown(probe, -1, g)
+            except PermissionError:
+                continue
+            return g
+    finally:
+        probe.unlink()
+    pytest.skip("needs root, or membership of a second group")
 
 
 class TestAtomicWritePermissions:
@@ -970,10 +982,12 @@ class TestBackupForExternalWrite:
         carried there; on POSIX the replace needs only the directory writable."""
         src = self._private_sym(tmp_path)
         src.chmod(0o444)
+        old = os.umask(0o022)
         try:
             _backup_for_external_write(src, "symbol library")
             dest = _backup_for_external_write(src, "symbol library")
         finally:
+            os.umask(old)
             src.chmod(0o644)
         assert self._mode(dest) == 0o444
         assert dest.read_bytes() == src.read_bytes()
