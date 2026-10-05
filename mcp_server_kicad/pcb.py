@@ -1089,7 +1089,7 @@ def _sync_fp_attributes(
     """
     attr = fp.find("attr")
     tokens = [a.text for a in attr.atoms[1:]] if attr is not None else []
-    owned = dict(zip(_SYMBOL_OWNED_ATTRS, (exclude_from_bom, dnp)))
+    owned: dict[str, bool] = dict(zip(_SYMBOL_OWNED_ATTRS, (exclude_from_bom, dnp)))
     if exclude_from_pos_files is not None:
         owned["exclude_from_pos_files"] = exclude_from_pos_files
     wanted = [tok for tok in tokens if tok not in owned]
