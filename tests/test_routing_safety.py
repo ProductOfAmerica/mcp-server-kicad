@@ -470,6 +470,18 @@ def test_dec23_a_power_symbol_pin_to_its_own_name_is_a_no_op(tmp_path):
     assert "already on 'VCC' via power symbol #PWR02 (Value 'VCC')" in msg
 
 
+@requires_cli
+def test_a_slash_escaped_name_is_the_net_kicad_reads(tmp_path):
+    """KiCad stores a typed 'A/B' as 'A{slash}B' and reads that and a raw 'A/B' as one net (the
+    routing review's e4_slash). R1:1 is on it already; R2:1, wired to 'A/B', joins it."""
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    place(p, "R", "R2", 152.4, 101.6)
+    stub(p, 101.6, 97.79, 0, -2.54, "A{slash}B")
+    assert wired(p, [("R1", "1")], "A/B")[0] == "NOOP"
+    assert wired(p, [("R2", "1")], "A/B")[0] == "OK"
+
+
 def test_a_pin_already_on_the_net_is_a_no_op(tmp_path):
     p = fresh(tmp_path)
     place(p, "R", "R1", 101.6, 101.6)

@@ -467,6 +467,75 @@ class Sym:
         return len(self.units) > 1
 
 
+#: KiCad's text escapes and what UnescapeString reads them as (9.0.8 and 10.0.6
+#: string_utils.cpp).
+_ESCAPES = {
+    "dblquote": '"',
+    "quote": "'",
+    "lt": "<",
+    "gt": ">",
+    "backslash": "\\",
+    "slash": "/",
+    "bar": "|",
+    "comma": ",",
+    "colon": ":",
+    "space": " ",
+    "dollar": "$",
+    "tab": "\t",
+    "return": "\n",
+    "brace": "{",
+}
+
+
+def unescape(text: str) -> str:
+    """Text as KiCad shows it: its UnescapeString (9.0.8 and 10.0.6 string_utils.cpp), which
+    every shown text goes through. {slash} reads as '/', {dblquote} as '"' and so on; a brace
+    group after $, ~, ^ or _ is markup and kept, as is an unknown or unterminated one."""
+    if len(text) <= 2:
+        return text
+    out: list[str] = []
+    ch = prev = ""
+    i, n = 0, len(text)
+    while i < n:
+        prev, ch = ch, text[i]
+        if ch != "{":
+            out.append(ch)
+            i += 1
+            continue
+        depth, token, i = 1, [], i + 1
+        while i < n:
+            ch = text[i]
+            depth += (ch == "{") - (ch == "}")
+            if depth <= 0:
+                break
+            token.append(ch)
+            i += 1
+        inner = "".join(token)
+        if depth > 0:  # unterminated
+            out.append("{" + unescape(inner))
+        elif prev != "" and prev in "$~^_":
+            out.append("{" + unescape(inner) + "}")
+        elif inner in _ESCAPES:
+            out.append(_ESCAPES[inner])
+        else:
+            out.append("{" + unescape(inner) + "}")
+        i += 1
+    return "".join(out)
+
+
+def _netname_escape(text: str) -> str:
+    """KiCad's EscapeString(text, CTX_NETNAME): '/' becomes {slash}, line breaks go."""
+    return text.replace("/", "{slash}").replace("\n", "").replace("\r", "")
+
+
+def netname(text: str) -> str:
+    """The net name KiCad gives a label, or a power symbol by its Value:
+    EscapeString(UnescapeString(text), CTX_NETNAME) (9.0.8 and 10.0.6 connection_graph.cpp
+    GetNameForDriver, sch_pin.cpp GetDefaultNetName). So 'A/B' and 'A{slash}B' are one net,
+    which KiCad shows as A/B."""
+    return _netname_escape(unescape(text))
+
+
 class Item:
     """One connectable thing: a point item (x, y) or a line (x, y)-(x2, y2)."""
 
@@ -526,18 +595,19 @@ def _desc(it: Item) -> str:
     k = it.kind
     if k == "pin":
         if it.sym is not None and it.sym.is_power:
-            return f"power symbol {it.ref} (Value {it.sym.value!r}) pin at {pt((it.x, it.y))}"
+            value = unescape(it.sym.value)
+            return f"power symbol {it.ref} (Value {value!r}) pin at {pt((it.x, it.y))}"
         extra = [w for w, f in (("hidden", it.hidden), ("no-connect type", it.nc)) if f]
         tail = f" ({', '.join(extra)})" if extra else ""
         return f"{it.ref}:{it.num} pin end at {pt((it.x, it.y))}{tail}"
     if k == "label":
-        return f"{it.sub} '{it.text}' at {pt((it.x, it.y))}"
+        return f"{it.sub} '{unescape(it.text or '')}' at {pt((it.x, it.y))}"
     if k == "junction":
         return f"junction at {pt((it.x, it.y))}"
     if k == "nc":
         return f"no-connect flag at {pt((it.x, it.y))}"
     if k == "sheetpin":
-        return f"sheet pin '{it.text}' of sheet '{it.sub}' at {pt((it.x, it.y))}"
+        return f"sheet pin '{unescape(it.text or '')}' of sheet '{it.sub}' at {pt((it.x, it.y))}"
     if k == "be":
         return f"bus entry {pt((it.x, it.y))}-{pt((it.x2, it.y2))}"
     name = {"wire": "wire", "bus": "bus", "gline": "graphic line"}[k]
@@ -1214,14 +1284,14 @@ class Model:
             it = self.add(Item("label", iu(at.atoms[1].text), iu(at.atoms[2].text)))
             it.sub = _LABEL_KINDS[h]
             it.text = ch.atoms[1].text if len(ch.atoms) > 1 else ""
-            it.name = None if h in ("netclass_flag", "directive_label") else it.text
+            it.name = None if h in ("netclass_flag", "directive_label") else netname(it.text)
             # Every property but Intersheetrefs can feed the net's name or class (H-C8).
             props = [
                 (q.atoms[1].text, q.atoms[2].text)
                 for q in ch.find_all("property")
                 if len(q.atoms) > 2 and q.atoms[1].text != "Intersheetrefs"
             ]
-            it.tv = any("${" in v for v in (it.text, *(v for _k, v in props)))
+            it.tv = any("${" in unescape(v) for v in (it.text, *(v for _k, v in props)))
             it.cls = tuple(v for k, v in props if k == "Netclass" and v)
         elif h == "sheet":
             sheet_name = _property(ch, "Sheetname") or _property(ch, "Sheet name") or "?"
@@ -1322,7 +1392,7 @@ class Model:
         # when it is hidden, by the library pin's own name, never an alternate's. PWR_FLAG's pin
         # is power_out and a visible power_in pin on an ordinary part names nothing.
         if it.etype == "power_in" and (s.is_power or it.hidden):
-            it.name = s.value if s.is_power else it.pname
+            it.name = netname(s.value) if s.is_power else _netname_escape(it.pname or "")
         it.tv = it.name is not None and "${" in it.name
         return it
 
@@ -1964,38 +2034,39 @@ def check_args(net, direction, stub_length, param: str = "label_text") -> int:
     problem P12): an empty name joins every such call into one net, a name with a stray space
     or a leading "/" is a different net from the one meant, an auto-looking name collides with
     KiCad's own, bus syntax writes a bus label on a wire, and an off-grid stub ends a hair from
-    a grid item.
+    a grid item. A name is judged as KiCad reads it, its escapes such as {slash} decoded.
     """
 
     def bad(text: str) -> Refusal:
         return Refusal("validation", text)
 
-    if not isinstance(net, str) or not net:
+    if not isinstance(net, str) or not unescape(net):
         raise bad(f"{param} must be a non-empty net name.")
-    if net != net.strip():
+    shown = unescape(net)
+    if shown != shown.strip():
         raise bad(
             f"{param} {net!r} has leading or trailing whitespace, which KiCad keeps as part"
-            f" of the name, so it would make a net apart from {net.strip()!r}. Pass the name"
+            f" of the name, so it would make a net apart from {shown.strip()!r}. Pass the name"
             " without it."
         )
-    if net.startswith("/"):
+    if shown.startswith("/"):
         raise bad(
             f"{param} {net!r} starts with '/', which is the sheet path KiCad prints before a"
             " local net's name, not part of the name; as label text it makes a different net."
             " Pass the name without it."
         )
-    if "${" in net:
+    if "${" in shown:
         raise bad(
             f"{param} {net!r} contains a text variable ('${{'): its value, and so the net it"
             " would join, cannot be known here. Pass the literal net name."
         )
-    if _AUTO_NAME.match(net):
+    if _AUTO_NAME.match(shown):
         raise bad(
             f"{param} {net!r} looks like a name KiCad generates for an unnamed net, and KiCad"
             " renames or splits nets that collide with one. Choose a real net name."
         )
-    if _BUS_RANGE.search(net) or any(
-        c == "{" and (i == 0 or net[i - 1] not in "_^~") for i, c in enumerate(net)
+    if _BUS_RANGE.search(shown) or any(
+        c == "{" and (i == 0 or shown[i - 1] not in "_^~") for i, c in enumerate(shown)
     ):
         raise bad(
             f"{param} {net!r} is bus syntax, and a bus label on a wire is a bus/net conflict."
@@ -2066,7 +2137,7 @@ def _names_text(entries: list[tuple[Item, str]]) -> str:
     parts = []
     for text, its in list(by_text.items())[:4]:
         more = f" and {len(its) - 2} more" if len(its) > 2 else ""
-        parts.append(f"{text!r} via {'; '.join(_desc(it) for it in its[:2])}{more}")
+        parts.append(f"{unescape(text)!r} via {'; '.join(_desc(it) for it in its[:2])}{more}")
     if len(by_text) > 4:
         parts.append(f"{len(by_text) - 4} more names")
     return ", ".join(parts)
@@ -2111,11 +2182,13 @@ def _names_refusal(other: list[tuple[Item, str]], net: str) -> Refusal:
         f" net with '{net}', and two named nets are never joined here. Remedy: if the pin belongs"
         " on that net, pass that name as label_text; otherwise stop and report."
     )
-    auto = [(it, t) for it, t in other if it.kind == "label" and _AUTO_NAME.match(t)]
-    for it, t in auto[:1]:
+    auto = [it for it, t in other if it.kind == "label" and _AUTO_NAME.match(unescape(t))]
+    for it in auto[:1]:
+        t = it.text or ""
         text += (
-            f" {t!r} looks like the label connect_pins writes; to name this net yourself, remove"
-            f" it with remove_label({t!r}, {mm(it.x)}, {mm(it.y)}) and call again."
+            f" {unescape(t)!r} looks like the label connect_pins writes; to name this net"
+            f" yourself, remove it with remove_label({t!r}, {mm(it.x)}, {mm(it.y)}) and call"
+            " again."
         )
     return Refusal("names", text)
 
@@ -2129,24 +2202,25 @@ def _wire_copy(m: Model, plan: WirePlan, c: Item, net: str, fixed: Point | None,
             f"pin end {pt((c.x, c.y))} has no axis-aligned outward direction. Remedy: pass"
             " direction explicitly.",
         )
+    key = netname(net)
     P = (c.x, c.y)
     E = (c.x + d[0] * L, c.y + d[1] * L)
     dname = _DIR_NAME[d]
     why_stub = m.touch([(P, c)], [E], [(P, E)])
-    cls_stub = None if why_stub else m.class_block([c], [E], [(P, E)], net)
+    cls_stub = None if why_stub else m.class_block([c], [E], [(P, E)], key)
     if why_stub is None and cls_stub is None:
         wire = m.add(Item("wire", *P, *E))
         wire.new = True
         lab = m.add(Item("label", *E))
-        lab.sub, lab.text, lab.name, lab.new = "label", net, net, True
+        lab.sub, lab.text, lab.name, lab.new = "label", net, key, True
         plan.wires.append((P, E))
         plan.labels.append((E, LABEL_ROT[d]))
         return f"stub {dname} {mm(L)} mm from {pt(P)} to {pt(E)}, label '{net}' at its end"
     why_label = m.rule1(P, c, ("wire",), ("wire",))
-    cls_label = None if why_label else m.class_block([c], [P], [], net)
+    cls_label = None if why_label else m.class_block([c], [P], [], key)
     if why_label is None and cls_label is None:
         lab = m.add(Item("label", *P))
-        lab.sub, lab.text, lab.name, lab.new = "label", net, net, True
+        lab.sub, lab.text, lab.name, lab.new = "label", net, key, True
         plan.labels.append((P, LABEL_ROT[d]))
         return (
             f"label '{net}' on the pin end {pt(P)} (stub {dname} blocked: {why_stub or cls_stub})"
@@ -2180,6 +2254,7 @@ def plan_wire_pins(
         plan.refuse(e.codes, e.text)
         return plan
     fixed = None if direction == "auto" else DIRECTIONS[direction]
+    key = netname(net)  # the name KiCad reads from a label holding *net*
 
     targets: list[tuple[str, list[Item]]] = []
     seen: dict[tuple, str] = {}
@@ -2225,7 +2300,7 @@ def plan_wire_pins(
             for q in m.members(copies[0])
             if q.ref and not q.ref.startswith("#") and (q.ref, q.num) not in requested
         }
-        on = [m.narrow_names(c).get(net) for c in copies]
+        on = [m.narrow_names(c).get(key) for c in copies]
         if all(on):
             plan.lines.append(
                 f"{tag}: "
@@ -2241,19 +2316,19 @@ def plan_wire_pins(
             plan.refuse(why.codes, f"{tag}: {why.text}")
             continue
         named = m.coarse().names_of(copies[0])  # every copy of a pad is one possible component
-        other = [e for e in named if e[1] != net]
+        other = [e for e in named if e[1] != key]
         if other:
             e = _names_refusal(other, net)
             plan.refuse(e.codes, f"{tag}: {e.text}")
             continue
-        ready.append((tag, copies, next((it for it, t in named if t == net), None)))
+        ready.append((tag, copies, next((it for it, t in named if t == key), None)))
 
-    joins = [_desc(it) for it in m.items if it.name == net and not it.new]
+    joins = [_desc(it) for it in m.items if it.name == key and not it.new]
     for tag, copies, hint in ready:
         parts = []
         try:
             for c in copies:
-                via = m.narrow_names(c).get(net)  # an earlier copy or pad may have joined it
+                via = m.narrow_names(c).get(key)  # an earlier copy or pad may have joined it
                 if via:
                     parts.append(f"{where(copies, c)}already on '{net}' via {_desc(via[0])}")
                     continue
@@ -2279,7 +2354,7 @@ def plan_wire_pins(
             " to reach one, place a power symbol (add_power_symbol) or a global label"
             " (add_global_label) instead."
         )
-    ports = [_desc(it) for it in m.items if it.kind == "sheetpin" and it.text == net]
+    ports = [_desc(it) for it in m.items if it.kind == "sheetpin" and netname(it.text or "") == key]
     if ports:
         plan.notes.append(
             "Note: " + "; ".join(ports) + f" is a hierarchy port named '{net}' too. A label of"

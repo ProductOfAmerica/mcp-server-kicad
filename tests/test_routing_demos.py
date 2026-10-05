@@ -332,3 +332,23 @@ def test_smps_com_parts_are_known_by_the_reference_kicad_reads(tmp_path_factory)
     for ref in ("R2", "R6"):
         ((_num, copies),) = m.resolve(ref, "1")
         assert len({id(c.sym) for c in copies}) == 1, (ref, len(copies))
+
+
+def test_a_pin_on_a_slash_escaped_net_is_found_by_the_name_kicad_shows(tmp_path_factory):
+    """KiCad 9.0.8's pic_programmer: R18:2 sits on a label stored as VPP{slash}MCLR, the net
+    kicad-cli lists as /VPP/MCLR (read 2026-10-05). Asked for 'VPP/MCLR', the call refused
+    [names], and the stored spelling it named was refused as bus syntax, so no call reached
+    that net (the routing review's e4c_pic). Read as KiCad reads it, R18:2 is already on it."""
+    base = demo_dir()
+    src = base / "pic_programmer" if base is not None else None
+    if src is None or not (src / "pic_programmer.kicad_pro").is_file():
+        pytest.skip("KiCad's demos have no pic_programmer project on this host")
+    dst = Path(tmp_path_factory.mktemp("pic")) / "pic_programmer"
+    shutil.copytree(src, dst)
+    path = dst / "pic_programmer.kicad_sch"
+    if b'"VPP{slash}MCLR"' not in path.read_bytes():
+        pytest.skip("this KiCad's pic_programmer has no VPP{slash}MCLR label")
+    status, msg = call_wptn(str(path), [{"reference": "R18", "pin": "2"}], "VPP/MCLR")
+    assert status == "NOOP", msg
+    on = {node: name for _c, name, _k, nodes in nets(path) for node in nodes}
+    assert on[("R18", "2")] == "/VPP/MCLR"

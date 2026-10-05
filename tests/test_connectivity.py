@@ -274,6 +274,40 @@ def _first_line(plan) -> str:
     return plan.refusal() if plan.refused else plan.lines[0]
 
 
+@pytest.mark.parametrize("stored", ["A{slash}B", "A/B"])
+@pytest.mark.parametrize("asked", ["A/B", "A{slash}B"])
+def test_a_slash_in_a_net_name_is_one_net_however_it_is_spelled(tmp_path, stored, asked):
+    """KiCad names a label's net EscapeString(UnescapeString(text), CTX_NETNAME) (9.0.8 and
+    10.0.6 connection_graph.cpp and string_utils.cpp), so 'A/B' and 'A{slash}B' are one net,
+    the one KiCad shows as A/B. The model compared the raw text: a pin on 'A{slash}B' was
+    refused [names] for 'A/B', and 'A{slash}B' itself was refused as bus syntax (the routing
+    review's e4_slash, and e4c_pic on KiCad's pic_programmer demo)."""
+    p = _named(tmp_path)
+    label(p, stored, 88.9, 97.79)
+    plan = _plan(p, [("R1", "1")], net=asked)
+    assert not plan.refused and not plan.labels, _first_line(plan)
+
+
+def test_a_names_refusal_gives_the_name_as_kicad_shows_it(tmp_path):
+    """The [names] remedy said to pass 'A{slash}B', which validation then refused; the name
+    that works is the one KiCad shows."""
+    p = _named(tmp_path)
+    label(p, "A{slash}B", 88.9, 97.79)
+    text = _plan(p, [("R1", "1")], net="X").refusal()
+    assert "carries 'A/B' via label 'A/B'" in text and "{slash}" not in text, text
+
+
+def test_a_name_spelled_another_way_is_not_a_new_net(tmp_path):
+    """The routing review's e4_slash case b: R2:1 wired to 'A/B' beside a label stored
+    'A{slash}B' joins that net, and the result said nothing on the sheet carried 'A/B'."""
+    p = _named(tmp_path)
+    label(p, "A{slash}B", 88.9, 97.79)
+    place(p, "R", "R2", 152.4, 101.6)
+    plan = _plan(p, [("R2", "1")], net="A/B")
+    assert not plan.refused
+    assert "'A/B' joins on this sheet: label 'A/B' at (88.9, 97.79)." in plan.success()
+
+
 def test_a_power_symbol_names_its_net_by_its_value(tmp_path):
     from routing_fixtures import power
 
