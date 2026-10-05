@@ -131,9 +131,14 @@ def _cache_dir() -> Path:
 
 
 def find_jar() -> str | None:
-    """Find the Freerouting JAR. Returns path or None."""
+    """Find the Freerouting JAR. Returns path or None.
+
+    A relative FREEROUTING_JAR is ignored, as a relative KICAD_CLI_PATH is:
+    is_file() resolved it against the working directory and java then loaded
+    whatever jar of that name sat in the directory the server started in.
+    """
     env_jar = os.environ.get("FREEROUTING_JAR")
-    if env_jar and Path(env_jar).is_file():
+    if env_jar and os.path.isabs(env_jar) and Path(env_jar).is_file():
         return env_jar
 
     cached = _cache_dir() / "freerouting.jar"
@@ -185,7 +190,7 @@ def ensure_jar() -> tuple[str | None, str | None]:
         return None, (
             f"Failed to download Freerouting: {exc}. "
             "Download manually from https://github.com/freerouting/freerouting/releases "
-            "and set FREEROUTING_JAR environment variable."
+            "and set the FREEROUTING_JAR environment variable to its absolute path."
         )
 
     jar = find_jar()

@@ -106,6 +106,14 @@ class TestFindJar:
         ):
             assert find_jar() is None
 
+    def test_a_relative_env_var_is_not_resolved_against_the_cwd(self, tmp_path, monkeypatch):
+        """java -jar loaded whatever freerouting.jar sat in the server's working directory."""
+        (tmp_path / "freerouting.jar").touch()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("FREEROUTING_JAR", "freerouting.jar")
+        monkeypatch.setattr(_fr_module, "_cache_dir", lambda: tmp_path / "empty")
+        assert find_jar() is None
+
 
 class TestEnsureJar:
     def test_already_exists(self, tmp_path):
@@ -141,6 +149,19 @@ class TestEnsureJar:
             assert path is None
             assert err is not None
             assert "Network error" in err
+
+    def test_a_relative_env_var_is_reported_not_used(self, tmp_path, monkeypatch):
+        """Ignored like KICAD_CLI_PATH's, so the message has to say what it needs."""
+        (tmp_path / "freerouting.jar").touch()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("FREEROUTING_JAR", "freerouting.jar")
+        monkeypatch.setattr(_fr_module, "_cache_dir", lambda: tmp_path / "empty")
+        with patch(
+            "mcp_server_kicad._freerouting._download_jar", side_effect=RuntimeError("offline")
+        ):
+            path, err = ensure_jar()
+        assert path is None
+        assert err is not None and "absolute path" in err
 
 
 class TestFindPcbnewPython:
