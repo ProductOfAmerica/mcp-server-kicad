@@ -1374,6 +1374,11 @@ def duplicate_sheet(
     return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
 
 
+# Distinct sheet files flatten_hierarchy walks when checking an existing output_path. Past
+# it the check cannot vouch for the output, so the tool refuses rather than write.
+_MAX_HIERARCHY_FILES = 4096
+
+
 @mcp.tool(annotations=_DESTRUCTIVE)
 def flatten_hierarchy(
     schematic_path: str = SCH_PATH,
@@ -1412,8 +1417,51 @@ def flatten_hierarchy(
     # ADR records that refuse-to-clobber in general needs an overwrite
     # parameter first.
     out = Path(output_path).resolve()
-    inputs = {Path(schematic_path).resolve()} | {(sch_dir / f).resolve() for f in child_files if f}
-    if out in inputs:
+    if not out.exists():
+        inputs = {Path(schematic_path).resolve()} | {
+            (sch_dir / f).resolve() for f in child_files if f
+        }
+        clash = out in inputs
+    else:
+        # Only an existing file can be lost, and the root and its own children are not the
+        # whole hierarchy: output_path naming a grandchild overwrote it. So walk every
+        # sheet. A sheet file resolves against its parent's directory, then the root's, and
+        # both are protected. One that cannot be read or parsed stays protected, though
+        # what lies below it is unknown.
+        def _real(p: Path) -> Path:
+            # Resolving a symlink loop raises (RuntimeError before Python 3.13).
+            try:
+                return p.resolve()
+            except (OSError, RuntimeError):
+                return p.absolute()
+
+        inputs: set[Path] = set()
+        todo = [Path(schematic_path)]
+        while todo:
+            f = todo.pop()
+            rf = _real(f)
+            if rf in inputs:
+                continue
+            if len(inputs) >= _MAX_HIERARCHY_FILES:
+                raise ToolError(
+                    f"The hierarchy under {Path(schematic_path).name} names more than"
+                    f" {_MAX_HIERARCHY_FILES} sheet files, so output_path {out.name} could"
+                    " not be checked against them and nothing was written."
+                )
+            inputs.add(rf)
+            if not f.is_file():
+                continue
+            try:
+                sheet_root = _cst.parse(f.read_bytes()).lists[0]
+            except Exception:
+                continue
+            for s in sheet_root.find_all("sheet"):
+                name = _sheet_file_cst(s) or ""
+                if name:
+                    todo += [c for c in (f.parent / name, sch_dir / name) if c.exists()]
+        # samefile also catches a case-only alias on a case-insensitive filesystem.
+        clash = out in inputs or any(p.exists() and out.samefile(p) for p in inputs)
+    if clash:
         raise ToolError(
             f"output_path {out.name} is part of the hierarchy being flattened."
             " Choose a different output file."

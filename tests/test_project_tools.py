@@ -1479,6 +1479,43 @@ class TestFlattenHierarchy:
         assert len(flat_sch.sheets) == 0
         assert len(flat_sch.schematicSymbols) >= 1
 
+    def _three_levels(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        """root -> child -> grand."""
+        root, child, grand = (tmp_path / f"{n}.kicad_sch" for n in ("root", "child", "grand"))
+        for p in (root, child, grand):
+            project.create_schematic(schematic_path=str(p))
+        for parent, sub in ((root, child), (child, grand)):
+            project.add_hierarchical_sheet(
+                parent_schematic_path=str(parent),
+                sheet_name=sub.stem,
+                sheet_file=str(sub),
+                pins=[],
+            )
+        return root, child, grand
+
+    def test_refuses_to_overwrite_a_nested_sheet(self, tmp_path: Path):
+        """The guard saw only the root and its own children, so a grandchild was replaced."""
+        root, _, grand = self._three_levels(tmp_path)
+        before = grand.read_bytes()
+
+        with pytest.raises(ToolError, match="part of the hierarchy"):
+            project.flatten_hierarchy(schematic_path=str(root), output_path=str(grand))
+
+        assert grand.read_bytes() == before
+
+    def test_refuses_a_child_and_still_reflattens_to_the_same_output(self, tmp_path: Path):
+        root, child, _ = self._three_levels(tmp_path)
+        before = child.read_bytes()
+
+        with pytest.raises(ToolError, match="part of the hierarchy"):
+            project.flatten_hierarchy(schematic_path=str(root), output_path=str(child))
+        assert child.read_bytes() == before
+
+        # The hierarchy walk runs only once the output exists, as it does from here on.
+        project.flatten_hierarchy(schematic_path=str(root))
+        project.flatten_hierarchy(schematic_path=str(root))
+        assert (tmp_path / "root_flat.kicad_sch").is_file()
+
 
 @pytest.mark.no_kicad_validation
 class TestRootSymbolInstanceSync:
