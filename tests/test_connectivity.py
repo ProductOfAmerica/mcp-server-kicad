@@ -597,6 +597,40 @@ def test_lines_kept_out_of_the_index_join_exactly_what_it_would(monkeypatch, seg
     assert _components(root) == want
 
 
+def test_the_line_index_stops_filling_at_its_budget(monkeypatch):
+    """Lines each under the per-line cap still add up: 200 diagonals of 31 by 31 cells asked
+    the index for 192,200 cells from an 8 KB sheet. Past the sheet's budget the rest are
+    checked against every point, so the index walks no more than the budget, and a label on
+    the last line still joins it while one 1 mm off does not."""
+    # 0.1 mm apart along x is 0.07 mm square to the lines, past the margin, so none join.
+    s, span, n = 1000, 736600, 200
+    nodes = [
+        f"(wire (pts (xy {C.mm(i * s)} 0) (xy {C.mm(i * s + span)} {C.mm(span)})))"
+        for i in range(n)
+    ]
+    x, y = (n - 1) * s + span // 2, span // 2
+    nodes += [
+        f'(label "ON" (at {C.mm(x)} {C.mm(y)} 0))',
+        f'(label "OFF" (at {C.mm(x + 10000)} {C.mm(y)} 0))',
+    ]
+    m = C.Model(_sheet(*nodes))
+    assert n * 31 * 31 > 2 * C._MAX_CELLS  # the sheet asks for more than the bound below
+    walked = 0
+
+    def counting(*args):
+        nonlocal walked
+        r = builtins.range(*args)
+        walked += len(r)
+        return r
+
+    monkeypatch.setattr(C, "range", counting, raising=False)
+    cm = m.coarse()
+    assert walked < 2 * C._MAX_CELLS, f"the line index walks {walked} cells"
+    *w, a, b = m.items
+    assert cm.uf.find(a.id) == cm.uf.find(w[-1].id)
+    assert cm.uf.find(b.id) != cm.uf.find(w[-1].id)
+
+
 # ---------------------------------------------------------------------------------------------
 # Outright refusals (design 4.3) and the order of the checks (H-C11, H-C12)
 # ---------------------------------------------------------------------------------------------
