@@ -643,6 +643,8 @@ _MAX_SEG_CELLS = 1024
 #: Cells the index fills per sheet before further lines are checked that way too, about 15 MiB
 #: at 232 B a cell (measured). The busiest of KiCad's own demo sheets fills 6,994 and no line
 #: of any of its 116 sheets spans more than 314, so real sheets stay entirely in the grid.
+#: Past it each further line costs a check per point, a steep cliff: a flat sheet of 9,000
+#: wires of 8 cells, 10% over, took 7.4 s here against 0.22 s with every line indexed.
 _MAX_CELLS = 1 << 16
 
 
