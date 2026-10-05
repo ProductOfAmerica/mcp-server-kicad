@@ -97,10 +97,10 @@ Follow existing spacing/wiring/naming conventions in the schematic.
 | Symbol not found | STOP. Do not fuzzy-match or substitute. Report the error. If a previously-verified symbol is missing, instruct the user to re-run from circuit-design to re-validate the BOM. |
 | Position outside page bounds | STOP. Report error. The plan's page calculation should have prevented this. Instruct the user to re-run schematic-plan. |
 | connect_pins fails | Try wire_pins_to_net for that connection. If that fails, report and continue with remaining wiring. |
-| wire_pins_to_net refuses | Act on the bracketed code, per the table below. |
+| `wire_pins_to_net` refuses | Act on the bracketed code, per the table below. |
 | ERC violations | Report violations. Invoke verification skill. |
 
-### wire_pins_to_net refusals
+### `wire_pins_to_net` refusals
 
 A refused call writes nothing and lists every refused pin with a
 bracketed code, the obstacle and a remedy. Fix the cause and call
