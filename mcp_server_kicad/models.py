@@ -431,6 +431,13 @@ class UpdatePcbResult(BaseModel):
     added: list[str]
     value_updated: list[str]
     fpid_changed: list[str]
+    #: Existing footprints whose fields, DNP/BOM attributes or sheet linkage
+    #: changed to follow the symbol (a new or swapped footprint is not listed
+    #: here: it carries everything by construction).
+    fields_updated: list[str]
+    #: Symbols with "On board" unticked: never placed, and a footprint they
+    #: left behind is reported stale like any other.
+    excluded_from_board: list[str]
     stale_footprints: list[str]
     stale_removed: list[str]
     nets_added: int
