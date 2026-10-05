@@ -430,8 +430,9 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   rows, measured by the reviewer). `_kicad_var` learned the two kinds of global row it
   dropped: variables from Preferences > Configure Paths, which KiCad keeps in
   `kicad_common.json` with the OS environment winning, and `${KICAD<N>_3RD_PARTY}`,
-  whose default KiCad computes at run time (`<documents>/<N>.0/3rdparty`,
-  `KICAD_DOCUMENTS_HOME` honoured) and never writes to the table; with it,
+  whose default KiCad computes at run time (`<documents>/KiCad/<N>.0/3rdparty`, the
+  folder `kicad` on Linux, with `KICAD_DOCUMENTS_HOME` standing in for `<documents>`)
+  and never writes to the table; with it,
   `_pcm_footprint_libs` emulates the scan KiCad runs while loading the global table
   when `pcm.lib_auto_add` is on, adding `<package>/<lib>.pretty` as
   `<pcm.lib_prefix><lib>` under the file's own rows. Smaller corrections: `Component

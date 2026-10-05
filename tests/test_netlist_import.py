@@ -8,7 +8,9 @@ kicad-cli and KiCad's Python with pcbnew.
 from __future__ import annotations
 
 import json
+import os
 import shutil
+import subprocess
 from pathlib import Path
 from xml.etree.ElementTree import ParseError
 
@@ -20,7 +22,13 @@ import mcp_server_kicad._cst as _cst
 from mcp_server_kicad import _netlist_import as ni
 from mcp_server_kicad import pcb
 from mcp_server_kicad._freerouting import find_pcbnew_python
-from mcp_server_kicad._shared import _kicad_cli_major, _kicad_root, _resolve_system_lib, _run_cli
+from mcp_server_kicad._shared import (
+    _find_kicad_cli,
+    _kicad_cli_major,
+    _kicad_root,
+    _resolve_system_lib,
+    _run_cli,
+)
 from mcp_server_kicad.models import UpdatePcbResult
 
 NETLIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
@@ -407,11 +415,12 @@ class TestFpLibTables:
         override = tmp_path / "override" / "Over.pretty"
         override.mkdir(parents=True)
         docs = tmp_path / "docs"
-        pkg = docs / "9.0" / "3rdparty" / "footprints" / "com_github_x_pkg"
+        third_party = docs / pcb._KICAD_PATH_STR / "9.0" / "3rdparty"
+        pkg = third_party / "footprints" / "com_github_x_pkg"
         (pkg / "Pkg.pretty").mkdir(parents=True)
         (pkg / "Also.pretty").mkdir()
         (pkg / "notes.pretty").write_text("a file, not a library")
-        (docs / "9.0" / "3rdparty" / "footprints" / "Loose.pretty").mkdir()
+        (third_party / "footprints" / "Loose.pretty").mkdir()
         own = tmp_path / "own" / "Pkg.pretty"
         own.mkdir(parents=True)
         configured = {
@@ -436,7 +445,7 @@ class TestFpLibTables:
         monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: 9)
 
         assert pcb._kicad_var("MYLIBS", None) == str(tmp_path / "mine")
-        assert pcb._kicad_var("KICAD9_3RD_PARTY", None) == str(docs / "9.0" / "3rdparty")
+        assert pcb._kicad_var("KICAD9_3RD_PARTY", None) == str(third_party)
         monkeypatch.setenv("MYLIBS", str(tmp_path / "elsewhere"))
         assert pcb._kicad_var("MYLIBS", None) == str(tmp_path / "elsewhere"), "the environment wins"
         monkeypatch.delenv("MYLIBS")
@@ -470,6 +479,38 @@ class TestFpLibTables:
         )
         assert pcb._project_dir(str(tmp_path / "a" / "x.kicad_pcb")) == tmp_path / "a"
         assert pcb._project_dir("", "", str(tmp_path / "b" / "p.kicad_pro")) == tmp_path / "b"
+
+
+class TestKicadDocumentsHome:
+    """The default of ${KICAD<N>_3RD_PARTY}, the root the Plugin and Content
+    Manager installs into: KiCad's PATHS::GetDefault3rdPartyPath."""
+
+    def test_the_override_takes_kicad_s_folder_name_as_well(self, tmp_path, monkeypatch):
+        """KiCad appends its own folder name after KICAD_DOCUMENTS_HOME just as
+        it does after the documents folder (PATHS::getUserDocumentPath), so the
+        override names the folder that holds KiCad/<N>.0, not <N>.0 itself."""
+        monkeypatch.setenv("KICAD_DOCUMENTS_HOME", str(tmp_path))
+        assert pcb._kicad_documents_home() == tmp_path / pcb._KICAD_PATH_STR
+
+    @pytest.mark.skipif(not HAS_KICAD_CLI, reason="kicad-cli not found")
+    def test_the_3rd_party_default_is_the_folder_kicad_cli_creates(self, tmp_path, monkeypatch):
+        """kicad-cli creates PATHS::GetDefault3rdPartyPath() as it starts, under
+        KICAD_DOCUMENTS_HOME when that is set, and that folder is the default of
+        ${KICAD<N>_3RD_PARTY}. So KiCad itself names the root, on every platform
+        the suite runs on and with its own folder name's capitalisation."""
+        docs = tmp_path / "docs"
+        docs.mkdir()
+        cli = _find_kicad_cli()
+        assert cli is not None
+        env = {**os.environ, "KICAD_DOCUMENTS_HOME": str(docs)}
+        subprocess.run([cli, "version"], env=env, capture_output=True, check=True, timeout=120)
+        major = _kicad_cli_major()
+        assert major is not None
+        monkeypatch.setenv("KICAD_DOCUMENTS_HOME", str(docs))
+        monkeypatch.delenv(f"KICAD{major}_3RD_PARTY", raising=False)
+        default = pcb._kicad_var(f"KICAD{major}_3RD_PARTY", None, configured={})
+        assert default is not None
+        assert sorted(docs.rglob("3rdparty")) == [Path(default)]
 
 
 _FP = (

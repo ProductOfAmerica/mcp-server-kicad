@@ -594,6 +594,11 @@ _KICAD_VAR_DIRS = {
     "3DMODEL": "3dmodels",
 }
 
+#: The folder KiCad gives itself inside the user's documents folder, and inside
+#: KICAD_DOCUMENTS_HOME when that stands in for it: KICAD_PATH_STR in KiCad's
+#: paths.h, capitalised on Windows and macOS and lowercase elsewhere.
+_KICAD_PATH_STR = "KiCad" if sys.platform in ("win32", "darwin") else "kicad"
+
 
 def _kicad_config_dirs() -> list[Path]:
     """KiCad's settings directories for the running kicad-cli, most likely first.
@@ -666,15 +671,22 @@ def _configured_vars() -> dict[str, str]:
 
 
 def _kicad_documents_home() -> Path:
-    """Where KiCad keeps the user's own data (projects, 3rd-party packages):
-    KICAD_DOCUMENTS_HOME when set, else Documents/KiCad on Windows and macOS
-    and the XDG data home's kicad directory on Linux."""
-    configured = os.environ.get("KICAD_DOCUMENTS_HOME")
-    if configured:
-        return Path(configured)
-    if sys.platform in ("win32", "darwin"):
-        return Path.home() / "Documents" / "KiCad"
-    return Path(os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "kicad"
+    """Where KiCad keeps the user's own data (projects, 3rd-party packages),
+    short of the version folder: KiCad's PATHS::getUserDocumentPath.
+
+    The base is KICAD_DOCUMENTS_HOME when set, else the platform's documents
+    folder (~/Documents on Windows and macOS, the XDG data home on Linux), and
+    KiCad appends its own folder name (_KICAD_PATH_STR) to either. So
+    KICAD_DOCUMENTS_HOME=D puts the packages under D/KiCad/<N>.0/3rdparty on
+    Windows, not D/<N>.0/3rdparty.
+    """
+    base = os.environ.get("KICAD_DOCUMENTS_HOME")
+    if not base:
+        if sys.platform in ("win32", "darwin"):
+            base = Path.home() / "Documents"
+        else:
+            base = os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share"
+    return Path(base) / _KICAD_PATH_STR
 
 
 def _kicad_var(name: str, project_dir: Path | None, configured: dict | None = None) -> str | None:
@@ -684,10 +696,11 @@ def _kicad_var(name: str, project_dir: Path | None, configured: dict | None = No
     resolves it: the OS environment first, which is where KiCad itself and a
     Guix or Nix profile set them, then Preferences > Configure Paths
     (*configured*, read from kicad_common.json when not given), then KiCad's
-    own defaults for its predefined variables: <documents>/<N>.0/3rdparty for
-    KICAD<N>_3RD_PARTY, the root the Plugin and Content Manager installs into,
-    which KiCad computes at run time and never writes anywhere, and the install
-    the resolved kicad-cli belongs to for the versioned KICAD<N>_FOOTPRINT_DIR
+    own defaults for its predefined variables: <N>.0/3rdparty under
+    _kicad_documents_home() for KICAD<N>_3RD_PARTY (PATHS::GetDefault3rdPartyPath),
+    the root the Plugin and Content Manager installs into, which KiCad
+    computes at run time and never writes anywhere, and the install the
+    resolved kicad-cli belongs to for the versioned KICAD<N>_FOOTPRINT_DIR
     family and the KiCad 5 spelling KISYSMOD.
     """
     if name == "KIPRJMOD":
