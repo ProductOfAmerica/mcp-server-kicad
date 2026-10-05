@@ -233,7 +233,7 @@ Override any of it if your install is unusual:
 |----------|-----------|
 | `KICAD_CLI_PATH` | the `kicad-cli` executable, and everything derived from its location |
 | `KICAD_SYMBOL_DIR` | the directory holding the stock `.kicad_sym` libraries |
-| `KICAD_PYTHON` | the interpreter used for `pcbnew` (`fill_zones`, `autoroute_pcb`) |
+| `KICAD_PYTHON` | the interpreter used for `pcbnew` (`fill_zones`, `autoroute_pcb`), as an absolute path or a name found on `PATH` |
 
 CLI-backed tools are always registered. Without `kicad-cli` they fail with a
 message naming `KICAD_CLI_PATH`, rather than vanishing from the tool list.

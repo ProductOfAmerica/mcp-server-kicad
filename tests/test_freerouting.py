@@ -179,25 +179,83 @@ class TestFindPcbnewPython:
         assert str(on_path) in launched
         assert all(os.path.isabs(p) for p in launched), launched
 
+    @pytest.mark.parametrize("value", ["python3", os.path.join("sub", "python3")])
+    def test_a_relative_kicad_python_is_never_launched_as_given(self, value, tmp_path, monkeypatch):
+        """Handed to subprocess unchanged, a bare name was searched for in the
+        working directory before PATH on Windows, and "sub/python3" ran from it
+        on every platform. Both are planted there, and neither may be launched."""
+        exe = "python3.exe" if os.name == "nt" else "python3"
+        cwd, bin_dir = tmp_path / "cwd", tmp_path / "bin"
+        for planted in (cwd / exe, cwd / "sub" / exe, bin_dir / exe):
+            planted.parent.mkdir(parents=True, exist_ok=True)
+            planted.write_text("")
+            planted.chmod(0o755)
+        monkeypatch.chdir(cwd)
+        monkeypatch.setenv("PATH", str(bin_dir))
+        monkeypatch.setenv("KICAD_PYTHON", value)
+        monkeypatch.setattr(_fr_module, "_kicad_python_candidates", lambda: [])
+        launched = []
+
+        def fail(args, **kwargs):
+            launched.append(args[0])
+            return subprocess.CompletedProcess(args=args, returncode=1, stdout="", stderr="")
+
+        with patch("subprocess.run", side_effect=fail):
+            assert find_pcbnew_python() == (None, None)
+        assert launched and all(os.path.isabs(p) for p in launched), launched
+        if value == "python3":
+            # Resolved on PATH, not merely dropped.
+            assert launched[0] == str(bin_dir / exe)
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "python3",
+            pytest.param(
+                "python3.exe",
+                marks=pytest.mark.skipif(os.name != "nt", reason="the .exe suffix is Windows'"),
+            ),
+        ],
+    )
+    def test_a_bare_kicad_python_is_cached_by_its_absolute_path(self, value, tmp_path, monkeypatch):
+        """Every later launch (fill_zones, export_dsn, import_ses, pcbnew_major)
+        takes the interpreter from the cache, so the cache has to hold the
+        resolved path rather than the name."""
+        on_path = tmp_path / ("python3.exe" if os.name == "nt" else "python3")
+        on_path.write_text("")
+        on_path.chmod(0o755)
+        monkeypatch.setenv("PATH", str(tmp_path))
+        monkeypatch.setenv("KICAD_PYTHON", value)
+        monkeypatch.setattr(_fr_module, "_kicad_python_candidates", lambda: [])
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=ok):
+            python, _env = find_pcbnew_python()
+        assert python == str(on_path)
+        assert _fr_module._pcbnew_cache is not None
+        assert _fr_module._pcbnew_cache[0] == str(on_path)
+
     def test_no_pcbnew_available(self):
         with patch("subprocess.run", side_effect=Exception("fail")):
             python, env = find_pcbnew_python()
             assert python is None
 
-    def test_pythonhome_stripped_from_probe_and_returned_env(self):
+    def test_pythonhome_stripped_from_probe_and_returned_env(self, tmp_path):
         """uv-trampoline venvs export PYTHONHOME, which breaks KiCad's own
         interpreter; the probe and the returned launch env must both drop it."""
         captured_envs = []
+        # Absolute on every platform: "/fake/py" has no drive, and Windows
+        # Python 3.13+ calls that relative, which KICAD_PYTHON now ignores.
+        fake_py = str(tmp_path / "py")
 
         def fake_run(args, **kwargs):
             captured_envs.append(kwargs.get("env"))
             return subprocess.CompletedProcess(args=args, returncode=0, stdout="", stderr="")
 
-        with patch.dict(os.environ, {"KICAD_PYTHON": "/fake/py", "PYTHONHOME": "/fake/venv"}):
+        with patch.dict(os.environ, {"KICAD_PYTHON": fake_py, "PYTHONHOME": "/fake/venv"}):
             with patch("subprocess.run", side_effect=fake_run):
                 python, env = find_pcbnew_python()
 
-        assert python == "/fake/py"
+        assert python == fake_py
         assert env is not None
         assert "PYTHONHOME" not in env
         # KICAD_PYTHON pins a single probe, and it must run under the same

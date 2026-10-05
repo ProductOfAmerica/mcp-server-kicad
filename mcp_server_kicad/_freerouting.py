@@ -264,6 +264,18 @@ def find_pcbnew_python() -> tuple[str | None, dict | None]:
         env = {k: v for k, v in os.environ.items() if k != "PYTHONHOME"}
 
     kicad_python = os.environ.get("KICAD_PYTHON")
+    # KICAD_CLI_PATH's rule, so nothing launched here is relative to the
+    # working directory. Handed to subprocess unchanged, a bare name was
+    # searched for there before PATH on Windows, and "sub/python3" ran from it
+    # everywhere. A bare name goes through _find_on_path, which appends the
+    # ".exe" itself; any other relative value is ignored and discovery goes on.
+    if kicad_python and not os.path.isabs(kicad_python):
+        if os.path.basename(kicad_python) == kicad_python:
+            if os.name == "nt" and kicad_python.lower().endswith(".exe"):
+                kicad_python = kicad_python[: -len(".exe")]
+            kicad_python = _find_on_path(kicad_python)
+        else:
+            kicad_python = None
     if kicad_python:
         try:
             result = subprocess.run(
