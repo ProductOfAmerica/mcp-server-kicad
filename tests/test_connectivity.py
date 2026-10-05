@@ -172,6 +172,20 @@ def test_another_pin_end_at_the_same_point_is_allowed(tmp_path):
     assert _outcome(_plan(p, [("R1", "1")])) == "stub"
 
 
+def test_a_foreign_pin_end_near_the_pin_end_refuses(tmp_path):
+    """Guard: the routing review's mutant X8, rule 1 letting a pin within 0.05 mm of the pin end
+    through as if it met it exactly, passed every test. R2's pin 2 end sits 0.03 mm from
+    R1:1's: the stub runs over it and a label on the pin would be within the margin, so the
+    call refuses. KiCad joins exact points only, so no netlist test can see this."""
+    p = _r1(tmp_path)
+    place(p, "R", "R2", 101.6, 93.98)
+    data = Path(p).read_bytes()  # the symbol and its hidden fields at its origin move together
+    assert b"(at 101.6 93.98 0)" in data
+    Path(p).write_bytes(data.replace(b"(at 101.6 93.98 0)", b"(at 101.6 93.95 0)"))
+    plan = _plan(p, [("R1", "1")])
+    assert plan.codes == ["touch"], _first_line(plan)
+
+
 def test_an_explicit_direction_is_honoured(tmp_path):
     plan = _plan(_r1(tmp_path), [("R1", "1")], direction="left")
     assert plan.wires == [((1016000, 977900), (990600, 977900))]
@@ -853,6 +867,37 @@ def test_a_sheet_that_cannot_be_read_refuses(tmp_path):
     assert plan.codes == ["dup_ref"] and "c.kicad_sch of this hierarchy could not be read" in (
         plan.refusal()
     )
+
+
+def _two_definitions(tmp_path, third) -> str:
+    """U1 placed twice: unit 1 from library symbol PARTA and unit 2 from PARTB. The two agree on
+    pads 1 and 2 and differ on pad 3 as *third* (type, unit) says for PARTB."""
+    from routing_fixtures import custom_lib, place_custom, rename_ref, set_unit
+
+    p = fresh(tmp_path)
+    common = [
+        ("1", "A", "passive", -5.08, 0, 0, False, 1),
+        ("2", "B", "passive", -5.08, 0, 0, False, 2),
+    ]
+    lib_a = custom_lib(tmp_path, "PARTA", [*common, ("3", "C", "passive", 5.08, 0, 180, False, 1)])
+    kind, unit = third
+    lib_b = custom_lib(tmp_path, "PARTB", [*common, ("3", "C", kind, 5.08, 0, 180, False, unit)])
+    place_custom(p, lib_a, "PARTA", "U1", 101.6, 101.6)
+    place_custom(p, lib_b, "PARTB", "U9", 152.4, 101.6)
+    set_unit(p, "U9", 2)
+    rename_ref(p, "U9", "U1")
+    return p
+
+
+@pytest.mark.parametrize("third", [("input", 1), ("passive", 2)], ids=["type", "unit"])
+def test_two_definitions_sharing_a_reference_differ_in_one_half_of_a_pad(tmp_path, third):
+    """Guard: the routing review's mutants M5e and M5f, a pad map holding only the units that
+    draw each pad or only its types, still refused the 74LS00 and 74LS04 fixture, which differ
+    in both, and only the message changed. Here the two definitions differ in pad 3's type
+    alone, or in which unit draws it alone, and each is still two parts."""
+    p = _two_definitions(tmp_path, third)
+    plan = _plan(p, [("U1", "1")])
+    assert plan.codes == ["dup_ref"], _first_line(plan)
 
 
 def test_the_units_of_one_part_on_one_sheet_are_one_part(tmp_path):

@@ -49,9 +49,9 @@ def agrees(path, netlist=None) -> list:
     return netlist
 
 
-def wired(path, specs, n, judge_on=None, **kw):
-    """call_wptn plus, when kicad-cli is present, the netlist judge of a write, on *judge_on*
-    (the root of a hierarchy) when given. Returns (status, msg).
+def wired(path, specs, n, judge_on=None, oracle=True, **kw):
+    """call_wptn plus, with *oracle*, the netlist judge of a write, on *judge_on* (the root of a
+    hierarchy) when given. Returns (status, msg).
 
     A refusal or a no-op leaves the file byte-identical (call_wptn asserts it), so only a write
     has a change to judge; judging an unchanged file measures the judge, which maps a pad listed
@@ -59,9 +59,9 @@ def wired(path, specs, n, judge_on=None, **kw):
     claim that kicad-cli has the pad on N already.
     """
     on = judge_on or path
-    if _cli():
+    if oracle:
         agrees(path)
-    before = nets(on) if _cli() else None
+    before = nets(on) if oracle else None
     status, msg = call_wptn(path, pins(*specs), n, **kw)
     if before is not None and status != "REFUSED":
         agrees(path)
@@ -72,10 +72,12 @@ def wired(path, specs, n, judge_on=None, **kw):
     return status, msg
 
 
-def _cli() -> bool:
-    from conftest import HAS_KICAD_CLI
-
-    return HAS_KICAD_CLI
+#: A test so marked runs twice: "model" makes its checks without kicad-cli, and "kicad" makes
+#: them with kicad-cli's netlist judging too, and skips where kicad-cli is not installed, so a
+#: KiCad-free run reports the netlist half as skipped instead of passing without it.
+ORACLE = pytest.mark.parametrize(
+    "oracle", [pytest.param(False, id="model"), pytest.param(True, id="kicad", marks=requires_cli)]
+)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -90,7 +92,8 @@ def _xy(node, which: int) -> tuple[float, float]:
     return round(float(xy.atoms[1].text), 4), round(float(xy.atoms[2].text), 4)
 
 
-def test_twelve_orientations_wire_the_pin_kicad_draws(tmp_path):
+@ORACLE
+def test_twelve_orientations_wire_the_pin_kicad_draws(tmp_path, oracle):
     """PI-01/PI-12. Every pin gets a stub that starts on the pin KiCad draws and points away
     from the body. The repo used to mirror before rotating, which put the stub on the other pin
     of R and D, and on empty space for Q, at rotation 90 or 270 with a mirror; and it pointed the
@@ -104,7 +107,7 @@ def test_twelve_orientations_wire_the_pin_kicad_draws(tmp_path):
             ref, x = f"{prefix}{i + 1}", 25.4 + 20.32 * i
             place(p, symbol, ref, x, y, rot=rot, mirror=mir)
             calls += [(ref, str(k + 1), x + dx, y + dy, d) for k, (dx, dy, d) in enumerate(ends)]
-    before = agrees(p) if _cli() else None
+    before = agrees(p) if oracle else None
     wrong = []
     for ref, num, ex, ey, d in calls:
         old = open(p, "rb").read()
@@ -595,10 +598,11 @@ def _stack(tmp_path, apart: bool):
     return p
 
 
-def test_a_name_on_stacked_pads_is_one_target(tmp_path):
+@ORACLE
+def test_a_name_on_stacked_pads_is_one_target(tmp_path, oracle):
     """Pads 3 and 5 are both "COM", drawn at one point: one stub wires both."""
     p = _stack(tmp_path, apart=False)
-    before = nets(p) if _cli() else None
+    before = nets(p) if oracle else None
     status, msg = call_wptn(p, pins(("U1", "COM")), "N")
     assert status == "OK" and "(pad 3)" in msg and "(pad 5)" in msg, msg
     if before is not None:
@@ -615,7 +619,8 @@ def test_a_name_on_pads_at_two_points_is_refused(tmp_path):
     assert "pad 3 at (96.52, 101.6)" in msg and "pad 5 at (106.68, 101.6)" in msg
 
 
-def test_a_pad_drawn_under_two_names_is_found_by_either(tmp_path):
+@ORACLE
+def test_a_pad_drawn_under_two_names_is_found_by_either(tmp_path, oracle):
     """The routing pressure test's X1c (x_duplicate_numbers): pad 1 is drawn twice in one unit,
     named A and A2, as KiCad's own 74278 draws pad 6 as Y4 and ~{P1}. Asked for by its second
     name, the pad was refused as not drawn here, because resolution kept only the first name
@@ -633,7 +638,7 @@ def test_a_pad_drawn_under_two_names_is_found_by_either(tmp_path):
         ],
     )
     place_custom(p, lib, "DUP", "U1", 101.6, 101.6)
-    before = nets(p) if _cli() else None
+    before = nets(p) if oracle else None
     status, msg = call_wptn(p, pins(("U1", "A2")), "N")
     assert status == "OK", msg
     assert "(96.52, 101.6)" in msg and "(96.52, 104.14)" in msg, msg
@@ -689,14 +694,15 @@ def _hier06(tmp_path, geom: str) -> str:
     return root
 
 
+@ORACLE
 @pytest.mark.parametrize("net", ["GND", "N1"])
 @pytest.mark.parametrize("geom", ["edge", "into"])
-def test_hier06_a_net_reaching_a_sheet_pin_is_refused(tmp_path, geom, net):
+def test_hier06_a_net_reaching_a_sheet_pin_is_refused(tmp_path, geom, net, oracle):
     """HIER-06. kicad-cli attaches a sheet pin to a wire that merely passes over it, so R1:1 is
     on the child's +5V. Wiring it to GND shorted +5V into GND, and to N1 joined N1 to +5V. The
     net is named across the hierarchy, which this tool does not follow, so it refuses."""
     root = _hier06(tmp_path, geom)
-    if _cli():
+    if oracle:
         assert _on(root)[("R1", "1")][1] >= {("R1", "1"), ("R31", "1")}  # the premise
     status, msg = call_wptn(root, pins(("R1", "1")), net)
     assert status == "REFUSED" and msg.startswith("[sheet_pin] "), msg
@@ -713,8 +719,9 @@ def _pi17(tmp_path) -> str:
     return p
 
 
+@ORACLE
 @pytest.mark.no_kicad_validation
-def test_pi17_an_unresolved_symbol_refuses_the_whole_call(tmp_path):
+def test_pi17_an_unresolved_symbol_refuses_the_whole_call(tmp_path, oracle):
     """PI-17. D3's lib_name names no lib_symbols entry, so KiCad stacks both its pins at its
     origin, which is where R1:1's stub ends; the old code knew nothing of D3's pins and joined
     R1:1 to them. Pins nobody can place cannot be judged, so the whole call refuses.
@@ -724,7 +731,7 @@ def test_pi17_an_unresolved_symbol_refuses_the_whole_call(tmp_path):
     premise below is still checked by KiCad.
     """
     p = _pi17(tmp_path)
-    if _cli():
+    if oracle:
         assert _on(p)[("D3", "1")][1] == {("D3", "1"), ("D3", "2")}  # the premise
     status, msg = call_wptn(p, pins(("R1", "1")), "N")
     assert status == "REFUSED" and msg.startswith("[derived] "), msg
@@ -749,18 +756,19 @@ def _units_two_sheets(tmp_path) -> tuple[str, str]:
     return root, child
 
 
+@ORACLE
 @pytest.mark.parametrize(
     ("where", "net"),
     [("root", "+5V"), ("child", "+5V"), ("root", "VDD")],
     ids=["root_existing_name", "child_existing_name", "root_new_name"],
 )
-def test_hier14_a_pad_with_a_copy_on_another_sheet_is_refused(tmp_path, where, net):
+def test_hier14_a_pad_with_a_copy_on_another_sheet_is_refused(tmp_path, where, net, oracle):
     """HIER-14, and UP-05's shape (UP-05 used 74xx_IEEE:7400, whose pads 14 and 7 are unit-0
     pins as the 4011's are). A sheet sees only its own copy of pad 14, so the old code wired
     that copy and kicad-cli then listed the pad in two nets, the wired one and the other copy's.
     The pad has a copy this sheet cannot see, so the call refuses."""
     root, child = _units_two_sheets(tmp_path)
-    if _cli():
+    if oracle:
         assert sum(("U1", "14") in nodes for *_x, nodes in agrees(root)) == 2  # the premise
     status, msg = call_wptn(root if where == "root" else child, pins(("U1", "14")), net)
     assert status == "REFUSED" and msg.startswith("[unit0_unplaced] "), msg
@@ -812,12 +820,13 @@ def _bus_p5(tmp_path) -> str:
     return p
 
 
-def test_bus_p5_a_net_reaching_a_bus_is_refused(tmp_path):
+@ORACLE
+def test_bus_p5_a_net_reaching_a_bus_is_refused(tmp_path, oracle):
     """BUS-P5. kicad-cli puts R36:1, R37:1 and R38:1 on /SIG; main wired R38:1 to NEWNET and
     renamed /SIG to /NEWNET. Bus members are not modelled, so a net that reaches a bus is
     refused as [bus], before any name it carries is weighed."""
     p = _bus_p5(tmp_path)
-    if _cli():
+    if oracle:
         assert _on(p)[("R38", "1")][0] == "/SIG"  # the premise
     status, msg = call_wptn(p, pins(("R38", "1")), "NEWNET")
     assert status == "REFUSED" and msg.startswith("[bus] "), msg
@@ -967,12 +976,13 @@ def _pi15(tmp_path, symbol: str, dup: str) -> str:
     return p
 
 
+@ORACLE
 @pytest.mark.parametrize(("symbol", "dup"), [("R", "R1"), ("R", "R?"), ("C", "C1"), ("C", "C?")])
-def test_pi15_two_parts_sharing_a_reference_are_refused(tmp_path, symbol, dup):
+def test_pi15_two_parts_sharing_a_reference_are_refused(tmp_path, symbol, dup, oracle):
     """PI-15. KiCad's netlist knows a part by its reference, so the two pin 1s are one pad:
     wiring it put both on NDUP and merged R7's net with R8's."""
     p = _pi15(tmp_path, symbol, dup)
-    status, msg = wired(p, [(dup, "1")], "NDUP")
+    status, msg = wired(p, [(dup, "1")], "NDUP", oracle=oracle)
     assert status == "REFUSED" and msg.startswith("[dup_ref] "), msg
 
 
@@ -987,18 +997,20 @@ def _mixed_parts(tmp_path) -> str:
     return p
 
 
+@ORACLE
 @pytest.mark.parametrize("pad", ["1", "3"])
-def test_two_different_parts_sharing_a_reference_are_refused(tmp_path, pad):
+def test_two_different_parts_sharing_a_reference_are_refused(tmp_path, pad, oracle):
     """Distinct units are not enough: the definitions must agree on which unit draws each pad.
     Pad 3 is the 74LS00's 1Y output and the 74LS04's 2A input; the old code wired both copies,
     joining an output to an input."""
     p = _mixed_parts(tmp_path)
-    status, msg = wired(p, [("U1", pad)], "N")
+    status, msg = wired(p, [("U1", pad)], "N", oracle=oracle)
     assert status == "REFUSED" and msg.startswith("[dup_ref] "), msg
     assert "disagree on pad 2 ('74LS00': units 1 as input; '74LS04': units 1 as output)" in msg
 
 
-def test_a_reference_shared_with_another_sheet_is_refused(tmp_path):
+@ORACLE
+def test_a_reference_shared_with_another_sheet_is_refused(tmp_path, oracle):
     """Two resistors annotated R1 on two sheets are one pad 1 to KiCad: wiring the root's copy
     left that pad in two nets, N and the child's CHILD_NET."""
     root, child = _hierarchy(tmp_path, "h")
@@ -1006,18 +1018,19 @@ def test_a_reference_shared_with_another_sheet_is_refused(tmp_path):
     stub(child, 101.6, 97.79, 0, -2.54, "CHILD_NET")
     sheet(root, child, "C", 152.4, 25.4)
     place(root, "R", "R1", 101.6, 101.6)
-    status, msg = wired(root, [("R1", "1")], "N")
+    status, msg = wired(root, [("R1", "1")], "N", oracle=oracle)
     assert status == "REFUSED" and msg.startswith("[dup_ref] "), msg
     assert "on c.kicad_sch" in msg
 
 
-def test_units_of_one_part_on_two_sheets_are_accepted(tmp_path):
+@ORACLE
+def test_units_of_one_part_on_two_sheets_are_accepted(tmp_path, oracle):
     """Guard against over-refusal (there was no reference check before): U1's gates 1 and 2 sit
     on two sheets as one part should, and a pin only its own gate draws is wired on either."""
     root, child = _units_two_sheets(tmp_path)
-    status, msg = wired(root, [("U1", "1")], "A_IN")
+    status, msg = wired(root, [("U1", "1")], "A_IN", oracle=oracle)
     assert status == "OK", msg
-    status, msg = wired(child, [("U1", "5")], "B_IN", judge_on=root)
+    status, msg = wired(child, [("U1", "5")], "B_IN", judge_on=root, oracle=oracle)
     assert status == "OK", msg
 
 
@@ -1032,21 +1045,23 @@ def _reused(tmp_path, second_ref: str) -> tuple[str, str]:
     return root, child
 
 
-def test_a_reused_sheet_whose_instances_share_a_reference_is_refused(tmp_path):
+@ORACLE
+def test_a_reused_sheet_whose_instances_share_a_reference_is_refused(tmp_path, oracle):
     """Divergence 8 of the design record (the prototype accepted this). Both instances of the
     child carry R1, so KiCad's netlist has one R1 whose pin 1 sits on two nets, /C1/N and
     /C2/N, once the child is wired: the reference names two parts."""
     root, child = _reused(tmp_path, "R1")
-    status, msg = wired(child, [("R1", "1")], "N", judge_on=root)
+    status, msg = wired(child, [("R1", "1")], "N", judge_on=root, oracle=oracle)
     assert status == "REFUSED" and msg.startswith("[dup_ref] "), msg
 
 
-def test_a_reused_sheet_annotated_per_instance_is_accepted(tmp_path):
+@ORACLE
+def test_a_reused_sheet_annotated_per_instance_is_accepted(tmp_path, oracle):
     """The instances carry R1 and R101, two parts with their own references, which is how KiCad
     annotates a reused sheet. Wiring the sheet wires every instance, R1:1 onto /C1/N and R101:1
     onto /C2/N, and the result says so."""
     root, child = _reused(tmp_path, "R101")
-    before = nets(root) if _cli() else None
+    before = nets(root) if oracle else None
     status, msg = call_wptn(child, pins(("R1", "1")), "N")
     assert status == "OK", msg
     assert "used 2 times in its project, so this wiring is in every instance: R1:1, R101:1" in msg
@@ -1087,22 +1102,24 @@ def _inert05(tmp_path, v: str) -> str:
     return p
 
 
+@ORACLE
 @pytest.mark.parametrize("v", ["RA1", "RA2"])
-def test_inert05_a_stub_into_a_classed_rule_area_falls_back_to_the_pin(tmp_path, v):
+def test_inert05_a_stub_into_a_classed_rule_area_falls_back_to_the_pin(tmp_path, v, oracle):
     """INERT-05. The 2.54 mm stub up from R1:1 enters an area whose directive assigns HV, which
     KiCad then gives to every net the area holds: the old stub moved R1:1 and R2:1 (SIG's net)
     into HV. The label goes on the pin end instead, outside the area."""
     p = _inert05(tmp_path, v)
-    status, msg = wired(p, [("R1", "1")], "SIG")
+    status, msg = wired(p, [("R1", "1")], "SIG", oracle=oracle)
     assert status == "OK" and "on the pin end" in msg, msg
 
 
+@ORACLE
 @pytest.mark.parametrize(("v", "direction"), [("RA3", "auto"), ("RA4", "left")])
-def test_inert05_a_stub_clear_of_any_class_is_kept(tmp_path, v, direction):
+def test_inert05_a_stub_clear_of_any_class_is_kept(tmp_path, v, direction, oracle):
     """Guards against over-refusal: an area with no directive assigns nothing (RA3), and a
     stub left stays clear of the box (RA4)."""
     p = _inert05(tmp_path, v)
-    status, msg = wired(p, [("R1", "1")], "SIG", direction=direction)
+    status, msg = wired(p, [("R1", "1")], "SIG", direction=direction, oracle=oracle)
     assert status == "OK" and "stub" in msg and "on the pin end" not in msg, msg
 
 
@@ -1128,19 +1145,21 @@ def _stale(tmp_path) -> str:
     return p
 
 
-def test_a_stale_reference_property_does_not_make_two_parts_one_pad(tmp_path):
+@ORACLE
+def test_a_stale_reference_property_does_not_make_two_parts_one_pad(tmp_path, oracle):
     """Matching parts by the Reference property made KiCad's R1 and R2 one pad "R1", so wiring
     R1:1 also wired R2:1 and merged R2's net into N. Only R1:1 is wired now."""
     p = _stale(tmp_path)
     old = open(p, "rb").read()
-    status, msg = wired(p, [("R1", "1")], "N")
+    status, msg = wired(p, [("R1", "1")], "N", oracle=oracle)
     assert status == "OK" and "copy at" not in msg, msg
     added = assert_only_added(old, open(p, "rb").read())
     assert [_xy(n, 0) for n in added if n.head == "wire"] == [(101.6, 97.79)]
 
 
-def test_a_part_is_found_by_the_reference_kicad_reads(tmp_path):
+@ORACLE
+def test_a_part_is_found_by_the_reference_kicad_reads(tmp_path, oracle):
     """KiCad's R2 has the Reference property R1; asking for R2 wired nothing ("not found")."""
     p = _stale(tmp_path)
-    status, msg = wired(p, [("R2", "1")], "M")
+    status, msg = wired(p, [("R2", "1")], "M", oracle=oracle)
     assert status == "OK", msg

@@ -205,11 +205,9 @@ class TestWirePinToLabel:
         )
         sch = reparse(path)
         wire = [g for g in sch.graphicalItems if isinstance(g, Connection) and g.type == "wire"][0]
-        # Pin end is at exact pin position (not snapped); label end is snapped.
-        # The actual stub length may differ slightly from the requested value
-        # due to label-end grid snapping, but should be within one grid step.
+        # The stub runs exactly stub_length from the pin end: nothing is snapped.
         dx = abs(wire.points[1].X - wire.points[0].X)
-        assert abs(dx - 5.08) < 1.27
+        assert dx == pytest.approx(5.08)
 
     def test_bad_reference(self, scratch_sch):
         with pytest.raises(ToolError, match="not found"):

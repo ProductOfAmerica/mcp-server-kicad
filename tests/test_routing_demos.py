@@ -259,6 +259,7 @@ def test_a_cold_reference_check_parses_only_the_sheets_it_needs(vme_wren, monkey
     check those that can carry the reference: 9 for IC20 on clocks and 15 for IC14 on
     fpga-hp-banks in KiCad 9.0.8's copy (counted 2026-10-04). The bound is computed here from a
     full read, not from the pre-filter. One test for both, so the full read is paid once."""
+    ran = 0
     for sheet, ref in (("clocks.kicad_sch", "IC20"), ("fpga-hp-banks.kicad_sch", "IC14")):
         path = vme_wren / sheet
         if ref not in path.read_text(encoding="utf-8"):
@@ -267,6 +268,9 @@ def test_a_cold_reference_check_parses_only_the_sheets_it_needs(vme_wren, monkey
         m = _connectivity.Model(_cst.parse(path.read_bytes()).lists[0], str(path))
         m.check_unique(ref)
         assert len(parsed) <= _needed(vme_wren, path, {ref}), (sheet, len(parsed))
+        ran += 1
+    if not ran:
+        pytest.skip("this KiCad's vme-wren has neither IC20 on clocks nor IC14 on fpga-hp-banks")
 
 
 def _budget_pins(path: Path, ref: str | None) -> list[PinRefSpec]:
