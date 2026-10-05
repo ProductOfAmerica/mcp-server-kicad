@@ -1451,7 +1451,8 @@ def flatten_hierarchy(
         # both are protected. One that cannot be read or parsed stays protected, though
         # what lies below it is unknown.
         def _real(p: Path) -> Path:
-            # Resolving a symlink loop raises (RuntimeError before Python 3.13).
+            # Before Python 3.13 resolving a symlink loop raises RuntimeError; later
+            # versions return the path unresolved.
             try:
                 return p.resolve()
             except (OSError, RuntimeError):
@@ -1480,7 +1481,11 @@ def flatten_hierarchy(
             for s in sheet_root.find_all("sheet"):
                 name = _sheet_file_cst(s) or ""
                 if name:
-                    todo += [c for c in (f.parent / name, sch_dir / name) if c.exists()]
+                    # KiCad squeezes '..' lexically, so 'zz/../grand.kicad_sch' with no zz
+                    # is a sheet to KiCad and missing to the kernel; protect both readings.
+                    cands = [f.parent / name, sch_dir / name]
+                    cands += [Path(os.path.normpath(c)) for c in cands]
+                    todo += [c for c in cands if c.exists()]
         # samefile also catches a case-only alias on a case-insensitive filesystem.
         clash = out in inputs or any(p.exists() and out.samefile(p) for p in inputs)
     if clash:

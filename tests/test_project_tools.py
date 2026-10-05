@@ -1622,6 +1622,21 @@ class TestFlattenHierarchy:
 
         assert grand.read_bytes() == before
 
+    def test_refuses_a_nested_sheet_named_through_a_missing_directory(self, tmp_path: Path):
+        """KiCad squeezes 'zz/..' lexically, so the kernel's failed walk hid grand."""
+        root, child, grand = self._three_levels(tmp_path)
+        project.modify_hierarchical_sheet(
+            _first_sheet_uuid(str(child)),
+            schematic_path=str(child),
+            file_name="zz/../grand.kicad_sch",
+        )
+        before = grand.read_bytes()
+
+        with pytest.raises(ToolError, match="part of the hierarchy"):
+            project.flatten_hierarchy(schematic_path=str(root), output_path=str(grand))
+
+        assert grand.read_bytes() == before
+
     def test_refuses_a_child_and_still_reflattens_to_the_same_output(self, tmp_path: Path):
         root, child, _ = self._three_levels(tmp_path)
         before = child.read_bytes()
