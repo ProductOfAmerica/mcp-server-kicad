@@ -311,46 +311,75 @@ def test_a_visible_power_in_pin_names_nothing(tmp_path):
     assert not _plan(p, [("U1", "14")], net="RAIL").refused
 
 
-def _hide_lib_pin(path, number: str, alternate: str | None = None) -> None:
-    """Hide lib pin *number* of the 4011 in this file's lib_symbols, optionally adding an
-    alternate of type power_in and selecting it on U1."""
+def _edit_lib_pin(path, symbol: str, number: str, hide=False, alternate=None, alt_type="") -> None:
+    """Edit lib pin *number* of *symbol* in this file's lib_symbols: hide it, and give it the
+    alternate *alternate* of type *alt_type*."""
     data = Path(path).read_bytes()
     tree = _cst.parse(data)
     root = tree.lists[0]
-    lib = next(s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == "4011")
+    lib = next(s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == symbol)
     for sub in lib.find_all("symbol"):
         for pin in sub.find_all("pin"):
             if pin.find("number").atoms[1].text == number:
-                pin.insert_after(pin.find("length"), _cst.parse(b"(hide yes)").lists[0], b" ")
+                if hide:
+                    pin.insert_after(pin.find("length"), _cst.parse(b"(hide yes)").lists[0], b" ")
                 if alternate:
-                    alt = f'(alternate "{alternate}" power_in line)'.encode()
+                    alt = f'(alternate "{alternate}" {alt_type} line)'.encode()
                     pin.append_child(_cst.parse(alt).lists[0], b" ")
-    if alternate:
-        for u1 in root.find_all("symbol"):
-            if not any(
-                q.atoms[2].text == "U1" for q in u1.find_all("property") if len(q.atoms) > 2
-            ):
-                continue
-            placed = next(q for q in u1.find_all("pin") if q.atoms[1].text == number)
-            placed.append_child(_cst.parse(f'(alternate "{alternate}")'.encode()).lists[0], b" ")
     Path(path).write_bytes(_cst.serialize(tree))
 
 
 def test_a_hidden_power_in_pin_names_its_net(tmp_path):
     p = _4011(tmp_path)
-    _hide_lib_pin(p, "14")
+    _edit_lib_pin(p, "4011", "14", hide=True)
     assert _plan(p, [("U1", "14")], net="RAIL").codes == ["names"]
     noop = _plan(p, [("U1", "14")], net="Vdd")
     assert not noop.refused and not noop.labels
 
 
-def test_an_alternate_makes_the_name_possible_only(tmp_path):
-    """With a placed alternate it is not established which name KiCad uses, so the narrow view
-    takes neither (no no-op) and the possible view takes both (Vdd and VBAT conflict)."""
+@pytest.mark.parametrize(
+    ("alternate", "alt_type", "select", "named"),
+    [
+        pytest.param("VBAT", "power_in", "VBAT", True, id="power_in"),
+        pytest.param("ALTP", "passive", "ALTP", False, id="passive"),
+        # SetAlt drops an alternate the library pin does not define, or one spelled like the
+        # pin's own name, so the pin keeps its own type.
+        pytest.param("ALTP", "passive", "NOPE", True, id="undefined"),
+        pytest.param("Vdd", "passive", "Vdd", True, id="named_like_the_pin"),
+    ],
+)
+def test_an_alternate_sets_the_type_and_never_the_name(
+    tmp_path, alternate, alt_type, select, named
+):
+    """DEC-15. KiCad takes a pin's type from the alternate placed on it, when SetAlt accepts it,
+    and names a hidden power_in pin's net by the library pin's own name, never the alternate's
+    (sch_pin.cpp IsGlobalPower and GetDefaultNetName, 9.0.8 and 10.0.6). The model used to
+    count both names as possible and neither as certain, so it refused what KiCad reads
+    plainly."""
+    from routing_fixtures import select_alternate
+
     p = _4011(tmp_path)
-    _hide_lib_pin(p, "14", alternate="VBAT")
-    plan = _plan(p, [("U1", "14")], net="Vdd")
-    assert plan.codes == ["names"] and "'VBAT'" in plan.refusal()
+    _edit_lib_pin(p, "4011", "14", hide=True, alternate=alternate, alt_type=alt_type)
+    select_alternate(p, "U1", "14", select)
+    on_vdd = _plan(p, [("U1", "14")], net="Vdd")
+    on_alt = _plan(p, [("U1", "14")], net="VBAT")
+    if named:
+        assert not on_vdd.refused and not on_vdd.labels, _first_line(on_vdd)
+        assert on_alt.codes == ["names"] and "'Vdd'" in on_alt.refusal()
+    else:
+        assert on_vdd.labels and on_alt.labels
+
+
+def test_a_power_symbol_pin_an_alternate_takes_off_power_in_names_nothing(tmp_path):
+    """IsGlobalPower needs the type power_in, which an alternate sets, so with a passive
+    alternate placed not even a power symbol's Value names the net."""
+    from routing_fixtures import power, select_alternate
+
+    p = _named(tmp_path)
+    power(p, "GND", "#PWR01", 88.9, 97.79, rot=270)  # its pin end is its origin
+    _edit_lib_pin(p, "GND", "1", alternate="ALTP", alt_type="passive")
+    select_alternate(p, "#PWR01", "1", "ALTP")
+    assert not _plan(p, [("R1", "1")], net="VCC").refused
 
 
 def test_the_margin_reaches_a_near_miss_label(tmp_path):

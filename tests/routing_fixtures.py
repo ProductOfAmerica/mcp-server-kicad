@@ -465,16 +465,18 @@ def place_units(path: str, symbol: str, ref: str, placements) -> None:
     p.write_bytes(_cst.serialize(tree))
 
 
-def custom_lib(directory: Path, name: str, pins) -> str:
+def custom_lib(directory: Path, name: str, pins, alternates=None) -> str:
     """A one-symbol library: pins [(number, name, type, x, y, angle, hidden[, unit])]. The unit
-    defaults to 1; unit 0 puts the pin in the common sub-symbol, which every unit draws."""
+    defaults to 1; unit 0 puts the pin in the common sub-symbol, which every unit draws.
+    *alternates* maps a pin number to its alternates [(name, type)]."""
     eff = "(effects (font (size 1.27 1.27)))"
     by_unit: dict[int, list[str]] = {}
     for num, pin_name, typ, x, y, ang, hidden, *unit in pins:
+        alts = "".join(f' (alternate "{a}" {t} line)' for a, t in (alternates or {}).get(num, ()))
         by_unit.setdefault(unit[0] if unit else 1, []).append(
             f"(pin {typ} line (at {_n(x)} {_n(y)} {ang}) (length 2.54)"
             + (" (hide yes)" if hidden else "")
-            + f' (name "{pin_name}" {eff}) (number "{num}" {eff}))'
+            + f' (name "{pin_name}" {eff}) (number "{num}" {eff}){alts})'
         )
     common = " ".join(by_unit.pop(0, []))
     units = " ".join(
@@ -496,6 +498,18 @@ def custom_lib(directory: Path, name: str, pins) -> str:
     path = Path(directory) / f"{name}.kicad_sym"
     path.write_text(text, encoding="utf-8")
     return str(path)
+
+
+def select_alternate(path: str, ref: str, num: str, alt: str) -> None:
+    """Select alternate *alt* on pin *num* of every placed *ref*, in the shape KiCad saves it:
+    (pin "N" (uuid ...) (alternate "ALT"))."""
+
+    def fn(root) -> None:
+        for s in _placed(root, ref):
+            (pin,) = [q for q in s.find_all("pin") if q.atoms[1].text == num]
+            pin.append_child(_cst.parse(f'(alternate "{alt}")'.encode()).lists[0], b" ")
+
+    _edit(path, fn)
 
 
 def place_custom(path: str, lib: str, name: str, ref: str, x: float, y: float) -> None:

@@ -492,7 +492,6 @@ class Item:
         "out",
         "sym",
         "new",
-        "alt_names",
         "tv",
         "cls",
         "w",
@@ -513,9 +512,6 @@ class Item:
         self.hidden = self.nc = self.new = False
         self.out: Point | None = None
         self.sym: Sym | None = None
-        # Names only the possible view counts: a pin whose placed alternate leaves it unclear
-        # which name KiCad gives the net.
-        self.alt_names: tuple[str, ...] = ()
         self.tv = False  # text holding a text variable ("${"), whose value is unknown here
         self.cls: tuple[str, ...] = ()  # a label's non-empty Netclass field values (H-C2)
         self.w = 0  # a wire's or bus's stroke width as written; 0 is the default
@@ -578,12 +574,6 @@ _CELL = 25400
 def _pad_order(num: str):
     """Pad numbers in natural order: 2 before 10."""
     return (0, int(num), "") if num.isdigit() else (1, 0, num)
-
-
-def _all_names(it: Item):
-    if it.name is not None:
-        yield it.name
-    yield from it.alt_names
 
 
 class _UF:
@@ -1287,37 +1277,24 @@ class Model:
         for r in s.refs:
             self.pads.setdefault((r, it.num), []).append(it)
         it.pname = _child_text(p, "name")
-        primary = p.atoms[1].text if len(p.atoms) > 1 else "unspecified"
-        it.etype = primary
+        it.etype = p.atoms[1].text if len(p.atoms) > 1 else "unspecified"
+        # A placed alternate sets the pin's type, unless KiCad's SetAlt drops it: one spelled
+        # like the pin's own name, or one the library pin does not define.
         alt = alts.get(it.num)
-        if alt:
+        if alt and alt != it.pname:
             for a in p.find_all("alternate"):
                 if len(a.atoms) > 2 and a.atoms[1].text == alt:
                     it.etype = a.atoms[2].text
                     break
         it.hidden = _pin_hidden(p)
         it.nc = it.etype == "no_connect"
-        # KiCad's rule (sch_pin.cpp): a power_in pin names its net when it is hidden, by its own
-        # name, or when it sits on a power symbol, by the symbol's Value. PWR_FLAG's pin is
-        # power_out and a visible power_in pin on an ordinary part names nothing.
-        if s.is_power:
-            if it.etype == "power_in":
-                it.name = s.value
-            elif primary == "power_in":
-                it.alt_names = (s.value,)
-        elif it.hidden:
-            if not alt:
-                it.name = it.pname if it.etype == "power_in" else None
-            else:
-                # Whether KiCad names the net by the primary or the alternate name is not
-                # established, so neither counts as certain and both count as possible.
-                cands = []
-                if it.etype == "power_in":
-                    cands += [it.pname, alt]
-                if primary == "power_in":
-                    cands.append(it.pname)
-                it.alt_names = tuple(n for n in dict.fromkeys(cands) if n is not None)
-        it.tv = any("${" in n for n in (it.name or "", *it.alt_names))
+        # KiCad's rule (sch_pin.cpp IsGlobalPower and GetDefaultNetName, 9.0.8 and 10.0.6): a
+        # power_in pin names its net when it sits on a power symbol, by the symbol's Value, or
+        # when it is hidden, by the library pin's own name, never an alternate's. PWR_FLAG's pin
+        # is power_out and a visible power_in pin on an ordinary part names nothing.
+        if it.etype == "power_in" and (s.is_power or it.hidden):
+            it.name = s.value if s.is_power else it.pname
+        it.tv = it.name is not None and "${" in it.name
         return it
 
     # -- the narrow view: joins every KiCad reader makes ----------------------------------
@@ -1458,14 +1435,14 @@ class Model:
                 uf.union(group[0].id, it.id)
         first: dict[str, int] = {}
         for it in self.items:  # same-text names join, transitively
-            for name in _all_names(it):
-                uf.union(first.setdefault(name, it.id), it.id)
+            if it.name is not None:
+                uf.union(first.setdefault(it.name, it.id), it.id)
         names: dict[int, list[tuple[Item, str]]] = {}
         bad: dict[int, list[tuple[str, Item]]] = {}
         for it in self.items:
             r = uf.find(it.id)
-            for name in _all_names(it):
-                names.setdefault(r, []).append((it, name))
+            if it.name is not None:
+                names.setdefault(r, []).append((it, it.name))
             for code in self._unhandled(it):
                 bad.setdefault(r, []).append((code, it))
         return _Coarse(uf, names, bad)

@@ -409,6 +409,35 @@ def test_a_pin_already_on_the_net_is_a_no_op(tmp_path):
     assert status == "NOOP" and "already on 'N' via label 'N' at (101.6, 95.25)" in msg
 
 
+@requires_cli
+def test_dec15_an_alternate_sets_a_pins_type_and_never_its_name(tmp_path):
+    """DEC-15 (d04_power_pins_as_targets f to i). KiCad takes a pin's type from the alternate
+    placed on it and names a hidden power_in pin's net by the library pin's own name, never the
+    alternate's (sch_pin.cpp IsGlobalPower and GetDefaultNetName, 9.0.8 and 10.0.6). U3:2 is
+    hidden power_in 'VCC' with a passive alternate placed, so it names nothing; U4:2 is hidden
+    passive 'VCC' with the power_in alternate 'PWRALT' placed, so it sits on VCC. The model used
+    to count both names as possible and neither as certain, and refused all three calls."""
+    from routing_fixtures import custom_lib, place_custom, select_alternate
+
+    p = fresh(tmp_path)
+    for name, ref, x, typ, alt in (
+        ("HALT", "U3", 101.6, "power_in", ("ALTP", "passive")),
+        ("HALT2", "U4", 152.4, "passive", ("PWRALT", "power_in")),
+    ):
+        lib = custom_lib(
+            tmp_path,
+            name,
+            [("1", "A", "passive", -5.08, 0, 0, False), ("2", "VCC", typ, 5.08, 0, 180, True)],
+            alternates={"2": [alt]},
+        )
+        place_custom(p, lib, name, ref, x, 101.6)
+        select_alternate(p, ref, "2", alt[0])
+    assert wired(p, [("U4", "2")], "VCC")[0] == "NOOP"
+    status, msg = wired(p, [("U4", "2")], "PWRALT")
+    assert status == "REFUSED" and msg.startswith("[names]") and "'VCC'" in msg, msg
+    assert wired(p, [("U3", "2")], "SIG")[0] == "OK"
+
+
 # ---------------------------------------------------------------------------------------------
 # Pad identity and pin resolution (design 4.5, 4.8)
 # ---------------------------------------------------------------------------------------------
