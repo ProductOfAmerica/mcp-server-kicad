@@ -339,7 +339,8 @@ def transform_mm(
     """A lib pin's sheet position (mm) and outward angle, for callers holding plain numbers.
 
     The same integer transform as symbol_transform and pin_end. Raises ValueError for an angle
-    KiCad cannot load.
+    KiCad cannot load. Only schematic._get_pin_pos, the kiutils twin of the pin reads, calls it:
+    tests compare that twin with the reads the tools make, which go through pin_point_mm.
     """
     rot, pang = _angle(str(angle)), _angle(str(pin_angle))
     if rot is None or pang is None:
@@ -1939,8 +1940,12 @@ class Model:
 
     def rule3(self, A: Point, B: Point, pin_ends: set) -> str | None:
         """A new wire's interior meets nothing: no point item near it, a graphic line's ends
-        included (the possible view joins them, though they are not connection points), no
-        collinear overlap with a wire or bus, and no crossing of any line."""
+        included (the possible view joins them, though they are not connection points), and no
+        crossing of any line.
+
+        A collinear overlap needs no check of its own. Two overlapping segments put an end of
+        one on the other: an existing line's end on the new wire is a point item caught below,
+        and a new end on an existing line is caught by rules 1 and 2, which run first."""
         ends = {A, B} & pin_ends
         for x, y, it in self._point_entries():
             if (x, y) in ends:
@@ -1956,9 +1961,6 @@ class Model:
                         f"end {pt((x, y))} of {_desc(ln)} lies on or within 0.05 mm of the new"
                         f" wire {pt(A)}-{pt(B)}"
                     )
-        for ln in self._lines(("wire", "bus")):
-            if _overlap_axis(A, B, ln):
-                return f"{_desc(ln)} overlaps the new wire {pt(A)}-{pt(B)} collinearly"
         # The crossing ban: no reader joins a plain crossing, but a later label, junction or
         # wire end put on it by another tool joins both lines (docs/adr-routing-safety.md).
         for ln in self._lines(_SEGS):
@@ -1988,24 +1990,6 @@ class Model:
             if why:
                 return why
         return None
-
-
-def _overlap_axis(A: Point, B: Point, ln: Item) -> bool:
-    """An axis-aligned new segment A-B overlapping *ln* collinearly over a positive length
-    (within the margin across)."""
-    if A[1] == B[1]:
-        if ln.y != ln.y2 or abs(ln.y - A[1]) > TOL:
-            return False
-        lo, hi = sorted((A[0], B[0]))
-        llo, lhi = sorted((ln.x, ln.x2))
-    elif A[0] == B[0]:
-        if ln.x != ln.x2 or abs(ln.x - A[0]) > TOL:
-            return False
-        lo, hi = sorted((A[1], B[1]))
-        llo, lhi = sorted((ln.y, ln.y2))
-    else:
-        return False
-    return min(hi, lhi) - max(lo, llo) > 0
 
 
 # ---------------------------------------------------------------------------------------------
