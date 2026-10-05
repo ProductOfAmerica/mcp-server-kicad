@@ -501,4 +501,4 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   when its bytes can hold a sheet block or a reference the call asks about, and cached by a
   digest of its content. auto_place_decoupling_cap still writes the cap and each pin separately;
   when a pin is refused after the cap is on disk, it now says what is there and lists the calls
-  that undo it.
+  that remove it, all but a library symbol it copied into lib_symbols, which it says stays.
