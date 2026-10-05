@@ -7,6 +7,7 @@ sym-lib-tables, hierarchical sheets, jobset execution, and version info.
 from __future__ import annotations
 
 import json
+from collections import Counter
 from pathlib import Path
 
 from mcp.server.mcpserver.exceptions import ToolError
@@ -1186,8 +1187,32 @@ def reorder_sheet_pages(
             f"Sheet UUIDs not found: {missing}."
             " Use list_schematic_sheets to see the sheets and their UUIDs."
         )
+    # The slots are filled from new_order, so a block listed twice took two slots and the
+    # last sheet fell off the end with its pins and instances: [A, A] over A, B, C wrote
+    # A, A, B. sheet_map also keeps only the last block per UUID, so two blocks sharing a
+    # listed UUID lost one of them even when page_order itself had no repeats.
+    name = Path(schematic_path).name
+    repeated = sorted(u for u, n in Counter(page_order).items() if n > 1)
+    if repeated:
+        raise ToolError(
+            f"Sheet UUIDs listed more than once in page_order: {repeated}. List each sheet"
+            f" once; {name} was not changed."
+        )
+    uuid_count = Counter(_node_uuid(s) for s in sheets)
+    shared = [u for u in page_order if uuid_count[u] > 1]
+    if shared:
+        raise ToolError(
+            f"Sheet UUIDs {shared} each belong to more than one sheet block in {name}, so"
+            " their order is ambiguous and the file was not changed. Leave them out of"
+            " page_order to keep those blocks where they are."
+        )
     new_order = [sheet_map[u] for u in page_order]
     new_order += [s for s in sheets if _node_uuid(s) not in page_order]
+    if len(new_order) != len(sheets) or {id(n) for n in new_order} != {id(s) for s in sheets}:
+        raise ToolError(
+            f"page_order would not keep every sheet block of {name} exactly once, so the"
+            " file was not changed."
+        )
     # Swap nodes in place, keeping each slot's leading whitespace where it was.
     slots = [i for i, c in enumerate(root.children) if c.kind == "list" and c.head == "sheet"]
     slot_seps = [root.children[i].sep for i in slots]

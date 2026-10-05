@@ -1165,6 +1165,50 @@ class TestReorderSheetPages:
         )
         assert "Reordered" in result
 
+    def _three_sheets(self, tmp_path: Path) -> tuple[Path, list[str]]:
+        """A root with sheets A, B and C, and their UUIDs in file order."""
+        root = tmp_path / "root.kicad_sch"
+        project.create_schematic(schematic_path=str(root))
+        for n in ("a", "b", "c"):
+            child = tmp_path / f"{n}.kicad_sch"
+            project.create_schematic(schematic_path=str(child))
+            project.add_hierarchical_sheet(
+                parent_schematic_path=str(root),
+                sheet_name=n.upper(),
+                sheet_file=str(child),
+                pins=[],
+            )
+        uuids = [s.uuid for s in Schematic.from_file(str(root)).sheets]
+        assert len(uuids) == 3
+        return root, [u for u in uuids if u is not None]
+
+    def test_refuses_a_uuid_listed_twice(self, tmp_path: Path):
+        """[A, A] put A in two slots and pushed C, with its instances, off the end."""
+        root, (a, _, _) = self._three_sheets(tmp_path)
+        before = root.read_bytes()
+
+        with pytest.raises(ToolError, match="more than once"):
+            project.reorder_sheet_pages(page_order=[a, a], schematic_path=str(root))
+
+        assert root.read_bytes() == before
+
+    def test_refuses_a_listed_uuid_two_blocks_share(self, tmp_path: Path):
+        """With B carrying A's UUID, [C, A] wrote C, B, C and lost A."""
+        root, (a, b, c) = self._three_sheets(tmp_path)
+        data = root.read_bytes()
+        own = f'(uuid "{b}")'.encode()
+        assert data.count(own) == 1
+        root.write_bytes(data.replace(own, f'(uuid "{a}")'.encode()))
+        before = root.read_bytes()
+
+        with pytest.raises(ToolError, match="more than one sheet block"):
+            project.reorder_sheet_pages(page_order=[c, a], schematic_path=str(root))
+        assert root.read_bytes() == before
+
+        # Left out of page_order, the shared UUID is no obstacle and both blocks stay.
+        project.reorder_sheet_pages(page_order=[c], schematic_path=str(root))
+        assert [s.uuid for s in Schematic.from_file(str(root)).sheets] == [c, a, a]
+
 
 class TestDuplicateSheet:
     def test_duplicates_sheet(self, tmp_path: Path):
