@@ -407,8 +407,8 @@ class TestFpLibTables:
         the OS environment winning), and the libraries the Plugin and Content
         Manager installed, which KiCad adds while loading the table from
         ${KICAD<N>_3RD_PARTY}/footprints/<package>/<lib>.pretty, a root it
-        computes at run time, as <prefix><lib> unless the table already has
-        the nickname."""
+        computes at run time, as <prefix><lib>, or <prefix><lib>_1 when the
+        table already has that nickname."""
         config = tmp_path / "config" / "9.0"
         config.mkdir(parents=True)
         mine = tmp_path / "mine" / "Mine.pretty"
@@ -456,13 +456,57 @@ class TestFpLibTables:
             "Over": str(override),
             "PCM_Pkg": str(own),
             "PCM_Also": str(pkg / "Also.pretty"),
-        }, "the table's own PCM_Pkg row keeps its nickname; Loose.pretty is in no package"
+            "PCM_Pkg_1": str(pkg / "Pkg.pretty"),
+        }, (
+            "the table's own PCM_Pkg row keeps its nickname and the package's Pkg.pretty"
+            " takes PCM_Pkg_1; Loose.pretty is in no package"
+        )
 
         (config / "kicad.json").write_text(json.dumps({"pcm": {"lib_prefix": "X_"}}))
         assert pcb._FpLibResolver(None, []).global_table["X_Pkg"] == str(pkg / "Pkg.pretty")
         (config / "kicad.json").write_text(json.dumps({"pcm": {"lib_auto_add": False}}))
         table = pcb._FpLibResolver(None, []).global_table
         assert "X_Pkg" not in table and "PCM_Also" not in table and table["PCM_Pkg"] == str(own)
+
+    def test_the_pcm_scan_skips_listed_libraries_and_numbers_clashes(self, tmp_path, monkeypatch):
+        """KiCad's own rules for the libraries it adds (PCM_FP_LIB_TRAVERSER
+        in 9.0.9, PCM_LIB_TRAVERSER in 10.0.6): any depth inside a package; a
+        library whose ${KICAD<N>_3RD_PARTY} URI is already a row stays as that
+        row has it, so a renamed one gains no alias and a disabled one stays
+        unloadable; a nickname already taken, by a row or by a library added
+        before, gets _1, _2 and so on."""
+        config = tmp_path / "config" / "9.0"
+        config.mkdir(parents=True)
+        docs = tmp_path / "docs"
+        footprints = docs / pcb._KICAD_PATH_STR / "9.0" / "3rdparty" / "footprints"
+        for lib in ("a_pkg/Renamed", "a_pkg/Off", "b_pkg/sub/Deep", "c_pkg/Dup", "d_pkg/Dup"):
+            (footprints / f"{lib}.pretty").mkdir(parents=True)
+        (config / "fp-lib-table").write_bytes(
+            _table(
+                [
+                    _row("Renamed", "${KICAD9_3RD_PARTY}/footprints/a_pkg/Renamed.pretty"),
+                    _row(
+                        "PCM_Off",
+                        "${KICAD9_3RD_PARTY}/footprints/a_pkg/Off.pretty",
+                        extra=" (disabled)",
+                    ),
+                ]
+            )
+        )
+        monkeypatch.setenv("KICAD_CONFIG_HOME", str(tmp_path / "config"))
+        monkeypatch.setenv("KICAD_DOCUMENTS_HOME", str(docs))
+        monkeypatch.delenv("KICAD9_3RD_PARTY", raising=False)
+        monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: 9)
+        monkeypatch.setattr(pcb, "_kicad_root", lambda: None)
+
+        resolver = pcb._FpLibResolver(None, [])
+        assert resolver.global_table == {
+            "Renamed": str(footprints / "a_pkg" / "Renamed.pretty"),
+            "PCM_Deep": str(footprints / "b_pkg" / "sub" / "Deep.pretty"),
+            "PCM_Dup": str(footprints / "c_pkg" / "Dup.pretty"),
+            "PCM_Dup_1": str(footprints / "d_pkg" / "Dup.pretty"),
+        }
+        assert resolver.resolve("PCM_Off") is None, "KiCad will not load a disabled library"
 
     def test_no_kicad_cli_means_no_global_table(self, monkeypatch):
         monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: None)

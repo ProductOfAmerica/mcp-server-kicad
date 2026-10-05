@@ -821,17 +821,50 @@ def _read_fp_lib_table(
     return table
 
 
-def _pcm_footprint_libs(configured: dict | None = None) -> dict[str, str]:
+def _lib_table_rows(path: Path) -> list[tuple[str, str]]:
+    """(nickname, URI as written) for every row of one fp-lib-table, disabled
+    rows and every plugin type included, or [] when the table cannot be read.
+
+    What KiCad checks before it adds a library the Plugin and Content Manager
+    installed: whether some row already has that nickname, or that URI before
+    any ${VAR} in it is expanded, whatever the row's state.
+    """
+    try:
+        tree = _cst.parse(path.read_bytes())
+    except (OSError, SyntaxError):
+        return []
+    if not tree.lists or tree.lists[0].head != "fp_lib_table":
+        return []
+    rows = []
+    for row in tree.lists[0].find_all("lib"):
+        name, uri = row.find("name"), row.find("uri")
+        if name is not None and len(name.atoms) > 1:
+            written = uri.atoms[1].text if uri is not None and len(uri.atoms) > 1 else ""
+            rows.append((name.atoms[1].text, written))
+    return rows
+
+
+def _pcm_footprint_libs(
+    configured: dict | None = None, rows: list[tuple[str, str]] | None = None
+) -> dict[str, str]:
     """nickname -> .pretty for the footprint libraries the Plugin and Content
     Manager installed, as KiCad adds them to the global table.
 
-    KiCad never writes these rows to the fp-lib-table file. With "auto add" on
-    (pcm.lib_auto_add in kicad.json, the default) it scans
-    ${KICAD<N>_3RD_PARTY}/footprints/<package>/<lib>.pretty while loading the
-    global table and inserts each as <prefix><lib> (pcm.lib_prefix, default
-    PCM_), a row already in the table keeping its nickname. The same scan, one
-    level under each package, is done here; the caller merges it under the
-    file's own rows.
+    With "auto add" on (pcm.lib_auto_add in kicad.json, the default) KiCad
+    walks ${KICAD<N>_3RD_PARTY}/footprints while it loads the global table and
+    takes every .pretty directory inside a package, at any depth
+    (PCM_FP_LIB_TRAVERSER in KiCad 9's fp_lib_table.cpp, PCM_LIB_TRAVERSER in
+    KiCad 10's library_manager.cpp). A library whose
+    ${KICAD<N>_3RD_PARTY}/footprints/... URI is already a row of the table is
+    left as that row has it, renamed or disabled. Any other is added as
+    <prefix><lib> (pcm.lib_prefix, default PCM_), or as <prefix><lib>_1, _2
+    and so on while the nickname is taken by a row, disabled or not, or by a
+    library added before it; KiCad numbers those in the order its directory
+    walk meets them, and the walk here is sorted. KiCad 9 inserts the rows in
+    memory at every load, and KiCad 10 also saves the table afterwards, so
+    there they come back as rows of the file, which the URI check skips.
+    *rows* are the table's own (nickname, URI) pairs from _lib_table_rows; the
+    caller merges the result under the file's rows.
     """
     major = _kicad_cli_major()
     if major is None:
@@ -841,14 +874,27 @@ def _pcm_footprint_libs(configured: dict | None = None) -> dict[str, str]:
     if pcm.get("lib_auto_add", True) is False:
         return {}
     prefix = str(pcm.get("lib_prefix", "PCM_"))
-    root = _kicad_var(f"KICAD{major}_3RD_PARTY", None, configured)
-    packages = Path(root) / "footprints" if root else None
-    if packages is None or not packages.is_dir():
+    variable = f"KICAD{major}_3RD_PARTY"
+    root = _kicad_var(variable, None, configured)
+    footprints = Path(root) / "footprints" if root else None
+    if footprints is None or not footprints.is_dir():
         return {}
+    taken = {name for name, _ in rows or ()}
+    listed = {uri for _, uri in rows or ()}
     libs: dict[str, str] = {}
-    for package in sorted(p for p in packages.iterdir() if p.is_dir()):
-        for pretty in sorted(p for p in package.glob("*.pretty") if p.is_dir()):
-            libs.setdefault(prefix + pretty.name[: -len(".pretty")], str(pretty))
+    for pretty in sorted(footprints.rglob("*.pretty")):
+        parts = pretty.relative_to(footprints).parts
+        # endswith is case-sensitive, as KiCad's EndsWith is; on Windows the glob is not.
+        if len(parts) < 2 or not pretty.name.endswith(".pretty") or not pretty.is_dir():
+            continue
+        if "/".join(["${" + variable + "}", "footprints", *parts]) in listed:
+            continue
+        base = prefix + pretty.name[: -len(".pretty")]
+        nickname, n = base, 1
+        while nickname in taken:
+            nickname, n = f"{base}_{n}", n + 1
+        taken.add(nickname)
+        libs[nickname] = str(pretty)
     return libs
 
 
@@ -922,7 +968,8 @@ class _FpLibResolver:
             table = (
                 _read_fp_lib_table(path, self.project_dir, configured=configured) if path else {}
             )
-            for nick, pretty in _pcm_footprint_libs(configured).items():
+            rows = _lib_table_rows(path) if path else []
+            for nick, pretty in _pcm_footprint_libs(configured, rows).items():
                 table.setdefault(nick, pretty)
             self._global = table
         return self._global
