@@ -272,4 +272,8 @@ Each slice appends an entry when it lands.
   policies, as with the prototype, while the skill policies left fewer off (26 of 147 against
   40; 169 of 1,196 against 302). The first full pass ran on 4f9861a; the later commits were run
   only on the inputs they can reach (scan_fix_reach.py and scan_multiname.py list them), and on
-  the adaptive policies, whose refusal parsing the gate's first adapter had broken.
+  the adaptive policies, whose refusal parsing the gate's first adapter had broken. A review of
+  the PR then found the pin reads behind get_pin_positions, get_net_connections, connect_pins
+  and the no-connect tools taking a part's definition by lib_id alone, where KiCad and the model
+  take the entry its lib_name names; they now share the model's rule (`lib_key`), and still find
+  a part by its Reference property and draw its top-level unit.
