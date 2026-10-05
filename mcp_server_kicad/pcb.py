@@ -776,6 +776,8 @@ def _read_fp_lib_table(
     project_dir: Path | None,
     depth: int = _LIB_TABLE_DEPTH,
     configured: dict | None = None,
+    *,
+    _memo: dict | None = None,
 ) -> dict:
     """nickname -> .pretty directory for the rows of one fp-lib-table.
 
@@ -790,10 +792,14 @@ def _read_fp_lib_table(
     malformed table answers empty rather than failing the tool, because the
     table is a hint about where libraries are and not the operation itself.
     *configured* is Configure Paths, read once per table and shared with the
-    tables it nests.
+    tables it nests. *_memo* holds the nested tables already read in this
+    traversal, keyed on real path and depth left; it is made per top-level
+    call, never kept, so a live edit of a table stays visible.
     """
     if configured is None:
         configured = _configured_vars()
+    if _memo is None:
+        _memo = {}
     try:
         tree = _cst.parse(path.read_bytes())
     except (OSError, SyntaxError):
@@ -813,7 +819,18 @@ def _read_fp_lib_table(
             continue
         if plugin == "table":
             if depth > 0 and Path(target).is_file():
-                nested = _read_fp_lib_table(Path(target), project_dir, depth - 1, configured)
+                # A nested table is parsed once per depth in this traversal.
+                # Unmemoised, a table naming itself in N rows was parsed
+                # 1+N+N^2+N^3 times (400 for seven rows). The depth is in the
+                # key because a table first reached with less depth left must
+                # not cut a deeper follow short, and a miss is tested by
+                # membership because a table with nothing servable answers {}.
+                key = (os.path.realpath(target), depth - 1)
+                if key not in _memo:
+                    _memo[key] = _read_fp_lib_table(
+                        Path(target), project_dir, depth - 1, configured, _memo=_memo
+                    )
+                nested = _memo[key]
                 for nick, pretty in nested.items():
                     table.setdefault(nick, pretty)
         elif plugin == "kicad" and Path(target).is_dir():
@@ -936,11 +953,12 @@ class _FpLibResolver:
     Content Manager installed, then KiCad's stock footprints under the
     kicad-cli install. update_pcb_from_schematic and place_footprint both
     resolve through one of these, so a hand-placed part and an imported one
-    name the same file. Each table is read at most once per resolver, and the
-    global table only once a local lookup has missed: the stock table's 155
-    nested rows cost about 15 ms to read, which a project library should not
-    pay for, and reading it per resolver rather than once per process keeps a
-    live edit of the table visible.
+    name the same file. The project and global tables are each read at most
+    once per resolver (a table they nest, once per level of nesting it is
+    reached at), and the global table only once a local lookup has missed: the
+    stock table's 155 nested rows cost about 15 ms to read, which a project
+    library should not pay for, and reading it per resolver rather than once
+    per process keeps a live edit of the table visible.
     """
 
     def __init__(self, project_dir: Path | None, search_dirs: list[str]) -> None:

@@ -525,6 +525,81 @@ class TestFpLibTables:
         assert pcb._project_dir(str(tmp_path / "a" / "x.kicad_pcb")) == tmp_path / "a"
         assert pcb._project_dir("", "", str(tmp_path / "b" / "p.kicad_pro")) == tmp_path / "b"
 
+    @pytest.mark.parametrize("servable", [False, True])
+    def test_a_table_naming_itself_is_parsed_once_per_depth(self, tmp_path, monkeypatch, servable):
+        """Seven rows naming the project table itself, one through a ./
+        spelling, used to parse it 1+7+49+343 = 400 times, a count that grows
+        with the cube of the rows. Each depth is parsed once now, both when
+        every nested read answers empty (an empty answer is still an answer,
+        not a miss) and when the table has a library to serve."""
+        proj = tmp_path / "proj"
+        (proj / "libs" / "Mine.pretty").mkdir(parents=True)
+        rows = [_row(f"t{i}", "${KIPRJMOD}/fp-lib-table", kind="Table") for i in range(6)]
+        rows.append(_row("t6", "${KIPRJMOD}/./fp-lib-table", kind="Table"))
+        if servable:
+            rows.append(_row("Mine", "${KIPRJMOD}/libs/Mine.pretty"))
+        (proj / "fp-lib-table").write_bytes(_table(rows))
+        monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: None)
+        parses: list[int] = []
+        parse = _cst.parse
+
+        def counted(data):
+            parses.append(len(data))
+            return parse(data)
+
+        monkeypatch.setattr(pcb._cst, "parse", counted)
+        resolver = pcb._FpLibResolver(proj, pcb._fp_search_dirs(str(proj / "b.kicad_pcb")))
+        if servable:
+            assert resolver.resolve("Mine") == str(proj / "libs" / "Mine.pretty")
+        else:
+            assert resolver.resolve("Nope") is None
+        assert len(parses) <= pcb._LIB_TABLE_DEPTH + 1
+
+    def test_a_table_first_reached_shallow_is_still_followed_deep(self, tmp_path, monkeypatch):
+        """C is reached first through B with one level left, where its chain to
+        E is cut short, then straight from A with two, where it reaches E. A
+        table already read is reused only at the same depth, so e resolves."""
+        proj = tmp_path / "proj"
+        (proj / "libs" / "Le.pretty").mkdir(parents=True)
+        (proj / "fp-lib-table").write_bytes(
+            _table(
+                [
+                    _row("b", "${KIPRJMOD}/B", kind="Table"),
+                    _row("c", "${KIPRJMOD}/C", kind="Table"),
+                ]
+            )
+        )
+        (proj / "B").write_bytes(_table([_row("c", "${KIPRJMOD}/C", kind="Table")]))
+        (proj / "C").write_bytes(_table([_row("d", "${KIPRJMOD}/D", kind="Table")]))
+        (proj / "D").write_bytes(_table([_row("e", "${KIPRJMOD}/E", kind="Table")]))
+        (proj / "E").write_bytes(_table([_row("e", "${KIPRJMOD}/libs/Le.pretty")]))
+        monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: None)
+        resolver = pcb._FpLibResolver(proj, pcb._fp_search_dirs(str(proj / "b.kicad_pcb")))
+        assert resolver.resolve("e") == str(proj / "libs" / "Le.pretty")
+
+    def test_a_table_naming_itself_ahead_of_its_rows_keeps_the_same_winner(
+        self, tmp_path, monkeypatch
+    ):
+        """Following the table into itself reaches its own q row before B's, so
+        q is L1. Refusing a table already on the path instead of following it
+        would let B's row win."""
+        proj = tmp_path / "proj"
+        (proj / "libs" / "L1.pretty").mkdir(parents=True)
+        (proj / "libs" / "L2.pretty").mkdir()
+        (proj / "fp-lib-table").write_bytes(
+            _table(
+                [
+                    _row("self", "${KIPRJMOD}/fp-lib-table", kind="Table"),
+                    _row("b", "${KIPRJMOD}/B", kind="Table"),
+                    _row("q", "${KIPRJMOD}/libs/L1.pretty"),
+                ]
+            )
+        )
+        (proj / "B").write_bytes(_table([_row("q", "${KIPRJMOD}/libs/L2.pretty")]))
+        monkeypatch.setattr(pcb, "_kicad_cli_major", lambda: None)
+        resolver = pcb._FpLibResolver(proj, pcb._fp_search_dirs(str(proj / "b.kicad_pcb")))
+        assert resolver.resolve("q") == str(proj / "libs" / "L1.pretty")
+
 
 class TestKicadDocumentsHome:
     """The default of ${KICAD<N>_3RD_PARTY}, the root the Plugin and Content
