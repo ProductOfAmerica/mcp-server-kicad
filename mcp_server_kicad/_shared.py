@@ -244,6 +244,17 @@ _REPLACE_RETRY_DELAYS = (0.05, 0.1, 0.2, 0.4)
 # mode without the ACL hands the owning group whatever the mask allows.
 _POSIX_ACL = "system.posix_acl_access"
 
+# How a library file is opened when what is read from it lands somewhere else:
+# never through a final link, and O_NONBLOCK so that a FIFO answers the open at
+# once and is then refused by fstat rather than hanging the call. Windows has
+# neither flag; O_BINARY keeps its CRT from translating line endings.
+_READ_NO_FOLLOW = (
+    os.O_RDONLY
+    | getattr(os, "O_NOFOLLOW", 0)
+    | getattr(os, "O_NONBLOCK", 0)
+    | getattr(os, "O_BINARY", 0)
+)
+
 # What getxattr and removexattr answer for a file with no ACL (ENODATA), or on a
 # filesystem that has none (ENOTSUP; EOPNOTSUPP is the same number on Linux).
 _NO_ACL = (errno.ENODATA, errno.ENOTSUP, errno.EOPNOTSUPP)
@@ -393,7 +404,8 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
 
     A library directory goes through _require_plain_tree before anything is
     copied, and a copy that fails part way is removed rather than left beside
-    the library, where nothing would ever come back for it.
+    the library, where nothing would ever come back for it. A library file that
+    is a link, or not a regular file, is refused.
     """
     src = Path(path)
     dest = src.with_name(src.name + ".bak")
@@ -439,7 +451,34 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
             if had_old:
                 shutil.rmtree(retired, ignore_errors=True)
         else:
-            _atomic_write(dest, src.read_bytes())
+            # A link is refused, not followed. Followed, its target was copied
+            # to <link>.bak beside it, and the upgrade then replaced the link
+            # with a regular file and left the target as it was. The one
+            # descriptor is both what is read and where the .bak's permissions
+            # come from, so a link swapped in after the check is not followed
+            # either. Windows has no O_NOFOLLOW and checks the name first.
+            why = (
+                "The upgrade will not follow a link or read a special file, so nothing was written."
+            )
+            if os.name == "nt" and stat.S_ISLNK(os.lstat(src).st_mode):
+                raise ToolError(f"The {kind} {src} is a link. {why}")
+            try:
+                fd = os.open(src, _READ_NO_FOLLOW)
+            except OSError as exc:
+                if exc.errno != errno.ELOOP:
+                    raise
+                raise ToolError(f"The {kind} {src} is a link. {why}") from exc
+            try:
+                if not stat.S_ISREG(os.fstat(fd).st_mode):
+                    raise ToolError(f"The {kind} {src} is not a regular file. {why}")
+                with open(fd, "rb", closefd=False) as f:
+                    data = f.read()
+                # The library's permissions, for a new .bak and a refreshed one
+                # alike. Taken from the destination, a new .bak got the umask's
+                # 0644 beside a 0600 library, and an old one never tightened.
+                _atomic_write(dest, data, like=fd)
+            finally:
+                os.close(fd)
     # shutil.Error is NOT an OSError: copytree aggregates per-file failures into
     # it, so catching OSError alone let a partly-failed tree copy out as a raw
     # traceback naming neither the tool nor the library.
@@ -564,7 +603,7 @@ def _ensure_dir(path: str | Path, kind: str = "output directory") -> Path:
     return p
 
 
-def _atomic_write(path: str | Path, data: bytes) -> None:
+def _atomic_write(path: str | Path, data: bytes, *, like: int | None = None) -> None:
     """Write *data* to *path* through a temp file and a replace.
 
     The invariant this exists for: an edit we cannot complete leaves the file
@@ -574,9 +613,10 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
     reader, a plain write was observed torn 345 times in 800 reads, including
     reads of zero bytes; the same probe against this function saw 0 in 25,529.
 
-    The replacement keeps the destination's group, mode and POSIX access ACL.
-    They are set on the temp before a byte is written, and what cannot be
-    carried without widening access is refused.
+    The replacement keeps the destination's group, mode and POSIX access ACL,
+    or takes them from the open file *like* instead, which is how a ``.bak``
+    gets its library's. They are set on the temp before a byte is written, and
+    what cannot be carried without widening access is refused.
 
     Deliberately no fsync. What was measured is tearing, which the replace
     closes completely. fsync buys power-loss durability that nobody here has
@@ -592,7 +632,7 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
     tmp = p.with_name(f"{p.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
     # Windows is left alone: its only mode is read-only, and a read-only temp
     # is one Windows then refuses to delete.
-    carry = os.name != "nt" and p.exists()
+    carry = os.name != "nt" and (like is not None or p.exists())
     # Exclusive, and before the try: a create that fails, or finds the name
     # taken, has made nothing of this call's, and the cleanup below would
     # otherwise delete a file this call did not create. Owner-only when a mode
@@ -615,10 +655,11 @@ def _atomic_write(path: str | Path, data: bytes) -> None:
                 # overwrites; and the original's own ACL goes on last, over the
                 # mode it agrees with.
                 fd = f.fileno()
+                ref = p if like is None else like
                 try:
-                    st = p.stat()
+                    st = os.stat(ref)
                     mode = stat.S_IMODE(st.st_mode)
-                    acl = _posix_acl(p)
+                    acl = _posix_acl(ref)
                     if os.fstat(fd).st_gid != st.st_gid:
                         try:
                             os.fchown(fd, -1, st.st_gid)

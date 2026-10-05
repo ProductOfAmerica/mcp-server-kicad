@@ -20,7 +20,7 @@ from kiutils.items.common import Position
 from kiutils.items.fpitems import FpCircle, FpLine, FpRect
 from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_server_kicad import _cst, _shared
+from mcp_server_kicad import _cst, _shared, symbol
 from mcp_server_kicad._shared import (
     _atomic_write,
     _backup_for_external_write,
@@ -889,6 +889,116 @@ class TestBackupForExternalWrite:
 
         assert (tmp_path / "MyLib.pretty.bak" / "a.kicad_mod").read_bytes() == b"one"
         assert sorted(p.name for p in tmp_path.iterdir()) == ["MyLib.pretty", "MyLib.pretty.bak"]
+
+    @staticmethod
+    def _private_sym(tmp_path: Path) -> Path:
+        src = tmp_path / "lib.kicad_sym"
+        src.write_bytes(b"(kicad_symbol_lib private)\n")
+        src.chmod(0o600)
+        return src
+
+    @staticmethod
+    def _mode(p: Path) -> int:
+        return stat.S_IMODE(p.lstat().st_mode)
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows carries no mode, by decision")
+    def test_a_new_backup_takes_the_library_mode(self, tmp_path):
+        """The mode came from the destination, and a new .bak has none, so it got
+        the umask's 0644 beside a 0600 library."""
+        src = self._private_sym(tmp_path)
+        old = os.umask(0o022)
+        try:
+            dest = _backup_for_external_write(src, "symbol library")
+        finally:
+            os.umask(old)
+        assert dest.read_bytes() == src.read_bytes()
+        assert self._mode(dest) == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows carries no mode, by decision")
+    def test_a_refreshed_backup_is_tightened(self, tmp_path):
+        """And a refresh kept the old .bak's mode, so it never tightened."""
+        src = self._private_sym(tmp_path)
+        stale = tmp_path / "lib.kicad_sym.bak"
+        stale.write_bytes(b"older")
+        stale.chmod(0o644)
+        old = os.umask(0o022)
+        try:
+            _backup_for_external_write(src, "symbol library")
+        finally:
+            os.umask(old)
+        assert stale.read_bytes() == src.read_bytes()
+        assert self._mode(stale) == 0o600
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows carries no mode, by decision")
+    def test_a_read_only_library_backs_up_twice(self, tmp_path):
+        """The stock libraries ship read-only, so their .bak is read-only now too.
+        On Windows that would make the next refresh fail, which is why no mode is
+        carried there; on POSIX the replace needs only the directory writable."""
+        src = self._private_sym(tmp_path)
+        src.chmod(0o444)
+        try:
+            _backup_for_external_write(src, "symbol library")
+            dest = _backup_for_external_write(src, "symbol library")
+        finally:
+            src.chmod(0o644)
+        assert self._mode(dest) == 0o444
+        assert dest.read_bytes() == src.read_bytes()
+
+    @pytest.mark.skipif(os.name == "nt", reason="Windows carries no mode, by decision")
+    def test_a_planted_backup_link_is_replaced_not_followed(self, tmp_path):
+        """The destination's mode was read through the destination's name, so a
+        .bak that was a link to a 0666 file gave the backup 0666."""
+        src = self._private_sym(tmp_path)
+        target = tmp_path / "elsewhere.txt"
+        target.write_bytes(b"not a backup")
+        target.chmod(0o666)
+        TestPlainLibraryTree._symlink(tmp_path / "lib.kicad_sym.bak", target)
+        dest = _backup_for_external_write(src, "symbol library")
+        assert not dest.is_symlink()
+        assert dest.read_bytes() == src.read_bytes()
+        assert self._mode(dest) == 0o600
+        assert target.read_bytes() == b"not a backup"
+        assert self._mode(target) == 0o666
+
+    def test_a_linked_library_file_is_refused(self, tmp_path):
+        """Followed, the link's target was copied to <link>.bak beside the link,
+        and the upgrade then replaced the link with a regular file and left the
+        target as it was."""
+        real = self._private_sym(tmp_path)
+        linked = tmp_path / "linked.kicad_sym"
+        TestPlainLibraryTree._symlink(linked, real)
+        with pytest.raises(ToolError, match="is a link") as exc:
+            _backup_for_external_write(linked, "symbol library")
+        assert str(linked) in str(exc.value)
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["lib.kicad_sym", "linked.kicad_sym"]
+
+    def test_upgrading_a_linked_symbol_library_runs_nothing(self, tmp_path, monkeypatch):
+        real = self._private_sym(tmp_path)
+        linked = tmp_path / "linked.kicad_sym"
+        TestPlainLibraryTree._symlink(linked, real)
+        monkeypatch.setattr(_shared, "_run_cli", lambda *a, **k: pytest.fail("kicad-cli was run"))
+        with pytest.raises(ToolError, match="is a link"):
+            symbol.upgrade_symbol_lib(str(linked))
+        assert sorted(p.name for p in tmp_path.iterdir()) == ["lib.kicad_sym", "linked.kicad_sym"]
+        assert real.read_bytes() == b"(kicad_symbol_lib private)\n"
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership")
+    def test_a_backup_takes_the_library_group(self, tmp_path):
+        src = self._private_sym(tmp_path)
+        src.chmod(0o640)
+        gid = _other_gid(tmp_path)
+        os.chown(src, -1, gid)
+        dest = _backup_for_external_write(src, "symbol library")
+        assert dest.stat().st_gid == gid
+        assert self._mode(dest) == 0o640
+
+    def test_a_backup_takes_the_library_acl(self, acl_dir: Path):
+        src = self._private_sym(acl_dir)
+        acl = _named_reader_acl(os.getuid() + 1)
+        os.setxattr(src, "system.posix_acl_access", acl)
+        dest = _backup_for_external_write(src, "symbol library")
+        assert _read_acl(dest) == acl
+        assert self._mode(dest) == 0o640
 
 
 class TestPlainLibraryTree:
