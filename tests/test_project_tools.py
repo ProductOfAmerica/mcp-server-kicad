@@ -629,11 +629,16 @@ class TestRemoveHierarchicalSheet:
         assert root.read_bytes() == root_bytes
         assert sub.read_bytes() == pointed, "parent schematic must be untouched"
 
-    @pytest.mark.parametrize("alias", ["dot", "absolute", "symlink"])
+    @pytest.mark.parametrize(
+        "alias",
+        ["dot", "absolute", "symlink", "missing-dir-dotdot", "file-dotdot", "dotdot-symlink"],
+    )
     def test_delete_child_file_keeps_a_child_still_referenced_by_another_spelling(
         self, tmp_path: Path, alias: str
     ):
-        """The other block's Sheetfile names the same file with different text."""
+        """The other block's Sheetfile names the same file with different text. KiCad
+        squeezes '..' lexically, so the dotdot spellings name the child to KiCad even
+        though the kernel cannot walk them."""
         parent, child = self._make_parent_and_child(tmp_path)
         uuid1 = self._add_sheet(parent, child, name="Power1")
         uuid2 = self._add_sheet(parent, child, name="Power2")
@@ -641,12 +646,16 @@ class TestRemoveHierarchicalSheet:
             file_name = "./child.kicad_sch"
         elif alias == "absolute":
             file_name = str(child)
+        elif alias == "missing-dir-dotdot":
+            file_name = "missing/../child.kicad_sch"
+        elif alias == "file-dotdot":
+            file_name = "child.kicad_sch/../child.kicad_sch"
         else:
             try:
                 (tmp_path / "link.kicad_sch").symlink_to(child)
             except (OSError, NotImplementedError):
                 pytest.skip("symlinks are not available here")
-            file_name = "link.kicad_sch"
+            file_name = "link.kicad_sch" if alias == "symlink" else "missing/../link.kicad_sch"
         project.modify_hierarchical_sheet(uuid2, schematic_path=str(parent), file_name=file_name)
 
         result = project.remove_hierarchical_sheet(

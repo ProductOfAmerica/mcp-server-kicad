@@ -7,6 +7,7 @@ sym-lib-tables, hierarchical sheets, jobset execution, and version info.
 from __future__ import annotations
 
 import json
+import os
 from collections import Counter
 from pathlib import Path
 
@@ -504,16 +505,27 @@ def remove_hierarchical_sheet(
                 return False
             if sf == child_filename:
                 return True
+            # KiCad squeezes '.' and '..' out of a sheet path lexically before opening it
+            # (wxFileName::MakeAbsolute normalizes with wxPATH_NORM_DOTS), while the kernel
+            # walks each component, so 'zz/../child.kicad_sch' with no zz, or
+            # 'child.kicad_sch/../child.kicad_sch', is the child to KiCad and missing to
+            # samefile. Compare the lexical path too, both as text and as a file.
+            lexical = Path(os.path.normpath(parent_dir / sf))
+            if lexical == Path(os.path.normpath(child_path)):
+                return True
             if not child_path.exists():
                 return False
-            try:
-                return (parent_dir / sf).samefile(child_path)
-            except (FileNotFoundError, NotADirectoryError):
-                return False
-            except (OSError, ValueError):
-                # This guards the package's only delete, so a block whose file cannot be
-                # compared for any reason but its absence keeps the child.
-                return True
+            for cand in (parent_dir / sf, lexical):
+                try:
+                    if cand.samefile(child_path):
+                        return True
+                except (FileNotFoundError, NotADirectoryError):
+                    pass
+                except (OSError, ValueError):
+                    # This guards the package's only delete, so a block whose file cannot
+                    # be compared for any reason but its absence keeps the child.
+                    return True
+            return False
 
         other_refs = any(_names_child(s) for j, s in enumerate(sheets) if j != matches[0])
         if other_refs:
