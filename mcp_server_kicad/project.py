@@ -670,7 +670,7 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
         existing_refs.update(_collect_refs_cst(hierarchy_root))
         for sheet in hierarchy_root.find_all("sheet"):
             child_path = root_dir / (_sheet_file_cst(sheet) or "")
-            if child_path.exists() and str(child_path.resolve()) != str(
+            if child_path.is_file() and str(child_path.resolve()) != str(
                 Path(schematic_path).resolve()
             ):
                 child_root = _cst.parse(child_path.read_bytes()).lists[0]
@@ -797,7 +797,10 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
         sheet_name = _sheet_name_cst(sheet) or ""
         file_name = _sheet_file_cst(sheet) or ""
         child_path = sch_dir / file_name
-        if not child_path.exists():
+        # is_file, not exists, here and at every other read of a Sheetfile: it is document
+        # content, and a directory or a device such as /dev/zero, which read_bytes() never
+        # finishes, counts as a missing sheet.
+        if not child_path.is_file():
             issues.append(
                 {
                     "type": "missing_file",
@@ -913,7 +916,7 @@ def list_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyResult:
             "x": _numish(at.atoms[1].text),
             "y": _numish(at.atoms[2].text),
         }
-        if child_path.exists():
+        if child_path.is_file():
             child_root = _cst.parse(child_path.read_bytes()).lists[0]
             child_info["component_count"] = len(child_root.find_all("symbol"))
             child_info["label_count"] = len(child_root.find_all("label"))
@@ -955,7 +958,7 @@ def get_sheet_info(sheet_uuid: str, schematic_path: str = SCH_PATH) -> SheetInfo
     # Load child to check label matching
     child_labels: set[str] = set()
     child_info: dict = {}
-    if child_path.exists():
+    if child_path.is_file():
         child_root = _cst.parse(child_path.read_bytes()).lists[0]
         child_labels = {_node_text(hl) for hl in child_root.find_all("hierarchical_label")}
         child_info = {
@@ -1031,7 +1034,7 @@ def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> Net
             )
             # Look inside child
             child_path = sch_dir / file_name
-            if child_path.exists():
+            if child_path.is_file():
                 child_root = _cst.parse(child_path.read_bytes()).lists[0]
                 hlabel_count = _count(child_root, "hierarchical_label")
                 if hlabel_count:
@@ -1059,7 +1062,7 @@ def trace_hierarchical_net(net_name: str, schematic_path: str = SCH_PATH) -> Net
     for sheet in root.find_all("sheet"):
         file_name = _sheet_file_cst(sheet) or ""
         child_path = sch_dir / file_name
-        if child_path.exists():
+        if child_path.is_file():
             child_root = _cst.parse(child_path.read_bytes()).lists[0]
             glabel_count = _count(child_root, "global_label")
             if glabel_count:
@@ -1098,7 +1101,7 @@ def list_cross_sheet_nets(schematic_path: str = SCH_PATH) -> CrossSheetNetsResul
         sheet_name = _sheet_name_cst(sheet) or ""
         file_name = _sheet_file_cst(sheet) or ""
         child_path = sch_dir / file_name
-        child_root = _cst.parse(child_path.read_bytes()).lists[0] if child_path.exists() else None
+        child_root = _cst.parse(child_path.read_bytes()).lists[0] if child_path.is_file() else None
         hlabels = (
             {_node_text(hl) for hl in child_root.find_all("hierarchical_label")}
             if child_root is not None
@@ -1502,7 +1505,7 @@ def flatten_hierarchy(
     sheet_index = 0
     for child_file in child_files:
         child_path = sch_dir / child_file
-        if not child_path.exists():
+        if not child_path.is_file():
             continue
 
         child_root = _cst.parse(child_path.read_bytes()).lists[0]

@@ -25,6 +25,50 @@ def _first_sheet_uuid(schematic_path: str) -> str:
     return uuid
 
 
+# Sheetfile values naming something that is not a regular file. /dev/null stands in for
+# /dev/zero, which a regressed guard would read until memory ran out; /dev/null ends at
+# once. On Windows Path("/dev/null") does not exist, so that case would prove nothing.
+_NON_REGULAR = [
+    pytest.param("adir", id="directory"),
+    pytest.param(
+        "/dev/null",
+        id="device",
+        marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX device path"),
+    ),
+]
+
+
+@pytest.fixture
+def pointed_root(request, tmp_path: Path):
+    """A project root whose one sheet's Sheetfile names ``request.param``, not its child.
+
+    A relative ``adir`` is created as a directory and ``empty.kicad_sch`` as an empty
+    file. The root's own bytes are put back afterwards, so the kicad-cli oracle judges
+    what the tools wrote rather than this hand-made edit.
+    """
+    proj_dir = tmp_path / "proj"
+    project.create_project(directory=str(proj_dir), name="proj")
+    child = proj_dir / "child.kicad_sch"
+    project.create_schematic(schematic_path=str(child))
+    root = proj_dir / "proj.kicad_sch"
+    project.add_hierarchical_sheet(
+        parent_schematic_path=str(root),
+        sheet_name="Power",
+        sheet_file=str(child),
+        pins=[{"name": "VIN", "direction": "input"}],
+        project_path=str(proj_dir / "proj.kicad_pro"),
+    )
+    if request.param == "adir":
+        (proj_dir / "adir").mkdir()
+    elif request.param == "empty.kicad_sch":
+        (proj_dir / "empty.kicad_sch").write_bytes(b"")
+    original = root.read_bytes()
+    assert original.count(b'"child.kicad_sch"') == 1
+    root.write_bytes(original.replace(b'"child.kicad_sch"', f'"{request.param}"'.encode()))
+    yield root
+    root.write_bytes(original)
+
+
 class TestCreateProject:
     def test_creates_pro_and_prl(self, tmp_path: Path):
         result = project.create_project(directory=str(tmp_path / "myproj"), name="myproj")
@@ -1187,6 +1231,48 @@ class TestListCrossSheetNets:
         net_names = {n["name"] for n in result.hierarchical_nets}
         assert "VIN" in net_names
         assert "GND" in net_names
+
+
+@pytest.mark.parametrize("pointed_root", _NON_REGULAR, indirect=True)
+class TestNonRegularChildSheet:
+    """Every read of a Sheetfile gated on exists() and then read the whole file, so a
+    directory raised a raw IsADirectoryError (PermissionError on Windows) and /dev/zero
+    grew the read until memory ran out. Each tool now treats such a sheet as missing."""
+
+    def test_validate_hierarchy(self, pointed_root: Path):
+        result = project.validate_hierarchy(schematic_path=str(pointed_root))
+        assert [i["type"] for i in result.issues] == ["missing_file"]
+
+    def test_list_hierarchy(self, pointed_root: Path):
+        result = project.list_hierarchy(schematic_path=str(pointed_root))
+        assert "error" in result.sheets[0]
+
+    def test_get_sheet_info(self, pointed_root: Path):
+        result = project.get_sheet_info(
+            sheet_uuid=_first_sheet_uuid(str(pointed_root)), schematic_path=str(pointed_root)
+        )
+        assert result.component_count is None
+        assert [p["matched"] for p in result.pins] == [False]
+
+    def test_trace_hierarchical_net(self, pointed_root: Path):
+        result = project.trace_hierarchical_net(net_name="VIN", schematic_path=str(pointed_root))
+        assert [c["type"] for c in result.connections] == ["sheet_pin"]
+
+    def test_list_cross_sheet_nets(self, pointed_root: Path):
+        result = project.list_cross_sheet_nets(schematic_path=str(pointed_root))
+        assert [n["label_matched"] for n in result.hierarchical_nets] == [False]
+
+    def test_annotate_schematic(self, pointed_root: Path):
+        result = project.annotate_schematic(
+            schematic_path=str(pointed_root),
+            project_path=str(pointed_root.with_suffix(".kicad_pro")),
+        )
+        assert "No unannotated" in result
+
+    def test_flatten_hierarchy(self, pointed_root: Path):
+        out = pointed_root.parent / "flat.kicad_sch"
+        project.flatten_hierarchy(schematic_path=str(pointed_root), output_path=str(out))
+        assert out.is_file()
 
 
 class TestGetSymbolInstances:
