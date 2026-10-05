@@ -10,7 +10,8 @@ test's judge, docs/adr-routing-safety.md):
 
 - ``bad_merges``: an after-net joins before-nets outside the requested join;
 - ``splits``: a before-net's nodes end up in two or more nets;
-- ``renames``: a net outside the requested join keeps its nodes but changes its name;
+- ``renames``: a net keeps its nodes but changes its name, outside the requested join or,
+  for a net that carried a user name, inside it;
 - ``class_changes``: a node's net class changes, other than a requested node taking a class one
   of the joined nets already had;
 - ``pads_multi``: a node is listed in more nets than before (a pad in two nets);
@@ -88,6 +89,12 @@ def bare_name(name: str) -> str:
     return name.rsplit("/", 1)[-1] if "/" in name else name
 
 
+def is_named(name: str, n: str) -> bool:
+    """A printed net name is N, with or without a sheet path. kicadxml prints a name's "/"
+    unescaped ("A{slash}B" as /A/B), so the path cannot be split off at the last "/"."""
+    return name == n or name.endswith("/" + n)
+
+
 def _user_name(name: str) -> bool:
     return bool(name) and not _AUTO_NAME.search(name)
 
@@ -157,7 +164,7 @@ def judge(
     for g in groups:
         allowed |= {bnet[node] for node in g if node in bnet}
     if n is not None:
-        allowed |= {i for i, (_c, name, _k, _v) in enumerate(before) if bare_name(name) == n}
+        allowed |= {i for i, (_c, name, _k, _v) in enumerate(before) if is_named(name, n)}
     v = Verdict()
 
     for _c, name, _k, nodes in after:
@@ -181,7 +188,8 @@ def judge(
         if not nodes or acount[nodes] != 1 or bcount[nodes] != 1 or nodes not in bsets:
             continue
         i, old = bsets[nodes]
-        if old != name and i not in allowed:
+        # Inside the join an unnamed net may take N; a user-named one keeps its name.
+        if old != name and (i not in allowed or _user_name(old)):
             v.renames.append((old, name))
 
     joined_classes = {before[i][2] for i in allowed}
@@ -209,10 +217,8 @@ def judge(
             continue
         if n is not None:
             (j,) = homes
-            was_n = any(
-                bare_name(before[bnet[node]][1]) == n for node in after[j][3] if node in bnet
-            )
-            delivered &= bare_name(after[j][1]) == n or was_n
+            was_n = any(is_named(before[bnet[node]][1], n) for node in after[j][3] if node in bnet)
+            delivered &= is_named(after[j][1], n) or was_n
     v.delivered = delivered
     return v
 

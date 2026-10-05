@@ -59,6 +59,22 @@ class TestJudge:
         v = judge(before, after, [{R1}], "N")
         assert v.renames == [("/A", "/B")]
 
+    def test_renaming_the_requested_pads_own_named_net_is_flagged(self):
+        # The routing review's mutation: with the names refusal disabled, R1's net /ZOLD was
+        # renamed /ANEW and the judge passed it, because the rename sat inside the join.
+        before = [net(1, "/ZOLD", R1)]
+        after = [net(1, "/ANEW", R1)]
+        v = judge(before, after, [{R1}], "ANEW")
+        assert v.renames == [("/ZOLD", "/ANEW")] and v.wrong
+
+    def test_a_net_name_holding_a_slash_is_matched_whole(self):
+        # kicadxml prints "A{slash}B" as /A/B; splitting at the last "/" read the name as "B",
+        # so joining R1 to the existing A/B net counted as a bad merge.
+        before = [net(1, "unconnected-(R1-Pad1)", R1), net(2, "/A/B", R2)]
+        after = [net(1, "/A/B", R1, R2)]
+        v = judge(before, after, [{R1}], "A/B")
+        assert not v.wrong and v.delivered, v.problems()
+
     def test_nets_sharing_a_printed_name_are_told_apart_by_nodes(self):
         before = [net(1, "/X", R1), net(2, "/X", R2)]
         assert not judge(before, before, [], None).wrong
