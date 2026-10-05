@@ -1000,6 +1000,43 @@ class TestBackupForExternalWrite:
         assert _read_acl(dest) == acl
         assert self._mode(dest) == 0o640
 
+    @pytest.mark.skipif(os.name == "nt", reason="Python 3.10 on Windows ignores mkdir's mode")
+    def test_the_staging_copy_is_owner_only_while_it_fills(self, tmp_path, monkeypatch):
+        """copytree made the staging directory at the umask's 0755 and each file
+        at 0644, and applied the library's own modes only after the bytes were
+        in. A descriptor opened in that window kept reading. So the staging
+        root's mode is read at the moment each file in it is created, through
+        the open both copiers use."""
+        pretty = tmp_path / "MyLib.pretty"
+        pretty.mkdir()
+        (pretty / "a.kicad_mod").write_bytes(b'(footprint "a")')
+        (pretty / "b.kicad_mod").write_bytes(b'(footprint "b")')
+        pretty.chmod(0o750)
+        seen: list[int] = []
+        real_open = open
+
+        def spy(file, mode="r", *args, **kwargs):
+            if not isinstance(file, int) and mode in ("wb", "xb"):
+                root = Path(file).parent
+                if root.name.endswith(".tmp"):
+                    seen.append(stat.S_IMODE(root.stat().st_mode))
+            return real_open(file, mode, *args, **kwargs)
+
+        # Both modules look open up in their own globals before the builtins, and
+        # between them they create every file a copy holds.
+        monkeypatch.setattr(_shared, "open", spy, raising=False)
+        monkeypatch.setattr(shutil, "open", spy, raising=False)
+        old = os.umask(0o022)
+        try:
+            dest = _backup_for_external_write(pretty, "footprint library")
+        finally:
+            os.umask(old)
+            monkeypatch.undo()
+        assert len(seen) == 2, f"expected one file creation per footprint, saw {seen}"
+        assert all(m & 0o077 == 0 for m in seen), [oct(m) for m in seen]
+        assert self._mode(dest) == 0o750, "the .bak no longer takes the library's mode"
+        assert (dest / "a.kicad_mod").read_bytes() == b'(footprint "a")'
+
 
 class TestPlainLibraryTree:
     """A footprint library is copied twice before kicad-cli touches it, once for

@@ -428,8 +428,17 @@ def _backup_for_external_write(path: str | Path, kind: str) -> Path:
                 if leftover.exists():
                     shutil.rmtree(leftover)
             had_old = dest.exists()
+            # Owner-only until the copy is whole. copytree made it at the
+            # umask's 0755 and copy2 each file at 0644, with the library's own
+            # modes applied only after the bytes were in, and a descriptor
+            # opened in that window kept reading. The final copystat still
+            # gives the .bak the library's mode. Exclusive, and before the try,
+            # for _atomic_write's reason: a name already taken is refused
+            # without the cleanup below deleting a directory this call did not
+            # make.
+            os.mkdir(staging, 0o700)
             try:
-                shutil.copytree(src, staging)
+                shutil.copytree(src, staging, dirs_exist_ok=True)
                 # Retire the old backup rather than deleting it first. Deleting
                 # it first left a window in which NO backup existed at all: the
                 # copy was complete and safe, but a crash between the delete and
