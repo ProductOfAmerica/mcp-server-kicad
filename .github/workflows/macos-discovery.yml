@@ -13,6 +13,9 @@ on:
   push:
     branches: [main, master, "ci/**"]
 
+permissions:
+  contents: read
+
 jobs:
   discovery:
     # arm64, matching the "macOS 15 (arm64)" environment #2 was reported on.
