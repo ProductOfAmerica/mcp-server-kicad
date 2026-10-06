@@ -15,6 +15,9 @@ on:
   push:
     branches: [main, master, "ci/**"]
 
+permissions:
+  contents: read
+
 jobs:
   discovery:
     # Pinned for the same reason kicad-suite.yml pins its Ubuntu: a -latest

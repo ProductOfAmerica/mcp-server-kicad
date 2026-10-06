@@ -22,6 +22,9 @@ on:
   pull_request:
     branches: [main, master]
 
+permissions:
+  contents: read
+
 jobs:
   suite:
     # Pinned rather than ubuntu-latest: this depends on an external PPA, and a
