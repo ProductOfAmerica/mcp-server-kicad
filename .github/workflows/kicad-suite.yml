@@ -51,11 +51,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # kicad-symbols and kicad-footprints are Recommends of kicad, so
-      # --no-install-recommends would drop them, break _resolve_system_lib, and
-      # leave ERC reporting bogus "library not found" violations, disabling the
-      # coverage this job exists to add. Keep the recommends and exclude only the
-      # multi-GB 3D models, via apt's trailing-dash syntax.
+      # kicad-symbols and kicad-footprints arrive as Recommends, through the
+      # kicad-libraries metapackage that kicad itself recommends, and so does
+      # kicad-demos, which the routing demo tests read. --no-install-recommends
+      # would drop all of them, break _resolve_system_lib, and leave ERC
+      # reporting bogus "library not found" violations, disabling the coverage
+      # this job exists to add. Keep the recommends and exclude only the
+      # multi-GB 3D models, via apt's trailing-dash syntax. Both PPAs carry the
+      # same dependency shape (read from their Packages indexes, 2026-10-10).
       - name: Install KiCad ${{ matrix.kicad }}
         run: |
           sudo add-apt-repository -y "ppa:kicad/kicad-${KICAD_SERIES}-releases"
