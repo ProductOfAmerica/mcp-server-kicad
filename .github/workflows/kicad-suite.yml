@@ -4,8 +4,8 @@ name: KiCad suite (Linux)
 # ci.yml's Python-version matrix should stay fast. Same reasoning as
 # macos-discovery.yml, whose structure this mirrors.
 #
-# It exists because ci.yml installs no KiCad, so 46 of 649 tests skip there. That
-# was tolerable while most of them could not fail anyway: they wrapped their only
+# It exists because ci.yml installs no KiCad, so tests skip there (46 of 649 when
+# this job was added, 2026-08-08). That was tolerable while most of them could not fail anyway: they wrapped their only
 # assertion in `except (ToolError, RuntimeError, FileNotFoundError): pass`, and a
 # bad scratch_pcb fixture meant every PCB export took the except branch on every
 # machine. Removing that exposed three defects that had already shipped, so the
@@ -51,14 +51,16 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      # kicad-symbols and kicad-footprints arrive as Recommends, through the
-      # kicad-libraries metapackage that kicad itself recommends, and so does
-      # kicad-demos, which the routing demo tests read. --no-install-recommends
-      # would drop all of them, break _resolve_system_lib, and leave ERC
-      # reporting bogus "library not found" violations, disabling the coverage
-      # this job exists to add. Keep the recommends and exclude only the
-      # multi-GB 3D models, via apt's trailing-dash syntax. Both PPAs carry the
-      # same dependency shape (read from their Packages indexes, 2026-10-10).
+      # kicad recommends kicad-libraries and kicad-demos (the routing demo tests
+      # read the demos), and kicad-libraries recommends kicad-symbols and
+      # kicad-footprints. --no-install-recommends would drop all of them, break
+      # _resolve_system_lib, and leave ERC reporting bogus "library not found"
+      # violations, disabling the coverage this job exists to add. Keep the
+      # recommends and exclude only the multi-GB 3D models, via apt's
+      # trailing-dash syntax. Read from both PPAs' noble Packages indexes,
+      # 2026-10-10: the 9.0 PPA ships no kicad-templates, so that leg takes
+      # Ubuntu's own (7.0.9); nothing here reads it beyond an existence check
+      # in a run_erc hint.
       - name: Install KiCad ${{ matrix.kicad }}
         run: |
           sudo add-apt-repository -y "ppa:kicad/kicad-${KICAD_SERIES}-releases"
@@ -131,4 +133,6 @@ jobs:
       # Only one Python version. kicad-cli is a subprocess and does not behave
       # differently across Python versions, so spreading this over ci.yml's
       # matrix legs would repeat a multi-minute install per leg for nothing.
-      - run: uv run pytest -v -n auto
+      # -rs prints each skip's reason, so a leg's log says which tests did
+      # not run and why.
+      - run: uv run pytest -v -n auto -rs
