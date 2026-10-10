@@ -15,6 +15,10 @@ name: KiCad suite (Linux)
 # cheaper than macos-15, and this guards the whole suite rather than checking one
 # derivation. Drop the pull_request trigger if the added latency stops being worth
 # it.
+#
+# It runs once per supported KiCad major. The two KiCad 10 gates, macOS and
+# Windows, run only on pushes to main and ci/**, so before the 10.0 leg a pull
+# request from a feature branch merged with no KiCad 10 signal at all.
 on:
   workflow_dispatch:
   push:
@@ -27,25 +31,34 @@ permissions:
 
 jobs:
   suite:
+    name: suite (KiCad ${{ matrix.kicad }})
     # Pinned rather than ubuntu-latest: this depends on an external PPA, and a
     # runner image bump to a series the PPA has not built for would break the job
     # for reasons that have nothing to do with the code.
     runs-on: ubuntu-24.04
     timeout-minutes: 30
+    strategy:
+      # Each leg answers a different question, so one major failing must not
+      # cancel the other and hide whether the fault is version-specific.
+      fail-fast: false
+      matrix:
+        # The PPA series names, ppa:kicad/kicad-<series>-releases. Each serves
+        # only its newest point release, so the patch version is whatever the
+        # PPA held that day; the version check below records it in the log.
+        kicad: ["9.0", "10.0"]
+    env:
+      KICAD_SERIES: ${{ matrix.kicad }}
     steps:
       - uses: actions/checkout@v7
 
-      # KiCad 9, not the 10.0 series kicad.org ships as current stable: this repo
-      # targets 9, and KICAD_SCH_VERSION is the KiCad 9 schematic format.
-      #
       # kicad-symbols and kicad-footprints are Recommends of kicad, so
       # --no-install-recommends would drop them, break _resolve_system_lib, and
       # leave ERC reporting bogus "library not found" violations, disabling the
       # coverage this job exists to add. Keep the recommends and exclude only the
       # multi-GB 3D models, via apt's trailing-dash syntax.
-      - name: Install KiCad 9
+      - name: Install KiCad ${{ matrix.kicad }}
         run: |
-          sudo add-apt-repository -y ppa:kicad/kicad-9.0-releases
+          sudo add-apt-repository -y "ppa:kicad/kicad-${KICAD_SERIES}-releases"
           sudo apt-get update
           sudo apt-get install -y kicad kicad-packages3d-
 
@@ -53,6 +66,32 @@ jobs:
         with:
           python-version: "3.10"
       - run: uv sync --frozen --all-extras --dev
+
+      # Fatal, unlike the report below. A leg named for one major that resolved
+      # another (a PPA mix-up, a stale package pulled in from the runner image)
+      # would pass green while testing the wrong KiCad, which is worse than
+      # failing. pcbnew is checked separately because fill_zones and
+      # autoroute_pcb run under pcbnew's own interpreter, not kicad-cli.
+      - name: Confirm the leg runs the KiCad it is named for
+        run: |
+          uv run python - <<'PY'
+          import os
+          import subprocess
+
+          from mcp_server_kicad._freerouting import pcbnew_major
+          from mcp_server_kicad._shared import _find_kicad_cli
+
+          want = int(os.environ["KICAD_SERIES"].split(".")[0])
+          cli = _find_kicad_cli()
+          assert cli, "no kicad-cli resolved"
+          version = subprocess.run(
+              [cli, "version"], capture_output=True, text=True, check=True
+          ).stdout.strip()
+          print("kicad-cli version:", version)
+          print("pcbnew major     :", pcbnew_major())
+          assert int(version.split(".")[0]) == want, (version, want)
+          assert pcbnew_major() == want, (pcbnew_major(), want)
+          PY
 
       # Non-fatal. This is the first look at a real Linux install, so record what
       # resolved even when the suite passes. If tests fail on library lookup, this
