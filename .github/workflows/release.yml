@@ -13,6 +13,9 @@ on:
 permissions:
   contents: write
   id-token: write
+  # Read-only, for the gate below: listing a workflow's runs needs it once
+  # the token's permissions are spelled out.
+  actions: read
 jobs:
   release:
     # Pinned to the image this has always released from. Nothing exercises it
@@ -24,6 +27,127 @@ jobs:
       - uses: actions/checkout@v7
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          # Full history, so the gate can walk back through bump commits.
+          fetch-depth: 0
+
+      # Refuse, before anything is built, bumped or pushed, unless CI and every
+      # KiCad suite passed on the commit being released. This job's own pytest
+      # run below has no KiCad installed, so every test that needs kicad-cli or
+      # pcbnew skips here, and it runs Python 3.10 only: ci.yml is the only
+      # place 3.11 to 3.14 are tested, and the three KiCad workflows the only
+      # place the write paths are checked against KiCad 9 and KiCad 10.
+      #
+      # The latest push or workflow_dispatch run per workflow decides, so a
+      # failure that was re-run green counts as green and a green run followed
+      # by a red one does not. A run still queued or in progress has no
+      # conclusion yet and is refused, as is an API error.
+      #
+      # A release's own bump commit is pushed with the default GITHUB_TOKEN and
+      # triggers no runs, so releasing again from one would always be refused.
+      # When HEAD is a bump commit, the commit it bumped joins the evidence (and
+      # the one before that, through any chain of bumps), and the newest run
+      # across them decides: the tree is the same, so a suite dispatched on the
+      # bump commit itself still counts. A commit is only treated as a bump when
+      # github-actions[bot] authored it with the bump subject, it touches exactly
+      # the four files the commit step stages, every changed line in the three
+      # manifests is a version line, and uv.lock changed nothing but this
+      # project's own version line. The last rule is not hypothetical: the bumps
+      # to v0.11.0 and v0.12.0 re-locked dependency markers, which is a tree the
+      # earlier runs never tested, so such a commit needs runs of its own.
+      #
+      # A dispatch can name any branch, and a ci/** branch has green push runs
+      # of its own, so the ref is checked too: releases are cut from main only.
+      - name: Refuse a commit whose CI or KiCad suites are not green
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "::error::releases are cut from main; this run is on $GITHUB_REF"
+            exit 1
+          fi
+          is_bump() {
+            local c="$1" changed stray
+            [ "$(git log -1 --format=%an "$c")" = "github-actions[bot]" ] || return 1
+            git log -1 --format=%s "$c" | grep '^chore: bump version to v' > /dev/null || return 1
+            changed=$(git diff --name-only "$c^" "$c" | LC_ALL=C sort | tr '\n' ' ')
+            [ "$changed" = ".claude-plugin/plugin.json pyproject.toml server.json uv.lock " ] || return 1
+            stray=$(git diff -U0 "$c^" "$c" -- .claude-plugin/plugin.json pyproject.toml server.json \
+              | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' \
+              | grep -vE '^[+-][[:space:]]*("version": "|version = ")' || true)
+            [ -z "$stray" ] || return 1
+            git diff -U1 "$c^" "$c" -- uv.lock | sed -n '/^@@/,$p' | awk '
+              NR == 1 { ok = /^@@ /; next }
+              NR == 2 { ok = ok && $0 == " name = \"mcp-server-kicad\""; next }
+              NR == 3 { ok = ok && /^-version = "[^"]+"$/; next }
+              NR == 4 { ok = ok && /^\+version = "[^"]+"$/; next }
+              NR == 5 { ok = ok && /^ /; next }
+              { ok = 0 }
+              END { exit !(ok && NR == 5) }'
+          }
+          candidates="$SHA"
+          c="$SHA"
+          while is_bump "$c"; do
+            c=$(git rev-parse "$c^")
+            candidates="$candidates $c"
+          done
+          if git log -1 --format=%s "$c" | grep '^chore: bump version to v' > /dev/null; then
+            echo "::notice::$(git rev-parse --short "$c") has the bump subject but is not treated as a bump (author, files, or a changed line beyond the version lines), so it needs runs of its own: dispatch ci.yml, kicad-suite.yml, macos-discovery.yml and windows.yml on main"
+          fi
+          echo "judging the runs on: $candidates"
+          failed=0
+          for wf in ci.yml kicad-suite.yml macos-discovery.yml windows.yml; do
+            runs='[]'
+            for s in $candidates; do
+              if ! page=$(gh api "repos/$REPO/actions/workflows/$wf/runs?head_sha=$s&per_page=100" \
+                  --jq '[.workflow_runs[] | select(.event == "push" or .event == "workflow_dispatch")
+                         | {run_number, status, conclusion, head_sha}]'); then
+                echo "::error::could not list the $wf runs on $s"
+                failed=1
+                continue 2
+              fi
+              runs=$(jq -cn --argjson a "$runs" --argjson b "$page" '$a + $b')
+            done
+            verdict=$(jq -rn --argjson r "$runs" '$r | max_by(.run_number)
+              | if . == null then "missing" else (.conclusion // .status) + " on " + .head_sha[0:7] end')
+            echo "$wf: $verdict"
+            case "$verdict" in
+              "success on "*) ;;
+              *) echo "::error::$wf has no successful latest run (latest: $verdict)"; failed=1 ;;
+            esac
+          done
+          exit "$failed"
+
+      # The two tools this job downloads at release time are fetched here, at
+      # pinned versions, and checked before they run: a mismatch stops the
+      # release before anything is pushed, rather than after PyPI already has
+      # the package. They run in the job that holds the PyPI environment and the
+      # registry's OIDC token, which is why "whatever is newest today" is not
+      # good enough for them. (The actions and uv's build backend are pinned by
+      # version tag and range, not by hash; that is a separate hardening.)
+      #
+      # mcp-publisher: the release's tarball, against the sha256 its own
+      # checksums file lists (registry_1.8.1_checksums.txt, read 2026-10-10).
+      # mcpb: npm ci installs exactly the tree in .github/tools/mcpb's
+      # package-lock.json and fails on any tarball whose integrity hash differs.
+      # --ignore-scripts because packing needs no install hook.
+      - name: Fetch the pinned release tools
+        env:
+          MCP_PUBLISHER_VERSION: v1.8.1
+          MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
+        run: |
+          set -euo pipefail
+          tools="$RUNNER_TEMP/release-tools"
+          mkdir -p "$tools"
+          curl -sSfL --retry 3 -o "$tools/mcp-publisher.tar.gz" \
+            "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
+          echo "$MCP_PUBLISHER_SHA256  $tools/mcp-publisher.tar.gz" | sha256sum -c -
+          tar -xzf "$tools/mcp-publisher.tar.gz" -C "$tools" mcp-publisher
+          npm ci --prefix .github/tools/mcpb --ignore-scripts --no-audit --no-fund
+          echo "MCP_PUBLISHER=$tools/mcp-publisher" >> "$GITHUB_ENV"
+          echo "MCPB=$GITHUB_WORKSPACE/.github/tools/mcpb/node_modules/.bin/mcpb" >> "$GITHUB_ENV"
 
       - uses: astral-sh/setup-uv@v10.2.0
         with:
@@ -61,9 +185,10 @@ jobs:
       # stamped files stay dirty and out of git on purpose: they are build
       # output, not repo state.
       #
-      # This runs before the push so that a transient npx or network failure
-      # aborts the release with nothing pushed, rather than stranding a bump
-      # commit on main with no release and no PyPI upload to match it.
+      # This runs before the push so that a packing failure aborts the release
+      # with nothing pushed, rather than stranding a bump commit on main with no
+      # release and no PyPI upload to match it. The packer itself was installed
+      # and checked in "Fetch the pinned release tools", before the bump.
       #
       # The bundle lands in bundle/, never dist/, because the PyPI publish step
       # uploads everything in dist/ and would choke on a non-package file.
@@ -81,7 +206,7 @@ jobs:
           # A reformatted pyproject would slip past sed and ship a bundle
           # pinned to the wrong release, so confirm the stamp landed.
           grep -q "\"mcp-server-kicad==$V\"" mcpb/pyproject.toml
-          npx --yes @anthropic-ai/mcpb pack mcpb "bundle/kicad-$V.mcpb"
+          "$MCPB" pack mcpb "bundle/kicad-$V.mcpb"
 
       # Commit and push
       - name: Commit and push
@@ -118,13 +243,12 @@ jobs:
       # every single release. OIDC uses the id-token permission declared above.
       - name: Publish to the MCP Registry
         run: |
-          curl -sSL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" \
-            | tar -xzf - mcp-publisher
-          ./mcp-publisher login github-oidc
+          # Fetched and checksummed in "Fetch the pinned release tools" above.
+          "$MCP_PUBLISHER" login github-oidc
           # PyPI serves a new version through a CDN, so the registry can still be
           # unable to see it for a few seconds after the publish step returns.
           for attempt in 1 2 3 4 5; do
-            ./mcp-publisher publish && exit 0
+            "$MCP_PUBLISHER" publish && exit 0
             echo "attempt $attempt failed; waiting for PyPI to serve ${{ steps.bump.outputs.version }}"
             sleep 30
           done

@@ -17,3 +17,6 @@ mcpb/uv.lock
 bundle/
 # Scratch gerber output from local probes; never repo content.
 gout*/
+# release.yml installs the pinned MCPB packer here; the sdist takes every
+# file .gitignore does not exclude, so this keeps node_modules out of it.
+.github/tools/mcpb/node_modules/

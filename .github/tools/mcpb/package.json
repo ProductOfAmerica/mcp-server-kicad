@@ -1,0 +1,11 @@
+{
+  "name": "mcp-server-kicad-release-tools",
+  "private": true,
+  "description": "Pins the MCPB packer that release.yml runs. npm ci installs exactly the tree in package-lock.json and checks every tarball against the integrity hash recorded there. The tmp override clears GHSA-52f5-9888-hmc6 and GHSA-ph9p-34f9-6g65 (reached only through mcpb's interactive editor prompt, which pack never opens).",
+  "dependencies": {
+    "@anthropic-ai/mcpb": "2.1.2"
+  },
+  "overrides": {
+    "tmp": "^0.2.6"
+  }
+}
