@@ -8,4 +8,10 @@ in tests/test_ladder_r1_judges.py, never against this package.
 
 Nothing here imports mcp_server_kicad, and nothing may: a judge that shares code
 with the code it judges agrees with it by construction.
+
+Each rung checks the ports it adds in its own judges file,
+tests/test_ladder_r<N>_judges.py: rung 2 adds trigo (angles and RotatePoint),
+transform (the schematic symbol transform), parse_units (number tokens and the
+load clamps), board_item (footprint-relative positions), kicad_io_utils (point
+packing) and eda_units.format_angle, all checked in test_ladder_r2_judges.py.
 """

@@ -31,6 +31,7 @@ import re
 from pathlib import Path
 
 import edit_judge as J
+import kicad_corpus
 import pytest
 from conftest import _nightly_skip_reason
 from kicad_ref import dsn_lexer as L
@@ -52,12 +53,7 @@ _NIGHTLY_ITEM_BYTES = 25_000_000
 _NO_INSTALL = "no KiCad install found through _kicad_root(); ci.yml installs no KiCad"
 
 
-def _share_dirs() -> list[Path]:
-    """KiCad's shared data: share/kicad on Windows and Linux, SharedSupport on macOS."""
-    root = _kicad_root()
-    if root is None:
-        return []
-    return [d for d in (root / "share" / "kicad", root / "SharedSupport") if d.is_dir()]
+_share_dirs = kicad_corpus.share_dirs
 
 
 def _is_sexpr(path: Path) -> bool:

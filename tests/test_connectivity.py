@@ -11,6 +11,7 @@ import random
 from pathlib import Path
 
 import pytest
+from kicad_ref import transform as T
 from routing_fixtures import ORIENTED, fresh, junction, label, place, polyline, wire
 
 from mcp_server_kicad import _connectivity as C
@@ -53,16 +54,22 @@ def _symbol(at: bytes, extra: bytes = b"") -> object:
 
 
 def test_a_mirror_written_before_at_is_ignored():
-    """KiCad's parser resets the transform at (at ...), so an earlier (mirror) is lost."""
+    """KiCad's parser resets the transform at (at ...), so an earlier (mirror) is lost. The
+    expected matrices are the transform port's reading of the same items in the same order
+    (kicad_ref.transform.parse_symbol_transform), not the code's own composition."""
     before = _symbol(b"(at 0 0 90)", b"(mirror y) ")
     after = _cst.parse(b'(symbol (lib_id "x") (at 0 0 90) (mirror y))').lists[0]
-    assert C.symbol_transform(before, "U1")[1] == C._ROT[90]
-    assert C.symbol_transform(after, "U1")[1] == C._compose(C._ROT[90], C._MIR["y"])
+    lost = T.parse_symbol_transform([("mirror", "y"), ("at", "90")])
+    kept = T.parse_symbol_transform([("at", "90"), ("mirror", "y")])
+    assert lost != kept  # the order changes the matrix, so the two cases tell readers apart
+    assert C.symbol_transform(before, "U1")[1] == lost
+    assert C.symbol_transform(after, "U1")[1] == kept
 
 
 def test_an_angle_kicad_truncates_is_read_the_same_way():
     """KiCad casts the parsed double to int, so 90.5 is 90 and 359 is unloadable."""
-    assert C.symbol_transform(_symbol(b"(at 1 2 90.5)"), "U1") == ((10000, 20000), C._ROT[90])
+    rotated = T.parse_symbol_transform([("at", "90.5")])
+    assert C.symbol_transform(_symbol(b"(at 1 2 90.5)"), "U1") == ((10000, 20000), rotated)
     with pytest.raises(C.Refusal) as e:
         C.symbol_transform(_symbol(b"(at 1 2 359)"), "U1")
     assert e.value.codes == ("unloadable",)

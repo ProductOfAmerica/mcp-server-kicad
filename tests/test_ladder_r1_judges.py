@@ -22,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import edit_judge as J
+import kicad_corpus
 import pytest
 import sexpr_gen as G
 from conftest import (
@@ -41,7 +42,6 @@ from kicad_ref import eda_units as U
 from kicad_ref.richio import quotes, quotes_bytes
 
 from mcp_server_kicad._freerouting import find_pcbnew_python, wx_app_prelude
-from mcp_server_kicad._shared import _kicad_root
 
 REPO = Path(__file__).resolve().parents[1]
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
@@ -66,12 +66,7 @@ _NO_INSTALL = (
 )
 
 
-def _share_dirs() -> list[Path]:
-    """KiCad's shared data: share/kicad on Windows and Linux, SharedSupport on macOS."""
-    root = _kicad_root()
-    if root is None:
-        return []
-    return [d for d in (root / "share" / "kicad", root / "SharedSupport") if d.is_dir()]
+_share_dirs = kicad_corpus.share_dirs
 
 
 def _shipped_files(cap: int) -> list[tuple[str, Path]]:

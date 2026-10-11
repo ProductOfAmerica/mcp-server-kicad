@@ -145,104 +145,6 @@ def _get_page_size(sch) -> tuple[float, float]:
     return w, h
 
 
-def _find_lib_symbol(sch, lib_id: str):
-    """Find a lib_symbol by lib_id, checking both bare and prefixed names.
-
-    KiCad schematics may store lib_symbols with the library prefix
-    (e.g. ``"Device:C"``) or without (e.g. ``"C"``).  This helper
-    normalises the lookup so callers don't need to worry about which
-    convention the file uses.
-
-    Returns the matching Symbol object, or ``None``.
-    """
-    bare = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-    for ls in sch.libSymbols:
-        if ls.entryName == bare or ls.entryName == lib_id:
-            return ls
-        # kiutils exposes libId with the library prefix even when
-        # entryName returns the bare name.
-        if getattr(ls, "libId", None) == lib_id:
-            return ls
-    return None
-
-
-def _transform_pin_pos(
-    px: float,
-    py: float,
-    pin_angle: float,
-    cx: float,
-    cy: float,
-    comp_angle_deg: float,
-    mirror: str | None,
-) -> tuple[float, float, float]:
-    """Transform a pin from lib coords to absolute schematic coords.
-
-    Returns (final_x, final_y, outward_angle_deg).
-
-    The outward angle is the direction away from the component body in
-    schematic coordinates (0=right, 90=down/+Y, 180=left, 270=up/-Y).
-
-    KiCad's order: rotate, then mirror. This used to mirror first, which
-    for rotation 90 or 270 with a mirror reflects the pin through the symbol
-    origin, onto the other pin of a two-pin part. The arithmetic is the
-    routing model's integer transform (_connectivity.transform_mm), and the
-    pin reads take a placed symbol's definition by the model's rule
-    (_connectivity.lib_key), so they draw a pin where wire_pins_to_net wires
-    it. They still find a part by its Reference property and draw its
-    top-level unit, where the model takes the reference and unit KiCad reads
-    at the sheet's live instance path. The two differ where the property or
-    the top-level unit is not what KiCad reads there: a stale property, or a
-    reused sheet's other instances.
-    """
-    return _connectivity.transform_mm(px, py, pin_angle, cx, cy, comp_angle_deg, mirror)
-
-
-def _get_pin_pos(sch, reference: str, pin_name: str) -> tuple[float, float, float]:
-    """Return absolute (x, y, outward_angle_deg) for a placed component's pin.
-
-    Matches pin by name (e.g. "IN", "GND") first, then by number (e.g. "1").
-    If multiple pins share a name, returns the first match. A multi-unit part
-    is several placed symbols with one reference: the first whose unit draws
-    the pin wins, unit 0 being common to all. kiutils keeps no body style on
-    a placed symbol, so style 1 is assumed here; the CST twin reads it.
-    Raises ValueError if reference or pin not found.
-    """
-    targets = [
-        s
-        for s in sch.schematicSymbols
-        if any(p.key == "Reference" and p.value == reference for p in s.properties)
-    ]
-    if not targets:
-        raise ValueError(f"Component {reference} not found")
-
-    for target in targets:
-        lib_sym = _find_lib_symbol(sch, target.libId)
-        if lib_sym is None:
-            raise ValueError(f"Lib symbol for {reference} not found")
-
-        cx, cy = target.position.X, target.position.Y
-        comp_angle = target.position.angle or 0
-        mir = getattr(target, "mirror", None)
-        placed_unit = target.unit if target.unit is not None else 1
-
-        for unit in lib_sym.units:
-            if unit.unitId not in (placed_unit, 0, None) or unit.styleId not in (1, 0, None):
-                continue
-            for pin in unit.pins:
-                if pin.name == pin_name or pin.number == pin_name:
-                    return _transform_pin_pos(
-                        pin.position.X,
-                        pin.position.Y,
-                        pin.position.angle or 0,
-                        cx,
-                        cy,
-                        comp_angle,
-                        mir,
-                    )
-
-    raise ValueError(f"Pin '{pin_name}' not found on {reference}")
-
-
 def _point_on_wire_interior(
     px: float,
     py: float,
@@ -1192,7 +1094,7 @@ def _find_sym_cst(root, reference: str):
 
 
 def _find_lib_symbol_cst(root, lib_id: str):
-    """CST twin of _find_lib_symbol: bare and prefixed names both match."""
+    """The lib_symbols entry for *lib_id*, or None: bare and prefixed names both match."""
     bare = lib_id.split(":")[-1] if ":" in lib_id else lib_id
     libs = root.find("lib_symbols")
     for ls in libs.find_all("symbol") if libs is not None else []:
@@ -1223,7 +1125,13 @@ def _drawn_pin_pos_cst(root, target, pin_name: str, reference: str):
 
 
 def _get_pin_pos_cst(root, reference: str, pin_name: str) -> tuple[float, float, float]:
-    """CST twin of _get_pin_pos; same match rules and ValueError strings.
+    """Sheet position (mm) and outward angle of *reference*'s pin *pin_name*.
+
+    The pin matches by name or number, per pin in file order; ValueError when
+    the part or the pin is missing. The part is found by its Reference property
+    and drawn with its top-level unit, which can differ from the reference and
+    unit KiCad reads at the sheet's live instance path (a stale property, a
+    reused sheet's other instances).
 
     Placed symbols are the root-level symbol nodes (find_all never descends
     into lib_symbols). A multi-unit part is several of them sharing one

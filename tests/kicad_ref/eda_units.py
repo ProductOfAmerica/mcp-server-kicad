@@ -67,3 +67,13 @@ def format_internal_units(value: int, iu_per_mm: int) -> str:
         text = format(millimetres, ".10f").rstrip("0")
         return text[:-1] if text.endswith(".") else text
     return format(millimetres, ".10g")
+
+
+def format_angle(degrees: float) -> str:
+    """FormatAngle: the text KiCad writes for an angle of ``degrees``.
+
+    EDA_UNIT_UTILS::FormatAngle (common/eda_units.cpp:162-167 at 9.0.8, 186-191 at
+    10.0.7) is fmt::format( "{:.10g}", aAngle.AsDegrees() ): ten significant digits,
+    trailing zeros and a bare point dropped, an exponent below 1e-4 or from 1e10 on.
+    """
+    return format(degrees, ".10g")

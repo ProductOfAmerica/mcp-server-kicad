@@ -186,10 +186,22 @@ class TestPointInPolygon:
     def test_degenerate_two_points(self):
         assert _point_in_polygon(0.5, 0.5, [(0.0, 0.0), (1.0, 1.0)]) is False
 
-    def test_on_vertex_no_crash(self):
-        # Must not raise; result may be True or False depending on algorithm
-        result = _point_in_polygon(0.0, 0.0, UNIT_SQUARE)
-        assert isinstance(result, bool)
+    def test_a_shared_vertex_or_edge_point_lies_in_exactly_one_square(self):
+        """On an outline the answer is a convention, but it has to be a consistent one:
+        the four unit squares around the origin tile the plane there, so their shared
+        corner, and each point two of them share on an edge, lies in exactly one of
+        them (the partition law), whichever way round each square is listed. Never an
+        exception, always a bool. A closed or bounding-box test puts the corner in all
+        four; an open one puts it in none."""
+        squares = [
+            [(x, y), (x + 1.0, y), (x + 1.0, y + 1.0), (x, y + 1.0)]
+            for x, y in ((-1.0, -1.0), (0.0, -1.0), (0.0, 0.0), (-1.0, 0.0))
+        ]
+        for point in ((0.0, 0.0), (0.5, 0.0), (-0.5, 0.0), (0.0, 0.5), (0.0, -0.5)):
+            for order in (1, -1):
+                hits = [_point_in_polygon(*point, square[::order]) for square in squares]
+                assert all(isinstance(hit, bool) for hit in hits), hits
+                assert sum(hits) == 1, (point, order, hits)
 
 
 # ---------------------------------------------------------------------------

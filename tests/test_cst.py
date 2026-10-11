@@ -20,9 +20,21 @@ from conftest import (
     requires_cli,
 )
 from kicad_ref import eda_units as U
+from kicad_ref import parse_units as P
+from kicad_ref import transform as T
 from kicad_ref.richio import quotes
 from kiutils.items.schitems import Connection
 from mcp.server.mcpserver.exceptions import ToolError
+from test_ladder_r2_pins import (
+    lexed_root,
+    pin_map,
+    pin_pos_of,
+    placed_symbols,
+    port_pin_ends,
+    reference_property,
+    report_map,
+    symbol_placement,
+)
 
 from mcp_server_kicad import _cst, footprint, project, schematic, symbol
 from mcp_server_kicad._shared import _node_uuid, _resolve_system_lib, _run_cli
@@ -172,11 +184,20 @@ class TestAddFamilyPreservation:
     def test_text(self, kicad_native_sch):
         before = kicad_native_sch.read_bytes()
         schematic.add_text("note here", 100.123456, 50, schematic_path=str(kicad_native_sch))
-        (text,) = J.assert_inserted(before, kicad_native_sch.read_bytes(), heads=["text"])
+        after = kicad_native_sch.read_bytes()
+        (text,) = J.assert_inserted(before, after, heads=["text"])
         assert text.path == ROOT
-        t = next(t for t in reparse(kicad_native_sch).texts if t.text == "note here")
-        # add_text never rounded coordinates; the quirk is preserved.
-        assert t.position.X == pytest.approx(100.123456)
+        item = J.item_at(after, text.location)
+        assert item.items[1].value == b"note here"
+        # KiCad reads a schematic coordinate to its 100 nm unit (parseInternalUnits), so
+        # the text lands where KiCad rounds the requested point to. How the number is
+        # spelled is bug 61's question (test_ladder_r2_numbers.py).
+        (at,) = [c for c in item.items if c.head == "at"]
+        for major in (9, 10):
+            for atom, requested in zip(at.items[1:3], (100.123456, 50)):
+                assert P.parse_sch_internal_units(atom.value, major=major) == U.kiround(
+                    requested * U.SCH_IU_PER_MM, major=major
+                ), (major, atom.raw)
 
     def test_junctions_two_points_one_write(self, kicad_native_sch):
         before = kicad_native_sch.read_bytes()
@@ -414,52 +435,62 @@ class TestHybridRoutingPreservation:
         assert len(root.find_all("wire")) == 2
         assert "Net-(R1-1)" in [n.atoms[1].text for n in root.find_all("label")]
 
-    def test_pin_pos_cst_matches_kiutils(self, scratch_sch, kicad_native_sch):
-        # Differential oracle: the CST walk must agree with the kiutils path
-        # exactly, on both file shapes, through rotation and mirror.
-        from mcp_server_kicad.schematic import _get_pin_pos, _get_pin_pos_cst
+    def test_pin_pos_cst_is_kicads_pin_end_on_both_file_shapes(self, scratch_sch, kicad_native_sch):
+        # The CST walk gives each pin's exact end and outward direction as the transform
+        # port computes them from the file's own tokens (test_ladder_r2_pins), on both
+        # file shapes, through rotation and mirror.
+        from mcp_server_kicad.schematic import _get_pin_pos_cst
+
+        def check(path, label) -> None:
+            data = path.read_bytes()
+            root = _cst.parse(data).lists[0]
+            (ends,) = port_pin_ends(data, "R1")
+            assert sorted(pin_map(ends)) == ["1", "2"]
+            for end in ends:
+                assert _get_pin_pos_cst(root, "R1", end.number) == pin_pos_of(end), (label, end)
 
         for path in (scratch_sch, kicad_native_sch):
-            sch = reparse(path)
-            root = _cst.parse(path.read_bytes()).lists[0]
-            for pin in ("1", "2"):
-                assert _get_pin_pos_cst(root, "R1", pin) == _get_pin_pos(sch, "R1", pin), (
-                    path.name,
-                    pin,
-                )
-        # Rotation via a real tool, then mirror via a hand-spliced token; both
-        # parsers reread the same file so the comparison stays apples-to-apples.
+            check(path, path.name)
+        # Rotation via a real tool, then mirror via a hand-spliced token; the port reads
+        # the file each time, so both must land where KiCad reads them.
         schematic.move_component("R1", 90, 80, rotation=90, schematic_path=str(scratch_sch))
         for mutate_mirror in (False, True):
             if mutate_mirror:
                 data = scratch_sch.read_bytes()
                 assert b"(mirror" not in data
                 scratch_sch.write_bytes(data.replace(b"(unit 1)", b"(mirror x) (unit 1)", 1))
-            sch = reparse(scratch_sch)
-            root = _cst.parse(scratch_sch.read_bytes()).lists[0]
-            for pin in ("1", "2"):
-                assert _get_pin_pos_cst(root, "R1", pin) == _get_pin_pos(sch, "R1", pin), (
-                    mutate_mirror,
-                    pin,
-                )
+            (r1,) = [
+                s
+                for s in placed_symbols(lexed_root(scratch_sch.read_bytes()))
+                if reference_property(s) == "R1"
+            ]
+            state = [("at", "90")] + ([("mirror", "x")] if mutate_mirror else [])
+            assert symbol_placement(r1)[1] == T.parse_symbol_transform(state)
+            check(scratch_sch, state)
         root = _cst.parse(scratch_sch.read_bytes()).lists[0]
         with pytest.raises(ValueError, match="Component X99 not found"):
             _get_pin_pos_cst(root, "X99", "1")
         with pytest.raises(ValueError, match="Pin 'NOPE' not found on R1"):
             _get_pin_pos_cst(root, "R1", "NOPE")
 
-    def test_pin_pos_twins_agree_on_a_multi_unit_part(self, tmp_path):
-        # Same oracle on a part placed as two symbols sharing one reference,
-        # whose units put their pins at identical body-local coordinates: both
-        # walks must pick the same placed unit for every pin, the shared
-        # unit-0 pins included.
-        from mcp_server_kicad.schematic import _get_pin_pos, _get_pin_pos_cst
+    def test_pin_pos_cst_on_a_multi_unit_part_is_kicads_pin_end(self, tmp_path):
+        # A part placed as two symbols sharing one reference, whose units put their pins
+        # at identical body-local coordinates (make_dual_unit_sch): unit 1, placed first,
+        # draws pins 1 and 2, unit 2 pins 3 and 4, and both draw the unit-0 pins 5 and 6,
+        # which the first placed unit answers for. Each answer is the port's end of that
+        # pin on that placed symbol, from the file's own tokens.
+        from mcp_server_kicad.schematic import _get_pin_pos_cst
 
         path = Path(make_dual_unit_sch(tmp_path))
-        sch = reparse(path)
-        root = _cst.parse(path.read_bytes()).lists[0]
-        for pin in ("1", "2", "3", "4", "5", "6"):
-            assert _get_pin_pos_cst(root, "U1", pin) == _get_pin_pos(sch, "U1", pin), pin
+        data = path.read_bytes()
+        root = _cst.parse(data).lists[0]
+        unit1, unit2 = port_pin_ends(data, "U1")
+        assert sorted(pin_map(unit1)) == ["1", "2", "5", "6"]
+        assert sorted(pin_map(unit2)) == ["3", "4", "5", "6"]
+        drawn_by = {"1": unit1, "2": unit1, "3": unit2, "4": unit2, "5": unit1, "6": unit1}
+        for pin, ends in drawn_by.items():
+            (end,) = [e for e in ends if e.number == pin]
+            assert _get_pin_pos_cst(root, "U1", pin) == pin_pos_of(end), pin
         assert _get_pin_pos_cst(root, "U1", "4")[:2] == (155.08, 100.0)
         assert _get_pin_pos_cst(root, "U1", "6")[:2] == (100.0, 92.38)
 
@@ -602,8 +633,8 @@ class TestPlaceComponentPreservation:
             )
         assert kicad_native_sch.read_bytes() == before
 
-    def test_place_rotation_and_mirror_differential(self, kicad_native_sch, scratch_sym_lib):
-        from mcp_server_kicad.schematic import _get_pin_pos, _get_pin_pos_cst
+    def test_place_rotation_and_mirror_pin_ends_are_kicads(self, kicad_native_sch, scratch_sym_lib):
+        from mcp_server_kicad.schematic import _get_pin_pos_cst
 
         p = str(kicad_native_sch)
         schematic.place_component(
@@ -625,9 +656,18 @@ class TestPlaceComponentPreservation:
         )
         assert u1.position.angle == 90
         assert u1.mirror == "x"
-        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
-        for pin in ("IN", "OUT"):
-            assert _get_pin_pos_cst(root, "U1", pin) == _get_pin_pos(sch, "U1", pin), pin
+        # Each pin read is the port's end on the file's own tokens. By hand: rotating 90
+        # and then mirroring x is the matrix (0, 1, 1, 0), which swaps x and y, so IN,
+        # written at (-5.08, 0), library y up, ends 5.08 above (63.5, 63.5) and OUT 5.08
+        # below it.
+        data = kicad_native_sch.read_bytes()
+        root = _cst.parse(data).lists[0]
+        (ends,) = port_pin_ends(data, "U1")
+        assert sorted(end.name for end in ends) == ["IN", "OUT"]
+        for end in ends:
+            assert _get_pin_pos_cst(root, "U1", end.name) == pin_pos_of(end), end.name
+        assert _get_pin_pos_cst(root, "U1", "IN")[:2] == (63.5, 58.42)
+        assert _get_pin_pos_cst(root, "U1", "OUT")[:2] == (63.5, 68.58)
 
     def test_root_symbol_instances_upsert_and_remove(self, kicad_native_sch):
         # A .kicad_pro sibling makes this file its own root: the helpers write
@@ -1100,7 +1140,10 @@ class TestReadToolsRelaxed:
         wires = schematic.list_schematic_wires(schematic_path=p)
         assert (wires[0].x1, wires[0].y1, wires[0].x2, wires[0].y2) == (50.0, 100.0, 80.0, 100.0)
         pins = schematic.get_pin_positions("R1", schematic_path=p)
-        assert "Pin 1" in pins and "(100.0, 96.19)" in pins
+        # Every pin at its exact end, the port's reading of the file's own tokens.
+        (ends,) = port_pin_ends(kicad_native_sch.read_bytes(), "R1")
+        assert pin_map(ends) == {"1": (1_000_000, 961_900), "2": (1_000_000, 1_038_100)}
+        assert report_map(pins) == pin_map(ends)
 
     def test_net_connections_cst(self, kicad_native_sch):
         p = str(kicad_native_sch)
