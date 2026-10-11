@@ -319,9 +319,15 @@ def _number_problems(board: bool, top) -> tuple[int, list[str]]:
     """(coordinates checked, problems) for one file's lexer-port tree.
 
     A board coordinate ``t`` reads as nm (parseBoardUnits, both majors): pcb._mm(nm)
-    must give ``t`` back, and the flip's _numish_text(-float(t)) must give KiCad's text
-    for -nm. A schematic coordinate reads as internal units: _connectivity.iu must read
-    what parseInternalUnits reads, and _connectivity.mm must give ``t`` back."""
+    must give KiCad's text for nm (FormatInternalUnits), and the flip's
+    _numish_text(-float(t)) must give KiCad's text for -nm. A schematic coordinate reads
+    as internal units: _connectivity.iu must read what parseInternalUnits reads, and
+    _connectivity.mm must give KiCad's text for that value. KiCad's text is ``t`` itself
+    wherever KiCad's writer wrote it, but not every shipped coordinate came from it:
+    KiCad 10's jetson-agx-thor-baseboard usb.kicad_sch holds an image at
+    "59.209102362204725", where saveBitmap writes FormatInternalUnits
+    (sch_io_kicad_sexpr.cpp:936-952 at 9.0.8, 1046-1062 at 10.0.7), so the file's own
+    text is not the judge."""
     checked, wrong = 0, []
     for tok in _coordinate_tokens(top):
         text = tok.value.decode()
@@ -329,19 +335,28 @@ def _number_problems(board: bool, top) -> tuple[int, list[str]]:
         where = f"byte {tok.start}: {text!r}"
         if board:
             for nm in {P.parse_board_units(text, major=major) for major in (9, 10)}:
-                if pcb._mm(nm) != text:
-                    wrong.append(f"{where} reads as {nm} nm, which _mm writes {pcb._mm(nm)!r}")
+                written = U.format_internal_units(nm, PCB)
+                if pcb._mm(nm) != written:
+                    wrong.append(
+                        f"{where} reads as {nm} nm, which _mm writes {pcb._mm(nm)!r}"
+                        f" where KiCad writes {written!r}"
+                    )
                 negated = U.format_internal_units(-nm, PCB)
                 flipped = pcb._numish_text(-float(text))
                 if flipped != negated:
                     wrong.append(f"{where} negated is {negated!r}; _numish_text gives {flipped!r}")
         else:
             iu = C.iu(text)
-            if C.mm(iu) != text:
-                wrong.append(f"{where} reads as {iu} internal units, which mm writes {C.mm(iu)!r}")
             kicad = _sch_readings(text)
             if iu not in kicad:
                 wrong.append(f"{where} reads as {kicad} internal units in KiCad; iu gives {iu}")
+            for value in kicad:
+                written = U.format_internal_units(value, SCH)
+                if C.mm(value) != written:
+                    wrong.append(
+                        f"{where} reads as {value} internal units, which mm writes"
+                        f" {C.mm(value)!r} where KiCad writes {written!r}"
+                    )
     return checked, wrong
 
 
