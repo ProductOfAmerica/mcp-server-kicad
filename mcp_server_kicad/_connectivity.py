@@ -26,6 +26,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from mcp_server_kicad import _cst, _shared
+from mcp_server_kicad._shared import kiround
 
 IU_PER_MM = 10000
 
@@ -46,13 +47,9 @@ Matrix = tuple[int, int, int, int]
 # ---------------------------------------------------------------------------------------------
 
 
-def kiround(v: float) -> int:
-    """KiCad's KiROUND: half away from zero."""
-    return int(v + 0.5) if v >= 0 else int(v - 0.5)
-
-
 def iu(text: str) -> int:
-    """A coordinate atom in mm as KiCad parses it."""
+    """A coordinate atom in mm as KiCad parses it. KiCad 9's KiROUND: on the
+    100 nm grid KiCad writes, KiCad 10's rounds the same (_shared.kiround)."""
     return kiround(float(text) * IU_PER_MM)
 
 

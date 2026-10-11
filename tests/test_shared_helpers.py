@@ -209,21 +209,25 @@ class TestPointInPolygon:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.parametrize("major", [9, 10])
 class TestTransformLocalToBoard:
-    def test_zero_rotation(self):
-        bx, by = _transform_local_to_board(10, 20, 0, 3, 4)
+    """Away from the one double where KiCad 9 and KiCad 10 round apart
+    (_shared.kiround), both majors give the same board position."""
+
+    def test_zero_rotation(self, major):
+        bx, by = _transform_local_to_board(10, 20, 0, 3, 4, major=major)
         assert bx == pytest.approx(13)
         assert by == pytest.approx(24)
 
-    def test_90_degrees(self):
-        bx, by = _transform_local_to_board(10, 20, 90, 3, 4)
+    def test_90_degrees(self, major):
+        bx, by = _transform_local_to_board(10, 20, 90, 3, 4, major=major)
         # KiCad's RotatePoint: x' = fp_x + ( lx*cos90 + ly*sin90) = 10 + (0 + 4) = 14
         #                      y' = fp_y + (-lx*sin90 + ly*cos90) = 20 + (-3 + 0) = 17
         assert bx == pytest.approx(14, abs=0.01)
         assert by == pytest.approx(17, abs=0.01)
 
-    def test_minus_90_is_the_other_way(self):
-        bx, by = _transform_local_to_board(10, 20, -90, 3, 4)
+    def test_minus_90_is_the_other_way(self, major):
+        bx, by = _transform_local_to_board(10, 20, -90, 3, 4, major=major)
         assert bx == pytest.approx(6, abs=0.01)
         assert by == pytest.approx(23, abs=0.01)
 
@@ -244,15 +248,15 @@ class TestTransformLocalToBoard:
             (170, 150, 0, (165.0, 151.0)),
         ],
     )
-    def test_matches_kicad_drill_output(self, fp_x, fp_y, angle, expected):
-        bx, by = _transform_local_to_board(fp_x, fp_y, angle, -5, 1)
+    def test_matches_kicad_drill_output(self, fp_x, fp_y, angle, expected, major):
+        bx, by = _transform_local_to_board(fp_x, fp_y, angle, -5, 1, major=major)
         assert (bx, by) == pytest.approx(expected, abs=1e-6)
 
-    def test_round_trip_through_the_inverse(self):
+    def test_round_trip_through_the_inverse(self, major):
         """Rotating by -angle undoes the placement, for any local point."""
         for angle in (0, 37, 90, -90, 180, 270):
-            bx, by = _transform_local_to_board(10, 20, angle, 3, 4)
-            lx, ly = _transform_local_to_board(0, 0, -angle, bx - 10, by - 20)
+            bx, by = _transform_local_to_board(10, 20, angle, 3, 4, major=major)
+            lx, ly = _transform_local_to_board(0, 0, -angle, bx - 10, by - 20, major=major)
             assert (lx, ly) == pytest.approx((3, 4), abs=1e-9)
 
 

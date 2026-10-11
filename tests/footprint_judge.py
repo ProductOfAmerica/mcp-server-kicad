@@ -36,6 +36,14 @@ from kicad_ref.trigo import normalize
 #: Within this many nanometres of each other, two footprint-relative positions are the
 #: same after a turn off the quarter turns (module docstring, D3).
 ROTATION_TOLERANCE_NM = 2
+#: Within this many degrees, a mandatory field one file leaves out has the angle the
+#: other file writes for it. KiCad reads the one left out at Normalize( 0 + A ), A being
+#: the footprint's angle atom, whose FormatAngle keeps ten significant digits: within
+#: 5e-8 degrees of the angle KiCad held for any angle below 1000 (a footprint placed at
+#: 180.17578125 is written -179.8242188, so such a field reads 0.1757812 after
+#: KeepUpright where KiCad writing it gives 0.17578125). A defect moves an angle by a
+#: whole step, not by a digit's rounding.
+DEFAULT_FIELD_ANGLE_TOLERANCE = 1e-7
 
 
 def root(data: bytes):
@@ -124,6 +132,27 @@ def pair(got, want, key, local, what: str, tiebreak=None) -> tuple[list[tuple], 
     return pairs, problems
 
 
+def _same_style(a: F.Text, b: F.Text) -> bool:
+    """Two texts' styles are KiCad's same reading: equal, or, where either text is a
+    mandatory field its file leaves out, equal but for the angle, which may differ by
+    the footprint angle atom's rounding (DEFAULT_FIELD_ANGLE_TOLERANCE).
+
+    That rounding can also cross the comparison form's fold at 180, so for a centred
+    keep-upright text, which KeepUpright turns half a turn and changes in nothing else,
+    the angle is compared on either side of the fold. Placed at -1.2306671787116972e-08,
+    a footprint is written -1.230667179e-08, so KiCad reads a field the file leaves out
+    at 359.99999998769334, folded to 179.9999999876934; KiCad itself holds that field at
+    179.9999999876934 after KeepUpright, writes it "180" and reads it back folded to 0."""
+    if a.style == b.style:
+        return True
+    if not (a.default or b.default) or a.style[1:] != b.style[1:]:
+        return False
+    gap = _angle_gap(a.style.angle, b.style.angle)
+    if a.style.keep_upright and a.style.h == T.CENTER and a.style.v == T.CENTER:
+        gap = min(gap, _angle_gap(a.style.angle + 180.0, b.style.angle))
+    return gap <= DEFAULT_FIELD_ANGLE_TOLERANCE
+
+
 def _pad_tiebreak(a: F.Pad, b: F.Pad) -> float:
     return _angle_gap(a.angle, b.angle)
 
@@ -181,7 +210,7 @@ def differences(
     )
     problems += found
     for mine, theirs in texts:
-        if mine.style != theirs.style:
+        if not _same_style(mine, theirs):
             problems.append(f"text {mine.key!r}: {mine.style} where KiCad has {theirs.style}")
         if mine.layer != theirs.layer:
             problems.append(f"text {mine.key!r}: layer {mine.layer} where KiCad has {theirs.layer}")

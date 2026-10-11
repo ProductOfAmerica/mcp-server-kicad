@@ -161,22 +161,6 @@ ROOT = ((0, "kicad_pcb"),)
 
 MM = 1_000_000
 
-_BUG2 = (
-    "bug 2: place_footprint and move_footprint do not turn pad and text angles as KiCad's"
-    " FOOTPRINT::Rotate does (a pad takes the footprint's angle instead of adding it to its"
-    " own, a text keeps its library angle); fixed by step 7"
-)
-_BUG53 = (
-    "bug 53: footprint angles are not spelled as KiCad writes them (the footprint's angle"
-    " 270 for -90 and an explicit 0, a library angle copied as the library spells it);"
-    " fixed by step 7"
-)
-_BUG_NONFINITE = (
-    "bug 89: place_footprint and move_footprint let a non-finite rotation reach the"
-    " caller as a raw OverflowError or ValueError instead of refusing it with a ToolError;"
-    " fixed by step 7"
-)
-
 
 def _the(data: bytes, *labels: str, where=lambda location, item: True) -> J.Path:
     """The location of the one list in ``data`` whose labels, outermost first, are
@@ -518,14 +502,13 @@ class TestFootprintWritersCst:
         after = Path(p).read_bytes()
         assert b"(at 50 50 90)" in after
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG2)
     def test_move_k10_rotation_turns_the_pads(self, tmp_path):
         """KiCad turns every pad with its footprint (FOOTPRINT::SetOrientation calls
         PAD::Rotate, which adds the change to the pad's absolute angle): R1's pads, written
         at -0.75 and 0.75 with no angle (0), read after a turn to 90 at 90, which KiCad
         writes (at -0.75 0 90) and (at 0.75 0 90) (kicad_ref.pad; pcbnew writes the same
-        shape for R_0805). The positions stay footprint-relative. The tool leaves the pads
-        at (at -0.75 0)."""
+        shape for R_0805). The positions stay footprint-relative. The tool used to leave
+        the pads at (at -0.75 0)."""
         p = _write_board(tmp_path, _K10_BOARD)
         pcb.move_footprint("R1", 50, 50, rotation=90, pcb_path=p)
         group = FJ.footprint_group(Path(p).read_bytes(), "R1")
@@ -535,7 +518,6 @@ class TestFootprintWritersCst:
         turned = PAD.angle_token(PAD.rotate(PAD.loaded_angle(None), 90.0))
         assert pads == [["-0.75", "0", turned], ["0.75", "0", turned]]
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_NONFINITE)
     @pytest.mark.parametrize("version", ["k9", "k10"])
     @pytest.mark.parametrize(
         "rotation", [float("inf"), float("-inf"), float("nan")], ids=["inf", "-inf", "nan"]
@@ -545,8 +527,8 @@ class TestFootprintWritersCst:
         """KiCad cannot load a footprint whose angle is inf, -inf or nan: the parser takes
         the angle only as a NUMBER token, and kicad-cli refuses the board
         (test_ladder_r3_judges.py's premise test). So the tools must refuse such a
-        rotation with a ToolError and leave the board byte-identical. Today a raw
-        OverflowError or ValueError reaches the caller, the file left intact."""
+        rotation with a ToolError and leave the board byte-identical. A raw OverflowError
+        or ValueError used to reach the caller instead, the file left intact."""
         board = tmp_path / "board.kicad_pcb"
         footprint = G.footprint_text("R1", (50 * MM, 40 * MM), version=version)
         board.write_text(G.board_text([footprint], version=version), newline="\n")
@@ -566,7 +548,6 @@ class TestFootprintWritersCst:
             raise AssertionError(f"{tool} accepted the rotation {rotation}")
         assert board.read_bytes() == before
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG53)
     @pytest.mark.parametrize("version", ["k9", "k10"])
     def test_rotating_to_the_current_angle_changes_nothing(self, tmp_path, version):
         """A footprint at -90 whose keep-upright Reference stands at 270 (as
@@ -575,7 +556,7 @@ class TestFootprintWritersCst:
         (Normalize180 gives -90 for all three), so nothing changes and the board stays
         byte-identical (the identity; FOOTPRINT::Rotate returns at once for a change of 0,
         pcbnew/footprint.cpp:2456-2459 at 9.0.8, 2898-2901 at 10.0.7). A KeepUpright pass
-        nobody asked for would turn that Reference. Today 270 and -450 are written as
+        nobody asked for would turn that Reference. 270 and -450 used to be written as
         given."""
         library = E.footprint_with_pad_at(45.0)
         text = E.board_footprint_text(library, "R1", (100 * MM, 80 * MM), -90.0, semantics="set")

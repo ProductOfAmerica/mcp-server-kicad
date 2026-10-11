@@ -14,7 +14,14 @@ written in a .kicad_mod or on a board, the way the board parser does
   fp_text items), through kicad_ref.pcb_text. A (property ...) named ki_fp_filters is the
   footprint's filters and one named Footprint is dropped since KiCad 9, so neither is a
   text KiCad holds (4611-4636 [5306-5321]); a legacy (fp_text reference|value ...) is the
-  Reference or Value field;
+  Reference or Value field. A field name written twice is one field: KiCad reads the later
+  (property ...) into the field the earlier one made (4637-4641 [5324-5328]), which resets
+  its keep-upright and its angle and takes the position, layer and justification the later
+  one writes (parsePCB_TEXT_effects, 3438-3576 [3955-4093]; parseEDA_TEXT, 505-515
+  [736-750]), so the later one is read and the earlier one is not. Fifteen of KiCad
+  9.0.8's stock footprints, its M.2 edge connectors, write Reference and Value twice at
+  different places (counted 2026-10-11). A later one that leaves out its (at), (layer)
+  or (effects) keeps some of the earlier one's, and this port refuses it (ValueError);
 - graphics (fp_line, fp_rect, fp_circle, fp_arc, fp_poly, fp_curve): their points in the
   footprint's own frame, as written;
 - the four fields every footprint holds from its constructor (addMandatoryFields,
@@ -88,12 +95,15 @@ class Pad(NamedTuple):
 
 
 class Text(NamedTuple):
-    """``key`` is ("property", name) for a field, ("fp_text", text) for any other text."""
+    """``key`` is ("property", name) for a field, ("fp_text", text) for any other text.
+    ``default`` marks a mandatory field the file leaves out, which KiCad holds as its
+    constructor made it."""
 
     key: tuple[str, str]
     local: Point | None  # None for a text written without (at)
     style: T.Style
     layer: str | None
+    default: bool = False
 
 
 class Shape(NamedTuple):
@@ -163,12 +173,34 @@ def pad_groups(group) -> list:
 
 
 def text_groups(group) -> list:
-    """The lists of a footprint that read as texts, in the order read_footprint reads them."""
-    return [
+    """The lists of a footprint that read as texts, in the order read_footprint reads them.
+    A (property ...) whose name a later one repeats is not among them: KiCad reads the
+    later one into the same field (module docstring)."""
+    found = [
         item
         for item in group.items
         if head(item) in (b"property", b"fp_text") and _text_key(item) is not None
     ]
+    last = {item.items[1].value: item for item in found if head(item) == b"property"}
+    return [
+        item for item in found if head(item) != b"property" or last[item.items[1].value] is item
+    ]
+
+
+def _check_repeated_fields(group) -> None:
+    """Refuse (ValueError) a repeated field name whose last (property ...) leaves out its
+    (at), (layer) or (effects): KiCad then keeps what the earlier one set for it, which
+    this port does not model."""
+    names = [item.items[1].value for item in group.items if head(item) == b"property"]
+    for item in text_groups(group):
+        if head(item) != b"property" or names.count(item.items[1].value) < 2:
+            continue
+        missing = [n.decode() for n in (b"at", b"layer", b"effects") if child(item, n) is None]
+        if missing:
+            raise ValueError(
+                f"the repeated field {item.items[1].value.decode()!r} leaves out"
+                f" {', '.join(missing)}: not modelled"
+            )
 
 
 def _text_key(group) -> tuple[str, str] | None:
@@ -287,6 +319,7 @@ def read_footprint(group, *, major: int) -> Footprint:
     layer_node = child(group, b"layer")
     layer = layer_node.items[1].value.decode() if layer_node is not None else "F.Cu"
     pads = tuple(_read_pad(g, major=major) for g in pad_groups(group))
+    _check_repeated_fields(group)
     texts = []
     for item in text_groups(group):
         text = _read_text(item, orientation, major=major)
@@ -297,7 +330,7 @@ def read_footprint(group, *, major: int) -> Footprint:
         if ("property", name) not in keys:
             angle = 0.0 if turned is None else normalize(0.0 + turned)
             style = T.Style(angle, True, T.CENTER, T.CENTER, False)
-            texts.append(Text(("property", name), (0, 0), style, field_layer))
+            texts.append(Text(("property", name), (0, 0), style, field_layer, True))
     shapes = []
     for item in group.items:
         name = head(item)
@@ -374,7 +407,7 @@ def fp_angle_token(orientation: float) -> str | None:
 def written(fp: Footprint) -> Footprint:
     """``fp`` as KiCad reads back the tokens it writes for it: every angle through its
     writer's spelling and the parser's arithmetic again (a text's through the orientation
-    read back)."""
+    read back). KiCad writes every field, so none is a default any more."""
     token = fp_angle_token(fp.orientation)
     orientation = 0.0 if token is None else normalize180(parse_double(token))
     pads = []
@@ -388,7 +421,7 @@ def written(fp: Footprint) -> Footprint:
     texts = []
     for t in fp.texts:
         angle = T.loaded_angle(parse_double(T.angle_token(t.style)), orientation)
-        texts.append(t._replace(style=t.style._replace(angle=angle)))
+        texts.append(t._replace(style=t.style._replace(angle=angle), default=False))
     return fp._replace(orientation=orientation, pads=tuple(pads), texts=tuple(texts))
 
 

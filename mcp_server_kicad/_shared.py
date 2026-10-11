@@ -1559,40 +1559,174 @@ def _point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) ->
     return inside
 
 
+# KiCad's integer board geometry. Here rather than in pcb.py because
+# _transform_local_to_board below needs it, and here rather than in
+# _connectivity.py because _connectivity imports this module: _shared imports
+# neither of them, so both can import from it without a cycle.
+
+
+def kiround(v: float) -> int:
+    """KiCad 9's KiROUND to int, half away from zero
+    (libs/kimath/include/math/util.h:99-142 at 9.0.8): ``v < 0 ? v - 0.5 : v + 0.5``
+    in floating point, then truncated.
+
+    KiCad 10 rounds with std::llround instead (kiround10). Inside int the two
+    agree on every double but +-0.49999999999999994, the one just below a half,
+    where KiCad 9's added 0.5 rounds up: KiCad 9 gives +-1, KiCad 10 gives 0.
+    RotatePoint lands there where a turned coordinate is exactly that, as for a
+    point 1 nm off the centre along an axis at 30 or 150 degrees, so a board
+    position goes through _kiround_for and the KiCad whose format the board
+    carries. This form also serves the readers that are given no board version:
+    the schematic readers in _connectivity, and pcb._numish_text, which negates a
+    footprint's local coordinates for the flip. Coordinates as KiCad writes them
+    are whole units of its grid (100 nm in a schematic, 1 nm on a board), where
+    the two never part; only a hand-written coordinate a hair below half a unit
+    would read differently. Neither clamp is modelled: coordinates stay far
+    inside int.
+    """
+    return int(v + 0.5) if v >= 0 else int(v - 0.5)
+
+
+def kiround10(v: float) -> int:
+    """KiCad 10's KiROUND to int: std::llround, exactly half away from zero
+    (libs/kimath/include/math/util.h:101-128 at 10.0.7). Taking a double's
+    integer part off is exact, so the fraction decides with no rounding of its
+    own; see kiround for the one double where KiCad 9 differs."""
+    whole = math.trunc(v)
+    fraction = v - whole
+    if fraction >= 0.5:
+        return whole + 1
+    if fraction <= -0.5:
+        return whole - 1
+    return whole
+
+
+def _kiround_for(major: int):
+    """KiCad ``major``'s KiROUND: kiround10 for KiCad 10, kiround for KiCad 9."""
+    return kiround10 if major >= 10 else kiround
+
+
+def _n360(degrees: float) -> float:
+    """EDA_ANGLE::Normalize: into [0, 360), -0.0 kept as it is.
+
+    KiCad's two loops (libs/kimath/include/geometry/eda_angle.h:229-238, the
+    same at 10.0.7), after math.fmod, which is exact and bounds them. Below
+    2**56 degrees each of KiCad's steps of 360 is exact too, so the result is
+    KiCad's to the bit; past that KiCad's own loops lose precision or never end,
+    and fmod gives the true remainder. Not Python's ``%``, which differs on tiny
+    negatives: ``(-1e-20) % 360`` is 360.0 where KiCad gets 0.0. A non-finite
+    angle comes back NaN, so callers refuse one before they get here.
+    """
+    value = math.fmod(degrees, 360.0)
+    while value < -0.0:
+        value += 360.0
+    while value >= 360.0:
+        value -= 360.0
+    return value
+
+
+def _n180(degrees: float) -> float:
+    """EDA_ANGLE::Normalize180: into (-180, 180], the orientation a footprint
+    holds (eda_angle.h:268-277 at 9.0.8, the same at 10.0.7), bounded by
+    math.fmod as _n360 is."""
+    value = math.fmod(degrees, 360.0)
+    while value <= -180.0:
+        value += 360.0
+    while value > 180.0:
+        value -= 360.0
+    return value
+
+
+#: M_SQRT1_2 and EDA_ANGLE::DEGREES_TO_RADIANS (eda_angle.h:122 at 9.0.8).
+_SQRT1_2 = 0.70710678118654752440
+_DEGREES_TO_RADIANS = math.pi / 180.0
+
+
+def _sin_cos(normalized: float) -> tuple[float, float]:
+    """EDA_ANGLE::Sin and Cos of an angle already in [0, 360) (eda_angle.h:178-214
+    at 9.0.8): exact at the multiples of 45 degrees, std::sin and std::cos of the
+    angle in radians anywhere else."""
+    exact = {
+        0.0: (0.0, 1.0),
+        45.0: (_SQRT1_2, _SQRT1_2),
+        90.0: (1.0, 0.0),
+        135.0: (_SQRT1_2, -_SQRT1_2),
+        180.0: (0.0, -1.0),
+        225.0: (-_SQRT1_2, -_SQRT1_2),
+        270.0: (-1.0, 0.0),
+        315.0: (-_SQRT1_2, _SQRT1_2),
+    }
+    if normalized in exact:
+        return exact[normalized]
+    radians = normalized * _DEGREES_TO_RADIANS
+    return math.sin(radians), math.cos(radians)
+
+
+def _rotate_point_iu(x: int, y: int, degrees: float, *, major: int) -> tuple[int, int]:
+    """KiCad ``major``'s RotatePoint of an integer point about the origin.
+
+    libs/kimath/src/trigo.cpp:229-264 at 9.0.8, the same at 10.0.7: the angle
+    is normalized; 0, 90, 180 and 270 degrees are exact swaps; any other angle
+    gives KiROUND( y sin + x cos ) and KiROUND( y cos - x sin ), each product
+    rounded separately as KiCad's builds do, with that major's KiROUND. The
+    signs are the transpose of the textbook rotation because a positive angle is
+    counter-clockwise on screen while the board's y axis points down.
+    """
+    angle = _n360(degrees)
+    if angle == 0.0:
+        return x, y
+    if angle == 90.0:
+        return y, -x
+    if angle == 180.0:
+        return -x, -y
+    if angle == 270.0:
+        return -y, x
+    sin, cos = _sin_cos(angle)
+    rnd = _kiround_for(major)
+    return rnd((y * sin) + (x * cos)), rnd((y * cos) - (x * sin))
+
+
 def _transform_local_to_board(
     fp_x: float,
     fp_y: float,
     angle: float,
     local_x: float,
     local_y: float,
+    *,
+    major: int,
 ) -> tuple[float, float]:
-    """Convert footprint-local coordinates to board coordinates.
+    """Convert footprint-local coordinates to board coordinates, in millimetres.
 
-    Matches KiCad's ``RotatePoint`` in ``libs/kimath/src/trigo.cpp``, which is
-    what pcbnew applies to ``m_pos0`` to reach a pad's board position::
+    KiCad holds every board position as an int count of nanometres and puts a
+    footprint's child on the board with RotatePoint
+    (BOARD_ITEM::SetFPRelativePosition, pcbnew/board_item.cpp:348-359 at 9.0.8,
+    413-424 at 10.0.7). So each coordinate is read as KiCad reads the text it
+    came from, KiROUND( mm * 1e6 ), the local point is turned by the integer
+    RotatePoint (_rotate_point_iu) and added to the footprint's position, and
+    the nanometres come back as millimetres. In float millimetres the result
+    could land a nanometre from KiCad's at a half-nanometre tie, a multiple of
+    30 degrees with an odd offset on one axis and none on the other (pcbnew
+    9.0.8 holds a pad of a footprint at (100, 50.123457) mm and 30 degrees,
+    at local (-0.000011, 0) mm, at y = 50.123462 mm, where the float sum gave
+    50.123463; measured 2026-10-11), and near one at any angle.
 
-        x' =  x*cos(a) + y*sin(a)
-        y' = -x*sin(a) + y*cos(a)
+    *major* is the KiCad whose format the board carries (pcb._board_major), the
+    one that reads it, and every KiROUND here is that KiCad's: KiCad 9 and 10
+    hold a point 1 nm off the centre along an axis at 30 or 150 degrees 1 nm
+    apart (kiround).
 
-    The signs are the transpose of the textbook rotation because a footprint's
-    stored angle is counter-clockwise **as seen on screen** while the file's Y
-    axis points down.  Using the textbook matrix instead mirrors every rotated
-    footprint about its own origin, which is invisible on a symmetric part and
-    wrong by twice the offset on everything else.
+    *angle* is the footprint's angle atom as read; RotatePoint normalizes it,
+    which gives the same turn as the Normalize180 orientation KiCad stores.
 
-    There is no back-side special case.  KiCad flips a footprint by rewriting
+    There is no back-side special case. KiCad flips a footprint by rewriting
     its children's local coordinates, so what the file holds for a ``B.Cu``
     footprint is already in the flipped frame and needs no further mirroring.
-
     Verified against ``kicad-cli pcb export drill`` for a front footprint and
     two back footprints; see ``TestTransformLocalToBoard``.
     """
-    theta = math.radians(angle or 0)
-    cos_t = math.cos(theta)
-    sin_t = math.sin(theta)
-    board_x = fp_x + (local_x * cos_t + local_y * sin_t)
-    board_y = fp_y + (-local_x * sin_t + local_y * cos_t)
-    return board_x, board_y
+    rnd = _kiround_for(major)
+    rx, ry = _rotate_point_iu(rnd(local_x * 1e6), rnd(local_y * 1e6), angle or 0.0, major=major)
+    return (rnd(fp_x * 1e6) + rx) / 1e6, (rnd(fp_y * 1e6) + ry) / 1e6
 
 
 def _chain_edge_polygon(

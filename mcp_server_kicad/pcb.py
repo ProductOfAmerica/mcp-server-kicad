@@ -73,6 +73,8 @@ from mcp_server_kicad._shared import (
     _kicad_cli_major,
     _kicad_root,
     _linearize_arc,
+    _n180,
+    _n360,
     _point_in_polygon,
     _read_kicad_bytes,
     _require_kicad_path,
@@ -82,6 +84,7 @@ from mcp_server_kicad._shared import (
     _transform_local_to_board,
     _xy,
     build_server,
+    kiround,
 )
 from mcp_server_kicad.models import (
     AutorouteResult,
@@ -308,6 +311,15 @@ def _board_version(root) -> int:
     return int(v.atoms[1].text) if v is not None else 0
 
 
+def _board_major(root) -> int:
+    """The KiCad whose format the board carries, whose arithmetic the board's
+    positions follow (_shared._transform_local_to_board): 10 above
+    _NUMERIC_NET_VERSION_MAX, a KiCad 10 format that KiCad 9 cannot load, and 9
+    at or below it, where KiCad 9.0.x writes 20241229. The two round one double
+    apart (_shared.kiround)."""
+    return 10 if _board_version(root) > _NUMERIC_NET_VERSION_MAX else 9
+
+
 def _splice_pcb_node(root, node) -> None:
     """Insert *node* after the last trace item, else before the board tail."""
     _splice_after(root, node, ("segment", "arc", "via"), ("zone", "group", "embedded_fonts"))
@@ -412,6 +424,7 @@ def _keepout_violations_cst(root, x: float, y: float, layer: str) -> list[dict]:
     polygons transformed into board coordinates.
     """
     candidates = [("board", z, _zone_pts(z)) for z in root.find_all("zone")]
+    major = _board_major(root)
     for fp in root.find_all("footprint"):
         at = fp.find("at")
         if at is None:
@@ -422,7 +435,7 @@ def _keepout_violations_cst(root, x: float, y: float, layer: str) -> list[dict]:
         for zone in fp.find_all("zone"):
             pts = []
             for px, py in _zone_pts(zone):
-                bx, by = _transform_local_to_board(fx, fy, angle, px, py)
+                bx, by = _transform_local_to_board(fx, fy, angle, px, py, major=major)
                 pts.append((round(bx, 3), round(by, 3)))
             candidates.append((source, zone, pts))
 
@@ -441,8 +454,14 @@ def _keepout_violations_cst(root, x: float, y: float, layer: str) -> list[dict]:
     return violations
 
 
+#: The pad-less marker place_footprint puts down without a library: a footprint in
+#: the layout pcbnew writes on a board, layer, uuid, (at), then the fields. Its (at)
+#: has no angle, as format( FOOTPRINT ) leaves out an orientation of 0
+#: (pcb_io_kicad_sexpr.cpp:1127-1131 at 9.0.8, 1231-1235 at 10.0.7; pcbnew 9.0.8's
+#: SaveBoard of a footprint at 0 writes (at 50 40), harvested 2026-10-11), while a
+#: field's (at) always carries one (1992-1994 at 9.0.8).
 _FOOTPRINT_TPL = _cst.parse(
-    b'(footprint ""\n\t\t(layer "F.Cu")\n\t\t(uuid "x")\n\t\t(at 0 0 0)'
+    b'(footprint ""\n\t\t(layer "F.Cu")\n\t\t(uuid "x")\n\t\t(at 0 0)'
     b'\n\t\t(property "Reference" "R"\n\t\t\t(at 0 -2 0)\n\t\t\t(layer "F.SilkS")\n\t\t\t(uuid "x")'
     b"\n\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 1.27 1.27)\n\t\t\t\t)\n\t\t\t)\n\t\t)"
     b'\n\t\t(property "Value" "V"\n\t\t\t(at 0 2 0)\n\t\t\t(layer "F.Fab")\n\t\t\t(uuid "x")'
@@ -1267,6 +1286,8 @@ def _copy_lib_footprint_cst(lib_path: str, name: str, fpid: str):
     - version, generator and generator_version are dropped
     - (uuid ...) and (at ...) are added after (layer ...), in that order
     - every uuid already in the file is regenerated
+    - every pad and text angle is spelled as KiCad writes it once it has loaded
+      the library file (_respell_library_angles)
 
     Two further differences are the caller's, not this function's: a placed
     footprint gains path/sheetname/sheetfile and the Footprint/ki_fp_filters
@@ -1298,7 +1319,272 @@ def _copy_lib_footprint_cst(lib_path: str, name: str, fpid: str):
     root_uuid = node.find("uuid")
     root_uuid.atoms[1].set_text(_gen_uuid())
     node.insert_after(root_uuid, _cst.parse(b"(at 0 0)").lists[0])
+    _respell_library_angles(node)
     return node
+
+
+# ---------------------------------------------------------------------------
+# A footprint's orientation, as KiCad turns it
+# ---------------------------------------------------------------------------
+#
+# What a board file stores (pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.cpp, 9.0.8
+# lines; the rules are the same at 10.0.7): the footprint's (at x y A) holds the
+# orientation Normalize180'd, left out at 0 (1127-1131); a pad's (at x y P) holds
+# its ABSOLUTE angle in [0, 360), left out at 0 (1492-1496); a field's or an
+# fp_text's (at x y T) holds its absolute angle, always written (1992-1994). Every
+# position in them is footprint-relative, so turning a footprint rewrites angle
+# atoms and nothing else of its pads, texts and graphics.
+
+
+def _angle_text(degrees: float) -> str:
+    """An angle as KiCad writes it: FormatAngle, fmt's ``{:.10g}``
+    (common/eda_units.cpp:162-167 at 9.0.8, 186-191 at 10.0.7), which Python's
+    ``.10g`` matches. Adding 0.0 turns -0.0 into 0, so no angle is written "-0"."""
+    return format(degrees + 0.0, ".10g")
+
+
+#: A token KiCad's lexer reads as a NUMBER (DSNLEXER's isNumber,
+#: common/dsnlexer.cpp:495-542 at 9.0.8), which is what the parser takes an
+#: angle atom from.
+_NUMBER_TEXT = re.compile(r"[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+
+
+def _at_angle_atom(at):
+    """The angle atom of an (at x y [angle] ...) list, or None when it has none."""
+    atoms = at.atoms
+    if len(atoms) > 3 and _NUMBER_TEXT.fullmatch(atoms[3].text):
+        return atoms[3]
+    return None
+
+
+def _set_at_angle(at, text: str | None) -> None:
+    """Write the angle atom of an (at x y ...) list: rewritten in place, inserted
+    after y with the single space KiCad's writer puts there (``(at %s %s)``),
+    before a legacy bare ``unlocked``, or removed with the space before it when
+    ``text`` is None. An atom that already reads ``text`` is not touched."""
+    atom = _at_angle_atom(at)
+    if text is None:
+        if atom is not None:
+            at.remove_child(atom)
+        return
+    if atom is not None:
+        if atom.text != text:
+            atom.set_text(text)
+        return
+    y = at.atoms[2]
+    atom = y.copy()
+    atom.sep = b" "
+    atom.set_text(text)
+    at.children.insert(at.children.index(y) + 1, atom)
+
+
+#: Footprint properties KiCad does not hold as texts: the footprint's filters, and
+#: the Footprint field it drops since version 9 (pcb_io_kicad_sexpr_parser.cpp:
+#: 4611-4636 at 9.0.8, 5306-5321 at 10.0.7).
+_NOT_FP_TEXTS = ("ki_fp_filters", "Footprint")
+
+
+def _fp_texts(fp) -> list:
+    """The texts KiCad turns with a footprint that carry an (at): its fields,
+    written as (property ...), and its fp_text items. A text without (at), such as
+    the bare (property "Reference" "R1") kiutils writes, has no angle written to
+    turn and is left as it is; so is an fp_text_box, whose corners are local and
+    whose angle KiCad stores relative to the footprint."""
+    texts = []
+    for child in fp.lists:
+        if child.head == "property":
+            if len(child.atoms) < 2 or child.atoms[1].text in _NOT_FP_TEXTS:
+                continue
+        elif child.head != "fp_text":
+            continue
+        if child.find("at") is not None:
+            texts.append(child)
+    return texts
+
+
+def _text_keeps_upright(text) -> bool:
+    """Whether KiCad keeps a footprint text upright: it does unless (unlocked yes),
+    or a bare ``unlocked`` after the angle in a legacy (at ...), turns that off,
+    the last one written winning (parsePCB_TEXT_effects,
+    pcb_io_kicad_sexpr_parser.cpp:3438-3576 at 9.0.8, 3955-4093 at 10.0.7)."""
+    upright = True
+    for child in text.lists:
+        if child.head == "at":
+            if any(atom.text == "unlocked" for atom in child.atoms[3:]):
+                upright = False
+        elif child.head == "unlocked" and len(child.atoms) > 1:
+            upright = child.atoms[1].text != "yes"
+    return upright
+
+
+#: KeepUpright negates both justifications: left and right swap, top and bottom
+#: swap, centre (no word) stays (GR_TEXT_H_ALIGN_T and GR_TEXT_V_ALIGN_T hold
+#: them as -1, 0 and 1).
+_JUSTIFY_FLIP = {"left": "right", "right": "left", "top": "bottom", "bottom": "top"}
+
+
+def _justify_words(effects) -> list[str]:
+    """The justification KiCad reads from a text's (effects ...), as the words
+    EDA_TEXT::Format writes for it, in its order: horizontal, vertical, mirror
+    (common/eda_text.cpp:1096-1110 at 9.0.8, 1078-1092 at 10.0.7)."""
+    h = v = None
+    mirror = False
+    for node in effects.find_all("justify"):
+        for atom in node.atoms[1:]:
+            if atom.text in ("left", "right"):
+                h = atom.text
+            elif atom.text in ("top", "bottom"):
+                v = atom.text
+            elif atom.text == "mirror":
+                mirror = True
+    return [word for word in (h, v, "mirror" if mirror else None) if word]
+
+
+def _set_justify(effects, words: list[str]) -> None:
+    """Write a text's (justify ...) words. An existing node keeps its place, its
+    leading whitespace and its close: only its words change, one space apart.
+    With no node, one goes in after (font ...) with the font node's leading
+    whitespace, which is where and how pcbnew writes it. With no words, the node
+    goes, its whitespace with it. A second (justify ...), which KiCad never
+    writes, is folded into the first."""
+    nodes = effects.find_all("justify")
+    if not nodes:
+        if not words:
+            return
+        node = _cst.parse(("(justify " + " ".join(words) + ")").encode()).lists[0]
+        font = effects.find("font")
+        if font is not None:
+            effects.insert_after(font, node)
+        else:
+            effects.append_child(node, b" ")
+        return
+    first, *extra = nodes
+    for node in extra:
+        effects.remove_child(node)
+    if not words:
+        effects.remove_child(first)
+        return
+    old = first.atoms[1:]
+    if len(old) == len(words):
+        for atom, word in zip(old, words):
+            if atom.text != word:
+                atom.set_text(word)
+        return
+    first.children[1:] = [_cst.Atom(word.encode(), b" ") for word in words]
+
+
+def _respell_library_angles(node) -> None:
+    """Spell each pad and text angle of a library footprint just copied as KiCad
+    writes it after loading the library file: a pad's Normalize( angle ), left
+    out at 0, and a text's Normalize( angle ), always written (the parser's
+    PADSTACK::SetOrientation, pcbnew/padstack.h:294-298 at 9.0.8, 348-352 at
+    10.0.7, and its text arithmetic at orientation 0). KiCad 9.0.8's stock
+    libraries write some text angles as -90, which KiCad writes back as 270. The
+    node is a new copy, so this changes no byte of the user's board."""
+    for pad in node.find_all("pad"):
+        at = pad.find("at")
+        atom = _at_angle_atom(at) if at is not None else None
+        if atom is not None:
+            angle = _n360(float(atom.text))
+            _set_at_angle(at, None if angle == 0 else _angle_text(angle))
+    for text in _fp_texts(node):
+        at = text.find("at")
+        atom = _at_angle_atom(at)
+        _set_at_angle(at, _angle_text(_n360(float(atom.text) if atom is not None else 0.0)))
+
+
+def _fp_translate(fp, x_text: str, y_text: str) -> None:
+    """FOOTPRINT::SetPosition in file terms: the footprint's own (at) x and y.
+
+    Pads, texts and graphics are footprint-relative, so they move with it and
+    nothing of theirs is rewritten (pcbnew/footprint.cpp:2553-2584 at 9.0.8,
+    3002-3039 at 10.0.7). KiCad stores a footprint's own zones in board
+    coordinates and moves them by the same delta; they are left where they are
+    here."""
+    at = fp.find("at")
+    at.atoms[1].set_text(x_text)
+    at.atoms[2].set_text(y_text)
+
+
+def _fp_rotate_to(fp, target: float) -> None:
+    """Turn a footprint to the angle ``target`` as KiCad's FOOTPRINT::Rotate turns
+    it about its own position: what the editor's rotate command and its footprint
+    properties dialog run (pcbnew/footprint.cpp:2456-2479 at 9.0.8, 2898-2918 at
+    10.0.7).
+
+    The change is ``target`` minus the orientation the footprint holds, A, the
+    Normalize180 of its angle atom (0 without one), as FOOTPRINT::SetOrientation
+    computes it (2641-2669 at 9.0.8, 3099-3137 at 10.0.7). The footprint's angle
+    becomes Normalize180( target ), written by FormatAngle and left out at 0.
+    Every pad's absolute angle P becomes Normalize( Normalize( P ) + change )
+    (PAD::Rotate, pcbnew/pad.cpp:1614-1620 at 9.0.8, 2183-2189 at 10.0.7), left
+    out at 0. Every field and fp_text with an (at) takes Normalize( T + change ),
+    T being what the parser holds for its written angle, Normalize( ( T - A ) + A )
+    (PCB_TEXT::Rotate, pcbnew/pcb_text.cpp:381-390 at 9.0.8, 460-469 at 10.0.7);
+    then KeepUpright turns a keep-upright text that lands at 180 or more half a
+    turn and negates its justification (321-339 at 9.0.8, 389-407 at 10.0.7), so it
+    stays readable on the side of its anchor its justification names. A text's
+    angle is always written. Positions, graphics, pad shapes and text boxes are
+    footprint-relative and stay as they are.
+
+    Rotate, with KeepUpright, rather than SetOrientation, without it: Rotate is
+    what KiCad writes when a user turns a part, and only its result keeps a left-
+    or right-justified text on the same side of its anchor after a half turn.
+
+    A target the footprint already holds (Normalize180 gives the same angle, so
+    270 for a footprint at -90, or 360 for one at 0) changes nothing at all.
+    KiCad's own Rotate returns at once only for a change of exactly 0, and its
+    properties dialog compares the typed angle, normalized into [0, 360), with
+    the stored one in (-180, 180], so for a footprint at -90 and a typed 270 it
+    runs Rotate( 360 ), whose KeepUpright can turn texts nobody asked to turn
+    (dialogs/dialog_footprint_properties.cpp:636-639 at 9.0.8). A rotation names
+    the footprint's final angle here, and a request that leaves it where it is
+    leaves the file byte-identical.
+
+    Footprint-owned zones, which KiCad stores in board coordinates and turns
+    about the footprint, are left as they are here.
+    """
+    at = fp.find("at")
+    atom = _at_angle_atom(at)
+    held = _n180(float(atom.text)) if atom is not None else 0.0
+    stored = _n180(target)
+    if stored == held:
+        return
+    change = target - held
+    _set_at_angle(at, None if stored == 0 else _angle_text(stored))
+    for pad in fp.find_all("pad"):
+        pad_at = pad.find("at")
+        if pad_at is None:
+            continue
+        pad_atom = _at_angle_atom(pad_at)
+        angle = _n360((_n360(float(pad_atom.text)) if pad_atom is not None else 0.0) + change)
+        _set_at_angle(pad_at, None if angle == 0 else _angle_text(angle))
+    for text in _fp_texts(fp):
+        text_at = text.find("at")
+        text_atom = _at_angle_atom(text_at)
+        written = float(text_atom.text) if text_atom is not None else 0.0
+        angle = _n360(_n360((written - held) + held) + change)
+        if angle >= 180.0 and _text_keeps_upright(text):
+            angle = _n360(angle + 180.0)
+            effects = text.find("effects")
+            if effects is not None:
+                words = _justify_words(effects)
+                turned = [_JUSTIFY_FLIP.get(word, word) for word in words]
+                if turned != words:
+                    _set_justify(effects, turned)
+        _set_at_angle(text_at, _angle_text(angle))
+
+
+def _require_finite_rotation(rotation: float | None) -> None:
+    """Refuse a rotation of inf, -inf or nan before anything is touched. KiCad's
+    parser takes a footprint's angle only as a NUMBER token, so a board holding
+    one at such an angle does not load at all (kicad-cli 9.0.8 writes no report
+    for it, and pcbnew's LoadBoard returns None; measured 2026-10-11)."""
+    if rotation is not None and not math.isfinite(rotation):
+        raise ToolError(
+            f"rotation must be a finite angle in degrees, not {rotation}. KiCad cannot load"
+            " a footprint at that angle, so nothing was written."
+        )
 
 
 def _place_pads_at_rotation(node, rotation: float) -> None:
@@ -1714,6 +2000,7 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
     fp_at = fp.find("at")
     fp_x, fp_y = _xy(fp_at)
     fp_angle = float(fp_at.atoms[3].text) if len(fp_at.atoms) > 3 else 0
+    major = _board_major(root)
     lines = [
         f"{reference} pads "
         f"(footprint origin ({_numish(fp_x)}, {_numish(fp_y)}), "
@@ -1727,7 +2014,9 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
         # Board coordinates first: a caller routing to this pad needs those, and
         # reporting only the footprint-local pair invites placing a trace at the
         # wrong end of the board on any rotated part.
-        board_x, board_y = _transform_local_to_board(fp_x, fp_y, fp_angle, local_x, local_y)
+        board_x, board_y = _transform_local_to_board(
+            fp_x, fp_y, fp_angle, local_x, local_y, major=major
+        )
         lines.append(
             f"  Pad {pad.atoms[1].text}: {pad.atoms[2].text} {pad.atoms[3].text} "
             f"@ board ({_numish(round(board_x, 6))}, {_numish(round(board_y, 6))}) "
@@ -1766,12 +2055,21 @@ def place_footprint(
 
     Use list_lib_footprints to see what a library holds.
 
+    The footprint is turned to its rotation as KiCad's own rotate turns it: every
+    pad and text turns with it (a pad's angle is its library angle plus the
+    footprint's), and a keep-upright text that would read upside down is turned
+    half a turn with its justification mirrored, so it stays readable on the same
+    side of its anchor. Angles are written as KiCad writes them: the footprint's
+    between -180 and 180 and left out at 0, each pad's and text's absolute.
+
     Args:
         reference: Reference designator (e.g. "R2")
         value: Component value (e.g. "4.7K")
         x: X position in mm
         y: Y position in mm
-        rotation: Rotation in degrees
+        rotation: The footprint's angle in degrees, counter-clockwise as seen on
+            screen; any finite value (270 is stored as -90, 360 as 0). inf and nan
+            are refused and nothing is written.
         layer: Layer (F.Cu or B.Cu)
         library: Footprint library nickname (e.g. "Resistor_SMD"), or a path to a
             .pretty directory. A nickname is resolved as update_pcb_from_schematic
@@ -1789,6 +2087,7 @@ def place_footprint(
             "library and footprint go together: name both to place a real footprint,"
             " or neither for a pad-less marker."
         )
+    _require_finite_rotation(rotation)
     tree, root, key = _open_pcb_cst(pcb_path)
     # Validate before the cache pop, so a refusal leaves the cached tree valid.
     _resolve_layer_cst(root, layer, copper_only=True)
@@ -1808,11 +2107,11 @@ def place_footprint(
         for prop in node.find_all("property"):
             prop.find("uuid").atoms[1].set_text(_gen_uuid())
     node.find("layer").atoms[1].set_text(layer)
-    _fill_at(node, x, y, rotation)
-    _place_pads_at_rotation(node, rotation)
     for prop in node.find_all("property"):
         if prop.atoms[1].text in ("Reference", "Value"):
             prop.atoms[2].set_text(reference if prop.atoms[1].text == "Reference" else value)
+    _fp_translate(node, _num(x), _num(y))
+    _fp_rotate_to(node, rotation)
     _splice_after(root, node, ("footprint",), _PCB_TAIL_HEADS)
     _atomic_write(key, _cst.serialize(tree))
     what = f"{Path(pretty).stem}:{footprint}" if library else "a pad-less marker"
@@ -1920,11 +2219,14 @@ def _toggle_mirror(node) -> None:
 
 
 def _numish_text(value: float) -> str:
-    """A float in KiCad's own shape: no trailing zeros, no negative zero."""
-    if value == 0:
-        value = 0.0
-    text = ("%.6f" % value).rstrip("0").rstrip(".")
-    return text or "0"
+    """The text KiCad writes for a board coordinate of *value* millimetres: the
+    nanometres it reads, KiROUND( value * 1e6 ), through FormatInternalUnits
+    (_mm). An int has no sign of zero, so nothing comes out as "-0", and for the
+    negation of a coordinate KiCad wrote, -float(t), it is exactly KiCad's text
+    for the negated value, which is what the flip writes. It is given no board
+    version, so it rounds as KiCad 9 does: on whole nanometres, which is what
+    KiCad writes, KiCad 10 rounds the same (_shared.kiround)."""
+    return _mm(kiround(value * 1e6))
 
 
 def _require_same_side(fp, layer: str, reference: str) -> bool:
@@ -1977,11 +2279,23 @@ def move_footprint(
 ) -> str:
     """Move a footprint to a new position.
 
+    A move rewrites the footprint's own position and nothing of its pads, texts
+    or graphics, which KiCad stores relative to the footprint. A rotation turns
+    the footprint to that angle as KiCad's own rotate turns it: every pad and text
+    turns by the change from the angle it had, and a keep-upright text that would
+    read upside down is turned half a turn with its justification mirrored, so it
+    stays readable on the same side of its anchor. Angles are written as KiCad
+    writes them: the footprint's between -180 and 180 and left out at 0.
+
     Args:
         reference: Reference designator (e.g. "R1")
         x: New X position
         y: New Y position
-        rotation: New rotation (None = keep current)
+        rotation: The footprint's angle after the move, in degrees (None keeps the
+            current one). An angle the footprint already has (270 for one at -90,
+            360 for one at 0) changes nothing and leaves the file byte-identical,
+            where KiCad's footprint properties dialog would still re-run its
+            rotate by a full turn. inf and nan are refused and nothing is written.
         layer: New layer. Naming the other side flips the footprint: every pad,
             graphic and text layer mirrors with it, the local geometry mirrors,
             and text gains a mirrored justification, which is what KiCad's own
@@ -1989,17 +2303,20 @@ def move_footprint(
             measured here is refused rather than half-transformed.
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
+    _require_finite_rotation(rotation)
     tree, root, key = _open_pcb_cst(pcb_path)
     if layer:
         _resolve_layer_cst(root, layer, copper_only=True)
     _BOARD_CACHE.pop(key, None)
     fp = _find_fp_cst(root, reference)
     flipping = _require_same_side(fp, layer, reference) if layer else False
+    _fp_translate(fp, _num(x), _num(y))
     if flipping:
-        # Mirror first, then place: the flip rewrites the footprint's own angle
-        # from the one it had, and _fill_at below applies the caller's.
+        # The flip before the angle: the flip rewrites the footprint's own angle
+        # from the one it had, and the rotation names the angle it ends at.
         _flip_footprint_cst(fp)
-    _fill_at(fp, x, y, rotation)
+    if rotation is not None:
+        _fp_rotate_to(fp, rotation)
     if layer:
         fp.find("layer").atoms[1].set_text(layer)
     # Advisory only: moving into a keep-out or off the board edge is legal
@@ -2449,7 +2766,9 @@ def update_pcb_from_schematic(
 
     Exports the schematic's netlist, loads the assigned footprints from
     libraries, and binds every pad to its net. Creates the .kicad_pcb if
-    it does not exist; new footprints land in a grid cluster. Existing
+    it does not exist; new footprints land in a grid cluster at orientation
+    0, written as KiCad writes a footprint it has just loaded (no angle on the
+    footprint, library pad and text angles normalized as KiCad holds them). Existing
     footprints are matched by reference and keep their position; a
     changed footprint assignment swaps the footprint in place. Stale
     board footprints are reported, and removed only with delete_stale
@@ -2690,6 +3009,7 @@ def add_thermal_vias(
         fp_angle,
         float(pad_at.atoms[1].text),
         float(pad_at.atoms[2].text),
+        major=_board_major(root),
     )
 
     # Determine net. A netless pad on a KiCad 10 format board resolves to
@@ -2841,6 +3161,7 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
     tolerance = 0.001  # mm
     total_removed = 0
     iterations = 0
+    major = _board_major(root)
 
     def _seg_ends(seg) -> tuple[tuple[float, float], tuple[float, float]]:
         start, end = seg.find("start"), seg.find("end")
@@ -2868,6 +3189,7 @@ def remove_dangling_tracks(pcb_path: str = PCB_PATH) -> DanglingTracksResult:
                     fp_angle,
                     float(pad_at.atoms[1].text),
                     float(pad_at.atoms[2].text),
+                    major=major,
                 )
                 connection_points.append((round(px, 3), round(py, 3)))
 
@@ -3251,9 +3573,11 @@ def _apply_netlist_cst(
         _set_fp_path(node, comp["path"])
 
         if existing is None:
+            # A new footprint stands at orientation 0, so its (at) carries no
+            # angle, as KiCad's writer leaves one of 0 out.
             x, y = _grid_slot(k, ax, ay, 10.0)
             k += 1
-            _fill_at(node, x, y, 0)
+            _fp_translate(node, _num(x), _num(y))
             _sync_fp_from_component(node, comp)
             _splice_after(root, node, ("footprint",), _PCB_TAIL_HEADS)
             by_ref[ref] = node
@@ -3870,6 +4194,7 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
     tree = _cst.parse(_read_kicad_bytes(pcb_path, "board"))
     root = tree.lists[0]
     count = 0
+    major = _board_major(root)
 
     for fp in root.find_all("footprint"):
         at = fp.find("at")
@@ -3884,7 +4209,7 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
             zone = source_zone.copy()
             for polygon in zone.find_all("polygon"):
                 for xy in polygon.find("pts").find_all("xy"):
-                    bx, by = _transform_local_to_board(fp_x, fp_y, fp_angle, *_xy(xy))
+                    bx, by = _transform_local_to_board(fp_x, fp_y, fp_angle, *_xy(xy), major=major)
                     xy.atoms[1].set_text(_num(round(bx, 6)))
                     xy.atoms[2].set_text(_num(round(by, 6)))
             _replace_child(zone, _HATCH_TPL.copy())
@@ -4117,6 +4442,26 @@ def autoroute_pcb(
     )
 
 
+def _courtyard_corner_on_board(
+    fp_x: float, fp_y: float, angle: float, local_x: float, local_y: float
+) -> tuple[float, float]:
+    """A corner of a courtyard's footprint-local box, turned onto the board in
+    float millimetres with RotatePoint's signs.
+
+    Not _transform_local_to_board, which reads every coordinate as KiCad's
+    integer nanometres: these corners are not points KiCad holds (a circle's
+    extremes, the chords of an arc are off its grid), and the box is reported to
+    1e-4 mm, so rounding them to the nanometre first could only push a value
+    across that rounding.
+    """
+    theta = math.radians(angle or 0)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    return (
+        fp_x + (local_x * cos_t + local_y * sin_t),
+        fp_y + (-local_x * sin_t + local_y * cos_t),
+    )
+
+
 @mcp.tool(annotations=_READ_ONLY, title="Outline bounds of a footprint placed on the board")
 def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintBoundsResult:
     """Get the board-coordinate bounding box of a placed footprint.
@@ -4144,7 +4489,7 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintB
             (bbox["min_x"], bbox["max_y"]),
         ]
         board_corners = [
-            _transform_local_to_board(fp_x, fp_y, angle, lx, ly) for lx, ly in local_corners
+            _courtyard_corner_on_board(fp_x, fp_y, angle, lx, ly) for lx, ly in local_corners
         ]
         # Recompute axis-aligned bounding box from transformed corners
         xs = [c[0] for c in board_corners]

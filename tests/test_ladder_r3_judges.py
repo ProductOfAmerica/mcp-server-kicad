@@ -37,8 +37,9 @@ from mcp_server_kicad._shared import _run_cli
 MM = 1_000_000
 
 #: The rung 3 plan's curated stock footprints, less the zone-owning Tag-Connect, whose
-#: zone is ported with the board-coordinates slice; and Texas_DSBGA-5, whose library
-#: writes a text at -90.
+#: zone is ported with the board-coordinates slice; Texas_DSBGA-5, whose library writes a
+#: text at -90; and an M.2 edge connector, whose library writes Reference and Value twice
+#: (kicad_ref.footprint's module docstring).
 CURATED = (
     "R_0805_2012Metric",
     "L_Bourns_SDR0604",
@@ -48,6 +49,7 @@ CURATED = (
     "ST_HLGA-6_3.76x4.72mm_P1.65mm",
     "BarrelJack_CUI_PJ-079BH_Horizontal",
     "Texas_DSBGA-5_0.8875x1.3875mm_Layout2x3_P0.5mm",
+    "M.2_22110-xx-B",
 )
 _ANGLES = (0.0, 90.0, 180.0, 270.0, 30.0, -90.0, 45.0, 37.5)
 _SEMANTICS = ("rotate", "set")

@@ -56,22 +56,6 @@ from mcp_server_kicad import pcb
 MM = 1_000_000
 
 
-def _xfail(reason: str):
-    """The one xfail the ladder allows: strict, and only for the bug's own assertion."""
-    return pytest.mark.xfail(strict=True, raises=AssertionError, reason=reason)
-
-
-_BUG2 = (
-    "bug 2: place_footprint and move_footprint do not turn pad and text angles as KiCad's"
-    " FOOTPRINT::Rotate does (a pad takes the footprint's angle instead of adding it to its"
-    " own, a text keeps its library angle); fixed by step 7"
-)
-_BUG53 = (
-    "bug 53: footprint angles are not spelled as KiCad writes them (the footprint's angle"
-    " 270 for -90 and an explicit 0, a library angle copied as the library spells it);"
-    " fixed by step 7"
-)
-
 _VERSIONS = st.sampled_from(("k9", "k10"))
 #: The rung 3 plan's curated stock footprints without the zone-owning Tag-Connect, and
 #: Texas_DSBGA-5, whose library writes its ${REFERENCE} text at -90.
@@ -111,8 +95,11 @@ def _tolerance(*angles: float) -> int:
 
 
 def _kicads_reading(fp: F.Footprint) -> F.Footprint:
-    """What KiCad reads back from the tokens it writes for ``fp``."""
-    return F.written(fp)
+    """What KiCad reads back from the tokens it writes for ``fp`` in the comparison form
+    (rule D2): KeepUpright applied before the writing, as FOOTPRINT::Rotate applies it,
+    since FormatAngle's ten digits taken before and after it part by float noise (359.90234375
+    written then turned reads 179.90234379999993, turned then written 179.9023438)."""
+    return F.written(F.canonical(fp))
 
 
 def _place(board: Path, ref: str, at_nm, angle, pretty: Path, name: str) -> None:
@@ -157,7 +144,6 @@ def _placed(fp: E.SynFootprint, angle: float, version: str) -> bytes:
         return board.read_bytes()
 
 
-@_xfail(_BUG2)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=E.footprint_with_pad_at(180.0), angle=90.0, version="k9")
 @given(fp=E.synthetic_footprints(), angle=G.angles(), version=_VERSIONS)
@@ -166,7 +152,7 @@ def test_place_matches_kicads_placement(fp, angle, version):
     unlocked texts with any justification, graphics, no zone) placed by place_footprint
     at any angle: KiCad's reading of the placed footprint is KiCad's own placement,
     kicad_ref.footprint.place with Rotate, in the comparison form. A pad at 180 placed at
-    90 must read at 270; the tool writes 90."""
+    90 must read at 270, where the tool used to write 90."""
     data = _placed(fp, angle, version)
     got = FJ.read(data, "U1")
     want = _kicads_reading(
@@ -205,7 +191,6 @@ def test_place_keeps_local_geometry(fp, angle, version):
     assert not problems, "\n".join(problems)
 
 
-@_xfail(_BUG2)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=E.footprint_with_pad_at(180.0), angle=90.0, version="k9")
 @given(fp=E.synthetic_footprints(), angle=G.angles(), version=_VERSIONS)
@@ -240,7 +225,6 @@ def _start_board(work: Path, fp: E.SynFootprint, theta0: float, version: str) ->
     return _board(work / "start.kicad_pcb", items, version)
 
 
-@_xfail(_BUG2)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=E.footprint_with_pad_at(180.0), theta0=0.0, angle=90.0, version="k9")
 @given(fp=E.synthetic_footprints(), theta0=G.angles(), angle=G.angles(), version=_VERSIONS)
@@ -293,6 +277,41 @@ def _at_path(data: bytes, reference: str) -> J.Path:
             at = next(k for k, c in enumerate(item.items) if F.head(c) == b"at")
             return ((0, "kicad_pcb"), (index, "footprint"), (at, "at"))
     raise RuntimeError(f"no footprint {reference} on the board")
+
+
+@settings(max_examples=sexpr_gen.budget(4))
+@example(fp=E.footprint_with_pad_at(180.0), theta0=30.0, angle=200.0, version="k9")
+@example(fp=E.footprint_with_pad_at(-90.0), theta0=-90.0, angle=0.0, version="k10")
+@example(fp=E.footprint_with_pad_at(180.0), theta0=-359.9, angle=-359.9, version="k9")
+@given(fp=E.synthetic_footprints(), theta0=G.angles(), angle=G.angles(), version=_VERSIONS)
+def test_move_rotation_changes_only_angles_inside_the_footprint(fp, theta0, angle, version):
+    """No zone: a move that turns the footprint where it stands changes nothing outside it
+    (edit_judge.assert_confined, U2 included) and, inside it, only the angle atom of an
+    (at), the footprint's, a pad's or a text's, set, added or left out, and the words of a
+    text's (justify ...), which KeepUpright negates in place. A turn to the angle KiCad
+    reads the footprint at already (Normalize180 of the requested one) leaves the board
+    byte-identical, and so can a turn smaller than any ten-digit spelling shows (theta0
+    1.2527619600573416, written 1.25276196, turned to 1.2527619600573416), whose reading
+    the tests above judge."""
+    with tempfile.TemporaryDirectory() as work:
+        board = _start_board(Path(work), fp, theta0, version)
+        before = board.read_bytes()
+        _move(board, "U1", _AT, rotation=angle)
+        after = board.read_bytes()
+    if normalize180(angle) == FJ.read(before, "U1").orientation:
+        assert after == before, "a turn to the angle the footprint holds changed the board"
+        return
+    if after == before:
+        return
+    footprint = _at_path(before, "U1")[:2]
+    edits = J.assert_confined(before, after, footprint)
+    stray = [
+        e.describe()
+        for e in edits
+        if not (e.path[-1][1] == "at" and e.index == 3)
+        and not (e.path[-1][1] == "justify" and e.op == "atom" and e.index >= 1)
+    ]
+    assert not stray, stray
 
 
 _HALF = G.half_degree_angles()
@@ -372,7 +391,6 @@ def _out_of_range(angle: float) -> bool:
     return normalize180(angle) != angle or normalize180(angle) == 0
 
 
-@_xfail(_BUG53)
 @pytest.mark.parametrize("tool", ["place_footprint", "move_footprint"])
 @settings(max_examples=sexpr_gen.budget(4))
 @example(angle=270.0, version="k9")
@@ -397,13 +415,12 @@ def test_footprint_angle_is_spelled_as_kicad_writes(tool, angle, version):
 # ---------------------------------------------------------------------------
 
 
-@_xfail(_BUG2)
 @pytest.mark.parametrize("angle", [90.0, 270.0])
 def test_marker_place_turns_its_texts(tmp_path, angle):
     """place_footprint without a library places a marker carrying Reference and Value.
     Placed at an angle its texts turn as KiCad's Rotate turns them, from the marker as
     placed at 0 (kicad_ref.footprint.place), in the comparison form: at 90 both read at 90,
-    at 270 at 90 again after KeepUpright. The tool leaves them at 0."""
+    at 270 at 90 again after KeepUpright. The tool used to leave them at 0."""
     board = _board(tmp_path / "marker.kicad_pcb")
     try:
         pcb.place_footprint("U1", "V", 20, 20, pcb_path=str(board))
@@ -423,7 +440,6 @@ def test_marker_place_turns_its_texts(tmp_path, angle):
 # ---------------------------------------------------------------------------
 
 
-@_xfail(_BUG53)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=E.footprint_with_pad_at(-90.0, rotation_text=-90.0), version="k9")
 @given(fp=E.synthetic_footprints(), version=_VERSIONS)
@@ -431,8 +447,8 @@ def test_place_writes_library_angles_as_kicad_loads_them(fp, version):
     """A library whose pads and texts are written at any multiple of half a degree within
     +-720, -90 among them as KiCad's stock libraries write it, placed at 0: every pad and
     text angle atom is what KiCad writes after FootprintLoad, the loader's Normalize( angle )
-    through the writer (a pad's left out at 0, a text's always written). The tool copies
-    the library's own atom, so -90 stays -90 where KiCad writes 270."""
+    through the writer (a pad's left out at 0, a text's always written). The tool used to
+    copy the library's own atom, so -90 stayed -90 where KiCad writes 270."""
     data = _placed(fp, 0.0, version)
     group = FJ.footprint_group(data, "U1")
     got = FJ.tokens(group)
@@ -534,7 +550,6 @@ def _placement_problems(runs: _Runs, angles) -> list[str]:
     return problems
 
 
-@_xfail(_BUG2)
 def test_place_matches_pcbnew(runs):
     """One item for the curated set at 90, 180, 270, 30, -90, 45 and 37.5 degrees: each
     footprint place_footprint wrote reads, in the comparison form, as the one pcbnew
@@ -554,7 +569,6 @@ def test_place_at_zero_matches_pcbnew(runs):
 
 
 @pytest.mark.nightly
-@_xfail(_BUG2)
 @settings(max_examples=sexpr_gen.budget(25))
 @example(picks=[(0, 90.0)])
 @given(st.lists(st.tuples(st.integers(0, 10**9), G.angles()), min_size=1, max_size=8))
@@ -604,12 +618,11 @@ def _same_angle(a: float, b: float) -> bool:
     return min(gap, 360.0 - gap) <= _ANGLE_TOLERANCE
 
 
-@_xfail(_BUG2)
 def test_pcbnew_reads_pads_at_their_library_angle(runs):
     """One item: the curated set placed by place_footprint at 90 and 45 degrees, read by
     pcbnew: every pad's footprint-relative orientation (PAD::GetFPRelativeOrientation) is
-    the angle its library gives it, as KiCad reads the library file. The tool writes each
-    pad at the footprint's angle, so a library pad at 180 reads at 0."""
+    the angle its library gives it, as KiCad reads the library file. The tool used to
+    write each pad at the footprint's angle, so a library pad at 180 read at 0."""
     problems = []
     for angle, found in runs.described.items():
         for index, path in enumerate(runs.paths):
@@ -642,7 +655,6 @@ def _dsbga_premise() -> None:
         raise RuntimeError(f"the installed {_DSBGA} writes its texts at {atoms}, none at -90")
 
 
-@_xfail(_BUG53)
 def test_place_writes_library_angles_as_pcbnew_saves_them(runs):
     """N12: Texas_DSBGA-5's library writes its ${REFERENCE} text at -90. The curated set
     placed at 0 by the tool: every pad and text angle atom is the one pcbnew writes after
@@ -660,7 +672,6 @@ def test_place_writes_library_angles_as_pcbnew_saves_them(runs):
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])
 
 
-@_xfail(_BUG2)
 @pytest.mark.parametrize("operation", ["place", "move"])
 @pytest.mark.parametrize("part", ["pads", "texts"])
 def test_place_and_move_match_pcbnew_rotate_token_for_token(runs, operation, part):
