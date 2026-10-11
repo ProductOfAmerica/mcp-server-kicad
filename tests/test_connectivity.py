@@ -980,8 +980,12 @@ def test_an_edited_sheet_is_never_served_stale(tmp_path):
 def test_a_missing_sheet_file_is_skipped(tmp_path):
     """Guard: KiCad loads a missing sheet file empty, so it holds no reference."""
     root, child = _two_sheets(tmp_path, child_ref="R1")
+    saved = Path(child).read_bytes()
     Path(child).unlink()
-    assert not _plan_in(root, [("R1", "1")]).refused
+    try:
+        assert not _plan_in(root, [("R1", "1")]).refused
+    finally:  # the autouse kicad-cli check loads every sheet file; the gap is this test's input
+        Path(child).write_bytes(saved)
 
 
 @pytest.mark.no_kicad_validation
@@ -1109,22 +1113,24 @@ def test_a_sheet_file_in_a_symlink_loop_counts_as_missing(tmp_path):
     import os
 
     root, _child = _two_sheets(tmp_path)
-    tree = _root(root)
-    for q in tree.find("sheet").find_all("property"):
-        if q.atoms[1].text == "Sheetfile":
-            q.atoms[2].set_text("loop.kicad_sch")
-    Path(root).write_bytes(_cst.serialize(tree))
     d = Path(root).parent
     try:
         os.symlink("loop2.kicad_sch", d / "loop.kicad_sch")
         os.symlink("loop.kicad_sch", d / "loop2.kicad_sch")
     except OSError as e:
         pytest.skip(f"cannot create symlinks here: {e}")
+    original = Path(root).read_bytes()
+    tree = _root(root)
+    for q in tree.find("sheet").find_all("property"):
+        if q.atoms[1].text == "Sheetfile":
+            q.atoms[2].set_text("loop.kicad_sch")
+    Path(root).write_bytes(_cst.serialize(tree))
     try:
         assert not _plan_in(root, [("R1", "1")]).refused
-    finally:  # the autouse kicad-cli check reads every .kicad_sch here, and cannot read these
+    finally:  # the autouse kicad-cli check loads every sheet file, and cannot read these
         (d / "loop.kicad_sch").unlink()
         (d / "loop2.kicad_sch").unlink()
+        Path(root).write_bytes(original)
 
 
 def test_the_project_is_found_from_a_sheet_in_a_subdirectory(tmp_path):

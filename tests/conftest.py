@@ -5,10 +5,14 @@ Provides:
     - empty_sch: minimal valid empty schematic
     - scratch_sym_lib: .kicad_sym with a custom TestPart symbol
     - stock_symbol_dir: stand-in for KiCad's stock symbol folder (set KICAD_SYMBOL_DIR)
-    - reparse: re-read a schematic from disk
+    - reparse: re-read a schematic from disk through kiutils (not KiCad's reader)
     - run_erc: run kicad-cli ERC and return parsed JSON
-    - assert_kicad_parseable: assert kicad-cli can parse the file
+    - assert_kicad_parseable: assert kicad-cli can load a schematic and every sheet below it
+    - netlist_nodes: KiCad's connectivity, keyed by printed net name
+    - netlist_fields: KiCad's reading of every placed symbol's user fields
     - requires_cli: skip marker for tests that shell out to kicad-cli
+    - Hypothesis profiles (HYPOTHESIS_PROFILE) and the nightly marker's skip rule
+    - the autouse output oracle over every KiCad file a test leaves in tmp_path
     - StdioClient: drive a server as a subprocess over stdio, as a host does
     - Builder helpers importable by test files for custom fixture creation
 """
@@ -21,12 +25,15 @@ import os
 import re
 import shutil
 import subprocess
+import tempfile
 import uuid as _uuid
 import xml.etree.ElementTree as ET
 from functools import lru_cache
 from pathlib import Path
 
 import pytest
+from hypothesis import Phase, settings
+from kicad_ref import dsn_lexer as _dsn
 from kiutils.board import Board
 from kiutils.footprint import Footprint, Pad
 from kiutils.items.brditems import Segment
@@ -70,43 +77,98 @@ KICAD_SCH_VERSION = 20250114
 KICAD_SCH_GENERATOR = "eeschema"
 KICAD_SYM_VERSION = "20231120"
 
-# Schematic bodies already validated this session, keyed on their UUID-normalised
-# digest.  See ``_validate_kicad_output``.
+# Files kicad-cli has already loaded this session, keyed on a UUID-normalised digest
+# of everything its verdict depends on.  See ``_validate_kicad_outputs``.
 _UUID_RE = re.compile(rb"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
 _VALIDATED: set[bytes] = set()
 
 
 # ---------------------------------------------------------------------------
-# Internal helpers
+# Test ladder: Hypothesis profiles, the nightly marker, xfailed calls
 # ---------------------------------------------------------------------------
 
+# HYPOTHESIS_PROFILE picks the profile; "ci" is the default everywhere. Hypothesis
+# loads a built-in "ci" profile of its own whenever a CI variable is set, so each
+# profile here is built on the plain default and loaded explicitly: a local run and
+# a CI run check the same examples. "ci" is derandomized with no example database,
+# so every run checks the same cases and a strict xfail cannot flip between runs.
+# report_multiple_bugs=False keeps a failure an AssertionError rather than an
+# exception group, which is what a strict xfail's raises=AssertionError matches.
+_HYPOTHESIS_DEFAULT = settings.get_profile("default")
+settings.register_profile(
+    "ci",
+    _HYPOTHESIS_DEFAULT,
+    max_examples=200,
+    derandomize=True,
+    database=None,
+    deadline=None,
+    print_blob=True,
+    report_multiple_bugs=False,
+)
+settings.register_profile(
+    "nightly",
+    _HYPOTHESIS_DEFAULT,
+    max_examples=5000,
+    derandomize=False,
+    deadline=None,
+    print_blob=True,
+    report_multiple_bugs=False,
+)
+# For mutation testing: deterministic, and no shrinking, since killing a mutant
+# needs a failing example, not a minimal one.
+settings.register_profile(
+    "mutation",
+    _HYPOTHESIS_DEFAULT,
+    max_examples=100,
+    derandomize=True,
+    database=None,
+    phases=[Phase.explicit, Phase.generate],
+    deadline=None,
+    report_multiple_bugs=False,
+)
+settings.load_profile(os.environ.get("HYPOTHESIS_PROFILE", "ci"))
 
-def _diff_spans(before: bytes, after: bytes) -> tuple[int, int]:
-    """Byte counts of the single differing region on each side, after
-    stripping the common prefix and suffix."""
-    p = 0
-    lo = min(len(before), len(after))
-    while p < lo and before[p] == after[p]:
-        p += 1
-    s = 0
-    while s < lo - p and before[-1 - s] == after[-1 - s]:
-        s += 1
-    return len(before) - p - s, len(after) - p - s
+
+def _nightly_skip_reason(profile: str | None) -> str | None:
+    """Why a @pytest.mark.nightly test is skipped under ``profile``, or None to run it."""
+    if profile == "nightly":
+        return None
+    return "nightly: a large generated KiCad run; set HYPOTHESIS_PROFILE=nightly to run it"
 
 
-def _pure_insertion(before: bytes, after: bytes) -> bool:
-    """*after* is *before* with one contiguous run of bytes inserted."""
-    return len(after) >= len(before) and _diff_spans(before, after)[0] == 0
+def pytest_collection_modifyitems(config, items):
+    reason = _nightly_skip_reason(os.environ.get("HYPOTHESIS_PROFILE"))
+    if reason is None:
+        return
+    skip = pytest.mark.skip(reason=reason)
+    for item in items:
+        if item.get_closest_marker("nightly") is not None:
+            item.add_marker(skip)
 
 
-def _span_preserved(before: bytes, after: bytes) -> bool:
-    """One contiguous insertion OR deletion: the shorter side is untouched."""
-    return min(_diff_spans(before, after)) == 0
+_CALL_REPORT = pytest.StashKey[pytest.TestReport]()
 
 
-def _confined(before: bytes, after: bytes, limit: int = 200) -> bool:
-    """All differences sit inside one span of <= limit bytes on each side."""
-    return max(_diff_spans(before, after)) <= limit
+@pytest.hookimpl(wrapper=True)
+def pytest_runtest_makereport(item, call):
+    report = yield
+    if report.when == "call":
+        item.stash[_CALL_REPORT] = report
+    return report
+
+
+def _call_xfailed(report) -> bool:
+    """True when a test's call phase failed as its xfail marker expects.
+
+    pytest reports that as skipped with ``wasxfail``; a pass, a failure and an XPASS
+    (failed under strict, passed with ``wasxfail`` otherwise) are not skipped.
+    """
+    return report is not None and report.skipped and hasattr(report, "wasxfail")
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
 
 
 def _gen_uuid() -> str:
@@ -612,68 +674,363 @@ def make_demorgan_sch(tmp_path, body_style: int = 1) -> str:
 
 
 def reparse(path: str | Path) -> Schematic:
-    """Re-parse a schematic file from disk. Returns the Schematic object."""
+    """Re-read a schematic through kiutils. Returns the Schematic object.
+
+    kiutils is a reader independent of the CST, which is all this is good for: it is
+    not KiCad's reader. It decodes escapes and non-ASCII text differently from KiCad
+    and drops tokens it does not model (docs/adr-cst-substrate.md, the codec rule and
+    the slice-17 entry), so a test asserting what KiCad reads, text or structure,
+    reads the file through the CST, the lexer port in tests/kicad_ref, or kicad-cli.
+    """
     return Schematic.from_file(str(path))
+
+
+def _cli_report(args: list[str], path: Path, name: str):
+    """Run ``kicad-cli *args --output <report> path``; return (process, report bytes or None).
+
+    The report goes to a directory created for this run alone, so it can only be this
+    run's: kicad-cli writes none for a file it cannot load, and a report an earlier run
+    left beside the file passed for its verdict (measured on kicad-cli 9.0.8,
+    2026-10-10: a schematic truncated after one good ERC run read back that run's
+    report).
+    """
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+        out = Path(scratch) / name
+        result = _run_cli([*args, "--output", str(out), str(path)], check=False)
+        return result, (out.read_bytes() if out.is_file() else None)
 
 
 def run_erc(path: str | Path) -> dict:
     """Run ``kicad-cli sch erc`` and return the parsed JSON report.
 
-    The ERC output is written next to *path* with a ``.erc.json`` suffix.
+    Raises RuntimeError when kicad-cli writes no report, which is how it answers a
+    schematic it cannot load.
     """
-    path = str(path)
-    erc_out = path + ".erc.json"
-    result = _run_cli(
-        ["sch", "erc", "--format", "json", "--severity-all", "--output", erc_out, path],
-        check=False,
+    result, report = _cli_report(
+        ["sch", "erc", "--format", "json", "--severity-all"], Path(path), "erc.json"
     )
-    if not os.path.exists(erc_out):
+    if report is None:
         raise RuntimeError(
             f"kicad-cli ERC failed (rc={result.returncode}): {result.stderr.strip()}"
         )
-    with open(erc_out) as f:
-        return json.load(f)
+    return json.loads(report)
+
+
+def parse_netlist_nodes(xml: bytes) -> dict[str, dict[tuple[str, str], str]]:
+    """``{net name: {(reference, pin number): pin type}}`` from a kicadxml netlist.
+
+    A root-sheet local label's net prints as ``/NAME``; one leading slash is dropped
+    from the key. Raises RuntimeError when two nets would share a key, that is when
+    they print the same name before or after that slash goes: kicadxml prints names
+    unescaped, so a root label ``A{slash}B`` and sheet A's local label ``B`` both
+    print ``/A/B`` (measured on kicad-cli 9.0.8, 2026-10-10), and a root label ``X``
+    keys like a global ``X``. Keyed by name, one net would silently replace the
+    other; tests/netlist_oracle.py compares by node set instead.
+    """
+    nets: dict[str, dict[tuple[str, str], str]] = {}
+    printed: dict[str, str] = {}
+    for net in ET.fromstring(xml).iter("net"):
+        name = net.get("name", "")
+        key = name[1:] if name.startswith("/") else name
+        nodes = {
+            (node.get("ref", ""), node.get("pin", "")): node.get("pintype", "")
+            for node in net.findall("node")
+        }
+        if key in nets:
+            raise RuntimeError(
+                f"two nets key as {key!r}: {printed[key]!r} with {sorted(nets[key])} and"
+                f" {name!r} with {sorted(nodes)}; compare by node set"
+                " (tests/netlist_oracle.py) where names can collide"
+            )
+        nets[key], printed[key] = nodes, name
+    return nets
 
 
 def netlist_nodes(path: str | Path) -> dict[str, dict[tuple[str, str], str]]:
     """Run ``kicad-cli sch export netlist`` and return KiCad's own connectivity.
 
-    ``{net name: {(reference, pin number): pin type}}``.  The export names a
-    root-sheet local label's net ``/NAME``; the leading slash is dropped here.
-    A pin under a no-connect flag carries the ``+no_connect`` suffix on its
-    type.  This is the oracle for anything that decides which placed symbol
-    a pin belongs to.
+    parse_netlist_nodes of the export: ``{net name: {(reference, pin number): pin
+    type}}``, refusing two nets that print alike. A pin under a no-connect flag
+    carries the ``+no_connect`` suffix on its type. This is the oracle for anything
+    that decides which placed symbol a pin belongs to.
     """
-    path = str(path)
-    net_out = path + ".netlist.xml"
-    result = _run_cli(
-        ["sch", "export", "netlist", "--format", "kicadxml", "--output", net_out, path],
-        check=False,
+    result, xml = _cli_report(
+        ["sch", "export", "netlist", "--format", "kicadxml"], Path(path), "netlist.xml"
     )
-    if not os.path.exists(net_out):
+    if xml is None:
         raise RuntimeError(
             f"kicad-cli netlist export failed (rc={result.returncode}): {result.stderr.strip()}"
         )
-    nets: dict[str, dict[tuple[str, str], str]] = {}
-    for net in ET.parse(net_out).getroot().iter("net"):
-        name = net.get("name", "")
-        nets[name[1:] if name.startswith("/") else name] = {
-            (node.get("ref", ""), node.get("pin", "")): node.get("pintype", "")
-            for node in net.findall("node")
-        }
-    return nets
+    return parse_netlist_nodes(xml)
+
+
+_COMP_RE = re.compile(rb'<comp ref="([^"]*)"[^>]*>(.*?)</comp>', re.S)
+_FIELDS_RE = re.compile(rb"<fields>(.*?)</fields>", re.S)
+_FIELD_RE = re.compile(rb'<field name="([^"]*)"\s*(?:/>|>(.*?)</field>)', re.S)
+_ENTITY_RE = re.compile(r"&(amp|lt|gt|quot|apos|#[0-9]+|#x[0-9A-Fa-f]+);")
+_NAMED_ENTITIES = {"amp": "&", "lt": "<", "gt": ">", "quot": '"', "apos": "'"}
+
+
+def _xml_text(raw: bytes) -> str:
+    """Element or attribute text as written: UTF-8, entities decoded once."""
+
+    def entity(match: re.Match) -> str:
+        name = match.group(1)
+        if name.startswith("#x"):
+            return chr(int(name[2:], 16))
+        if name.startswith("#"):
+            return chr(int(name[1:]))
+        return _NAMED_ENTITIES[name]
+
+    return _ENTITY_RE.sub(entity, raw.decode("utf-8", "surrogateescape"))
+
+
+def parse_comp_fields(xml: bytes) -> dict[tuple[str, str], str]:
+    """``{(reference, field name): value}`` from a kicadxml netlist's raw bytes.
+
+    Read with regexes, not an XML parser: KiCad writes control characters raw (BEL,
+    BS, FF, VT measured on kicad-cli 9.0.8, 2026-10-10), which no conforming parser
+    accepts, and escapes only & < > (plus CR as &#xD; and, in attributes, " TAB LF).
+    Only each component's own first <fields> block counts; KiCad 10 may add more under
+    <variants> after it. A field KiCad prints empty is written <field name="X"/> and
+    reads as "".
+    """
+    out: dict[tuple[str, str], str] = {}
+    for comp in _COMP_RE.finditer(xml):
+        block = _FIELDS_RE.search(comp.group(2))
+        if block is None:
+            continue
+        ref = _xml_text(comp.group(1))
+        for field in _FIELD_RE.finditer(block.group(1)):
+            out[(ref, _xml_text(field.group(1)))] = _xml_text(field.group(2) or b"")
+    return out
+
+
+def netlist_fields(path: str | Path) -> dict[tuple[str, str], str] | None:
+    """KiCad's reading of every placed symbol's user fields, or None if it cannot load.
+
+    Runs ``kicad-cli sch export netlist --format kicadxml`` into a fresh scratch file
+    and returns parse_comp_fields of it. KiCad passes each value through
+    UnescapeString and text-variable expansion before printing it, so a value holding
+    "{" or "${" does not read back verbatim; choose values without them. A field KiCad
+    does not print is absent from the result.
+    """
+    _, xml = _cli_report(
+        ["sch", "export", "netlist", "--format", "kicadxml"], Path(path), "fields.xml"
+    )
+    return None if xml is None else parse_comp_fields(xml)
+
+
+def _is_list(item, head: bytes) -> bool:
+    """Whether a lexer-port item is a list whose first item is the atom ``head``."""
+    return (
+        item.kind == _dsn.GROUP
+        and bool(item.items)
+        and item.items[0].kind in _dsn.ATOM_KINDS
+        and item.items[0].value == head
+    )
+
+
+#: A schematic at or below this format names a sheet's file by the position of its
+#: property, not by its name (parseSheet: sch_io_kicad_sexpr_parser.cpp:3538-3547 at
+#: 9.0.8, 3793-3802 at 10.0.7).
+_POSITIONAL_SHEET_FIELDS_MAX = 20200310
+
+#: A sheet's property as _sheet_files reads it: (name, value, the N an (id N) sets).
+_SheetField = tuple[bytes, bytes, int | None]
+
+
+def _sheet_field(item) -> _SheetField | None:
+    """A (property ...) list of a sheet as a _SheetField; None for any other item.
+
+    A leading bare ``private`` is skipped, as parseSchField skips it (2201-2209 at 9.0.8,
+    2290-2296 at 10.0.7). The N is that of the last (id N) whose N is 2 or more, the only
+    ones KiCad 9 applies to a sheet's field (2292-2300 at 9.0.8). A property without a name
+    and a value is a parse error that fails the whole file, so it is left out.
+    """
+    if not _is_list(item, b"property"):
+        return None
+    parts = item.items[1:]
+    if parts and parts[0].kind == _dsn.SYMBOL and parts[0].value == b"private":
+        parts = parts[1:]
+    if len(parts) < 2 or not {parts[0].kind, parts[1].kind} <= _dsn.ATOM_KINDS:
+        return None
+    ids = [
+        _dsn._parse_int(p.items[1].value)
+        for p in parts[2:]
+        if _is_list(p, b"id") and len(p.items) > 1 and p.items[1].kind == _dsn.NUMBER
+    ]
+    return parts[0].value, parts[1].value, next((n for n in reversed(ids) if n >= 2), None)
+
+
+def _k9_sheet_file(fields: list[_SheetField], positional: bool) -> bytes | None:
+    """The value KiCad 9.0.8 takes as a sheet's file name, or None when it takes none.
+
+    parseSchField gives each property an id (sch_io_kicad_sexpr_parser.cpp at 9.0.8): 2,
+    the first after the two mandatory ones (2236-2245); 0 or 1 for exactly "Sheetname" or
+    "Sheetfile" (2265-2273), or the legacy "Sheet name" or "Sheet file" in any case
+    (2275-2279); then an (id N) replaces it (2292-2300). parseSheet numbers the
+    properties by position at or below 20200310 (3538-3547) and moves a repeated id up
+    until it is free (3560-3561). SCH_SHEET::SetFields sorts the fields by id, renumbers
+    each field whose id is neither 0 nor 1 to its index, and reads the file name from
+    index 1 (sch_sheet.cpp:405-425 at 9.0.8). So the field that sorts second names the
+    file, whatever it is called: after a "Sheetname", a "sheetfile" or a "Foo" does, and
+    with no "Sheetname" the field sorting after the "Sheetfile" does, not the "Sheetfile".
+    With one field, index 1 is past the end of the list and the sheet loads no file.
+    Measured on kicad-cli 9.0.8 for each case here (2026-10-11).
+    """
+    taken: set[int] = set()
+    numbered: list[tuple[int, bytes]] = []
+    for index, (name, value, given) in enumerate(fields):
+        field_id = 2
+        if name == b"Sheetname" or name.lower() == b"sheet name":
+            field_id = 0
+        elif name == b"Sheetfile" or name.lower() == b"sheet file":
+            field_id = 1
+        if given is not None:
+            field_id = given
+        if positional:
+            field_id = 0 if index == 0 else 1
+        while field_id in taken:
+            field_id += 1
+        taken.add(field_id)
+        numbered.append((field_id, value))
+    numbered.sort()
+    return numbered[1][1] if len(numbered) > 1 else None
+
+
+def _k10_sheet_file(fields: list[_SheetField], positional: bool) -> bytes | None:
+    """The value KiCad 10.0.7 takes as a sheet's file name, or None when it takes none.
+
+    parseSchField makes a property the file when its name is "Sheetfile" or the legacy
+    "Sheet file", in any case (sch_io_kicad_sexpr_parser.cpp:2353-2366 at 10.0.7), and
+    ignores an (id N) (2399-2400); at or below 20200310, parseSheet makes every property
+    after the first the file (3793-3802). SCH_SHEET::SetFields reads the first of them
+    (sch_sheet.cpp:415-421, FindField at sch_field.h:382-391), or with none an empty
+    field the sheet adds (sch_sheet.cpp:381-388).
+    """
+    for index, (name, value, _given) in enumerate(fields):
+        is_file = index > 0 if positional else name.lower() in (b"sheetfile", b"sheet file")
+        if is_file:
+            return value
+    return None
+
+
+def _sheet_files(data: bytes, directory: str) -> list[str | None]:
+    """The file of each sheet the schematic ``data`` holds, resolved as KiCad resolves it.
+
+    Read with the lexer port, not the CST under test: each (sheet ...) of the top-level
+    list and its properties. Which property names the file is the rule of the major of
+    the kicad-cli that loads it: _k9_sheet_file below 10, _k10_sheet_file from 10. None
+    stands for a sheet that names no file, or an empty one, which KiCad cannot load.
+    Names and values are compared as bytes, a name's case folded in ASCII only.
+    Backslashes become '/' as SCH_SHEET::SetFileName stores them (sch_sheet.h:324-330 at
+    9.0.8), and a relative name is joined to the referencing file's own directory, which
+    KiCad's loader keeps on a stack while it descends (sch_io_kicad_sexpr.cpp:178-199 at
+    9.0.8), then normalised by text the way wxFileName::MakeAbsolute removes "..". A
+    file the port cannot read yields nothing: kicad-cli judges that file itself.
+    """
+    try:
+        top = _dsn.tree(data, knows_bar=_dsn.knows_bar_of(data))
+    except _dsn.LexError:
+        return []
+    version = _dsn.file_version(data)
+    positional = version is not None and version <= _POSITIONAL_SHEET_FIELDS_MAX
+    pick = _k10_sheet_file if _kicad_cli_major() >= 10 else _k9_sheet_file
+    found: list[str | None] = []
+    for doc in top[:1]:
+        if doc.kind != _dsn.GROUP:
+            continue
+        for sheet in doc.items:
+            if not _is_list(sheet, b"sheet"):
+                continue
+            fields = [f for f in map(_sheet_field, sheet.items) if f is not None]
+            value = pick(fields, positional)
+            if not value:
+                found.append(None)
+                continue
+            name = value.decode("utf-8", "surrogateescape").replace("\\", "/")
+            found.append(os.path.normpath(os.path.join(directory, name)))
+    return found
+
+
+def _schematic_tree(path: str | Path) -> list[tuple[str, bytes | None, str | None]]:
+    """(file, key, problem) for the schematic ``path`` and every sheet file below it.
+
+    Each file appears once with its key, in depth-first order from ``path``. ``key``
+    digests the file and, recursively, every sheet under it, UUIDs normalised (_UUID_RE),
+    because loading a schematic loads its sheets and so kicad-cli's verdict can depend on
+    all of them. A problem says why a sheet cannot load at all: its file is missing, it
+    names no file (reported against the file holding the sheet), or the file is its own
+    ancestor, which KiCad's loader refuses (sch_io_kicad_sexpr.cpp:202-222 at 9.0.8).
+    KiCad reports each as "The entire schematic could not be loaded"
+    (eeschema/files-io.cpp:284-289 at 9.0.8), even though kicad-cli carries on without a
+    word (EESCHEMA_HELPERS::LoadSchematic catches only the root's errors,
+    eeschema_helpers.cpp:165-171 at 9.0.8).
+    """
+    out: list = []
+    keys: dict[str, bytes] = {}
+
+    def visit(file: str, ancestors: frozenset[str]) -> bytes:
+        ident = os.path.normcase(file)
+        if ident in ancestors:
+            out.append((file, None, "is its own ancestor in the sheet hierarchy"))
+            return b"cycle"
+        if ident in keys:
+            return keys[ident]
+        try:
+            data = Path(file).read_bytes()
+        except OSError:
+            keys[ident] = b"missing"
+            out.append((file, None, "is referenced as a sheet but cannot be read"))
+            return keys[ident]
+        slot = len(out)
+        out.append(None)
+        digest = hashlib.sha256(_UUID_RE.sub(b"U", data))
+        for child in _sheet_files(data, os.path.dirname(file)):
+            if child is None:
+                out.append((file, None, "holds a sheet that names no file"))
+                digest.update(b"nameless")
+                continue
+            digest.update(visit(child, ancestors | {ident}))
+        keys[ident] = digest.digest()
+        out[slot] = (file, keys[ident], None)
+        return keys[ident]
+
+    visit(os.path.normpath(os.path.abspath(path)), frozenset())
+    return out
 
 
 def assert_kicad_parseable(path: str | Path) -> None:
-    """Assert that kicad-cli can parse the file without errors.
+    """Assert that kicad-cli loads the schematic and, each on its own, every sheet below it.
 
-    Ignores ERC violations: this only fails when the file itself is
-    malformed (missing S-expression fields, invalid syntax, etc.).
+    ERC violations are ignored: the signal is whether kicad-cli writes a report at all,
+    which it does not for a file it cannot load. Loading the root is not enough,
+    because kicad-cli loads a root whose sheets fail and reports nothing about them
+    (measured on kicad-cli 9.0.8, 2026-10-10: a root with a truncated child ran ERC
+    with exit 0 and listed the child with no violations), so every sheet file in the
+    hierarchy is loaded standalone too, and a missing one, a sheet naming none or a
+    cycle fails outright (see _schematic_tree). Memoised on the keys _schematic_tree
+    computes.
     """
-    try:
-        run_erc(path)
-    except RuntimeError as exc:
-        pytest.fail(f"kicad-cli cannot parse {Path(path).name}: {exc}")
+    tree = _schematic_tree(path)
+    name = Path(path).name
+    problems = [f"{file} {problem}" for file, _, problem in tree if problem]
+    if problems:
+        pytest.fail(f"the sheet hierarchy of {name} cannot load:\n" + "\n".join(problems))
+    for file, key, _ in tree:
+        if key is None or key in _VALIDATED:  # None only beside a problem, failed above
+            continue
+        result, report = _cli_report(
+            ["sch", "erc", "--format", "json", "--severity-all"], Path(file), "erc.json"
+        )
+        if report is None:
+            role = "" if file == tree[0][0] else f", a sheet of {name}"
+            pytest.fail(
+                f"kicad-cli cannot parse {Path(file).name}{role}"
+                f" (rc={result.returncode}): {result.stderr.strip()[:400]}"
+            )
+        _VALIDATED.add(key)
 
 
 #: Highest board format the KiCad 9 line can load. Same boundary pcb.py gates
@@ -715,17 +1072,134 @@ def assert_kicad_pcb_parseable(path: str | Path) -> None:
     could load the board at all. A board it refuses produces no report file and
     prints "Failed to load board".
     """
-    path = str(path)
-    drc_out = path + ".drc.json"
-    result = _run_cli(
-        ["pcb", "drc", "--format", "json", "--severity-all", "--output", drc_out, path],
-        check=False,
+    result, report = _cli_report(
+        ["pcb", "drc", "--format", "json", "--severity-all"], Path(path), "drc.json"
     )
-    if not os.path.exists(drc_out):
+    if report is None:
         pytest.fail(
             f"kicad-cli cannot parse {Path(path).name} "
             f"(rc={result.returncode}): {result.stderr.strip()[:400]}"
         )
+
+
+#: Newest symbol-library format a KiCad 9 kicad-cli loads: SEXPR_SYMBOL_LIB_FILE_VERSION
+#: (eeschema/sch_file_versions.h:55 at 9.0.8; it is 20251024 at 10.0.7). Footprints
+#: share the board format, so _K9_BOARD_VERSION_MAX bounds them (SEXPR_BOARD_FILE_VERSION,
+#: pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h:175 at 9.0.8).
+_K9_SYMBOL_LIB_VERSION_MAX = 20241209
+
+
+def _cli_can_load_library(data: bytes, k9_max: int) -> bool:
+    """_cli_can_load_board for a symbol library or a footprint.
+
+    A KiCad 9 kicad-cli is not asked about one stamped past KiCad 9's format.
+    Measured on kicad-cli 9.0.8 (2026-10-10): it refuses a symbol library stamped
+    20251024 and happens to load a footprint stamped 20260206, but KiCad 10 content
+    can hold tokens KiCad 9 never had, so both are left to the legs where kicad-cli
+    is 10 or newer.
+    """
+    if _kicad_cli_major() >= 10:
+        return True
+    version = _dsn.file_version(data)
+    return version is None or version <= k9_max
+
+
+def _kicad_cli_library_problem(path: Path) -> str | None:
+    """None when kicad-cli loads the symbol library or footprint at ``path``, else why not.
+
+    kicad-cli has no load-only command for a library, so the upgrade stands in: it
+    loads the library and, with --force, saves it to the --output path, answering
+    "Unable to load library" with exit 2 when the load fails (JobSymUpgrade,
+    eeschema/eeschema_jobs_handler.cpp:1061-1145 at 9.0.8, 1205 at 10.0.7;
+    JobExportFpUpgrade, pcbnew/pcbnew_jobs_handler.cpp:1707-1798 at 9.0.8, 2054 at
+    10.0.7). It runs on a copy in a scratch directory, never on the file under test.
+    A footprint goes into a .pretty of its own, since that is what fp upgrade loads.
+    """
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+        work = Path(scratch)
+        if path.suffix == ".kicad_sym":
+            source, out = work / "in.kicad_sym", work / "out.kicad_sym"
+            shutil.copyfile(path, source)
+            result = _run_cli(
+                ["sym", "upgrade", "--force", "--output", str(out), str(source)], check=False
+            )
+            loaded = out.is_file()
+        else:
+            source, out = work / "in.pretty", work / "out.pretty"
+            source.mkdir()
+            shutil.copyfile(path, source / path.name)
+            result = _run_cli(
+                ["fp", "upgrade", "--force", "--output", str(out), str(source)], check=False
+            )
+            loaded = (out / path.name).is_file()
+    if result.returncode == 0 and loaded:
+        return None
+    said = (result.stdout + result.stderr).strip()
+    return f"rc={result.returncode}: {said[-400:]}"
+
+
+#: The library tables the oracle reads, by file name, with the keyword each opens with.
+_LIB_TABLE_KEYWORDS = {"sym-lib-table": b"sym_lib_table", "fp-lib-table": b"fp_lib_table"}
+#: What KiCad 10's table grammar takes as space: PEGTL's space rule.
+_PEGTL_SPACE = b" \t\n\r\x0b\x0c"
+
+
+def _lib_table_problem(data: bytes, name: str) -> str | None:
+    """Why KiCad 9 and KiCad 10 could read the library table ``name`` differently, or None.
+
+    ``name`` is the file's name, sym-lib-table or fp-lib-table, which fixes the keyword
+    it must open with. KiCad 9 reads a table with DSNLEXER, taking '(' and then that
+    keyword as its first two tokens (eeschema/symbol_lib_table.cpp:145-151,
+    common/fp_lib_table.cpp:91-97 at 9.0.8), never reading past the table's ')', and
+    decoding escapes inside quotes (dsnlexer.cpp:640-733). KiCad 10 parses the whole file
+    as LIB_TABLE_FILE: '(' as its first byte, the keyword, the table, then only space to
+    the end; its QUOTED_TEXT is a quote, raw bytes and a quote, decoding nothing
+    (include/libraries/library_table_grammar.h:60 and 119-127,
+    common/libraries/library_table_parser.cpp:95-105 and 161-168 at 10.0.7). So the rule:
+    the file opens with '(' and the keyword at its first byte, so an empty file fails, and
+    holds only space after the table; it lexes as KiCad 9 reads it, with no bare '|' (a
+    separator to KiCad 9's table lexer, which keeps the bar its init turns on, an ordinary
+    byte to KiCad 10); it parses as this package's own table reader does, through the CST
+    (pcb._read_fp_lib_table); and no value holds a backslash or a double quote, since only
+    a value with neither reads alike in both. Every table KiCad 9.0.8 ships obeys it (49
+    files, measured 2026-10-11).
+    """
+    keyword = _LIB_TABLE_KEYWORDS[name]
+    knows_bar = _dsn.knows_bar_of(data)
+    try:
+        top = _dsn.tree(data, knows_bar=knows_bar)
+        toks = _dsn.tokens(data, knows_bar=knows_bar)
+    except _dsn.LexError as exc:
+        return f"KiCad 9's lexer refuses it: {exc}"
+    opening = [(tok.kind, tok.value, tok.start) for tok in toks[:2]]
+    if opening != [(_dsn.LEFT, b"(", 0), (_dsn.SYMBOL, keyword, 1)]:
+        return (
+            f"it does not open with ({keyword.decode()} at its first byte, which KiCad 10"
+            " requires and KiCad 9 reads as its first two tokens"
+        )
+    if len(top) != 1 or data[top[0].end :].strip(_PEGTL_SPACE):
+        return (
+            f"bytes other than space follow the table's ')' at byte {top[0].end - 1}, which"
+            " KiCad 10 refuses and KiCad 9 never reads"
+        )
+    try:
+        _cst.parse(data)
+    except SyntaxError as exc:
+        return f"the CST refuses it: {exc}"
+    for tok in toks:
+        raw = data[tok.start : tok.end]
+        if tok.kind == _dsn.BAR:
+            return f"a bare '|' at byte {tok.start}, which KiCad 9 lexes apart and KiCad 10 keeps"
+        if tok.kind not in _dsn.ATOM_KINDS:
+            continue
+        body = raw[1:-1] if tok.kind == _dsn.STRING else raw
+        if b"\\" in body or b'"' in body:
+            return (
+                f"the value {raw[:80]!r} at byte {tok.start} holds a backslash or a double"
+                " quote; only a value with neither reads alike in KiCad 9, which decodes"
+                " escapes, KiCad 10, which decodes none, and the CST"
+            )
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -835,9 +1309,75 @@ class StdioClient:
 # ---------------------------------------------------------------------------
 
 
+#: The files the oracle hands to kicad-cli, by suffix.
+_CLI_SUFFIXES = (".kicad_sch", ".kicad_pcb", ".kicad_sym", ".kicad_mod")
+
+
+def _oracle_files(root: Path) -> dict[str, Path]:
+    """Every file under ``root`` the oracle checks, keyed by its path relative to ``root``
+    in '/' form: each library table by name, each schematic, board, symbol library and
+    footprint by suffix."""
+    return {
+        path.relative_to(root).as_posix(): path
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and (path.name in _LIB_TABLE_KEYWORDS or path.suffix in _CLI_SUFFIXES)
+    }
+
+
+def _validate_kicad_outputs(root: Path, skip: frozenset[str] = frozenset()) -> None:
+    """The autouse oracle's checks, over every file under ``root`` that _oracle_files names.
+
+    - ``sym-lib-table`` and ``fp-lib-table``: _lib_table_problem, which needs no KiCad;
+    - ``*.kicad_sch``: assert_kicad_parseable, the file and every sheet below it;
+    - ``*.kicad_pcb``: assert_kicad_pcb_parseable;
+    - ``*.kicad_sym`` and ``*.kicad_mod``: _kicad_cli_library_problem.
+
+    Whatever a file's first bytes, an empty file included: KiCad refuses a file with a
+    byte order mark or a stray byte in front as surely as one cut short, and a tool
+    leaving a truncated file is what the invariant forbids. ``skip`` names files, by
+    their _oracle_files key, that are not checked on their own (the kicad_placeholder
+    marker's); a schematic that has one as a sheet still loads it. A board or library
+    newer than the local kicad-cli can load is left to a kicad-cli that can.
+    """
+    files = [path for key, path in _oracle_files(root).items() if key not in skip]
+    for path in files:
+        if path.name in _LIB_TABLE_KEYWORDS:
+            if problem := _lib_table_problem(path.read_bytes(), path.name):
+                pytest.fail(f"{path}: {problem}")
+    if not HAS_KICAD_CLI:
+        return
+    for path in files:
+        if path.name in _LIB_TABLE_KEYWORDS:
+            continue
+        if path.suffix == ".kicad_sch":
+            assert_kicad_parseable(path)  # memoised per file of the hierarchy
+            continue
+        data = path.read_bytes()
+        if path.suffix == ".kicad_pcb":
+            loadable = _cli_can_load_board(data)
+        elif path.suffix == ".kicad_sym":
+            loadable = _cli_can_load_library(data, _K9_SYMBOL_LIB_VERSION_MAX)
+        else:
+            loadable = _cli_can_load_library(data, _K9_BOARD_VERSION_MAX)
+        if not loadable:
+            continue
+        # Fixtures differ only in freshly generated UUIDs, so the same file is
+        # otherwise re-validated hundreds of times per run. A UUID cannot turn a
+        # loadable file unloadable, so normalise them out and validate each distinct
+        # file once. Measured 2026-08-10 for schematics: 376 spawns -> 186.
+        seen = hashlib.sha256(_UUID_RE.sub(b"U", data)).digest()
+        if seen in _VALIDATED:
+            continue
+        if path.suffix == ".kicad_pcb":
+            assert_kicad_pcb_parseable(path)
+        elif problem := _kicad_cli_library_problem(path):
+            pytest.fail(f"kicad-cli cannot load {path.name} ({path}): {problem}")
+        _VALIDATED.add(seen)
+
+
 @pytest.fixture(autouse=True)
 def _validate_kicad_output(request, tmp_path: Path):
-    """After each test, validate every generated KiCad file via kicad-cli.
+    """After each test, validate every KiCad file it left in tmp_path (_validate_kicad_outputs).
 
     Catches format-level bugs (e.g. kiutils omitting required fields)
     that kiutils round-trip tests miss because kiutils reads back its
@@ -847,41 +1387,54 @@ def _validate_kicad_output(request, tmp_path: Path):
     is that it turns every valid tool call the suite already makes into a
     corpus. Boards were outside it until 2026-08-12, which is exactly why
     add_trace(layer="banana") could write a board kicad-cli refuses to load and
-    nothing in the suite noticed.
+    nothing in the suite noticed; symbol libraries, footprints and library tables
+    were outside it until the test ladder, which is how create_sym_lib_table could
+    write a table KiCad refuses (bug 4).
 
-    Tests that intentionally produce invalid files can opt out with::
+    A test that writes a placeholder, or a malformed input that is not its subject,
+    names each such file by its path under tmp_path::
+
+        @pytest.mark.kicad_placeholder("empty.kicad_pcb", "sub/stub.kicad_sch")
+
+    and the oracle checks every other file. A test that passes without leaving a
+    file its marker names fails, so a marker cannot outlive its file or miss it by a
+    typo. Tests whose subject is the malformed file opt out entirely with::
 
         @pytest.mark.no_kicad_validation
 
     Reach for that marker only when the malformed file *is* the subject, as in
     test_cst.py. Using it to silence a tool writing a bad file is how the
     45-degree rotation defect survived.
+
+    A test whose call phase failed as its strict xfail expects is not validated
+    either: the xfail already records that the output is wrong, and removing the
+    marker brings the check back. A pass or an XPASS is validated as usual.
     """
     yield
     if request.node.get_closest_marker("no_kicad_validation"):
         return
-    if not HAS_KICAD_CLI:
+    call = request.node.stash.get(_CALL_REPORT, None)
+    if _call_xfailed(call):
         return
-    for pattern, magic, check, loadable in (
-        ("*.kicad_sch", b"(kicad_sch", assert_kicad_parseable, lambda _: True),
-        ("*.kicad_pcb", b"(kicad_pcb", assert_kicad_pcb_parseable, _cli_can_load_board),
-    ):
-        for out_file in tmp_path.rglob(pattern):
-            data = out_file.read_bytes()
-            # Skip dummy/empty files and anything that isn't a real KiCad file
-            # (e.g. config tests that create placeholder paths).
-            if not data.startswith(magic) or not loadable(data):
-                continue
-            # Fixtures differ only in freshly generated UUIDs, so the same file
-            # is otherwise re-validated hundreds of times per run.  A UUID cannot
-            # turn a parseable file unparseable, so normalise them out and
-            # validate each distinct file once.  Measured 2026-08-10 for
-            # schematics: 376 spawns -> 186.
-            seen = hashlib.sha256(_UUID_RE.sub(b"U", data)).digest()
-            if seen in _VALIDATED:
-                continue
-            check(out_file)
-            _VALIDATED.add(seen)
+    skip = _placeholder_names(request.node)
+    if skip and call is not None and call.passed:
+        unseen = sorted(skip.difference(_oracle_files(tmp_path)))
+        if unseen:
+            pytest.fail(
+                f"kicad_placeholder names {unseen}, but the test left no such file among"
+                f" those the oracle checks in {tmp_path}"
+            )
+    _validate_kicad_outputs(tmp_path, skip)
+
+
+def _placeholder_names(node) -> frozenset[str]:
+    """The files the kicad_placeholder markers on ``node`` name; a marker naming none fails."""
+    names: set[str] = set()
+    for marker in node.iter_markers("kicad_placeholder"):
+        if not marker.args or not all(isinstance(name, str) for name in marker.args):
+            pytest.fail(f"kicad_placeholder takes each placeholder's path, got {marker.args!r}")
+        names.update(marker.args)
+    return frozenset(names)
 
 
 @pytest.fixture()

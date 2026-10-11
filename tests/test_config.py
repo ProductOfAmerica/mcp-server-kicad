@@ -12,6 +12,12 @@ from mcp_server_kicad._shared import _resolve_config, _resolve_system_lib
 # ---------------------------------------------------------------------------
 
 
+#: The empty siblings tmp_project writes: names for _resolve_config to find, not designs.
+_PROJECT_PLACEHOLDERS = pytest.mark.kicad_placeholder(
+    "myboard.kicad_sch", "myboard.kicad_pcb", "myboard.kicad_sym"
+)
+
+
 @pytest.fixture
 def tmp_project(tmp_path: Path) -> Path:
     """Create a minimal KiCad project directory with all sibling files."""
@@ -40,6 +46,7 @@ def tmp_project_partial(tmp_path: Path) -> Path:
 
 
 class TestAutoDetectSingleProject:
+    @_PROJECT_PLACEHOLDERS
     def test_derives_all_paths_when_siblings_exist(self, tmp_project: Path) -> None:
         with patch("mcp_server_kicad._shared._cwd", return_value=tmp_project):
             cfg = _resolve_config()
@@ -74,6 +81,7 @@ class TestAutoDetectNoProject:
 
 
 class TestAutoDetectMultipleProjects:
+    @pytest.mark.kicad_placeholder("a.kicad_sch", "b.kicad_sch")
     def test_all_empty_when_multiple_kicad_pro(self, tmp_path: Path) -> None:
         (tmp_path / "a.kicad_pro").write_text("{}")
         (tmp_path / "b.kicad_pro").write_text("{}")
@@ -96,6 +104,7 @@ class TestAutoDetectMultipleProjects:
 
 
 class TestAutoDetectPartialSiblings:
+    @pytest.mark.kicad_placeholder("partial.kicad_sch")
     def test_only_existing_siblings_populated(self, tmp_project_partial: Path) -> None:
         with patch("mcp_server_kicad._shared._cwd", return_value=tmp_project_partial):
             cfg = _resolve_config()
@@ -116,6 +125,7 @@ class TestAutoDetectPartialSiblings:
 
 
 class TestEnvVarOverrides:
+    @_PROJECT_PLACEHOLDERS
     def test_env_vars_override_auto_detected(self, tmp_project: Path) -> None:
         env = {"KICAD_SCH_PATH": "/override/my.kicad_sch"}
 
@@ -188,6 +198,7 @@ class TestResolveSystemLib:
         if result is not None:
             assert Path(result).name == "Connector_Generic.kicad_sym"
 
+    @pytest.mark.kicad_placeholder("FakeLib.kicad_sym")
     def test_env_override(self, tmp_path, monkeypatch):
         """KICAD_SYMBOL_DIR env var is checked first."""
         fake_lib = tmp_path / "FakeLib.kicad_sym"
@@ -209,6 +220,9 @@ class TestResolveSystemLib:
         """Empty string returns None."""
         assert _resolve_system_lib("") is None
 
+    @pytest.mark.kicad_placeholder(
+        "kicad/share/kicad/symbols/Probe.kicad_sym", "std/Probe.kicad_sym"
+    )
     def test_search_order(self, tmp_path, monkeypatch):
         """The override, then KiCad's own tree, then the standard folders.
 
@@ -233,6 +247,7 @@ class TestResolveSystemLib:
             (folder / "Probe.kicad_sym").write_text("")
         assert _resolve_system_lib("Probe") == str(root / "share/kicad/symbols" / "Probe.kicad_sym")
 
+    @pytest.mark.kicad_placeholder("Probe.kicad_sym")
     def test_an_override_hit_never_looks_for_kicad_cli(self, tmp_path, monkeypatch):
         """The kicad-cli lookup behind _kicad_root runs only once the override misses."""
         from mcp_server_kicad import _shared

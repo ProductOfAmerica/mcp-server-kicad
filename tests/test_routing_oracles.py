@@ -128,6 +128,8 @@ class TestJudge:
             '<node ref="R1" pin="1" pintype="passive"/></net></nets></export>'
         )
         assert parse_kicadxml(xml) == [("2", "/N", "HV", frozenset({R1}))]
+        # No <design> header names a sheet, so the design reads as the root alone.
+        assert parse_kicadxml(xml).sheets == ("/",)
 
 
 @requires_cli

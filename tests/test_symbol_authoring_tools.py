@@ -2,8 +2,9 @@
 
 from typing import cast
 
+import edit_judge as J
 import pytest
-from conftest import _pure_insertion, requires_cli
+from conftest import requires_cli
 from kiutils.symbol import SymbolLib
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -305,7 +306,8 @@ class TestAddSymbolBytes:
             pins=_two_pin_passive(),
             symbol_lib_path=str(scratch_sym_lib),
         )
-        assert _pure_insertion(before, scratch_sym_lib.read_bytes())
+        (added,) = J.assert_inserted(before, scratch_sym_lib.read_bytes(), heads=["symbol"])
+        assert added.path == ((0, "kicad_symbol_lib"),)
 
     def test_pin_names_offset_emitted(self, tmp_path):
         """The parameter was a silent no-op under kiutils; now it lands."""

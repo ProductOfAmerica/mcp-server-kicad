@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 from conftest import requires_cli
 
 from mcp_server_kicad import _cst, pcb, schematic
@@ -211,6 +212,7 @@ class TestUnfilledZoneNote:
         assert note is not None and "connectivity errors" in note
         assert "no copper" not in note
 
+    @pytest.mark.kicad_placeholder("not-a-board.kicad_pcb")  # unparseable on purpose
     def test_an_unparseable_board_is_silent_not_fatal(self, tmp_path):
         """Advisory: it must never become a failure mode of its own."""
         bad = tmp_path / "not-a-board.kicad_pcb"

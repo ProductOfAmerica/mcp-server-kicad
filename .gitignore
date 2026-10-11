@@ -22,3 +22,5 @@ gout*/
 .github/tools/mcpb/node_modules/
 # Routing harness runs: fixtures copied from the installed KiCad, and results. Never repo content.
 /tools/routing_harness/work/
+# Hypothesis's example database (the nightly profile writes one).
+.hypothesis/

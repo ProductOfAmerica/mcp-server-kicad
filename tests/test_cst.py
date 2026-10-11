@@ -2,22 +2,25 @@
 
 Decision record: docs/adr-cst-substrate.md. The property under test is the
 substrate invariant: bytes the caller did not edit reach the disk unchanged.
+What an edit changed is judged by tests/edit_judge.py, which reads both files
+with the port of KiCad's lexer, never with the CST under test.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
 
+import edit_judge as J
 import pytest
 from conftest import (
-    _confined,
-    _pure_insertion,
-    _span_preserved,
+    _kicad_cli_major,
     build_test_footprint,
     make_dual_unit_sch,
     reparse,
     requires_cli,
 )
+from kicad_ref import eda_units as U
+from kicad_ref.richio import quotes
 from kiutils.items.schitems import Connection
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -25,6 +28,38 @@ from mcp_server_kicad import _cst, footprint, project, schematic, symbol
 from mcp_server_kicad._shared import _node_uuid, _resolve_system_lib, _run_cli
 
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
+
+#: edit_judge's location of a schematic's root list: the path of every edit to a
+#: top-level item (a label, a wire, a placed symbol).
+ROOT = ((0, "kicad_sch"),)
+
+
+def _labels(location) -> list:
+    """A location's labels, outermost first: ["kicad_sch", "symbol", "property"]."""
+    return [label for _, label in location]
+
+
+def _the(data: bytes, *labels: str, where=lambda location, item: True) -> J.Path:
+    """The location of the one list in ``data`` whose labels, outermost first, are
+    ``labels`` and that ``where(location, item)`` accepts.
+
+    Raises LookupError, not AssertionError: a locator that matches nothing is a broken
+    premise, never the defect a strict xfail expects.
+    """
+    found = J.find_paths(
+        data,
+        lambda loc, item: (
+            item.items is not None and _labels(loc) == list(labels) and where(loc, item)
+        ),
+    )
+    if len(found) != 1:
+        raise LookupError(f"{len(found)} items match where one was expected: {found[:4]}")
+    return found[0]
+
+
+def _uuid_of(item) -> bytes | None:
+    """The value of a list item's (uuid ...) child, as the lexer reads it."""
+    return next((c.items[1].value for c in item.items if c.head == "uuid"), None)
 
 
 class TestRoundTrip:
@@ -67,7 +102,8 @@ class TestAddLabelPreservation:
         assert b"(embedded_fonts" in before and b"generator_version" in before
         schematic.add_label("CST_NET", 60, 90, schematic_path=str(kicad_native_sch))
         after = kicad_native_sch.read_bytes()
-        assert _pure_insertion(before, after)
+        (label,) = J.assert_inserted(before, after, heads=["label"])
+        assert label.path == ROOT
         assert b"(embedded_fonts" in after and b"generator_version" in after
         sch = reparse(kicad_native_sch)
         assert "CST_NET" in [lbl.text for lbl in sch.labels]
@@ -76,11 +112,17 @@ class TestAddLabelPreservation:
         hostile = 'A(B "q" \\end'
         schematic.add_label(hostile, 60, 90, schematic_path=str(kicad_native_sch))
         sch = reparse(kicad_native_sch)
-        # kiutils 1.4.8 does not decode \\ and \" the way KiCad does, so assert
-        # via the CST's own KiCad-faithful decoder plus kiutils label count.
-        tree = _cst.parse(kicad_native_sch.read_bytes())
-        texts = [n.atoms[1].text for n in tree.lists[0].find_all("label")]
-        assert hostile in texts
+        # kiutils 1.4.8 does not decode \\ and \" the way KiCad does, and the CST's
+        # decoder is the code under test, so KiCad's lexer (the port) reads the
+        # label back; the written atom is what KiCad's own Quotew writes for it.
+        data = kicad_native_sch.read_bytes()
+        atoms = [
+            item.items[1]
+            for loc, item in J.walk(data)
+            if item.items is not None and _labels(loc) == ["kicad_sch", "label"]
+        ]
+        assert hostile.encode() in [atom.value for atom in atoms]
+        assert quotes(hostile) in [atom.raw for atom in atoms]
         assert len(sch.labels) == 2  # original TEST_NET + the hostile one
 
     def test_anchor_fallback_no_labels(self, empty_sch):
@@ -105,7 +147,8 @@ class TestAddFamilyPreservation:
         schematic.add_global_label(
             "GNET", 60, 90, rotation=90, shape="bidirectional", schematic_path=str(kicad_native_sch)
         )
-        assert _pure_insertion(before, kicad_native_sch.read_bytes())
+        (label,) = J.assert_inserted(before, kicad_native_sch.read_bytes(), heads=["global_label"])
+        assert label.path == ROOT
         gl = next(g for g in reparse(kicad_native_sch).globalLabels if g.text == "GNET")
         assert gl.shape == "bidirectional"
         assert gl.position.angle == 90
@@ -115,7 +158,9 @@ class TestAddFamilyPreservation:
         schematic.add_hierarchical_label(
             "HNET", "output", 25.4, 30, schematic_path=str(kicad_native_sch)
         )
-        assert _pure_insertion(before, kicad_native_sch.read_bytes())
+        after = kicad_native_sch.read_bytes()
+        (label,) = J.assert_inserted(before, after, heads=["hierarchical_label"])
+        assert label.path == ROOT
         hl = next(h for h in reparse(kicad_native_sch).hierarchicalLabels if h.text == "HNET")
         assert hl.shape == "output"
         assert hl.position.X == pytest.approx(25.4)
@@ -127,7 +172,8 @@ class TestAddFamilyPreservation:
     def test_text(self, kicad_native_sch):
         before = kicad_native_sch.read_bytes()
         schematic.add_text("note here", 100.123456, 50, schematic_path=str(kicad_native_sch))
-        assert _pure_insertion(before, kicad_native_sch.read_bytes())
+        (text,) = J.assert_inserted(before, kicad_native_sch.read_bytes(), heads=["text"])
+        assert text.path == ROOT
         t = next(t for t in reparse(kicad_native_sch).texts if t.text == "note here")
         # add_text never rounded coordinates; the quirk is preserved.
         assert t.position.X == pytest.approx(100.123456)
@@ -138,7 +184,9 @@ class TestAddFamilyPreservation:
             [{"x": 50.8, "y": 50.8}, {"x": 96.19, "y": 100.5}],
             schematic_path=str(kicad_native_sch),
         )
-        assert _pure_insertion(before, kicad_native_sch.read_bytes())
+        after = kicad_native_sch.read_bytes()
+        junctions = J.assert_inserted(before, after, heads=["junction", "junction"])
+        assert [j.path for j in junctions] == [ROOT, ROOT]
         sch = reparse(kicad_native_sch)
         assert len(sch.junctions) == 2
         # File order is list order: the last point supplied is junctions[-1].
@@ -184,7 +232,8 @@ class TestRemoveFamilyPreservation:
         assert "Removed junction" in schematic.remove_junction(50.8, 50.8, schematic_path=p)
         after = kicad_native_sch.read_bytes()
         assert len(after) < len(before)
-        assert _span_preserved(before, after)
+        (junction,) = J.assert_removed(before, after, heads=["junction"])
+        assert junction.path == ROOT
         with pytest.raises(ToolError, match="not found"):
             schematic.remove_junction(50.8, 50.8, schematic_path=p)
         assert kicad_native_sch.read_bytes() == after
@@ -194,7 +243,8 @@ class TestRemoveFamilyPreservation:
         schematic.add_text("gone", 60, 90, schematic_path=p)
         before = kicad_native_sch.read_bytes()
         assert "Removed 1 text(s)" in schematic.remove_text("gone", schematic_path=p)
-        assert _span_preserved(before, kicad_native_sch.read_bytes())
+        (text,) = J.assert_removed(before, kicad_native_sch.read_bytes(), heads=["text"])
+        assert text.path == ROOT
         assert not any(t.text == "gone" for t in reparse(kicad_native_sch).texts)
 
     def test_remove_hierarchical_label_by_uuid(self, kicad_native_sch):
@@ -242,7 +292,9 @@ class TestWiresPreservation:
             schematic_path=str(kicad_native_sch),
         )
         after = kicad_native_sch.read_bytes()
-        assert _pure_insertion(before, after)
+        # Far from the fixture wire, so no junction belongs with it.
+        (wire,) = J.assert_inserted(before, after, heads=["wire"])
+        assert wire.path == ROOT
         assert b"generator_version" in after and b"(embedded_fonts" in after
         wires = _wires_of(reparse(kicad_native_sch))
         assert len(wires) == n + 1
@@ -275,7 +327,8 @@ class TestWiresPreservation:
         n = len(_wires_of(reparse(kicad_native_sch)))
         assert "Removed 1 wire(s)." == schematic.remove_wire(30, 20, 20, 20, schematic_path=p)
         after = kicad_native_sch.read_bytes()
-        assert _span_preserved(before, after)
+        (wire,) = J.assert_removed(before, after, heads=["wire"])
+        assert wire.path == ROOT
         assert len(_wires_of(reparse(kicad_native_sch))) == n - 1
         with pytest.raises(ToolError, match="not found"):
             schematic.remove_wire(30, 20, 20, 20, schematic_path=p)
@@ -304,7 +357,8 @@ class TestHybridRoutingPreservation:
         result = schematic.no_connect_pin("R1", "1", schematic_path=str(kicad_native_sch))
         assert result == "No-connect on R1:1 at (100.0, 96.19)"
         after = kicad_native_sch.read_bytes()
-        assert _pure_insertion(before, after)
+        (flag,) = J.assert_inserted(before, after, heads=["no_connect"])
+        assert flag.path == ROOT
         assert b"generator_version" in after and b"(embedded_fonts" in after
         nc = reparse(kicad_native_sch).noConnects[0]
         assert (nc.position.X, nc.position.Y) == (100.0, 96.19)
@@ -322,7 +376,8 @@ class TestHybridRoutingPreservation:
         before = kicad_native_sch.read_bytes()
         assert "Removed 1 no-connect" in schematic.remove_no_connect("R1", "1", schematic_path=p)
         after = kicad_native_sch.read_bytes()
-        assert _span_preserved(before, after)
+        (flag,) = J.assert_removed(before, after, heads=["no_connect"])
+        assert flag.path == ROOT
         assert reparse(kicad_native_sch).noConnects == []
         with pytest.raises(ToolError, match="No no-connect"):
             schematic.remove_no_connect("R1", "1", schematic_path=p)
@@ -351,7 +406,8 @@ class TestHybridRoutingPreservation:
         assert schematic.get_schematic_summary(schematic_path=p).components >= 0
         before = kicad_native_sch.read_bytes()
         schematic.no_connect_pin("R1", "1", schematic_path=p)
-        assert _pure_insertion(before, kicad_native_sch.read_bytes())
+        (flag,) = J.assert_inserted(before, kicad_native_sch.read_bytes(), heads=["no_connect"])
+        assert flag.path == ROOT
         assert "Removed 1 no-connect" in schematic.remove_no_connect("R1", "1", schematic_path=p)
         schematic.connect_pins("R1", "1", "R1", "2", schematic_path=p)
         root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
@@ -439,8 +495,6 @@ class TestWirePinsToNetPreservation:
         assert (lbl.position.X, lbl.position.Y, lbl.position.angle) == (100.0, 93.65, 90)
 
     def test_pwr_flag_lib_copy_verbatim(self, tmp_path):
-        from mcp_server_kicad._shared import _extract_raw_symbol, _resolve_system_lib
-
         lib_path = _resolve_system_lib("power")
         if lib_path is None:
             pytest.skip("no KiCad system symbol library on this host")
@@ -453,12 +507,21 @@ class TestWirePinsToNetPreservation:
             y=100,
             schematic_path=str(path),
         )
-        want = _extract_raw_symbol(lib_path, "PWR_FLAG")
-        got = _extract_raw_symbol(str(path), "power:PWR_FLAG")
-        assert want is not None and got is not None
+
+        def symbol_bytes(data: bytes, *labels: str, name: bytes) -> bytes:
+            # The node's bytes from its '(' to its ')' as KiCad's lexer delimits them,
+            # so a paren inside a string cannot cut it short and a CR stays a CR.
+            node = _the(data, *labels, where=lambda loc, item: item.items[1].value == name)
+            return J.item_at(data, node).raw
+
+        lib = Path(lib_path).read_bytes()
+        want = symbol_bytes(lib, "kicad_symbol_lib", "symbol", name=b"PWR_FLAG")
+        got = symbol_bytes(
+            path.read_bytes(), "kicad_sch", "lib_symbols", "symbol", name=b"power:PWR_FLAG"
+        )
         # Verbatim except the name atom, which gains the lib prefix (the way
         # KiCad imports symbols; a bare name segfaults kicad-cli 9.0 on load).
-        assert got.replace('"power:PWR_FLAG"', '"PWR_FLAG"', 1) == want
+        assert got.replace(b'"power:PWR_FLAG"', b'"PWR_FLAG"', 1) == want
 
     @pytest.mark.no_kicad_validation
     def test_future_version_file_wire_pins_to_net_works(self, kicad_native_sch):
@@ -494,6 +557,10 @@ class TestPlaceComponentPreservation:
         assert b"generator_version" in after and b"(embedded_fonts" in after
         assert _cst.serialize(_cst.parse(after)) == after
         assert before[: len(before) // 3] == after[: len(before) // 3]
+        # Two whole items and nothing else: the definition into lib_symbols, the
+        # placed symbol among the sheet's items (no .kicad_pro, so no root index).
+        edits = J.assert_inserted(before, after, heads=["symbol", "symbol"], contiguous=False)
+        assert {e.path for e in edits} == {ROOT, _the(before, "kicad_sch", "lib_symbols")}
         sch = reparse(kicad_native_sch)
         u1 = next(
             s
@@ -596,7 +663,8 @@ class TestSymbolFamilyPreservation:
         result = schematic.add_lib_symbol(str(scratch_power_lib), "VCC", schematic_path=p)
         assert result == "Added 'VCC' to lib_symbols."
         after = kicad_native_sch.read_bytes()
-        assert _pure_insertion(before, after)
+        (entry,) = J.assert_inserted(before, after, heads=["symbol"])
+        assert entry.path == _the(before, "kicad_sch", "lib_symbols")
         assert any(ls.entryName == "VCC" for ls in reparse(kicad_native_sch).libSymbols)
         with pytest.raises(ToolError, match="already in lib_symbols"):
             schematic.add_lib_symbol(str(scratch_power_lib), "VCC", schematic_path=p)
@@ -610,11 +678,62 @@ class TestSymbolFamilyPreservation:
         before = kicad_native_sch.read_bytes()
         assert "Moved R1" in schematic.move_component("R1", 63.5, 63.5, schematic_path=p)
         after = kicad_native_sch.read_bytes()
-        assert _confined(before, after, limit=40)
+        # A move edits the moved symbol and nothing else on the sheet, and inside it only
+        # positions: every atom it changes sits in an (at ...) list. Which of R1's (at ...)
+        # lists move is test_move_component_carries_its_fields's question, not this one's.
+        J.assert_confined(before, after, _the(before, "kicad_sch", "symbol"))
+        changes = J.atom_changes(before, after)
+        assert changes, "the move changed no atom"
+        assert [c for c in changes if c.path[-1][1] != "at"] == [], "a move changed a non-position"
         sym = reparse(kicad_native_sch).schematicSymbols[0]
         assert (sym.position.X, sym.position.Y, sym.position.angle) == (63.5, 63.5, 0)
         schematic.move_component("R1", 63.5, 63.5, rotation=90, schematic_path=p)
         assert reparse(kicad_native_sch).schematicSymbols[0].position.angle == 90
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="bug 1: move_component leaves the symbol's fields behind; fixed by step 9",
+    )
+    def test_move_component_carries_its_fields(self, kicad_native_sch):
+        """A symbol's fields travel with it.
+
+        KiCad writes a field's (at ...) from SCH_FIELD::GetPosition (sch_io_kicad_sexpr.cpp
+        910-918 at 9.0.8, 1019-1027 at 10.0.7), which is the field's drawn position on the
+        sheet, its offset from the symbol plus the symbol's own position (sch_field.cpp
+        1615-1628 at 9.0.8, 1398-1411 at 10.0.7). SCH_SYMBOL::Move translates the symbol
+        and every field by the same vector (sch_symbol.h:701-710 at 9.0.8, 788-797 at
+        10.0.7). So a pure translation adds the symbol's displacement to each field's x
+        and y, keeps each field's angle, and changes nothing outside the symbol.
+        Positions are compared in schematic internal units, as KiCad reads them, not as
+        text.
+        """
+        before = kicad_native_sch.read_bytes()
+        schematic.move_component("R1", 63.5, 63.5, schematic_path=str(kicad_native_sch))
+        after = kicad_native_sch.read_bytes()
+        r1 = _the(before, "kicad_sch", "symbol")
+        J.assert_confined(before, after, r1)
+
+        def iu(mm: float) -> int:
+            # KiROUND's two majors differ only at its clamp and at one tie (eda_units).
+            return U.kiround(mm * U.SCH_IU_PER_MM, major=9)
+
+        def placement(item):
+            # An item's own (at x y angle): x and y in internal units, the angle as written.
+            (at,) = [c for c in item.items if c.head == "at"]
+            x, y = (iu(float(atom.value)) for atom in at.items[1:3])
+            return x, y, tuple(atom.raw for atom in at.items[3:])
+
+        def fields(symbol):
+            return {p.items[1].value: placement(p) for p in symbol.items if p.head == "property"}
+
+        old, new = J.item_at(before, r1), J.item_at(after, r1)
+        (x0, y0, _), (x1, y1, _) = placement(old), placement(new)
+        if (x1, y1) != (iu(63.5), iu(63.5)):
+            raise RuntimeError(f"R1 landed at {(x1, y1)} IU, not where the call put it")
+        dx, dy = x1 - x0, y1 - y0
+        expected = {name: (x + dx, y + dy, angle) for name, (x, y, angle) in fields(old).items()}
+        assert fields(new) == expected, "the symbol moved and its fields stayed where they were"
 
     def test_set_component_property_existing_and_new(self, kicad_native_sch):
         p = str(kicad_native_sch)
@@ -623,7 +742,15 @@ class TestSymbolFamilyPreservation:
             "R1", "Value", "22K", schematic_path=p
         )
         after = kicad_native_sch.read_bytes()
-        assert _confined(before, after, limit=20)
+        # Setting a field's value rewrites that one atom.
+        value = _the(
+            before,
+            "kicad_sch",
+            "symbol",
+            "property",
+            where=lambda loc, p: p.items[1].value == b"Value",
+        )
+        assert J.atom_changes(before, after) == [J.AtomChange(value, 2, b'"10K"', b'"22K"')]
         sym = reparse(kicad_native_sch).schematicSymbols[0]
         assert any(pr.key == "Value" and pr.value == "22K" for pr in sym.properties)
         assert "(new property)" in schematic.set_component_property(
@@ -641,7 +768,8 @@ class TestSymbolFamilyPreservation:
         before = kicad_native_sch.read_bytes()
         assert schematic.remove_component("R1", schematic_path=p) == "Removed R1"
         after = kicad_native_sch.read_bytes()
-        assert _span_preserved(before, after)
+        (r1,) = J.assert_removed(before, after, heads=["symbol"])
+        assert r1.path == ROOT
         assert reparse(kicad_native_sch).schematicSymbols == []
         with pytest.raises(ToolError, match="not found"):
             schematic.remove_component("R1", schematic_path=p)
@@ -652,13 +780,14 @@ class TestSymbolFamilyPreservation:
         before = kicad_native_sch.read_bytes()
         assert "A3" in schematic.set_page_size("A3", schematic_path=p)
         mid = kicad_native_sch.read_bytes()
-        assert _confined(before, mid, limit=40)
+        paper_node = _the(before, "kicad_sch", "paper")
+        assert J.atom_changes(before, mid) == [J.AtomChange(paper_node, 1, b'"A4"', b'"A3"')]
         assert reparse(kicad_native_sch).paper.paperSize == "A3"
         result = schematic.set_page_size(
             "User", width=200, height=150, portrait=True, schematic_path=p
         )
         assert "portrait" in result
-        assert _confined(mid, kicad_native_sch.read_bytes(), limit=60)
+        J.assert_confined(mid, kicad_native_sch.read_bytes(), paper_node)
         paper = reparse(kicad_native_sch).paper
         assert (paper.paperSize, paper.width, paper.height) == ("User", 200, 150)
         after = kicad_native_sch.read_bytes()
@@ -687,12 +816,23 @@ class TestProjectToolsPreservation:
     def test_add_hierarchical_sheet_preserves_both_files(self, tmp_path, kicad_native_sch):
         parent, child = self._hierarchy(tmp_path, kicad_native_sch)
         p_before = parent.read_bytes()
+        c_before = child.read_bytes()
         project.add_hierarchical_sheet(
             str(parent), "sub", str(child), [{"name": "A", "direction": "input"}]
         )
         p_after = parent.read_bytes()
         assert b"generator_version" in p_after and b"(embedded_fonts" in p_after
         assert p_after[: len(p_before) // 3] == p_before[: len(p_before) // 3]
+        # Whole items added to each file and nothing else: in the parent the sheet
+        # plus, for its one pin, a wire stub and the label naming it; in the child the
+        # matching hierarchical label plus its own stub and label (the tool's design,
+        # one stub and label per pin on each side).
+        for before, after, heads in (
+            (p_before, p_after, ["sheet", "wire", "label"]),
+            (c_before, child.read_bytes(), ["hierarchical_label", "wire", "label"]),
+        ):
+            edits = J.assert_inserted(before, after, heads=heads, contiguous=False)
+            assert {e.path for e in edits} == {ROOT}
         psch = reparse(parent)
         assert len(psch.sheets) == 1
         sheet = psch.sheets[0]
@@ -712,23 +852,50 @@ class TestProjectToolsPreservation:
         uuids = [s.uuid for s in reparse(parent).sheets if s.uuid is not None]
         assert len(uuids) == 2
 
+        def s1(data: bytes) -> J.Path:
+            uuid = uuids[0].encode()
+            return _the(data, "kicad_sch", "sheet", where=lambda loc, s: _uuid_of(s) == uuid)
+
+        def child_of_s1(data: bytes, head: str, where=lambda item: True) -> J.Path:
+            sheet = s1(data)
+            return _the(
+                data,
+                "kicad_sch",
+                "sheet",
+                head,
+                where=lambda loc, c: loc[:-1] == sheet and where(c),
+            )
+
         before = parent.read_bytes()
         project.add_sheet_pin(uuids[0], "P1", "input", schematic_path=str(parent))
-        assert _pure_insertion(before, parent.read_bytes())
+        (pin,) = J.assert_inserted(before, parent.read_bytes(), heads=["pin"])
+        assert pin.path == s1(before)
         before = parent.read_bytes()
         project.remove_sheet_pin(uuids[0], "P1", schematic_path=str(parent))
-        assert _span_preserved(before, parent.read_bytes())
+        (pin,) = J.assert_removed(before, parent.read_bytes(), heads=["pin"])
+        assert pin.path == s1(before)
         with pytest.raises(ToolError, match="not found on sheet"):
             project.remove_sheet_pin(uuids[0], "P1", schematic_path=str(parent))
 
+        # Renaming a sheet rewrites its Sheetname value and nothing else.
         before = parent.read_bytes()
         project.modify_hierarchical_sheet(
             uuids[0], schematic_path=str(parent), sheet_name="renamed"
         )
-        assert _confined(before, parent.read_bytes(), limit=30)
+        name = child_of_s1(before, "property", lambda item: item.items[1].value == b"Sheetname")
+        assert J.atom_changes(before, parent.read_bytes()) == [
+            J.AtomChange(name, 2, b'"s1"', b'"renamed"')
+        ]
+        # A wider sheet with no pins is its width atom alone. KiCad's Resize keeps pins
+        # on their edges and re-places autoplaced fields at offsets from the sheet's
+        # origin and height, never its width (sch_sheet.cpp:665-706 and 1023-1037 at
+        # 9.0.8, 767-811 and 1160-1174 at 10.0.7).
         before = parent.read_bytes()
         project.modify_hierarchical_sheet(uuids[0], schematic_path=str(parent), width=30)
-        assert _confined(before, parent.read_bytes(), limit=30)
+        size = child_of_s1(before, "size")
+        assert J.atom_changes(before, parent.read_bytes()) == [
+            J.AtomChange(size, 1, b"25.4", b"30")
+        ]
         sheet = next(s for s in reparse(parent).sheets if s.uuid == uuids[0])
         assert sheet.sheetName.value == "renamed"
         assert sheet.width == 30
@@ -741,6 +908,45 @@ class TestProjectToolsPreservation:
         assert [s.uuid for s in reparse(parent).sheets] == [uuids[1], uuids[0]]
         with pytest.raises(ToolError, match="Sheet UUIDs not found"):
             project.reorder_sheet_pages(["nope"], schematic_path=str(parent))
+
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="bug 35: modify_hierarchical_sheet leaves an autoplaced sheet's file name inside"
+        " the sheet when it grows taller; fixed by step 12a",
+    )
+    def test_a_taller_sheet_keeps_its_file_name_below_it(self, tmp_path, kicad_native_sch):
+        """KiCad resizes a sheet through SCH_SHEET::Resize (its point editor's call,
+        sch_point_editor.cpp:900-901 at 9.0.8, 873-874 at 10.0.7), which re-places
+        autoplaced fields: on a sheet with no pins the file name goes to the sheet's origin
+        plus its height plus a positive margin, below the box (sch_sheet.cpp:665-706 and
+        1023-1037 at 9.0.8, 767-811 and 1160-1174 at 10.0.7)."""
+        parent, child = self._hierarchy(tmp_path, kicad_native_sch)
+        project.add_hierarchical_sheet(str(parent), "s1", str(child), [])
+        data = parent.read_bytes()
+        location = _the(data, "kicad_sch", "sheet")
+        uuid = _uuid_of(J.item_at(data, location))
+        if uuid is None:
+            raise RuntimeError("add_hierarchical_sheet wrote a sheet with no uuid")
+        project.modify_hierarchical_sheet(uuid.decode(), schematic_path=str(parent), height=30)
+        sheet = J.item_at(parent.read_bytes(), location)
+
+        def part(head: str, name: bytes | None = None):
+            return next(
+                c
+                for c in sheet.items
+                if c.head == head and (name is None or c.items[1].value == name)
+            )
+
+        def iu(atom) -> int:
+            return U.kiround(float(atom.value) * U.SCH_IU_PER_MM, major=9)
+
+        autoplaced = [a.value for a in part("fields_autoplaced").items[1:]] in ([], [b"yes"])
+        if not autoplaced or any(c.head == "pin" for c in sheet.items):
+            raise RuntimeError("the premise is a sheet with autoplaced fields and no pins")
+        top, height = iu(part("at").items[2]), iu(part("size").items[2])
+        (name_at,) = [c for c in part("property", b"Sheetfile").items if c.head == "at"]
+        assert iu(name_at.items[2]) > top + height, "the file name is left inside the sheet"
 
     def test_annotate_cst(self, kicad_native_sch, scratch_sym_lib):
         p = str(kicad_native_sch)
@@ -906,14 +1112,6 @@ class TestReadToolsRelaxed:
         assert any(c["reference"] == "R1" and c["pin"] == "1" for c in result.connections)
 
 
-def _kicad_cli_major() -> int:
-    result = _run_cli(["version"], check=False)
-    try:
-        return int(result.stdout.strip().split(".")[0])
-    except (ValueError, IndexError):
-        return 0
-
-
 class TestGuardRelax:
     @pytest.mark.no_kicad_validation
     def test_future_version_file_add_label_works_other_tools_refuse(self, kicad_native_sch):
@@ -925,7 +1123,8 @@ class TestGuardRelax:
         before = kicad_native_sch.read_bytes()
         schematic.add_label("RELAXED", 60, 90, schematic_path=str(kicad_native_sch))
         after = kicad_native_sch.read_bytes()
-        assert _pure_insertion(before, after)
+        (label,) = J.assert_inserted(before, after, heads=["label"])
+        assert label.path == ROOT
         tree = _cst.parse(after)
         assert "RELAXED" in [n.atoms[1].text for n in tree.lists[0].find_all("label")]
 
@@ -1034,7 +1233,8 @@ class TestKicad10E2E:
         assert b"(version 2026" in before[:80], before[:80]
         schematic.add_label("K10_NET", 60, 90, schematic_path=str(kicad_native_sch))
         after = kicad_native_sch.read_bytes()
-        assert _pure_insertion(before, after)
+        (label,) = J.assert_inserted(before, after, heads=["label"])
+        assert label.path == ROOT
         tree = _cst.parse(after)
         assert "K10_NET" in [n.atoms[1].text for n in tree.lists[0].find_all("label")]
         # The autouse _validate_kicad_output fixture then runs this runner's
@@ -1052,7 +1252,8 @@ class TestKicad10E2E:
         before = self._mint(kicad_native_sch)
         schematic.add_global_label("K10_G", 60, 90, schematic_path=str(kicad_native_sch))
         after = kicad_native_sch.read_bytes()
-        assert _pure_insertion(before, after)
+        (label,) = J.assert_inserted(before, after, heads=["global_label"])
+        assert label.path == ROOT
         assert _cst.parse(after).lists[0].find("global_label") is not None
 
     def test_hierarchical_label_on_real_kicad10(self, kicad_native_sch):
@@ -1061,21 +1262,24 @@ class TestKicad10E2E:
             "K10_H", "input", 60, 90, schematic_path=str(kicad_native_sch)
         )
         after = kicad_native_sch.read_bytes()
-        assert _pure_insertion(before, after)
+        (label,) = J.assert_inserted(before, after, heads=["hierarchical_label"])
+        assert label.path == ROOT
         assert _cst.parse(after).lists[0].find("hierarchical_label") is not None
 
     def test_text_on_real_kicad10(self, kicad_native_sch):
         before = self._mint(kicad_native_sch)
         schematic.add_text("K10 note", 60, 90, schematic_path=str(kicad_native_sch))
         after = kicad_native_sch.read_bytes()
-        assert _pure_insertion(before, after)
+        (text,) = J.assert_inserted(before, after, heads=["text"])
+        assert text.path == ROOT
         assert _cst.parse(after).lists[0].find("text") is not None
 
     def test_junctions_on_real_kicad10(self, kicad_native_sch):
         before = self._mint(kicad_native_sch)
         schematic.add_junctions([{"x": 60, "y": 90}], schematic_path=str(kicad_native_sch))
         after = kicad_native_sch.read_bytes()
-        assert _pure_insertion(before, after)
+        (junction,) = J.assert_inserted(before, after, heads=["junction"])
+        assert junction.path == ROOT
         assert _cst.parse(after).lists[0].find("junction") is not None
 
     def test_remove_label_on_real_kicad10(self, kicad_native_sch):
@@ -1085,7 +1289,8 @@ class TestKicad10E2E:
         mid = kicad_native_sch.read_bytes()
         assert "1 label(s)" in schematic.remove_label("K10_RM", schematic_path=p)
         after = kicad_native_sch.read_bytes()
-        assert _span_preserved(mid, after)
+        (label,) = J.assert_removed(mid, after, heads=["label"])
+        assert label.path == ROOT
         assert "K10_RM" not in [
             n.atoms[1].text for n in _cst.parse(after).lists[0].find_all("label")
         ]
@@ -1122,10 +1327,12 @@ class TestKicad10E2E:
         p = str(kicad_native_sch)
         assert "at (100.0, 96.19)" in schematic.no_connect_pin("R1", "1", schematic_path=p)
         mid = kicad_native_sch.read_bytes()
-        assert _pure_insertion(before, mid)
+        (flag,) = J.assert_inserted(before, mid, heads=["no_connect"])
+        assert flag.path == ROOT
         assert _cst.parse(mid).lists[0].find("no_connect") is not None
         assert "Removed 1 no-connect" in schematic.remove_no_connect("R1", "1", schematic_path=p)
-        assert _span_preserved(mid, kicad_native_sch.read_bytes())
+        (flag,) = J.assert_removed(mid, kicad_native_sch.read_bytes(), heads=["no_connect"])
+        assert flag.path == ROOT
         schematic.connect_pins("R1", "1", "R1", "2", schematic_path=p)
         root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
         assert len(root.find_all("wire")) == 2
@@ -1292,7 +1499,8 @@ class TestKicad10E2E:
             symbol_lib_path=lib,
         )
         after = scratch_sym_lib.read_bytes()
-        assert _pure_insertion(before, after)
+        (added,) = J.assert_inserted(before, after, heads=["symbol"])
+        assert added.path == ((0, "kicad_symbol_lib"),)
         # The KiCad 10 stamp survives: no downgrade, and KiCad still loads it.
         assert int(_cst.parse(after).lists[0].find("version").atoms[1].text) == version
         _run_cli(["sym", "upgrade", "--force", lib])
