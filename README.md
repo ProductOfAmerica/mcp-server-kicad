@@ -214,8 +214,8 @@ Highest priority wins:
   libraries, which come with KiCad. Every other read and write tool parses files
   directly and needs no KiCad install.
 
-CI runs the full suite on Linux against KiCad 9 and on macOS and Windows against
-KiCad 10, plus a KiCad-free matrix across Python 3.10 through 3.14.
+CI runs the full suite on Linux against KiCad 9 and KiCad 10, and on macOS and
+Windows against KiCad 10, plus a KiCad-free matrix across Python 3.10 through 3.14.
 
 ### Finding your KiCad install
 

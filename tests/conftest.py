@@ -697,9 +697,10 @@ def _cli_can_load_board(data: bytes) -> bool:
     """A KiCad 9 kicad-cli cannot open a KiCad 10 board, and that is not a bug.
 
     Without this the oracle reports 26 false failures on a KiCad 9 machine, all
-    of them the K10 fixtures. The K10 boards still get validated, on the macOS
-    and Windows runners, which install KiCad 10 from the Homebrew cask and from
-    KiCad's own Windows installer.
+    of them the K10 fixtures. The K10 boards still get validated wherever
+    kicad-cli is KiCad 10: the Linux 10.0 leg of kicad-suite.yml (from KiCad's
+    PPA), and the macOS and Windows runners (from the Homebrew cask and from
+    KiCad's own Windows installer).
     """
     m = _VERSION_RE.search(data[:400])
     if m is None or _kicad_cli_major() >= 10:

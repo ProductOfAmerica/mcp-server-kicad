@@ -48,7 +48,7 @@ jobs:
       # this downloads, which downloads.kicad.org 307s to on s3.cern.ch, so
       # dropping it removes a failure mode without changing a byte of what is
       # fetched. The version is pinned rather than discovered on purpose: this
-      # is one of the two KiCad 10 gates, and which KiCad it ran against should
+      # is one of the three KiCad 10 gates, and which KiCad it ran against should
       # be a fact in the file rather than whatever was newest that morning.
       - name: Install KiCad
         shell: pwsh
