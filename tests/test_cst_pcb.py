@@ -149,6 +149,19 @@ _K10_BOARD = """(kicad_pcb
 )"""
 
 
+_BUG52 = (
+    "bug 52: move_footprint refuses to flip a footprint carrying a 3D model, which KiCad's"
+    " flip leaves as it is; fixed by step 7"
+)
+#: A 3D model block at a nonzero offset and rotation, in the layout pcbnew 9.0.8 writes
+#: inside a footprint on a board.
+_MODEL = (
+    '\t\t(model "x.step"\n\t\t\t(offset\n\t\t\t\t(xyz 1 2 3)\n\t\t\t)'
+    "\n\t\t\t(scale\n\t\t\t\t(xyz 1 1 1)\n\t\t\t)"
+    "\n\t\t\t(rotate\n\t\t\t\t(xyz 0 0 45)\n\t\t\t)\n\t\t)\n"
+)
+
+
 def _write_board(tmp_path, content: str) -> str:
     p = tmp_path / "board.kicad_pcb"
     p.write_text(content)
@@ -482,19 +495,46 @@ class TestFootprintWritersCst:
             just = t.find("effects").find("justify")
             assert just is not None and "mirror" in [a.text for a in just.atoms[1:]]
 
-    def test_an_unmeasured_construct_is_refused_with_the_file_intact(self, tmp_path):
-        """A 3D model block's flip has not been measured, so mirroring
-        everything around it and leaving it alone is refused instead."""
-        p = _write_board(tmp_path, _K10_BOARD)
-        tree = _cst.parse(Path(p).read_bytes())
-        fp = tree.lists[0].find_all("footprint")[0]
-        fp.append_child(_cst.parse(b'(model "x.step")').lists[0], b"\n\t\t")
-        Path(p).write_bytes(_cst.serialize(tree))
-        before = Path(p).read_bytes()
-        with pytest.raises(ToolError) as exc:
-            pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
-        assert "model" in str(exc.value) and "Nothing was changed" in str(exc.value)
-        assert Path(p).read_bytes() == before
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG52)
+    @pytest.mark.parametrize("version", ["k9", "k10"])
+    def test_a_footprint_with_a_3d_model_flips_and_keeps_its_model(self, tmp_path, version):
+        """KiCad's flip leaves a 3D model as it is (FOOTPRINT::Flip has no model code,
+        pcbnew/footprint.cpp:2491-2550 at 9.0.8, 2930-2999 at 10.0.7; pcbnew 9.0.8 flips a
+        footprint whose model sits at offset (1 2 3) and rotation (0 0 45) and writes the
+        model's values unchanged, measured in the step 7 design, 2026-10-11, and checked
+        against the installed pcbnew by test_ladder_r3_fp_flip.py). R1 carrying such a model
+        moved to the back: the flip happens, the (model ...) block is byte-identical, and
+        the side, the footprint's angle and every pad's, text's and graphic's position and
+        layer read as KiCad's flip of R1 (kicad_ref.footprint). Pad and text angles are
+        bug 14's (rung 3's D4). The tool refused the flip; its refusal of what it cannot
+        flip lives on in test_ladder_r3_fp_flip.py's refusal tests."""
+        text = E.board_footprint_text(E.footprint_with_pad_at(0.0), "R1", (50 * MM, 40 * MM), 30.0)
+        anchor = "\t\t(embedded_fonts no)\n"
+        if text.count(anchor) != 1:
+            raise RuntimeError("edit_gen's footprint no longer ends in one (embedded_fonts no)")
+        text = text.replace(anchor, _MODEL + anchor)
+        board = tmp_path / "model.kicad_pcb"
+        board.write_text(G.board_text([text], version=version), newline="\n")
+        before = board.read_bytes()
+        try:
+            pcb.move_footprint("R1", 50, 40, layer="B.Cu", pcb_path=str(board))
+        except ToolError as exc:
+            raise AssertionError(f"move_footprint refused the flip: {exc}") from exc
+        after = board.read_bytes()
+        models = F.children(FJ.footprint_group(after, "R1"), b"model")
+        assert [after[m.start : m.end] for m in models] == [_MODEL.strip().encode()]
+        major = 10 if version == "k10" else 9
+        start = FJ.read(before, "R1", major=major)
+        want = F.board_flip(start, FJ.layer_table(before), major=major)
+        problems = FJ.differences(
+            FJ.read(after, "R1", major=major),
+            F.written(F.canonical(want)),
+            angles=False,
+            shapes=True,
+            written_fields_only=True,
+            copper_count=FJ.copper_count(after),
+        )
+        assert not problems, "\n".join(problems)
 
     def test_move_k10_rotation_appends_atom(self, tmp_path):
         p = _write_board(tmp_path, _K10_BOARD)

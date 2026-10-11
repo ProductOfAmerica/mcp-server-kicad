@@ -9,22 +9,29 @@ result per job. A job is a dict built by the helpers below:
 - ``move_job``: LoadBoard( board_in ), then per item FindFootprintByReference,
   SetPosition, and the item's turn; SaveBoard( board_out ) when one is named.
 - ``describe_job``: LoadBoard( board_in ), nothing else.
+- ``layers_job``: LoadBoard( board_in ), then per canonical layer name its opposite
+  (BOARD::FlipLayer) and whether a PCB_TEXT on it is side specific
+  (BOARD_ITEM::IsSideSpecific), and the board's copper layer count.
 
 A turn is ("rotate", d): FOOTPRINT::Rotate( position, d ); ("rotate_to", a): Rotate by
 a minus the orientation the footprint holds, which is what the editor's footprint
 properties dialog does for a new angle (dialogs/dialog_footprint_properties.cpp:636-639 at
 9.0.8, without its Normalize of the typed value); ("set", a): FOOTPRINT::SetOrientation(
-a ), the Python API's path; or None. Each job's result describes every footprint it
+a ), the Python API's path; ("flip", None): FOOTPRINT::Flip( position,
+FLIP_DIRECTION::LEFT_RIGHT ), what SetLayerAndFlip runs to change the side; a list of
+turns, applied in order; or None. Each job's result describes every footprint it
 touched (all of them for describe_job), keyed by reference, as pcbnew holds it in
-memory: position and orientation, and per pad its number, board position, absolute and
-footprint-relative orientation, and per text (the fields, then the fp_text items) its key,
-board position, angle, keep-upright flag, justification, mirror flag and canonical layer
-name. Angles come back as the doubles pcbnew holds, positions in nanometres.
+memory: position, orientation and layer, per pad its number, board position, absolute
+and footprint-relative orientation, and under "pad_layers" the canonical names of its
+layers, and per text (the fields, then the fp_text items) its key, board position,
+angle, keep-upright flag, justification, mirror flag and canonical layer name. Angles
+come back as the doubles pcbnew holds, positions in nanometres.
 
 pcbnew's Python API is used as measured on 9.0.8 (``FOOTPRINT.Rotate( VECTOR2I,
-EDA_ANGLE )``, ``BOARD_ITEM.Cast()``, ``LSET.Name``); any call that fails, a board pcbnew
-cannot load included, raises RuntimeError through pcbnew_judge.run, never AssertionError,
-so a KiCad 10 call shape that changed shows up on the KiCad 10 legs as an error to fix.
+EDA_ANGLE )``, ``FOOTPRINT.Flip( VECTOR2I, FLIP_DIRECTION_LEFT_RIGHT )``,
+``BOARD_ITEM.Cast()``, ``LSET.Name``); any call that fails, a board pcbnew cannot load
+included, raises RuntimeError through pcbnew_judge.run, never AssertionError, so a KiCad
+10 call shape that changed shows up on the KiCad 10 legs as an error to fix.
 """
 
 from __future__ import annotations
@@ -81,12 +88,19 @@ def describe(fp):
         "orientation": fp.GetOrientation().AsDegrees(),
         "layer": layer_name(fp.GetLayer()),
         "pads": pads,
+        "pad_layers": [
+            sorted(layer_name(layer) for layer in pad.GetLayerSet().Seq()) for pad in fp.Pads()
+        ],
         "texts": texts,
     }
 
 
 def turn(fp, how):
     if how is None:
+        return
+    if how and isinstance(how[0], list):
+        for step in how:
+            turn(fp, step)
         return
     kind, value = how
     if kind == "rotate":
@@ -95,6 +109,8 @@ def turn(fp, how):
         fp.Rotate(fp.GetPosition(), angle(float(value) - fp.GetOrientation().AsDegrees()))
     elif kind == "set":
         fp.SetOrientation(angle(value))
+    elif kind == "flip":
+        fp.Flip(fp.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
     else:
         raise ValueError(f"no such turn {kind!r}")
 
@@ -141,12 +157,32 @@ for job in payload["jobs"]:
         board = load(job["board_in"])
         for fp in board.GetFootprints():
             out[fp.GetReference()] = describe(fp)
+    elif job["op"] == "layers":
+        board = load(job["board_in"])
+        out["copper_count"] = board.GetCopperLayerCount()
+        for name in job["names"]:
+            layer = board.GetLayerID(name)
+            if layer < 0:
+                raise RuntimeError(f"pcbnew knows no layer {name!r}")
+            text = pcbnew.PCB_TEXT(board)
+            text.SetLayer(layer)
+            board.Add(text)
+            out[name] = [layer_name(board.FlipLayer(layer)), bool(text.IsSideSpecific())]
     elif job["op"] == "call":
         getattr(pcbnew, job["name"])()
     else:
         raise ValueError(f"no such job {job['op']!r}")
     result.append(out)
 """
+
+
+def _turn(turn):
+    """A turn or a sequence of turns (module docstring) in the job's JSON shape."""
+    if not turn:
+        return None
+    if isinstance(turn[0], (list, tuple)):
+        return [list(step) for step in turn]
+    return list(turn)
 
 
 def place_item(library, name: str, ref: str, at_nm: tuple[int, int], turn=None, value="V") -> dict:
@@ -159,13 +195,13 @@ def place_item(library, name: str, ref: str, at_nm: tuple[int, int], turn=None, 
         "value": value,
         "x": at_nm[0],
         "y": at_nm[1],
-        "turn": list(turn) if turn else None,
+        "turn": _turn(turn),
     }
 
 
 def move_item(ref: str, at_nm: tuple[int, int], turn=None) -> dict:
     """One footprint for move_job."""
-    return {"ref": ref, "x": at_nm[0], "y": at_nm[1], "turn": list(turn) if turn else None}
+    return {"ref": ref, "x": at_nm[0], "y": at_nm[1], "turn": _turn(turn)}
 
 
 def place_job(board_in, items: list[dict], board_out=None) -> dict:
@@ -188,6 +224,11 @@ def move_job(board_in, items: list[dict], board_out=None) -> dict:
 
 def describe_job(board_in) -> dict:
     return {"op": "describe", "board_in": str(board_in)}
+
+
+def layers_job(board_in, names) -> dict:
+    """A job reporting each named layer's opposite and side specificity on a board."""
+    return {"op": "layers", "board_in": str(board_in), "names": list(names)}
 
 
 def call_job(name: str) -> dict:

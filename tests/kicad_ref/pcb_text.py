@@ -14,6 +14,11 @@ in brackets, the bodies identical):
   leaves the mirror flag alone.
 - EDA_TEXT::SetTextAngle stores the angle without normalizing it (common/eda_text.cpp:
   292-297 at 9.0.8, 258-263 at 10.0.7).
+- Flip (414-431 [493-510]), top to bottom as FOOTPRINT::Flip calls it: the position
+  mirrored in y about the centre, the angle ANGLE_180 - angle (an EDA_ANGLE difference,
+  not normalized), the layer taken to its opposite, and the mirror flag toggled only when
+  the text is side specific on its new layer (BOARD_ITEM::IsSideSpecific,
+  kicad_ref.board_layers).
 
 Reading, parsePCB_TEXT_effects (pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr_parser.cpp:
 3438-3576 at 9.0.8, 3955-4093 at 10.0.7): a footprint text starts keep-upright; a bare
@@ -98,3 +103,11 @@ def justify_words(style: Style) -> list[str]:
 def angle_token(style: Style) -> str:
     """The (at) angle atom format( PCB_TEXT ) writes: always present."""
     return format_angle(style.angle)
+
+
+def flip(style: Style, side_specific: bool) -> Style:
+    """PCB_TEXT::Flip's angle and mirror, top to bottom: 180 - angle, the mirror toggled
+    when the text is side specific on the layer it lands on."""
+    return style._replace(
+        angle=180.0 - style.angle, mirror=not style.mirror if side_specific else style.mirror
+    )

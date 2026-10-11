@@ -8,10 +8,18 @@ written in a .kicad_mod or on a board, the way the board parser does
   FOOTPRINT::SetOrientation, which stores Normalize180 of parseDouble; no angle atom is
   0, and a token that is not a NUMBER refuses the file (4533-4549 [5227-5243]);
   FOOTPRINT::SetOrientation (pcbnew/footprint.cpp:2641-2669 [3099-3137]) normalizes;
-- (layer ...): the footprint's own layer, read as written here (KiCad reads anything but
-  B.Cu as F.Cu; the side is not this port's subject yet);
-- pads, through kicad_ref.pad; texts (the fields, written as (property ...), and the
-  fp_text items), through kicad_ref.pcb_text. A (property ...) named ki_fp_filters is the
+- (layer ...): the footprint's side, B.Cu when the file says B.Cu and F.Cu for anything
+  else, since a footprint sits on one of the two (4510-4519 [5198-5207]);
+- pads, through kicad_ref.pad: the position, the absolute angle, and what a flip
+  changes: the layers (the parser's wildcards expanded, kicad_ref.board_layers), the shape
+  offset (drill (offset x y)), the trapezoid delta (rect_delta), the chamfered corners and
+  a custom pad's primitives, in the pad's own frame. A plated through-hole pad read from
+  a board also holds every copper layer of the board, which FOOTPRINT::FixUpPadsForBoard
+  adds once the footprint is read (4978 [5793]; pcbnew/footprint.cpp:4167-4185
+  [4834-4853], where KiCad 10 skips a footprint with a stackup of its own, a construct
+  this port does not read);
+- texts (the fields, written as (property ...), and the fp_text items), through
+  kicad_ref.pcb_text. A (property ...) named ki_fp_filters is the
   footprint's filters and one named Footprint is dropped since KiCad 9, so neither is a
   text KiCad holds (4611-4636 [5306-5321]); a legacy (fp_text reference|value ...) is the
   Reference or Value field. A field name written twice is one field: KiCad reads the later
@@ -21,7 +29,15 @@ written in a .kicad_mod or on a board, the way the board parser does
   [736-750]), so the later one is read and the earlier one is not. Fifteen of KiCad
   9.0.8's stock footprints, its M.2 edge connectors, write Reference and Value twice at
   different places (counted 2026-10-11). A later one that leaves out its (at), (layer)
-  or (effects) keeps some of the earlier one's, and this port refuses it (ValueError);
+  or (effects) keeps some of the earlier one's, and this port refuses it (ValueError).
+  A text written without (layer) keeps the layer it was made with: F.SilkS for
+  Reference and F.Fab for Value, Datasheet and Description, whatever the footprint's side
+  (addMandatoryFields, below; measured: pcbnew 9.0.8 reads such a Reference on a B.Cu
+  footprint on F.SilkS, unmirrored, 2026-10-11); F.Fab or B.Fab by the footprint's side
+  for any other field (4644-4651 [5330-5338]), which on a board then takes
+  StyleFromSettings' mirror for a back layer until an (effects) resets it; F.SilkS or
+  B.SilkS by the side for an fp_text (the PCB_TEXT constructor, pcbnew/pcb_text.cpp:56-76
+  [61-79]);
 - graphics (fp_line, fp_rect, fp_circle, fp_arc, fp_poly, fp_curve): their points in the
   footprint's own frame, as written;
 - the four fields every footprint holds from its constructor (addMandatoryFields,
@@ -55,6 +71,27 @@ The operations (pcbnew/footprint.cpp, identical in substance at both tags):
 - Rotate (2456-2479 [2898-2918]): returns at once when the angle is exactly 0, else
   SetOrientation( orientation + angle ) and then KeepUpright on every field and every
   fp_text (PCB_TEXT_T; a text box is not one);
+- Flip about the footprint's own position, LEFT_RIGHT (2491-2550 [2930-2999]; what
+  SetLayerAndFlip runs, 2482-2488 [2921-2927]): the footprint's layer goes to its
+  opposite; the new orientation is Normalize180( -orientation ), and with the held one
+  set to 0 every field and pad is flipped top to bottom about the footprint, then the
+  zones and drawings (graphics and fp_text items) are, and then the footprint is Rotated
+  by 180 degrees about its position, which turns every pad and text by d = ( new + 180 ) -
+  new (not always exactly 180 in doubles) and runs KeepUpright. In the file's
+  footprint-relative terms that is: every local y negated; a pad's angle
+  Normalize( Normalize( -P ) + d ) (PAD::Flip, pcbnew/pad.cpp:1029-1093 [1504-1565], sets
+  the footprint-relative angle to its negation while the footprint holds 0), its shape
+  offset and trapezoid delta mirrored in y, its top and bottom chamfered corners swapped,
+  its layers through BOARD::FlipLayer and its primitives flipped about the pad's own
+  origin (FlipPrimitives, 1096-1111 [1568-1583]); a text's angle
+  Normalize( ( 180 - T ) + d ) and then KeepUpright, its layer through FlipLayer, its
+  mirror toggled only when its new layer is side specific (PCB_TEXT::Flip,
+  pcbnew/pcb_text.cpp:414-431 [493-510]); a graphic's layer through FlipLayer, an arc's
+  start and end swapped (EDA_SHAPE::flip, common/eda_shape.cpp:697-737 [991-1033];
+  PCB_SHAPE::Flip, pcbnew/pcb_shape.cpp:492-497 [600-605]), and a rectangle becomes the
+  polygon of its corners when d is not a multiple of 90 (EDA_SHAPE::rotate, 636-694
+  [930-988]). Which layer is whose opposite, and which layers are side specific, is the
+  board's (kicad_ref.board_layers); a 3D model is left as it is.
 - placing a library footprint (FootprintLoad, then SetPosition, then Rotate or
   SetOrientation): the library footprint reads with orientation 0 at the origin.
 
@@ -68,8 +105,10 @@ This module imports nothing from mcp_server_kicad.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from typing import NamedTuple
 
+from kicad_ref import board_layers as BL
 from kicad_ref import dsn_lexer as L
 from kicad_ref import pad as PAD
 from kicad_ref import pcb_text as T
@@ -81,6 +120,17 @@ Point = tuple[int, int]
 
 #: The graphic items read, with the point lists each one carries in its own frame.
 SHAPE_HEADS = (b"fp_line", b"fp_rect", b"fp_circle", b"fp_arc", b"fp_poly", b"fp_curve")
+#: A custom pad's primitives (pcb_io_kicad_sexpr_parser.cpp:5426-5458 at 9.0.8).
+PRIMITIVE_HEADS = (
+    b"gr_line",
+    b"gr_vector",
+    b"gr_rect",
+    b"gr_bbox",
+    b"gr_arc",
+    b"gr_circle",
+    b"gr_curve",
+    b"gr_poly",
+)
 _POINT_HEADS = (b"start", b"mid", b"end", b"center")
 #: Properties that are no text KiCad holds (see the module docstring).
 _NOT_TEXTS = (b"ki_fp_filters", b"Footprint")
@@ -88,10 +138,22 @@ _H = {b"left": T.LEFT, b"right": T.RIGHT}
 _V = {b"top": T.TOP, b"bottom": T.BOTTOM}
 
 
+class Shape(NamedTuple):
+    kind: str
+    layer: str | None
+    points: tuple[Point, ...]
+
+
 class Pad(NamedTuple):
     number: str
     local: Point
     angle: float  # absolute on the board, [0, 360)
+    layers: frozenset[str] = frozenset()  # wildcards expanded
+    offset: Point = (0, 0)
+    delta: Point = (0, 0)
+    chamfer: frozenset[str] = frozenset()
+    primitives: tuple[Shape, ...] = ()
+    kind: str = "smd"
 
 
 class Text(NamedTuple):
@@ -104,12 +166,6 @@ class Text(NamedTuple):
     style: T.Style
     layer: str | None
     default: bool = False
-
-
-class Shape(NamedTuple):
-    kind: str
-    layer: str | None
-    points: tuple[Point, ...]
 
 
 class Footprint(NamedTuple):
@@ -159,12 +215,49 @@ def _point(group, *, major: int) -> Point:
     )
 
 
-def _read_pad(group, *, major: int) -> Pad:
+def _read_pad(group, *, major: int, copper_count: int | None) -> Pad:
     at = child(group, b"at")
     if at is None:
         raise ParseRefusal(f"the pad at byte {group.start} has no (at)")
     written = _number(at.items[3]) if len(at.items) > 3 else None
-    return Pad(group.items[1].value.decode(), _point(at, major=major), PAD.loaded_angle(written))
+    kind = group.items[2].value.decode() if len(group.items) > 2 else "smd"
+    layers_node = child(group, b"layers")
+    layers = (
+        BL.layer_set(token.value.decode() for token in layers_node.items[1:])
+        if layers_node is not None
+        else frozenset()
+    )
+    if kind == "thru_hole" and copper_count is not None:
+        layers |= BL.all_cu(copper_count)
+    offset: Point = (0, 0)
+    drill = child(group, b"drill")
+    if drill is not None and child(drill, b"offset") is not None:
+        offset = _point(child(drill, b"offset"), major=major)
+    delta_node = child(group, b"rect_delta")
+    delta = _point(delta_node, major=major) if delta_node is not None else (0, 0)
+    chamfer_node = child(group, b"chamfer")
+    chamfer = (
+        frozenset(token.value.decode() for token in chamfer_node.items[1:])
+        if chamfer_node is not None
+        else frozenset()
+    )
+    primitives_node = child(group, b"primitives")
+    primitives = []
+    for item in primitives_node.items if primitives_node is not None else ():
+        name = head(item)
+        if name in PRIMITIVE_HEADS:
+            primitives.append(Shape(name.decode(), None, _shape_points(item, major=major)))
+    return Pad(
+        group.items[1].value.decode(),
+        _point(at, major=major),
+        PAD.loaded_angle(written),
+        layers,
+        offset,
+        delta,
+        chamfer,
+        tuple(primitives),
+        kind,
+    )
 
 
 def pad_groups(group) -> list:
@@ -217,7 +310,17 @@ def _text_key(group) -> tuple[str, str] | None:
     return ("fp_text", text)
 
 
-def _read_text(group, orientation: float, *, major: int) -> Text | None:
+def _default_layer(group, key: tuple[str, str], *, back: bool) -> str:
+    """The layer a text written without (layer) keeps (module docstring)."""
+    for name, layer in MANDATORY_FIELDS:
+        if key == ("property", name) and head(group) == b"property":
+            return layer
+    if head(group) == b"property":
+        return "B.Fab" if back else "F.Fab"
+    return "B.SilkS" if back else "F.SilkS"
+
+
+def _read_text(group, orientation: float, *, major: int, back: bool, on_board: bool):
     key = _text_key(group)
     if key is None:
         return None
@@ -225,8 +328,16 @@ def _read_text(group, orientation: float, *, major: int) -> Text | None:
     written = 0.0
     keep_upright = True
     h = v = T.CENTER
-    mirror = False
     layer = None
+    for item in group.items:
+        if head(item) == b"layer":
+            layer = item.items[1].value.decode()
+    if layer is None:
+        layer = _default_layer(group, key, back=back)
+    # A user field new to a footprint on a board takes StyleFromSettings, whose mirror is
+    # that of a back layer (4648-4651 [5335-5338]; pcbnew/pcb_text.cpp:307-318 [370-386]),
+    # until an (effects) resets it (parseEDA_TEXT).
+    mirror = head(group) == b"property" and key not in _MANDATORY_KEYS and on_board and back
     for item in group.items:
         name = head(item)
         if name == b"at":
@@ -242,8 +353,6 @@ def _read_text(group, orientation: float, *, major: int) -> Text | None:
             if word not in (b"yes", b"no"):
                 raise ParseRefusal(f"(unlocked {word!r}) is no bool KiCad reads")
             keep_upright = word == b"no"
-        elif name == b"layer":
-            layer = item.items[1].value.decode()
         elif name == b"effects":
             h = v = T.CENTER
             mirror = False
@@ -299,11 +408,13 @@ MANDATORY_FIELDS = (
     ("Datasheet", "F.Fab"),
     ("Description", "F.Fab"),
 )
+_MANDATORY_KEYS = frozenset(("property", name) for name, _ in MANDATORY_FIELDS)
 
 
-def read_footprint(group, *, major: int) -> Footprint:
+def read_footprint(group, *, major: int, copper_count: int | None = None) -> Footprint:
     """The footprint KiCad ``major`` reads from a (footprint ...) Group (module docstring).
-    Raises ParseRefusal for a token KiCad refuses."""
+    ``copper_count`` is the copper layer count of the board the footprint is read from,
+    None for a library file. Raises ParseRefusal for a token KiCad refuses."""
     at = child(group, b"at")
     position: Point = (0, 0)
     orientation = 0.0
@@ -317,12 +428,15 @@ def read_footprint(group, *, major: int) -> Footprint:
         if b"pad" in before or b"property" in before or b"fp_text" in before:
             raise ValueError("a pad or text precedes the footprint's (at): not modelled")
     layer_node = child(group, b"layer")
-    layer = layer_node.items[1].value.decode() if layer_node is not None else "F.Cu"
-    pads = tuple(_read_pad(g, major=major) for g in pad_groups(group))
+    back = layer_node is not None and layer_node.items[1].value == b"B.Cu"
+    layer = "B.Cu" if back else "F.Cu"
+    pads = tuple(_read_pad(g, major=major, copper_count=copper_count) for g in pad_groups(group))
     _check_repeated_fields(group)
     texts = []
     for item in text_groups(group):
-        text = _read_text(item, orientation, major=major)
+        text = _read_text(
+            item, orientation, major=major, back=back, on_board=copper_count is not None
+        )
         if text is not None:
             texts.append(text)
     keys = {t.key for t in texts}
@@ -378,15 +492,112 @@ def rotate(fp: Footprint, degrees: float) -> Footprint:
     return keep_upright(set_orientation(fp, fp.orientation + degrees))
 
 
-def place(library: Footprint, position: Point, degrees: float, *, semantics: str) -> Footprint:
+def is_cardinal(degrees: float) -> bool:
+    """EDA_ANGLE::IsCardinal (libs/kimath/src/geometry/eda_angle.cpp:40-49 at 9.0.8, the
+    same at 10.0.7): a multiple of 90 degrees, tested by stepping into [0, 90)."""
+    test = degrees
+    while test < 0.0:
+        test += 90.0
+    while test >= 90.0:
+        test -= 90.0
+    return test == 0.0
+
+
+def _mirror_y(point: Point) -> Point:
+    return (point[0], -point[1])
+
+
+def flip_shape(shape: Shape, opposite: Mapping[str, str] | None) -> Shape:
+    """EDA_SHAPE::flip top to bottom about the frame's origin (PCB_SHAPE::Flip also takes
+    the layer to its opposite): every y negated, an arc's start and end swapped."""
+    points = tuple(_mirror_y(p) for p in shape.points)
+    if shape.kind in ("fp_arc", "gr_arc"):
+        points = (points[2], points[1], points[0])
+    layer = shape.layer
+    if layer is not None and opposite is not None:
+        layer = opposite[layer]
+    return shape._replace(layer=layer, points=points)
+
+
+def _rotated_shape(shape: Shape, change: float) -> Shape:
+    """What EDA_SHAPE::rotate by ``change`` does to a graphic's footprint-relative form
+    when its footprint turns with it: nothing, except that a rectangle turned by an angle
+    that is not a multiple of 90 becomes the polygon of its corners."""
+    if shape.kind == "fp_rect" and not is_cardinal(change):
+        (sx, sy), (ex, ey) = shape.points
+        return shape._replace(kind="fp_poly", points=((sx, sy), (ex, sy), (ex, ey), (sx, ey)))
+    return shape
+
+
+def flip(
+    fp: Footprint, opposite: Mapping[str, str], side_specific: Callable[[str], bool]
+) -> Footprint:
+    """FOOTPRINT::Flip about the footprint's own position, LEFT_RIGHT (module docstring).
+    ``opposite`` maps every layer to its opposite and ``side_specific`` says which layers
+    are, both the board's (kicad_ref.board_layers.opposites and is_side_specific)."""
+    new = normalize180(-fp.orientation)
+    change = (new + 180.0) - new
+    pads = []
+    for p in fp.pads:
+        pads.append(
+            p._replace(
+                local=_mirror_y(p.local),
+                angle=PAD.rotate(PAD.flip_angle(p.angle), change),
+                layers=frozenset(opposite[layer] for layer in p.layers),
+                offset=_mirror_y(p.offset),
+                delta=_mirror_y(p.delta),
+                chamfer=PAD.flip_chamfer(p.chamfer),
+                primitives=tuple(flip_shape(s, None) for s in p.primitives),
+            )
+        )
+    texts = []
+    for t in fp.texts:
+        layer = opposite[t.layer] if t.layer is not None else None
+        style = T.flip(t.style, side_specific(layer) if layer is not None else False)
+        texts.append(
+            t._replace(
+                local=None if t.local is None else _mirror_y(t.local),
+                style=T.keep_upright(T.rotate(style, change)),
+                layer=layer,
+            )
+        )
+    shapes = tuple(_rotated_shape(flip_shape(s, opposite), change) for s in fp.shapes)
+    return fp._replace(
+        orientation=normalize180(new + 180.0),
+        layer=opposite[fp.layer],
+        pads=tuple(pads),
+        texts=tuple(texts),
+        shapes=shapes,
+    )
+
+
+def board_flip(fp: Footprint, table: BL.LayerTable, *, major: int) -> Footprint:
+    """``flip`` on the board whose layer table is ``table``, as KiCad ``major`` reads it."""
+    opposite = BL.opposites(table, major=major)
+    return flip(fp, opposite, lambda layer: BL.is_side_specific(table, layer))
+
+
+def place(
+    library: Footprint,
+    position: Point,
+    degrees: float,
+    *,
+    semantics: str,
+    flipped: Callable[[Footprint], Footprint] | None = None,
+) -> Footprint:
     """A library footprint (orientation 0) placed at ``position`` and turned to ``degrees``
     by Rotate (``semantics="rotate"``, the editor's rotate command and properties dialog)
-    or by SetOrientation (``"set"``, the Python API)."""
+    or by SetOrientation (``"set"``, the Python API). With ``flipped`` (a flip of the
+    board, such as board_flip bound to its table) the footprint is flipped after
+    SetPosition and before the turn, which then turns it from the orientation the flip
+    left (SetLayerAndFlip( B_Cu ), then the turn to ``degrees``)."""
     if library.orientation != 0:
         raise ValueError(f"a library footprint reads at orientation 0, not {library.orientation}")
     placed = set_position(library, position)
+    if flipped is not None:
+        placed = flipped(placed)
     if semantics == "rotate":
-        return rotate(placed, degrees)
+        return rotate(placed, degrees - placed.orientation)
     if semantics == "set":
         return set_orientation(placed, degrees)
     raise ValueError(f"no such semantics {semantics!r}")
