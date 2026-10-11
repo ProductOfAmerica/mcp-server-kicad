@@ -840,7 +840,13 @@ class TestGridSlot:
         assert ni.grid_slot(0, 100, 200, 10) == (100, 200)
         assert ni.grid_slot(9, 100, 200, 10) == (190, 200)
         assert ni.grid_slot(10, 100, 200, 10) == (100, 210)
-        assert ni.grid_slot(0, 100, 200, 10) == ni.grid_slot(0, 100, 200, 10)
+        # New footprints must not stack: the first 25 slots are pairwise distinct and at
+        # least a pitch apart (integer arguments, so the arithmetic is exact).
+        slots = [ni.grid_slot(k, 100, 200, 10) for k in range(25)]
+        assert len(set(slots)) == 25, slots
+        for i, a in enumerate(slots):
+            for b in slots[i + 1 :]:
+                assert (a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2 >= 10**2, (a, b)
 
 
 class TestSummarySchema:

@@ -14,6 +14,7 @@ from conftest import (
     _default_stroke,
     _gen_uuid,
     build_r_symbol,
+    build_test_part_symbol,
     make_demorgan_sch,
     make_dual_unit_sch,
     netlist_nodes,
@@ -21,9 +22,19 @@ from conftest import (
     place_r1,
     requires_cli,
 )
+from kicad_ref import dsn_lexer as L
 from kiutils.items.common import Effects, Font, Position, Property
 from kiutils.items.schitems import Connection, LocalLabel, SchematicSymbol
 from mcp.server.mcpserver.exceptions import ToolError
+from test_ladder_r2_pins import (
+    pin_end,
+    pin_map,
+    pin_pos_of,
+    port_pin_ends,
+    read_iu,
+    report_map,
+    symbol_placement,
+)
 
 from mcp_server_kicad import _connectivity, _cst, schematic
 from mcp_server_kicad.models import (
@@ -36,14 +47,27 @@ from mcp_server_kicad.models import (
 # ---------------------------------------------------------------------------
 
 
-def _make_rotated_sch(tmp_path: Path, rotation: float = 0, mirror: str = "") -> str:
-    """Create a schematic with Device:R placed as R1 at (100,100) with rotation/mirror."""
+#: The parts _make_rotated_sch can place: library symbol builder, lib_id, lib_name,
+#: reference and value.
+_PARTS = {
+    "R": (build_r_symbol, "Device:R", "R", "R1", "10K"),
+    "TestPart": (build_test_part_symbol, "Test:TestPart", "TestPart", "U1", "TP"),
+}
+
+
+def _make_rotated_sch(
+    tmp_path: Path, rotation: float = 0, mirror: str = "", part: str = "R"
+) -> str:
+    """Create a schematic with one part placed at (100,100) with rotation/mirror: Device:R
+    as R1, or the TestPart of conftest.build_test_part_symbol (pins at x -5.08 and 5.08)
+    as U1."""
+    build, lib_id, lib_name, reference, value = _PARTS[part]
     sch = new_schematic()
-    sch.libSymbols.append(build_r_symbol())
+    sch.libSymbols.append(build())
 
     sym = SchematicSymbol()
-    sym.libId = "Device:R"
-    sym.libName = "R"
+    sym.libId = lib_id
+    sym.libName = lib_name
     sym.position = Position(X=100, Y=100, angle=rotation)
     sym.uuid = _gen_uuid()
     sym.unit = 1
@@ -55,14 +79,14 @@ def _make_rotated_sch(tmp_path: Path, rotation: float = 0, mirror: str = "") -> 
     sym.properties = [
         Property(
             key="Reference",
-            value="R1",
+            value=reference,
             id=0,
             effects=_default_effects(),
             position=Position(X=100, Y=96.19, angle=0),
         ),
         Property(
             key="Value",
-            value="10K",
+            value=value,
             id=1,
             effects=_default_effects(),
             position=Position(X=100, Y=103.81, angle=0),
@@ -86,7 +110,7 @@ def _make_rotated_sch(tmp_path: Path, rotation: float = 0, mirror: str = "") -> 
     sym.pins = {"1": _gen_uuid(), "2": _gen_uuid()}
     sch.schematicSymbols.append(sym)
 
-    path = str(tmp_path / f"rot{int(rotation)}_mir{mirror or 'none'}.kicad_sch")
+    path = str(tmp_path / f"{part}_rot{int(rotation)}_mir{mirror or 'none'}.kicad_sch")
     sch.filePath = path
     sch.to_file()
     return path
@@ -154,49 +178,43 @@ class TestGetSymbolPins:
 # ---------------------------------------------------------------------------
 
 
+def _at(x_mm: str, y_mm: str) -> tuple[int, int]:
+    """A sheet point in internal units, as KiCad reads its two coordinates."""
+    return read_iu(x_mm), read_iu(y_mm)
+
+
 class TestGetPinPositions:
+    """Each report is read the way KiCad reads its numbers and must name every pin at its
+    exact end, as the transform port computes it from the file's own tokens
+    (test_ladder_r2_pins.port_pin_ends). The port is held to the values each docstring
+    traces by hand: Device:R's pin 1 is written at (0, 3.81) and pin 2 at (0, -3.81),
+    library y pointing up and the sheet's down; KiCad rotates, then mirrors."""
+
+    @staticmethod
+    def _check(path, reference: str, hand: dict[str, tuple[int, int]]) -> None:
+        (ends,) = port_pin_ends(Path(path).read_bytes(), reference)
+        assert pin_map(ends) == hand, "the port disagrees with the hand trace"
+        assert report_map(schematic.get_pin_positions(reference, str(path))) == pin_map(ends)
+
     def test_rotation_0(self, scratch_sch: Path) -> None:
         """Default rotation: Pin 1 at (100, 96.19), Pin 2 at (100, 103.81)."""
-        result = schematic.get_pin_positions("R1", str(scratch_sch))
-        lines = result.strip().split("\n")
-        pin_lines = [ln for ln in lines if ln.strip().startswith("Pin")]
-        pin1_line = [ln for ln in pin_lines if "Pin 1" in ln][0]
-        pin2_line = [ln for ln in pin_lines if "Pin 2" in ln][0]
-        assert "96.19" in pin1_line
-        assert "103.81" in pin2_line
+        hand = {"1": _at("100", "96.19"), "2": _at("100", "103.81")}
+        self._check(scratch_sch, "R1", hand)
 
     def test_rotation_90(self, tmp_path: Path) -> None:
-        """90 deg CW: Pin 1 at (96.19, 100), Pin 2 at (103.81, 100)."""
+        """90 deg, counterclockwise as drawn: Pin 1 at (96.19, 100), Pin 2 at (103.81, 100)."""
         path = _make_rotated_sch(tmp_path, rotation=90)
-        result = schematic.get_pin_positions("R1", path)
-        lines = result.strip().split("\n")
-        pin_lines = [ln for ln in lines if ln.strip().startswith("Pin")]
-        pin1_line = [ln for ln in pin_lines if "Pin 1" in ln][0]
-        pin2_line = [ln for ln in pin_lines if "Pin 2" in ln][0]
-        assert "96.19" in pin1_line
-        assert "103.81" in pin2_line
+        self._check(path, "R1", {"1": _at("96.19", "100"), "2": _at("103.81", "100")})
 
     def test_rotation_180(self, tmp_path: Path) -> None:
         """180 deg: Pin 1 at (100, 103.81), Pin 2 at (100, 96.19)."""
         path = _make_rotated_sch(tmp_path, rotation=180)
-        result = schematic.get_pin_positions("R1", path)
-        lines = result.strip().split("\n")
-        pin_lines = [ln for ln in lines if ln.strip().startswith("Pin")]
-        pin1_line = [ln for ln in pin_lines if "Pin 1" in ln][0]
-        pin2_line = [ln for ln in pin_lines if "Pin 2" in ln][0]
-        assert "103.81" in pin1_line
-        assert "96.19" in pin2_line
+        self._check(path, "R1", {"1": _at("100", "103.81"), "2": _at("100", "96.19")})
 
     def test_rotation_270(self, tmp_path: Path) -> None:
-        """270 deg CW: Pin 1 at (103.81, 100), Pin 2 at (96.19, 100)."""
+        """270 deg, clockwise as drawn: Pin 1 at (103.81, 100), Pin 2 at (96.19, 100)."""
         path = _make_rotated_sch(tmp_path, rotation=270)
-        result = schematic.get_pin_positions("R1", path)
-        lines = result.strip().split("\n")
-        pin_lines = [ln for ln in lines if ln.strip().startswith("Pin")]
-        pin1_line = [ln for ln in pin_lines if "Pin 1" in ln][0]
-        pin2_line = [ln for ln in pin_lines if "Pin 2" in ln][0]
-        assert "103.81" in pin1_line
-        assert "96.19" in pin2_line
+        self._check(path, "R1", {"1": _at("103.81", "100"), "2": _at("96.19", "100")})
 
     def test_mirror_x(self, tmp_path: Path) -> None:
         """Mirror x negates py in schematic coords (after Y-negate, rot=0).
@@ -204,34 +222,16 @@ class TestGetPinPositions:
         Pin 2: (0,-3.81) -> negate Y -> (0,3.81) -> mirror x -> (0,-3.81) -> (100, 96.19).
         """
         path = _make_rotated_sch(tmp_path, rotation=0, mirror="x")
-        result = schematic.get_pin_positions("R1", path)
-        assert "96.19" in result
-        assert "103.81" in result
-        # With mirror x, pin 1 and pin 2 swap positions vs rotation_0
-        # Pin 1 should be at y=103.81, Pin 2 at y=96.19
-        lines = result.strip().split("\n")
-        pin_lines = [ln for ln in lines if ln.strip().startswith("Pin")]
-        pin1_line = [ln for ln in pin_lines if "Pin 1" in ln][0]
-        pin2_line = [ln for ln in pin_lines if "Pin 2" in ln][0]
-        assert "103.81" in pin1_line
-        assert "96.19" in pin2_line
+        self._check(path, "R1", {"1": _at("100", "103.81"), "2": _at("100", "96.19")})
 
     def test_mirror_y(self, tmp_path: Path) -> None:
-        """Mirror y negates px (which is 0 for a vertical resistor, no visible change).
-        Pin positions same as corrected rotation_0.
-        Pin 1: (100, 96.19), Pin 2: (100, 103.81).
+        """Mirror y negates px, so the part must have pins off the y axis to show it:
+        TestPart's pin 1 is written at (-5.08, 0) and pin 2 at (5.08, 0).
+        Pin 1: (-5.08,0) -> mirror y -> (5.08,0) -> (105.08, 100).
+        Pin 2: (5.08,0) -> mirror y -> (-5.08,0) -> (94.92, 100).
         """
-        path = _make_rotated_sch(tmp_path, rotation=0, mirror="y")
-        result = schematic.get_pin_positions("R1", path)
-        assert "103.81" in result
-        assert "96.19" in result
-        # Same positions as rotation_0 since px=0 for both pins
-        lines = result.strip().split("\n")
-        pin_lines = [ln for ln in lines if ln.strip().startswith("Pin")]
-        pin1_line = [ln for ln in pin_lines if "Pin 1" in ln][0]
-        pin2_line = [ln for ln in pin_lines if "Pin 2" in ln][0]
-        assert "96.19" in pin1_line
-        assert "103.81" in pin2_line
+        path = _make_rotated_sch(tmp_path, rotation=0, mirror="y", part="TestPart")
+        self._check(path, "U1", {"1": _at("105.08", "100"), "2": _at("94.92", "100")})
 
     def test_unknown_reference(self, scratch_sch: Path) -> None:
         with pytest.raises(ToolError, match="not found"):
@@ -474,67 +474,44 @@ class TestListSchematicItemsExpanded:
 
 
 # ---------------------------------------------------------------------------
-# Tests: floating-point precision in _transform_pin_pos
+# Tests: floating-point precision of the pin reads
 # ---------------------------------------------------------------------------
+
+#: Device:R placed as R1 at (132.08, 48.26), and its two library pins.
+_R1_AT = b'(symbol (lib_id "Device:R") (at 132.08 48.26 %d) (unit 1))'
+_R_PIN1 = b'(pin passive line (at 0 3.81 270) (length 1.27) (name "~") (number "1"))'
+_R_PIN2 = b'(pin passive line (at 0 -3.81 90) (length 1.27) (name "~") (number "2"))'
 
 
 class TestPinPositionPrecision:
+    """_connectivity.pin_point_mm, under every pin read the tools make, gives a pin end
+    as the float of the millimetres KiCad writes for it: the transform port's exact end,
+    read from the same bytes by the lexer port. No float error from adding millimetres
+    can reach that value."""
+
+    @staticmethod
+    def _pin_pos(rotation: int, pin: bytes) -> tuple[float, float, int]:
+        """pin_point_mm on CST nodes of R1 at ``rotation`` and of ``pin``, after checking
+        it against the port's reading of the same bytes."""
+        symbol = _R1_AT % rotation
+        got = _connectivity.pin_point_mm(
+            _cst.parse(symbol).lists[0], _cst.parse(pin).lists[0], "R1"
+        )
+        position, matrix = symbol_placement(L.tree(symbol)[0])
+        assert got == pin_pos_of(pin_end(position, matrix, L.tree(pin)[0]))
+        return got
+
     def test_no_floating_point_artifacts(self, tmp_path: Path):
-        """_transform_pin_pos must return cleanly rounded coordinates, no IEEE 754 artifacts.
-
-        Without rounding:
-          132.08 + (-3.81) * cos(0) = 128.27 (happens to be clean)
-          but 132.08 + 0 * sin(0) = 132.08 (clean)
-          48.26 - 0 * sin(0) + (-3.81) * cos(0) = 44.449999... (artifact!)
-
-        The artifact comes from float arithmetic on non-power-of-2 values.
-        """
-        from mcp_server_kicad.schematic import _transform_pin_pos
-
-        # Resistor pin 1 at lib pos (0, 3.81), angle 270
-        # Placed at (132.08, 48.26), rotation 0, no mirror
-        x, y, _ = _transform_pin_pos(
-            0,
-            3.81,
-            270,
-            132.08,
-            48.26,
-            0,
-            None,
-        )
-        # x and y should be cleanly representable to 4 decimal places
-        assert x == round(x, 4), f"x={x!r} has FP artifact (expected {round(x, 4)})"
-        assert y == round(y, 4), f"y={y!r} has FP artifact (expected {round(y, 4)})"
-
-        # Resistor pin 2 at lib pos (0, -3.81), angle 90
-        x2, y2, _ = _transform_pin_pos(
-            0,
-            -3.81,
-            90,
-            132.08,
-            48.26,
-            0,
-            None,
-        )
-        assert x2 == round(x2, 4), f"x={x2!r} has FP artifact (expected {round(x2, 4)})"
-        assert y2 == round(y2, 4), f"y={y2!r} has FP artifact (expected {round(y2, 4)})"
+        """Rotation 0: pin 1 ends at (132.08, 44.45) and leaves upward (270), where the
+        sum 48.26 - 3.81 in floats is 44.449999999999996; pin 2 ends at (132.08, 52.07)
+        and leaves downward (90)."""
+        assert self._pin_pos(0, _R_PIN1) == (132.08, 44.45, 270)
+        assert self._pin_pos(0, _R_PIN2) == (132.08, 52.07, 90)
 
     def test_90_deg_rotation_no_artifacts(self, tmp_path: Path):
-        """90-degree rotation should also produce clean coordinates."""
-        from mcp_server_kicad.schematic import _transform_pin_pos
-
-        # 48.26 + 5.08 * sin(90) = 53.339999999999996 without rounding
-        x, y, _ = _transform_pin_pos(
-            0,
-            3.81,
-            270,
-            132.08,
-            48.26,
-            90,
-            None,
-        )
-        assert x == round(x, 4), f"x={x!r} has FP artifact"
-        assert y == round(y, 4), f"y={y!r} has FP artifact"
+        """Rotation 90 turns pin 1 to the left of the origin: it ends at (128.27, 48.26)
+        and leaves leftward (180)."""
+        assert self._pin_pos(90, _R_PIN1) == (128.27, 48.26, 180)
 
 
 # ---------------------------------------------------------------------------

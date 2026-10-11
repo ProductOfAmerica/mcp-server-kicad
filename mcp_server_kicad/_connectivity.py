@@ -333,29 +333,6 @@ def effective_mirror(sym) -> str | None:
     return mirror
 
 
-def transform_mm(
-    px: float, py: float, pin_angle: float, cx: float, cy: float, angle: float, mirror
-) -> tuple[float, float, int]:
-    """A lib pin's sheet position (mm) and outward angle, for callers holding plain numbers.
-
-    The same integer transform as symbol_transform and pin_end. Raises ValueError for an angle
-    KiCad cannot load. Only schematic._get_pin_pos, the kiutils twin of the pin reads, calls it:
-    tests compare that twin with the reads the tools make, which go through pin_point_mm.
-    """
-    rot, pang = _angle(str(angle)), _angle(str(pin_angle))
-    if rot is None or pang is None:
-        bad = angle if rot is None else pin_angle
-        raise ValueError(f"angle {bad} cannot be loaded by KiCad, which accepts 0, 90, 180 or 270")
-    t = _ROT[rot]
-    if mirror in _MIR:
-        t = _compose(t, _MIR[mirror])
-    dx, dy = _apply(t, kiround(px * IU_PER_MM), -kiround(py * IU_PER_MM))
-    tx, ty = _TOWARD[pang]
-    x = (kiround(cx * IU_PER_MM) + dx) / IU_PER_MM
-    y = (kiround(cy * IU_PER_MM) + dy) / IU_PER_MM
-    return x, y, _OUT_DEG[_apply(t, -tx, -ty)]
-
-
 def pin_point_mm(sym, pin, ref: str) -> tuple[float, float, int]:
     """Sheet position (mm) and outward angle of lib *pin* drawn by placed symbol *sym*."""
     pos, t = symbol_transform(sym, ref)

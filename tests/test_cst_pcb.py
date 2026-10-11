@@ -12,8 +12,13 @@ import os
 from pathlib import Path
 
 import edit_judge as J
+import geom_gen as G
+import geom_judge as GJ
 import pytest
 from conftest import requires_cli
+from kicad_ref import dsn_lexer as L
+from kicad_ref import parse_units as P
+from kicad_ref import trigo
 from kiutils.board import Board
 from kiutils.items.brditems import Segment, Via
 from kiutils.items.common import Net, Position
@@ -23,7 +28,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import _cst, pcb
 from mcp_server_kicad._shared import _gen_uuid
-from mcp_server_kicad.models import PointSpec
+from mcp_server_kicad.models import BoardValidationResult, PlacementCheckResult, PointSpec
 
 # KiCad-9-native-format board (quoted generator, uuid tokens), the dialect
 # kicad-cli 9 writes; shape shared with test_pcb_write_tools.py, plus one
@@ -873,27 +878,197 @@ def _k9_k10_pair(tmp_path, make):
     return str(make(k9)), _bump_version(make(k10))
 
 
-class TestGeometryTrioCst:
-    """The geometry trio on KiCad-10-header boards, which kiutils refused outright.
+MM = 1_000_000  # nanometres per millimetre
 
-    Same geometry either side of the version token, so the K10 result is
-    pinned to the K9 one rather than to a hand-copied expectation.
+
+def _lexer_head(item) -> bytes | None:
+    if item.kind == L.GROUP and item.items and item.items[0].kind in L.ATOM_KINDS:
+        return item.items[0].value
+    return None
+
+
+def _lexer_kids(group, name: bytes) -> list:
+    return [c for c in group.items if _lexer_head(c) == name]
+
+
+def _lexer_child(group, name: bytes):
+    found = _lexer_kids(group, name)
+    if not found:
+        raise LookupError(f"no ({name.decode()} ...) in the list at byte {group.start}")
+    return found[0]
+
+
+def _nm_xy(group) -> tuple[int, int]:
+    """(x, y) of a list such as (at x y ...), (start x y) or (xy x y), in nm as KiCad
+    reads them (parseBoardUnits; the two majors read these fixtures' values alike)."""
+    return (
+        P.parse_board_units(group.items[1].value, major=10),
+        P.parse_board_units(group.items[2].value, major=10),
+    )
+
+
+def _closed_loops(segments) -> list[list[tuple[int, int]]]:
+    """The closed loops the segments form, chained where their ends are equal (the
+    fixtures here draw exact corners); LookupError when an end has no partner or more
+    than one, which no closed outline has."""
+    ends: dict[tuple[int, int], list[int]] = {}
+    for i, (a, b) in enumerate(segments):
+        ends.setdefault(a, []).append(i)
+        ends.setdefault(b, []).append(i)
+    if any(len(uses) != 2 for uses in ends.values()):
+        raise LookupError(f"Edge.Cuts segments that do not close into loops: {segments}")
+    loops, used = [], set()
+    for first, (start, nxt) in enumerate(segments):
+        if first in used:
+            continue
+        used.add(first)
+        loop = [start]
+        while nxt != start:
+            loop.append(nxt)
+            i = next(k for k in ends[nxt] if k not in used)
+            used.add(i)
+            a, b = segments[i]
+            nxt = b if a == nxt else a
+        loops.append(loop)
+    return loops
+
+
+def _geometry_judge(path) -> dict:
+    """What KiCad reads from a board for the geometry trio, through its lexer (the port
+    in tests/kicad_ref), never the CST: each footprint's reference, position (nm),
+    orientation (Normalize180 of the angle, as FOOTPRINT::SetOrientation stores it) and
+    layer; each board-level rule area's layers, restrictions and outline (nm); and the
+    closed loops of the Edge.Cuts gr_line items. Raises LookupError for an Edge.Cuts
+    shape of another kind, which this judge does not read."""
+    data = Path(path).read_bytes()
+    root = L.tree(data, knows_bar=L.knows_bar_of(data))[0]
+    footprints = {}
+    for fp in _lexer_kids(root, b"footprint"):
+        at = _lexer_child(fp, b"at")
+        reference = next(
+            p.items[2].value.decode()
+            for p in _lexer_kids(fp, b"property")
+            if p.items[1].value == b"Reference"
+        )
+        footprints[reference] = {
+            "at": _nm_xy(at),
+            "orientation": (
+                trigo.normalize180(P.parse_double(at.items[3].value)) if len(at.items) > 3 else 0.0
+            ),
+            "layer": _lexer_child(fp, b"layer").items[1].value.decode(),
+            "group": fp,
+        }
+    keepouts = []
+    for zone in _lexer_kids(root, b"zone"):
+        for rules in _lexer_kids(zone, b"keepout"):
+            named = (_lexer_kids(zone, b"layers") or _lexer_kids(zone, b"layer"))[0]
+            keepouts.append(
+                {
+                    "layers": [t.value.decode() for t in named.items[1:]],
+                    "restrictions": {
+                        r.items[0].value.decode(): r.items[1].value.decode()
+                        for r in rules.items[1:]
+                    },
+                    "outline": [
+                        _nm_xy(g)
+                        for g in _lexer_kids(
+                            _lexer_child(_lexer_child(zone, b"polygon"), b"pts"), b"xy"
+                        )
+                    ],
+                }
+            )
+    segments = []
+    for item in root.items:
+        layer = _lexer_kids(item, b"layer") if item.kind == L.GROUP else []
+        if not layer or layer[0].items[1].value != b"Edge.Cuts":
+            continue
+        if _lexer_head(item) != b"gr_line":
+            raise LookupError(f"this judge reads gr_line edges only, not {_lexer_head(item)!r}")
+        segments.append((_nm_xy(_lexer_child(item, b"start")), _nm_xy(_lexer_child(item, b"end"))))
+    return {"footprints": footprints, "keepouts": keepouts, "contours": _closed_loops(segments)}
+
+
+def _forbidding(judge: dict, layer: str, p: tuple[int, int]) -> list[dict]:
+    """The rule areas that forbid a footprint on ``layer`` at p, as check_placement lists
+    them: geom_judge.inside on the exact outline (none of the points asked about here
+    is on one)."""
+    return [
+        {"source": "board", "layers": zone["layers"], "restrictions": zone["restrictions"]}
+        for zone in judge["keepouts"]
+        if zone["restrictions"].get("footprints") == "not_allowed"
+        and layer in zone["layers"]
+        and GJ.inside(p, zone["outline"])
+    ]
+
+
+def _expected_check(judge: dict, reference: str, x_mm: float, y_mm: float) -> PlacementCheckResult:
+    """check_placement's answer from the judge: the keepouts holding the point, and
+    whether it is off the board (an even number of Edge.Cuts loops around it)."""
+    p = (round(x_mm * MM), round(y_mm * MM))
+    hits = _forbidding(judge, judge["footprints"][reference]["layer"], p)
+    contours = judge["contours"]
+    outside = bool(contours) and not GJ.parity(p, contours)
+    return PlacementCheckResult(
+        status="violations_found" if hits or outside else "ok",
+        board_edge_checked=bool(contours),
+        keepout_violations=hits,
+        outside_board_edge=outside,
+    )
+
+
+def _expected_validation(judge: dict) -> BoardValidationResult:
+    """validate_board's answer from the judge, footprint by footprint in file order."""
+    contours = judge["contours"]
+    violations = []
+    for reference, fp in judge["footprints"].items():
+        issues = []
+        if _forbidding(judge, fp["layer"], fp["at"]):
+            issues.append("keepout_zone")
+        if contours and not GJ.parity(fp["at"], contours):
+            issues.append("outside_board_edge")
+        if issues:
+            violations.append(
+                {
+                    "reference": reference,
+                    "position": {"x": fp["at"][0] / MM, "y": fp["at"][1] / MM},
+                    "layer": fp["layer"],
+                    "issues": issues,
+                }
+            )
+    return BoardValidationResult(
+        total_footprints=len(judge["footprints"]),
+        violations=violations,
+        board_edge_checked=bool(contours),
+        status=f"{len(violations)} violations found" if violations else "ok",
+    )
+
+
+class TestGeometryTrioCst:
+    """The geometry trio on KiCad 9 and KiCad 10 headers, which kiutils refused outright.
+
+    Each answer is judged on its own file, read back through KiCad's lexer: its rule
+    area and Edge.Cuts loop by geom_judge, its courtyard by geom_gen.courtyard_box (exact
+    extremes of the shapes as RotatePoint turns them). Pinning the K10 answer to the K9
+    answer of the same code showed only that the code agrees with itself. The hand
+    values stay, the readable statement of what the judge computes.
     """
 
     def test_check_placement(self, tmp_path):
         from test_pcb_write_tools import _make_keepout_pcb
 
         k9, k10 = _k9_k10_pair(tmp_path, _make_keepout_pcb)
-        for x, y in ((100, 100), (25, 25), (500, 500)):
-            assert pcb.check_placement("R1", x, y, pcb_path=k10) == pcb.check_placement(
-                "R1", x, y, pcb_path=k9
-            )
-        hit = pcb.check_placement("R1", 25, 25, pcb_path=k10)
-        assert hit.status == "violations_found"
-        assert [v["source"] for v in hit.keepout_violations] == ["board"]
-        assert hit.keepout_violations[0]["layers"] == ["F.Cu"]
-        assert hit.keepout_violations[0]["restrictions"]["footprints"] == "not_allowed"
-        assert pcb.check_placement("R1", 500, 500, pcb_path=k10).outside_board_edge is True
+        for path in (k9, k10):
+            judge = _geometry_judge(path)
+            for x, y in ((100, 100), (25, 25), (500, 500)):
+                assert pcb.check_placement("R1", x, y, pcb_path=path) == _expected_check(
+                    judge, "R1", x, y
+                ), (path, x, y)
+            hit = pcb.check_placement("R1", 25, 25, pcb_path=path)
+            assert hit.status == "violations_found"
+            assert [v["source"] for v in hit.keepout_violations] == ["board"]
+            assert hit.keepout_violations[0]["layers"] == ["F.Cu"]
+            assert hit.keepout_violations[0]["restrictions"]["footprints"] == "not_allowed"
+            assert pcb.check_placement("R1", 500, 500, pcb_path=path).outside_board_edge is True
 
     def test_check_placement_takes_no_rotation(self, tmp_path):
         """It accepted one and never read it, so the schema promised nothing.
@@ -938,42 +1113,65 @@ class TestGeometryTrioCst:
         from test_pcb_read_tools import _make_board_with_courtyard_fp
 
         k9, k10 = _k9_k10_pair(tmp_path, _make_board_with_courtyard_fp)
-        result = pcb.get_footprint_bounds("U1", pcb_path=k10)
-        assert result == pcb.get_footprint_bounds("U1", pcb_path=k9)
-        assert result.position == {"x": 100, "y": 100}
-        assert result.rotation == 0
-        assert result.layer == "F.Cu"
-        # Local courtyard -5..5 around a footprint at (100, 100).
-        assert result.courtyard == {
-            "min_x": 95,
-            "min_y": 95,
-            "max_x": 105,
-            "max_y": 105,
-            "width": 10,
-            "height": 10,
-        }
+        for path in (k9, k10):
+            result = pcb.get_footprint_bounds("U1", pcb_path=path)
+            fp = _geometry_judge(path)["footprints"]["U1"]
+            assert result.position == {"x": fp["at"][0] / MM, "y": fp["at"][1] / MM}
+            assert result.rotation == fp["orientation"]
+            assert result.layer == fp["layer"]
+            shapes = G.shapes_of(fp["group"], "F.CrtYd", major=10)
+            x0, y0, x1, y1 = G.courtyard_box(shapes, fp["orientation"], fp["at"])
+            want = {
+                "min_x": x0 / MM,
+                "min_y": y0 / MM,
+                "max_x": x1 / MM,
+                "max_y": y1 / MM,
+                "width": (x1 - x0) / MM,
+                "height": (y1 - y0) / MM,
+            }
+            assert result.courtyard is not None and result.courtyard.keys() == want.keys()
+            for key, value in want.items():
+                # The tool reports four decimals (0.1 um), so the exact box to within that.
+                assert abs(result.courtyard[key] - value) <= 1e-4, (path, key, result, want)
+            assert result.position == {"x": 100, "y": 100}
+            assert result.rotation == 0
+            assert result.layer == "F.Cu"
+            # Local courtyard -5..5 around a footprint at (100, 100).
+            assert result.courtyard == {
+                "min_x": 95,
+                "min_y": 95,
+                "max_x": 105,
+                "max_y": 105,
+                "width": 10,
+                "height": 10,
+            }
 
     def test_validate_board(self, tmp_path):
         from test_pcb_write_tools import _make_keepout_pcb
 
         k9, k10 = _k9_k10_pair(tmp_path, _make_keepout_pcb)
-        clean = pcb.validate_board(pcb_path=k10)
-        assert clean == pcb.validate_board(pcb_path=k9)
-        assert (clean.total_footprints, clean.board_edge_checked, clean.status) == (1, True, "ok")
+        for path in (k9, k10):
+            clean = pcb.validate_board(pcb_path=path)
+            assert clean == _expected_validation(_geometry_judge(path)), path
+            assert (clean.total_footprints, clean.board_edge_checked, clean.status) == (
+                1,
+                True,
+                "ok",
+            )
 
         for path in (k9, k10):
             pcb.move_footprint("R1", 25, 25, pcb_path=path)
-        bad = pcb.validate_board(pcb_path=k10)
-        assert bad == pcb.validate_board(pcb_path=k9)
-        assert bad.status == "1 violations found"
-        assert bad.violations == [
-            {
-                "reference": "R1",
-                "position": {"x": 25, "y": 25},
-                "layer": "F.Cu",
-                "issues": ["keepout_zone"],
-            }
-        ]
+            bad = pcb.validate_board(pcb_path=path)
+            assert bad == _expected_validation(_geometry_judge(path)), path
+            assert bad.status == "1 violations found"
+            assert bad.violations == [
+                {
+                    "reference": "R1",
+                    "position": {"x": 25, "y": 25},
+                    "layer": "F.Cu",
+                    "issues": ["keepout_zone"],
+                }
+            ]
 
 
 class TestResolveLayer:
@@ -1053,12 +1251,13 @@ class TestZoneFillSplice:
         assert len(node.find("pts").find_all("xy")) == 3
 
     def test_points_are_packed_not_one_per_line(self):
-        """KiCad packs (xy ...) runs to a column limit; one per line would be a
-        different file for the same geometry."""
+        """KiCad packs (xy ...) runs onto shared lines; one per line would be a
+        different file for the same geometry. Where KiCad breaks those lines (its
+        Prettify rule, under which a line can run past column 99) is judged by
+        test_ladder_r2_fills.py, a strict xfail until bug 62 is fixed."""
         pts = [(i * 1_234_567, i * 987_654) for i in range(40)]
         text = pcb._filled_polygon_bytes("F.Cu", pts).decode()
         body = [ln for ln in text.splitlines() if "(xy " in ln]
-        assert max(len(ln.expandtabs(1)) for ln in body) <= pcb._XY_COLUMN_LIMIT
         assert any(ln.count("(xy ") > 1 for ln in body), "points were not packed"
 
     def _board_with_zone(self, board):
