@@ -402,6 +402,12 @@ _SHEET_FIELD_LAYOUTS: dict[str, tuple[int | None, list[tuple]]] = {
 }
 
 
+#: Layouts KiCad 10 refuses as a whole: its parser requires a sheet name and a sheet file
+#: property ("Missing sheet name property", sch_io_kicad_sexpr_parser.cpp:4002-4011 at
+#: 10.0.7); KiCad 9.0.8 has no such check and loads them.
+_K10_REFUSES = {"no_sheet_name"}
+
+
 @requires_cli
 @pytest.mark.no_kicad_validation  # the hierarchies whose sheet loads no child are the subject
 @pytest.mark.parametrize("layout", sorted(_SHEET_FIELD_LAYOUTS))
@@ -425,6 +431,11 @@ def test_sheet_files_names_the_file_kicad_cli_loads(tmp_path, layout):
     if _kicad_cli_output(_ERC, child) is None:
         raise RuntimeError("premise: kicad-cli refuses child.kicad_sch on its own")
     netlist = _kicad_cli_output(_NETLIST, root)
+    if _kicad_cli_major() >= 10 and layout in _K10_REFUSES:
+        assert netlist is None, f"KiCad 10 refuses a {layout} root, this kicad-cli loads it"
+        with pytest.raises(pytest.fail.Exception):
+            assert_kicad_parseable(root)
+        return
     if netlist is None:
         raise RuntimeError(f"premise: kicad-cli refuses the {layout} root itself")
     loads_child = b'<comp ref="R2"' in netlist
