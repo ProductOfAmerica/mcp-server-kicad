@@ -1,0 +1,37 @@
+[
+ {
+  "cwd": "suites/probeA/inert",
+  "args": [
+   "inert_jobs.py",
+   "2"
+  ],
+  "out": "probeA/inert/run.out"
+ },
+ {
+  "cwd": "suites/probeA/labels",
+  "args": [
+   "run_labels.py"
+  ],
+  "out": "probeA/labels/run.out",
+  "env": {
+   "LABELS_WORKERS": "2"
+  }
+ },
+ {
+  "cwd": "suites/probeA/junctions",
+  "args": [
+   "run_junctions.py",
+   "2"
+  ],
+  "out": "probeA/junctions/run.out"
+ },
+ {
+  "cwd": "suites/probeA/pin-identity",
+  "args": [
+   "pi_jobs.py",
+   "--workers",
+   "3"
+  ],
+  "out": "probeA/pin-identity/run.out"
+ }
+]

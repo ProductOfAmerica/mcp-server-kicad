@@ -1,0 +1,177 @@
+{
+ "layouts_stock": {
+  "ampli_ht": "c1489e3489a24ff48abb406cd7c2ac259a2997dc221ff39d750d2674634c5701",
+  "fpga-hp-banks": "877daa4d3946b785c71b7d0d91ca235ee2b33b41ab2dcf3fb5f11843fb69d82d",
+  "tinytapeout-demo": "d6409486479759023545b09b02b38ca3ceb52a31e9e9bcc6d503ab78ca2b014b"
+ },
+ "probeB_vhp": "0e5524b2f6c52bac7b8e13f6df486548ae33643b0f7fdacf9d1db470faa1f5c7",
+ "probeC_perf": {
+  "probe/ampli_ht.aug.kicad_sch": {
+   "norm": "a26c3731e9150d7d13b1"
+  },
+  "probe/ampli_ht.kicad_sch": {
+   "sha256": "102fd1d9dfbc86de83dc2cd21e5f682eca8e3ebbe2cf81dbb7bb9bb1783437cf"
+  },
+  "probe/fpga-hp-banks.aug.kicad_sch": {
+   "norm": "d42b0a955e1ae486cd8c"
+  },
+  "probe/fpga-hp-banks.kicad_sch": {
+   "sha256": "877daa4d3946b785c71b7d0d91ca235ee2b33b41ab2dcf3fb5f11843fb69d82d"
+  },
+  "probe/fpga-power.aug.kicad_sch": {
+   "norm": "322809bd9689eae6bb04"
+  },
+  "probe/fpga-power.kicad_sch": {
+   "sha256": "7e3d3713db89a2df56cbd647b57d26e086834cf84990c45d69da3add6b4553d7"
+  },
+  "probe/tinytapeout-demo.aug.kicad_sch": {
+   "norm": "7ec1d550e46e1b5d5b75"
+  },
+  "probe/tinytapeout-demo.k200.kicad_sch": {
+   "norm": "60e720e917bf2f3133dd"
+  },
+  "probe/tinytapeout-demo.kicad_sch": {
+   "sha256": "ed51b94c31918939f20f70af881bbea715805f73924ba970ffeb2566e822b362"
+  },
+  "verify/ampli_ht.base.kicad_sch": {
+   "sha256": "c1489e3489a24ff48abb406cd7c2ac259a2997dc221ff39d750d2674634c5701"
+  },
+  "verify/ampli_ht.free.kicad_sch": {
+   "norm": "c9606e52210b7a6877fe"
+  },
+  "verify/fpga-hp-banks.base.kicad_sch": {
+   "sha256": "877daa4d3946b785c71b7d0d91ca235ee2b33b41ab2dcf3fb5f11843fb69d82d"
+  },
+  "verify/fpga-hp-banks.free.kicad_sch": {
+   "norm": "e27a5cf33c282c8c0ad5"
+  },
+  "verify/fpga-power.base.kicad_sch": {
+   "sha256": "7e3d3713db89a2df56cbd647b57d26e086834cf84990c45d69da3add6b4553d7"
+  },
+  "verify/fpga-power.free.kicad_sch": {
+   "norm": "50a241486080a673e2a5"
+  },
+  "verify/tinytapeout-demo.base.kicad_sch": {
+   "sha256": "d6409486479759023545b09b02b38ca3ceb52a31e9e9bcc6d503ab78ca2b014b"
+  },
+  "verify/tinytapeout-demo.free.kicad_sch": {
+   "norm": "ff403a8622c9d031c336"
+  },
+  "verify/tinytapeout-demo.free200.kicad_sch": {
+   "norm": "263d462f587f49bbdbeb"
+  }
+ },
+ "probeC_perf_report": {
+  "probe": {
+   "fpga-power": {
+    "aug": {
+     "J9001": [
+      495300,
+      2247900
+     ],
+     "J9003": [
+      2501900,
+      1689100
+     ],
+     "J9002": [
+      2806700,
+      1689100
+     ],
+     "paper": ""
+    }
+   },
+   "fpga-hp-banks": {
+    "aug": {
+     "J9001": [
+      4254500,
+      571500
+     ],
+     "J9003": [
+      4737100,
+      368300
+     ],
+     "J9002": [
+      5041900,
+      368300
+     ],
+     "paper": " paper A3->A2 (no free spot)"
+    }
+   },
+   "tinytapeout-demo": {
+    "aug": {
+     "J9001": [
+      4457700,
+      571500
+     ],
+     "J9003": [
+      4940300,
+      368300
+     ],
+     "J9002": [
+      5245100,
+      368300
+     ],
+     "paper": " paper A3->A2 (no free spot)"
+    }
+   },
+   "ampli_ht": {
+    "aug": {
+     "J9001": [
+      495300,
+      1206500
+     ],
+     "J9003": [
+      1562100,
+      368300
+     ],
+     "J9002": [
+      1866900,
+      368300
+     ],
+     "paper": ""
+    }
+   },
+   "k200": {
+    "placed": {
+     "J9004": [
+      491.49,
+      95.25
+     ],
+     "J9005": [
+      537.21,
+      95.25
+     ],
+     "J9006": [
+      443.23,
+      133.35
+     ]
+    }
+   }
+  },
+  "verify": {
+   "tinytapeout-demo": {
+    "free": {
+     "x0": 497.84000000000003
+    },
+    "free200": {
+     "x0": 497.84000000000003
+    }
+   },
+   "fpga-hp-banks": {
+    "free": {
+     "x0": 447.04
+    }
+   },
+   "fpga-power": {
+    "free": {
+     "x0": 424.18
+    }
+   },
+   "ampli_ht": {
+    "free": {
+     "x0": 314.96
+    }
+   }
+  }
+ }
+}

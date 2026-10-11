@@ -1,0 +1,121 @@
+[
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_star.py"
+  ],
+  "out": "llm-workflow/lw_star.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_designs.py",
+   "g030_leds"
+  ],
+  "out": "llm-workflow/lw_designs_g030_leds.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_designs.py",
+   "tiny_bme"
+  ],
+  "out": "llm-workflow/lw_designs_tiny_bme.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_designs.py",
+   "tiny_bme_ps"
+  ],
+  "out": "llm-workflow/lw_designs_tiny_bme_ps.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_designs.py",
+   "stm32_usb"
+  ],
+  "out": "llm-workflow/lw_designs_stm32_usb.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_demo.py",
+   "demo",
+   "interf_u/interf_u.kicad_sch"
+  ],
+  "out": "llm-workflow/lw_demo_interf_u.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_demo.py",
+   "demo",
+   "vme-wren/clocks.kicad_sch"
+  ],
+  "out": "llm-workflow/lw_demo_clocks.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_demo.py",
+   "demo",
+   "vme-wren/power-supply-1.kicad_sch"
+  ],
+  "out": "llm-workflow/lw_demo_power-supply-1.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_demo.py",
+   "demo",
+   "stickhub/StickHub.kicad_sch"
+  ],
+  "out": "llm-workflow/lw_demo_StickHub.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_hier.py"
+  ],
+  "out": "llm-workflow/lw_hier.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_small.py"
+  ],
+  "out": "llm-workflow/lw_small.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_decap.py"
+  ],
+  "out": "llm-workflow/lw_decap.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_designs.py",
+   "tiny_bme_derived"
+  ],
+  "out": "llm-workflow/lw_designs_tiny_bme_derived.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_demo.py",
+   "v03"
+  ],
+  "out": "llm-workflow/lw_demo_v03.out"
+ },
+ {
+  "cwd": "suites/llm-workflow",
+  "args": [
+   "lw_followup.py"
+  ],
+  "out": "llm-workflow/lw_followup.out"
+ }
+]

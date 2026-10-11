@@ -1,0 +1,1042 @@
+{
+ "pins": [
+  {
+   "sheet": "ampli_ht",
+   "ref": "C201",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R202",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R203",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "C202",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R201",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R202",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "C204",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R211",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "D201",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "D202",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "D202",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "Q201",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R205",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "D203",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "Q201",
+   "pin": "3",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "Q202",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "D203",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "D204",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "D204",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "Q203",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "Q204",
+   "pin": "3",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R211",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "Q201",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R204",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "Q202",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R206",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R210",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "Q203",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R207",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R209",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "Q204",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R208",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "Q204",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R212",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R212",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "U201",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R213",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "RV201",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "RV201",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "U201",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "C203",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "R203",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "ampli_ht",
+   "ref": "U201",
+   "pin": "5",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "C1",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R7",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "SW1",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "C3",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R16",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "D1",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R15",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "D2",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R17",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "D3",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R18",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "D4",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R19",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "JP1",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "JP2",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "JP3",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "JP4",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "JP5",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "JP6",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "JP7",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "JP8",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R1",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "SW4",
+   "pin": "8",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R2",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "SW4",
+   "pin": "7",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R3",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "SW4",
+   "pin": "6",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R4",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "SW4",
+   "pin": "5",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R5",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "SW4",
+   "pin": "4",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R6",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "SW4",
+   "pin": "3",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R10",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "SW4",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R11",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "SW4",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R8",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "SW2",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R14",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "SW3",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "U1",
+   "pin": "7",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "U1",
+   "pin": "6",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "U1",
+   "pin": "4",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "U1",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "U1",
+   "pin": "5",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "U1",
+   "pin": "1",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "U1",
+   "pin": "9",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "U1",
+   "pin": "10",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R44",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "U7",
+   "pin": "3",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "R45",
+   "pin": "2",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "U7",
+   "pin": "7",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "J16",
+   "pin": "1",
+   "in110": false,
+   "in60": true
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "ref": "J18",
+   "pin": "1",
+   "in110": false,
+   "in60": true
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "IC14",
+   "pin": "AD6",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "R22",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "IC14",
+   "pin": "W9",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "R20",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "IC14",
+   "pin": "G4",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "R21",
+   "pin": "2",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "IC109",
+   "pin": "17",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "R451",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "IC109",
+   "pin": "16",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "R453",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "IC109",
+   "pin": "15",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "R187",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "IC109",
+   "pin": "14",
+   "in110": true,
+   "in60": true
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "ref": "R188",
+   "pin": "1",
+   "in110": true,
+   "in60": false
+  }
+ ],
+ "pairs": [
+  {
+   "sheet": "ampli_ht",
+   "a": [
+    "D201",
+    "1"
+   ],
+   "b": [
+    "D202",
+    "1"
+   ],
+   "dist_mm": 7.62
+  },
+  {
+   "sheet": "ampli_ht",
+   "a": [
+    "C204",
+    "1"
+   ],
+   "b": [
+    "Q204",
+    "1"
+   ],
+   "dist_mm": 9.16
+  },
+  {
+   "sheet": "ampli_ht",
+   "a": [
+    "Q204",
+    "2"
+   ],
+   "b": [
+    "R212",
+    "2"
+   ],
+   "dist_mm": 11.71
+  },
+  {
+   "sheet": "ampli_ht",
+   "a": [
+    "R213",
+    "1"
+   ],
+   "b": [
+    "RV201",
+    "2"
+   ],
+   "dist_mm": 12.05
+  },
+  {
+   "sheet": "ampli_ht",
+   "a": [
+    "D203",
+    "1"
+   ],
+   "b": [
+    "D204",
+    "1"
+   ],
+   "dist_mm": 12.7
+  },
+  {
+   "sheet": "ampli_ht",
+   "a": [
+    "D203",
+    "2"
+   ],
+   "b": [
+    "Q202",
+    "1"
+   ],
+   "dist_mm": 17.78
+  },
+  {
+   "sheet": "ampli_ht",
+   "a": [
+    "C201",
+    "2"
+   ],
+   "b": [
+    "C203",
+    "1"
+   ],
+   "dist_mm": 20.95
+  },
+  {
+   "sheet": "ampli_ht",
+   "a": [
+    "Q201",
+    "1"
+   ],
+   "b": [
+    "Q203",
+    "1"
+   ],
+   "dist_mm": 42.04
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "a": [
+    "J16",
+    "1"
+   ],
+   "b": [
+    "J18",
+    "1"
+   ],
+   "dist_mm": 2.54
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "a": [
+    "JP1",
+    "2"
+   ],
+   "b": [
+    "JP2",
+    "2"
+   ],
+   "dist_mm": 2.54
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "a": [
+    "JP3",
+    "2"
+   ],
+   "b": [
+    "JP4",
+    "2"
+   ],
+   "dist_mm": 2.54
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "a": [
+    "JP5",
+    "2"
+   ],
+   "b": [
+    "JP6",
+    "2"
+   ],
+   "dist_mm": 2.54
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "a": [
+    "JP7",
+    "2"
+   ],
+   "b": [
+    "JP8",
+    "2"
+   ],
+   "dist_mm": 2.54
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "a": [
+    "R1",
+    "2"
+   ],
+   "b": [
+    "R2",
+    "2"
+   ],
+   "dist_mm": 3.59
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "a": [
+    "R3",
+    "2"
+   ],
+   "b": [
+    "R4",
+    "2"
+   ],
+   "dist_mm": 3.59
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "a": [
+    "R5",
+    "2"
+   ],
+   "b": [
+    "R6",
+    "2"
+   ],
+   "dist_mm": 3.59
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "a": [
+    "R44",
+    "2"
+   ],
+   "b": [
+    "R45",
+    "2"
+   ],
+   "dist_mm": 3.81
+  },
+  {
+   "sheet": "tinytapeout-demo",
+   "a": [
+    "R10",
+    "2"
+   ],
+   "b": [
+    "R11",
+    "2"
+   ],
+   "dist_mm": 4.58
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "a": [
+    "IC14",
+    "W9"
+   ],
+   "b": [
+    "IC109",
+    "17"
+   ],
+   "dist_mm": 84.89
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "a": [
+    "IC14",
+    "G4"
+   ],
+   "b": [
+    "IC109",
+    "16"
+   ],
+   "dist_mm": 93.47
+  },
+  {
+   "sheet": "fpga-hp-banks",
+   "a": [
+    "IC14",
+    "AD6"
+   ],
+   "b": [
+    "IC109",
+    "15"
+   ],
+   "dist_mm": 213.53
+  }
+ ]
+}

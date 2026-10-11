@@ -1,0 +1,182 @@
+[
+ {
+  "id": "NAM-01",
+  "title": "P's connect_pins auto label 'Net-(R1-1)' makes the net 'named', so naming it later or joining two such nets is refused",
+  "affects": "P",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-naming/n01_autolabel_workflow.py ; ...\\probe-naming\\n01b_autolabel_piecewise.py ; ...\\probe-naming\\n01c_name_then_connect.py",
+  "verifier_method": "Own rebuild pr57pt/verify-probe-naming/v01_autolabel_then_name.py (.out/.json): R1/R2 pin 1 aligned at y 85.09; connect_pins then wire_pins_to_net([R1:1],'VCC') with VCC absent, power:VCC on R3:1, local VCC on R3:1; a batch variant ([R2:1,R5:1]); a 4-part connect_pins chain; reverse order; and a what-if that adds a raw VCC or ABC label to P's auto-labelled net. P, M, B judged by kicad-cli 9.0.8 node sets.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "NAM-02",
+  "title": "connect_pins merges a named net into a power net that the target reaches only through a sheet pin",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-naming/n02_autolabel_sheetpin.py (variant gnd)",
+  "verifier_method": "Own rebuild v02_sheetpin_named_merge.py: repo-built hierarchy (sheet 'Sub', pin SCL, parent stub label removed, R1:1 wired to the stub end); the child's SCL net also carries power GND or a global label CLK; root R2:1 carries local SIG; wire_pins_to_net twins with R7:1 on local N; a free-R2 control.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "NAM-03",
+  "title": "P's labels rename a net whose only name comes through a sheet pin ('/Kid/SDA' to '/Net-(R1-1)', '/SDA' or '/N')",
+  "affects": "P",
+  "kind": "rename",
+  "scenario_script": "pr57pt/probe-naming/n02_autolabel_sheetpin.py (variant plain) ; ...\\probe-naming\\n02b_wire_sheetpin_chain.py",
+  "verifier_method": "Own rebuild v03_sheetpin_name_rename.py: same hierarchy with the parent label removed, child with and without its local label; connect_pins(R1:1,R2:1), wire_pins_to_net([R1:1],'SCL') and ([R1:1],'N') on P, M, B.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "NAM-04",
+  "title": "P's label breaks a sheet-pin promotion join and splits a net (connect_pins auto label and wire_pins_to_net)",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-naming/n02_autolabel_sheetpin.py (variants promoC, promoW)",
+  "verifier_method": "Own rebuild v04_sheetpin_promotion_split.py: R4:1's net carries local AAA (elected) and SCL (secondary) while the parent's SCL sheet-pin subgraph has no label; control with ZZZ instead of AAA; connect_pins(R1:1,R2:1), wire_pins_to_net([R1:1],'N') and ('SCL'). Source re-read in kisrc 9.0.8 and 10.0 connection_graph.cpp.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "NAM-05",
+  "title": "False no-op: P reports 'already on N' from a label that KiCad 9 detaches from the wire",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-naming/n04_noop_detached_label.py",
+  "verifier_method": "Own rebuild v05_false_noop_stacked.py: R1:1 wired to R5:1, with N+M labels, N on R6:1's pin end, N+NC flag, N+netclass directive, N+N, and N alone (control) at one interior point; wire_pins_to_net([R1:1],'N') on P, M, ML (M read literally), B. v05b_duplicate_add_label.py: the repo's add_label called twice at that point. Source: kisrc 9.0.8 and 10.0.6 sch_label.cpp.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "NAM-06",
+  "title": "A label 1 IU off a wire names the net in KiCad but not in P's model: merge on wire_pins_to_net, rename by the auto label",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-naming/n03b_1iu_label_isolated.py ; ...\\probe-naming\\n03_autolabel_midwire_hier.py (b_1iu)",
+  "verifier_method": "Own rebuild v06_label_1iu_off_wire.py: label SIG 1 IU (and a 2 IU control) below R1:1's wire interior, coordinates asserted in the file; wire_pins_to_net([R1:1],'N') with R7:1 on N, and connect_pins(R1:1,R2:1); P, M, B.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "NAM-07",
+  "title": "Empty label_text: P's text has no validation, and the inherited behaviour merges unrelated pins under '/<NO NET>' and renames named nets",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-naming/n09_label_text_validation.py (e, e3)",
+  "verifier_method": "Own rebuild v07_empty_label_text.py with PL, generated in vlib.py from proposal_impl.py with only I24's empty-label refusal and I26(c) removed (P as written); two '' calls on separate pins, then '' on a pin already on SIG; P, M, B for comparison; ERC detail in probe_v07_erc_detail.py.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "NAM-08",
+  "title": "label_text equal to an auto name ('Net-(R3-Pad1)', 'unconnected-(R2-Pad1)') reports success but creates a separate net",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-naming/n09_label_text_validation.py (n, u)",
+  "verifier_method": "Own rebuild v08_auto_name_label_text.py: R3:1 and R4:1 joined by a wire (KiCad 'Net-(R3-Pad1)'); wire_pins_to_net([R1:1],'Net-(R3-Pad1)') and ('unconnected-(R2-Pad1)') on P, M, B; the repo's conftest.netlist_nodes (via harness.nets) printed after P.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "NAM-09",
+  "title": "Bus-syntax label_text ('D[0..1]', '{D0 D1}') is accepted and writes a bus label on a plain wire",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-naming/n09_label_text_validation.py (v, g)",
+  "verifier_method": "Own rebuild v09_bus_syntax_label_text.py: plain D0/D1 labels present; wire_pins_to_net([R1:1],'D[0..1]') and ('{D0 D1}'); kicad-cli sch erc after each write.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "NAM-10",
+  "title": "P's text lets the auto label join, by name, another net that already carries 'Net-(R1-1)'",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-naming/n15_autolabel_text_clash.py",
+  "verifier_method": "Own rebuild v10_autolabel_text_clash.py with PL (prototype minus I26c): (s) R3:1's net carries local 'Net-(R1-1)', then connect_pins(R1:1,R2:1); (m) realistic chain on one file: connect_pins(R1:1,R2:1), repo move_component(R1), connect_pins(R1:1,R5:1); PL, P, M, B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "NAM-11",
+  "title": "Hidden pins whose type comes from a selected alternate: P's prototype merges a hidden global net and reports a false no-op",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-naming/n14_hidden_pin_alternate.py",
+  "verifier_method": "Own rebuild v11_hidden_pin_alternate.py with an own library altx.kicad_sym: pin 2 hidden passive 'PA' with power_in alternate 'PWR' selected, pin 3 hidden power_in 'PB' with bidirectional alternate 'GPIO' selected; wire_pins_to_net([U1:2],'N') and ([U1:3],'PB'); P, M, B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "NAM-12",
+  "title": "label_text that exists only on another sheet (global label, power symbol) makes a sheet-local net; P is silent, M discloses it",
+  "affects": "both",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-naming/n05_global_labels.py (c_child_global, d_child_power)",
+  "verifier_method": "Own rebuild v12_name_only_on_other_sheet.py: the child alone holds a global label G or power GND, plus a variant where label_text equals the unlabelled port's name SCL; root wire_pins_to_net([R2:1], name) on P, M, B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "NAM-13",
+  "title": "Text variables are compared raw: legitimate no-ops are refused, and P's refusal message falsely claims a merge",
+  "affects": "both",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-naming/n08_text_variables.py",
+  "verifier_method": "Own rebuild v13_text_variables.py: hp.kicad_pro text_variables VAR=SIG; legit no-ops t1 (net '${VAR}', wire to SIG), t3 (net SIG, wire to '${VAR}'), t6 (net 'N${#}', wire to N1), t4 connect_pins of pins KiCad already joins, and t2 writing '${VAR}'.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "NAM-14",
+  "title": "M refuses pins already on N when another name shares the net, directly or by name closure (also on a KiCad demo)",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-naming/n13_transitive_names.py ; ...\\probe-naming\\n11c_frontpanel_vcc.py",
+  "verifier_method": "Own rebuild v14_m_other_name_on_net.py: transitive case (R1 on A, R2 on N, R3's net carries A and N), direct case (R1:1's own net carries A and N), and KiCad's vme-wren front-panel-io IC2:5 (P1V8 symbol on a hidden VCC pin); P, M, ML (mine_impl with 5.4 step 2 in written order), B.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "NAM-15",
+  "title": "M's sheet-pin rule refuses a no-op when a real label N is already on the target's net (the repo's default hierarchy layout)",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-naming/n16_sheetpin_with_parent_label.py",
+  "verifier_method": "Own rebuild v15_sheetpin_with_parent_label.py: repo default hierarchy layout (parent label SCL kept, R1:1 on the stub); wire_pins_to_net([R1:1],'SCL'), the batch ([R1:1,R5:1],'SCL') with R5 free, and ([R1:1],'N'); P, M, B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "NAM-16",
+  "title": "M refuses a pin addressed by a name shared by several pads even when every match is already on N",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-naming/n06b_hidden_power_demo_files.py",
+  "verifier_method": "Own rebuild v16_pin_name_several_pads.py with an own library mg.kicad_sym (pins 7 and 14 hidden power_in named GND); wire_pins_to_net([U1:'GND'],'GND') and by number; P, M, B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "NAM-17",
+  "title": "Hidden power_in pins (target, target's net, label_text elsewhere) on demo symbols and real demo files: P and M correct",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-naming/n06_hidden_power_628128.py ; ...\\n06b_hidden_power_demo_files.py ; ...\\n11_census_name_sources.py ; ...\\n11b_bare_hide_check.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "NAM-18",
+  "title": "Power symbols by Value, case variants, case-only local labels and whitespace: P and M correct",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-naming/n07_power_value_case.py ; ...\\n10_case_only.py ; ...\\n09_label_text_validation.py (s)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "NAM-19",
+  "title": "P's model sees exact mid-wire labels and hierarchical labels, so its auto label does not rename those nets (B does)",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-naming/n03_autolabel_midwire_hier.py (a_exact, c_kid, d_root)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "NAM-20",
+  "title": "label_text equal to a parent sheet pin's name or to a global label on the target net: KiCad outcome correct, P's messages say nothing",
+  "affects": "P",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-naming/n12_label_named_like_sheet_pin.py ; ...\\n05_global_labels.py (a_target_global, b_global_is_N)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

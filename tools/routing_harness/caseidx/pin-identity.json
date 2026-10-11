@@ -1,0 +1,200 @@
+[
+ {
+  "id": "PI-01",
+  "title": "P wires the other pin (or no pin) at rotation 90/270 with a mirror, in both tools, and reports success",
+  "affects": "P",
+  "kind": "wrong-pin",
+  "scenario_script": "pr57pt/probe-pin-identity/o12_sweep.py (output o12_sweep.out, o12_sweep.json)",
+  "verifier_method": "Rebuilt from scratch in pr57pt/verify-probe-pin-identity/v01_o12.py (.out/.json): Device:R, Device:D, Q_NPN_BCE in all 12 orientations, one fresh file per call, P/M/B on both tools (504 calls). Pin-end truth from a KiCad label probe (kicad_pin_at), not from either prototype; judged with kicad-cli 9.0.8 nets_coded + diff.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-02",
+  "title": "On KiCad-authored demo sheets P's mirrored-part error merges nets, including on calls that should be no-ops",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-pin-identity/kicad_fixture.py, kicad_fixture_connect.py, kicad_fixture_connect_analyze.py, verify_c5.py (outputs alongside); fixtures are repathed copies of stock flat_hierarchy/pic_programmer, simulation/q17/Q17ng, vme-wren/vme_buffers_addr",
+  "verifier_method": "Independent census over all 93 stock demo .kicad_sch with my own port of KiCad's transform (pr57pt/verify-probe-pin-identity/v02_demo.py part 1). Behaviour judged on ROOT exports of unmodified project copies, with no repathing: the tools edit flat_hierarchy/pic_programmer.kicad_sch and the judge exports flat_hierarchy.kicad_sch; Q17ng is its own root. Extra pairs and vme-wren C239 calls on the vme-wren root export are in v02b_demo_extra.py.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-03",
+  "title": "P's model loses the real pin ends of asymmetric mirrored neighbours, so its stubs land on them (foreign pin merged; target pulled onto a power rail)",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-pin-identity/neighbour_phantom.py (cases 2a, 2b; output neighbour_phantom.out)",
+  "verifier_method": "Own geometry in a different orientation (rotation 270 + mirror y): pr57pt/verify-probe-pin-identity/v03_phantom.py, case A (Q_NPN_BCE whose real E end is R1:1's 1x stub end) and case Bh (own custom part libs/vhv.kicad_sym with a hidden power_in 'VCC' pin there, plus a VCC rail with R5:1). All pin ends probe-verified.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-04",
+  "title": "P reports 'already on N' or 'already connected' for pins KiCad has elsewhere, so the requested connection is silently not made",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-pin-identity/neighbour_phantom.py (case 2c), kicad_fixture_connect.py",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v03_phantom.py case C (own geometry: rotation 270 + mirror y; label 'NA' wired to R2:1 on the repo point of Q1:B; Q1:B's real end probe-verified free). v02_demo.py connect_pins(C4:1,U4:6) on the unmodified flat_hierarchy project, judged by root export.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-05",
+  "title": "P refuses legitimate calls because it reads the net of a swapped or phantom pin",
+  "affects": "P",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-pin-identity/neighbour_phantom.py (case 2d), kicad_fixture.py, kicad_fixture_connect.py",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v03_phantom.py case D (own geometry: label 'OTHER' on the repo point of Q1:B). v02_demo.py on the unmodified flat_hierarchy and Q17ng projects: wire L1:1, C5:1 and D3:2 to fresh names, and connect_pins(L1:1,R6:2).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-06",
+  "title": "P takes the unit from the top-level (unit), not (instances): wrong pin, refusal of the drawn pin, and an unrequested pin wired in another instance of a reused sheet",
+  "affects": "P",
+  "kind": "wrong-pin",
+  "scenario_script": "pr57pt/probe-pin-identity/unit_instances.py (output unit_instances.out)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v04_units.py with 74LS00 units 3/4 (the reporter used 1/2). KU a-d: which unit KiCad draws, via a label probe on the gate's first input. S1: single sheet with top-level (unit 3) and instance (unit 4). RS: my own two-instance hierarchy with S1 drawing unit 3 and S2 drawing unit 4, judged on the root export. Census in v04b_unit_census.py; KiCad save and load source read.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-07",
+  "title": "P ignores lib_name: wrong pin when the lib_name entry differs from the lib_id entry, and on a cross-library bare-name match",
+  "affects": "P",
+  "kind": "wrong-pin",
+  "scenario_script": "pr57pt/probe-pin-identity/libname.py (cases 5a, 5c; output libname.out), demo_libname_unresolved.py",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v05_libname.py on Device:C_Polarized (the reporter used Device:D and Device:R). Case La: a lib_name 'C_Polarized_1' entry with pins 1 and 2 swapped, with stock Device:C_Polarized also present. Case Lc: lib_id 'MyLib:C_Polarized' (pins swapped, no lib_name) with Device:C_Polarized sorted first. Pin ends probe-verified; demo census in v05a_libname_census.py.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-08",
+  "title": "Symbols the repo lookup cannot resolve (37 KiCad-authored demo symbols) are invisible to P: targets refused, and their pins are not obstacles",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-pin-identity/libname.py (case 5b), demo_libname_unresolved.py",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v05_libname.py case Lb: C1 with lib_name 'C_Polarized_1' as the only matching entry, plus R1:1's 1x stub end on C1:2's real end. Census in v05a_libname_census.py.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-09",
+  "title": "P resolves a pin argument by name-or-number in file order: 74LS348 '1' wires pad 11",
+  "affects": "P",
+  "kind": "wrong-pin",
+  "scenario_script": "pr57pt/probe-pin-identity/pin_name_number.py (case 6a; output pin_name_number.out)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v06_pinname.py: 74xx:74LS348 '1' and '4', plus an independent part from the scan (Interface_USB:STULPI01A 'D1'). Library scan in v06a_pinname_scan.py over every non-derived stock symbol.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-10",
+  "title": "P treats no_connect-type pins as ordinary: it 'wires' pins KiCad never connects, and a legacy wire on an NC pin lets it merge a foreign net",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-pin-identity/nc_hidden.py (7a-7c), pad_alt_order.py (10_NCX)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v07_nc.py on Connector:AVR-TPI-6 pin 4 and an independent stock part found by scan (Interface_UART:ADM1491EBR pin 8, no_connect type). Also an own part (libs/valt.kicad_sym) with a selected no_connect alternate. Scenarios: N1 wire; N2 a legacy wire from the NC pin to R5:1 with N4 on R6:1; N3 connect.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-11",
+  "title": "P wires one placed copy of a unit-0 common pad, leaving the pad listed in two nets",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-pin-identity/pad_alt_order.py (case 9)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v08_padcopies.py with Device:D_Dual_CommonAnode_AKK_Split (found by scan; the reporter used R_Network04_Split), units 1 and 2 placed as two nodes of Q5. Every net listing (Q5,1) is read after each call.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-12",
+  "title": "P's direction rule is wrong in the mirrored 90/270 cases: the repo angle is already right there, and the flip turns it into the body",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-pin-identity/o12_direction_check.py (reads o12_sweep.json; output o12_direction_check.out)",
+  "verifier_method": "DIRECTION table in pr57pt/verify-probe-pin-identity/v01_o12.py: KiCad's outward direction for each true pin, computed from the lib pin angle through the KiCad-order transform (toward table checked against 9.0.8 sch_pin.cpp:611-614). Positions confirmed by the same sweep's label probes and M's 84/84 netlists.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-13",
+  "title": "(mirror) written before (at): P applies a mirror KiCad ignores",
+  "affects": "P",
+  "kind": "wrong-pin",
+  "scenario_script": "pr57pt/probe-pin-identity/pad_alt_order.py (case 11)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v09_mirror_order.py: Device:D at rotation 180 with (mirror y) inserted before (at). Rotation 180 isolates the token-order effect, because the repo mirror math is right at 0/180 (v01). Pin ends by label probe.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-14",
+  "title": "A pin name shared by several pads: P wires only the first and reports success",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-pin-identity/pin_name_number.py (case 6c)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v06_pinname.py: Amplifier_Audio:LM380N-8 'GND' (pads 4, 5) and an independent part, Analog_ADC:AD7171 'GND' (pads 7, 10). Frequency from v06b_dupname_power.py and v06e_dupname_single.py over all non-derived stock symbols.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-15",
+  "title": "M treats distinct symbols sharing a Reference (pasted duplicates, unannotated 'R?') as copies of one pad and merges their nets",
+  "affects": "M",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-pin-identity/m_edges.py (case 13; output m_edges.out)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v10_dupref.py: two Device:C (the reporter used Device:R), both 'C1', then both 'C?'. Each pin 1 is tied sideways to its own probe resistor (R7:2, R8:2).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-16",
+  "title": "M refuses when another project's instance entry names a different unit",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-pin-identity/m_edges.py (case 12)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v04_units.py case MP: 74LS00 with instances [this project /root (unit 3), project 'other' /beef (unit 4)] and top-level unit 3. KU a-d establish KiCad's rule; census in v04b_unit_census.py.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "PI-17",
+  "title": "Unresolved lib_name: KiCad stacks all of the symbol's pins at its origin, and neither design models them there",
+  "affects": "both",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-pin-identity/libname_unresolved_origin.py, m_orphan.py, libname.py (case 5d)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v05_libname.py case Ld: C1 (Device:C_Polarized) with lib_name 'C_Polarized_9' (no matching entry) and its lib_id present. KiCad label probes at the origin and at the lib_id pin ends. One call targets C1:1; an obstacle call puts R1:1's 1x stub end on C1's origin.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "PI-18",
+  "title": "M silently prefers the pad number when the string is also another pad's name",
+  "affects": "M",
+  "kind": "wrong-pin",
+  "scenario_script": "pr57pt/probe-pin-identity/pin_name_number.py (case 6a)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v06_pinname.py: 74LS348 '1' (pad 1 is named '4', pad 11 is named '1') and Interface_USB:STULPI01A 'D1' (ball D1; ball A1 is named 'D1').",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-19",
+  "title": "M refuses a pin name shared by stacked pads where every choice gives the same netlist",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-pin-identity/pin_name_number.py (case 6b), nc_hidden.py (case 8a)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v06_pinname.py (Amplifier_Current:INA240A1D 'GND', pads 2 and 4 stacked) and v06d_stacked_single.py (independent: MCU_ST_STM32F1:STM32F100C_4-6_Tx 'VSS', pads 23/35/47 stacked, plus the remedy call by number). Frequency over all single-unit non-derived stock symbols.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-20",
+  "title": "Hidden pins as targets and as obstacles: P and M both correct (outside mirrored 90/270)",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-pin-identity/nc_hidden.py (cases 8a-8d)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "PI-21",
+  "title": "Alternate pin names are not accepted as pin arguments by either design",
+  "affects": "both",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-pin-identity/pad_alt_order.py (case 10_SDA)",
+  "verifier_method": "pr57pt/verify-probe-pin-identity/v07_nc.py case N4: own part libs/valt.kicad_sym, pin 1 'IO' with alternates NCX and SDA, SDA selected; wire_pins_to_net(U1:'SDA').",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "PI-22",
+  "title": "M's pin geometry matches KiCad in all 12 orientations and on every KiCad-authored mirrored symbol tested",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-pin-identity/o12_sweep.py, kicad_fixture.py, kicad_fixture_connect.py, unit_instances.py, libname.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

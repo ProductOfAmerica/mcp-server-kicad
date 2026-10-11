@@ -1,0 +1,137 @@
+[
+ {
+  "id": "LBL-01",
+  "title": "P treats a lone directive label as inert, so a stub or route through it moves net N into that netclass",
+  "affects": "P",
+  "kind": "netclass",
+  "scenario_script": "pr57pt/probe-labels/L01_directive_labels.py",
+  "verifier_method": "Rebuilt from scratch on my own layout (pr57pt/verify-probe-labels/v01_directive.py and .out): R1 at (63.5,76.2), N on R9, a .kicad_pro defining class HV. Cases: netclass_flag HV on the 1x stub path (a), at the stub end (b), on a pinless crossing wire (c), NEW c2 = flag on the FAR end of a pinless dangling wire whose other end is the stub end, controls d (plain crossing) and e (flag on a wire with pins), and g (connect_pins, flag on the H-first leg). Ran P, M, B; judged with kicad-cli 9.0.8 node sets plus per-node net class.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-02",
+  "title": "P's kept auto-junction at a label T splits the net it joins in kicad-cli 9, although the label alone already joins it",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-labels/L03_label_at_T.py",
+  "verifier_method": "pr57pt/verify-probe-labels/v02_junction_split.py (.out): stub end on the interior of an N-net wire (a; a_rev drawn the other way), of the target's own wire (b), and NEW on the target's own straight outward wire (c; c_rev drawn toward the pin; d where that wire was drawn by the repo's add_wires). KiCad-only controls per case: P's geometry without the junction, with it, and with the hit wire pre-split at E1. Also seen in v03_stack_pin_merge.out.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-03",
+  "title": "P's model attaches a label to the wire under it even when a pin end shares the anchor, so a stub ending there merges a separate net into N",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-labels/L05_stack_label_pin_merge.py",
+  "verifier_method": "pr57pt/verify-probe-labels/v03_stack_pin_merge.py (.out): WN from R5:1 to R6:1 through E1 (both draw directions), R4:2's pin end and label N stacked at E1, plus a FOO variant; KiCad truth before, P/M/B, and P's geometry without the junction.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-04",
+  "title": "False no-op: P reports the pin already on N when KiCad detaches that label from the pin's wire",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-labels/L06_stack_on_target_wire.py",
+  "verifier_method": "pr57pt/verify-probe-labels/v04_stack_own_wire.py (.out): target's own wire W1 from R1:1 to R2:1; at interior point Q, label N stacked with R4:1's pin end (a), an NC flag (b), label M (c), FOO plus pin (d), N plus pin plus a 2-point polyline (e), and NEW (f) label N plus a netclass flag; KiCad truth before each call, then P/M/B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-05",
+  "title": "P refuses a legitimate call when a foreign label is stacked with a foreign pin on the target's wire",
+  "affects": "P",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-labels/L06_stack_on_target_wire.py",
+  "verifier_method": "v04d in pr57pt/verify-probe-labels/v04_stack_own_wire.out (label FOO plus R4:1's pin end on W1's interior), KiCad truth before, P/M/B; v03b in v03_stack_pin_merge.out as a related stub-end case.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-06",
+  "title": "P as built has no 1 IU label capture: new stubs and labels within 1 IU of foreign labels or wires merge nets (off-grid only)",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-labels/L07_capture_new_stub.py",
+  "verifier_method": "pr57pt/verify-probe-labels/v05_capture.py (.out): lone FOO label 1 IU (s1) and 2 IU (s2) beside the 1x stub path, with KiCad truth for the stub geometry; Pk = proposal_impl reloaded with my own integer TestSegmentHit(1) replacing the exact _on_segment. Plus v08_m_tolerance_and_glines.out t2 (connect_pins, foreign wire end 1 IU from pin 1) with a hand-built control of the route alone. L13, L10e and L09c not rebuilt; v06 Ke reproduces L10e's KiCad truth.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-07",
+  "title": "P as built misses a label 1 IU off the target's own wire or crossing, so it wires a pin KiCad already has on another named net",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-labels/L08_capture_model.py",
+  "verifier_method": "pr57pt/verify-probe-labels/v05_capture.py (.out) cases w1 (FOO 1 IU off own wire W1's interior), w2 (2 IU) and x1 (FOO 1 IU off both W1 and a foreign wire crossing it, L02d analog); KiCad truth before; P, Pk, M, B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-08",
+  "title": "P's stated reason for refusing the label on the pin is wrong for one wire; the real trigger is a second line within 1 IU",
+  "affects": "P",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-labels/L11_kicad_label_on_pin_rule.py",
+  "verifier_method": "pr57pt/verify-probe-labels/v06_label_on_pin.py (.out): KiCad-only label N on P with one foreign wire through P (Ka), plus the own wire ending at P (Kb), two crossing foreign wires (Kc), an off-grid wire 1 IU away plus own wire (Ke) or alone (Kf), and NEW a bus through P plus own wire (Kbus); tool level Ta (Ka geometry) and Tbus on P/M/B.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "LBL-09",
+  "title": "P keeps connect_pins' auto label, so naming that net later, or joining two connect_pins nets, is refused as a two-named-net merge",
+  "affects": "P",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-labels/L14_autolabel_then_wire.py",
+  "verifier_method": "pr57pt/verify-probe-labels/v07_autolabel.py (.out): connect_pins(R1:1,R2:2) then wire_pins_to_net([R2:2],'N'), naming through the pin that does not carry the label; and connect_pins twice then connect_pins(R1:1,R3:1) on aligned pins; each design on its own file.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-10",
+  "title": "M's 0.05 mm near-miss rule refuses label-on-pin and routes that KiCad leaves clean (off-grid only)",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-labels/L10_label_on_pin_fallback.py",
+  "verifier_method": "pr57pt/verify-probe-labels/v08_m_tolerance_and_glines.py (.out): t1 (every stub blocked by a BLK label at E1, lone FOO 1 IU right of P) and t2 (connect_pins with a foreign wire end 1 IU from pin 1), plus a hand-built KiCad control of M's straight route without a label.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-11",
+  "title": "M's possible model joins a label to its wire despite a stacked pin end or NC flag, so M refuses version-independent cases as ambiguous",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-labels/L06_stack_on_target_wire.py",
+  "verifier_method": "v04a, v04b, v04d, v04e, v04f in pr57pt/verify-probe-labels/v04_stack_own_wire.out on M; read mine_impl._build (P0 captures labels with CAP2 regardless of stacking; C ignores graphic lines) against phase1-independent.md 115; v09b_literal_m_pin_nc.out for the literal-text alternative.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-12",
+  "title": "M refuses a pin whose end has a 2-point graphic polyline through it, though both candidates are electrically clean",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-labels/L09_graphic_polylines.py",
+  "verifier_method": "pr57pt/verify-probe-labels/v08_m_tolerance_and_glines.out case g1 (2-point graphic polyline through P) on P/M/B, plus a KiCad control: label N on P with only that polyline.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "LBL-13",
+  "title": "M's capture bound d^2 <= 4 IU^2 treats a label 2 IU off a wire interior as attached",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-labels/L08_capture_model.py",
+  "verifier_method": "pr57pt/verify-probe-labels/v05_capture.out case w2: FOO 2 IU off own wire W1's interior; KiCad truth before; P, Pk, M, B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-14",
+  "title": "M refuses a pin whose wire carries stacked labels N and M, though KiCad already has N and M as one net",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-labels/L06_stack_on_target_wire.py",
+  "verifier_method": "v04c in pr57pt/verify-probe-labels/v04_stack_own_wire.out (labels N and M stacked on W1's interior) on M with KiCad truth before; v09_literal_m_noop.out case c with a literal-M variant.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LBL-15",
+  "title": "Stacking by itself never split a net in either design's output; the only stacking splits seen come from P's junction",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-labels/L04_stack_at_stub_end.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

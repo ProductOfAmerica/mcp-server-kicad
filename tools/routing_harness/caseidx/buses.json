@@ -1,0 +1,119 @@
+[
+ {
+  "id": "BUS-P1",
+  "title": "P's rule 1 joins bus-entry ends, so P reports false no-ops ('already on N', 'already connected') where two entries share a bus point or a bus label sits on an entry's bus point",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-buses/s05_shared_entry_point.py (s05b, s05c, s05u); pr57pt/probe-buses/s14_entry_symmetry.py (s14c); pr57pt/probe-buses/s09_demo_sweep.py (Part B); pr57pt/probe-buses/s12_royalblue_member.py (s12b); pr57pt/probe-buses/c05_partB_fullproject.py; pr57pt/probe-buses/c02_shared_entry_shapes.py; pr57pt/probe-buses/c03_busside_items.py",
+  "verifier_method": "Own fixtures (horizontal bus split at S, entries EL/ER opening downward from S, both entry encodings, with and without bus label): verify-probe-buses/v01_shared_entry_point.py/.out (v01a-d). Demo shared points with FULL-project kicad-cli truth: v03_demo_sheets.py/.out (Part B', 5 points) and v07_vme_shared_points.py/.out (7 more points in vme-wren/vme_buffers_data). Stacked hier bus label: v04_stacked_bus_label.py/.out (royalblue copy v04a2, synthetic v04b). Independent literal-P model written from proposal lines 19-29 (vb.py literal_p, two readings of entry conduction). Source re-read: 9.0.8 sch_bus_entry.cpp:597, connection_graph.cpp:1350/1354, sch_screen.cpp:1197; 10.0 sch_bus_entry.cpp:580, connection_graph.cpp:1509/1513.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "BUS-P3",
+  "title": "A multi-pin wire_pins_to_net across a shared entry point wires one pin, reports the other 'already on N', and returns success",
+  "affects": "P",
+  "kind": "partial-write",
+  "scenario_script": "pr57pt/probe-buses/s10_multi_and_cap.py (s10a)",
+  "verifier_method": "v01_shared_entry_point.py/.out v01f: own fixture, both members unlabelled; P in both pin orders; P with its model built ONCE per call (wrapper removing I19's per-pin rebuild, rules unchanged); B and M for context; kicad-cli.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "BUS-M1",
+  "title": "M's over-approximate model lumps every member wire of a bus into one multi-named component, so M refuses the ordinary bus workflow, including no-ops",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-buses/s04_member_workflow.py (s04a, s04b, s04d, s04f); pr57pt/probe-buses/s09_demo_sweep.py (Part A); pr57pt/probe-buses/c01_demo_census.py; pr57pt/probe-buses/s12_royalblue_member.py (s12a); pr57pt/probe-buses/s10_multi_and_cap.py (s10a)",
+  "verifier_method": "v02_member_workflow.py/.out (own horizontal bus, 4 split entries, members A0/A1 labelled, Q2/Q3 unlabelled; P, M, B; independent literal-M model under both orderings of 5.4's bullets; M prototype with its certain no-op checked before _pad_conflict, v02g). v03_demo_sheets.py/.out Part A' (7 demo sheets, 161 already-satisfied requests). v04 royalblue unmodified (v04a3). v06_demo_census.py/.out.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "BUS-M2",
+  "title": "Literal M declares any two pins on one bus 'already connected' (5.5) and can no-op through a bus (5.4); the prototype avoids it but refuses with a false explanation",
+  "affects": "M",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-buses/s05m_literal_M.py; pr57pt/probe-buses/s09_demo_sweep.py (Part B, M_literal_5_5); pr57pt/probe-buses/s04_member_workflow.py (s04f); pr57pt/probe-buses/s05_shared_entry_point.py (s05c)",
+  "verifier_method": "Independent literal-M model (vb.py literal_m, 5.2 rules only) on v01 and v02 fixtures and at the 12 demo shared entry points (v07b_shared_points_M.py/.out, v07c inspection); kicad-cli truth; mine_impl messages.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "BUS-P2",
+  "title": "P's entry over-join treats a foreign member wire as the pin's own net, so a stub touching it is allowed and merges an unrelated net",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-buses/s05_shared_entry_point.py (s05d)",
+  "verifier_method": "v01_shared_entry_point.py/.out v01g1/v01g2: own fixture, both members unlabelled, R2:1's 1x stub end on R1's member wire interior, hit segment drawn in each direction; P's output re-exported with its auto junction deleted; literal-P model; M on the same fixture.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "BUS-P4",
+  "title": "P refuses to name an unlabelled bus member because its model attaches a neighbour member's name or the stacked bus label to it",
+  "affects": "P",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-buses/s05_shared_entry_point.py (s05a); pr57pt/probe-buses/s12_royalblue_member.py (s12a)",
+  "verifier_method": "v01e (own Λ fixture, R2:1 to D2); v04_stacked_bus_label.py/.out v04a1 (royalblue copy, UART.TX removed, root export), v04b synthetic hier bus label exactly on the entry point, v04b_ctrl with it 2.54 mm off; literal-P both readings; census v06.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "BUS-P5",
+  "title": "P's model gives a bus no connectivity, so P wires a pin that KiCad already names through a bus and the old name disappears",
+  "affects": "P",
+  "kind": "rename",
+  "scenario_script": "pr57pt/probe-buses/s03_pin_on_bus.py (s03d, s03e); pr57pt/probe-buses/s11_label_on_pin_on_bus.py",
+  "verifier_method": "v05_pin_on_bus.py/.out v05d (R11:1 is a bus end and a wire end, wire to R13:1, SIG on the bus; own vertical-bus geometry) and v05e (wire ends on a junction on a pre-split bus); literal P; v11_erc_checks.py/.out; census v06; source 9.0.8 sch_line.cpp:707-717.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "BUS-P6",
+  "title": "P as written counts a clean crossing of a bus as a touch, so connect_pins refuses routes that merely cross a bus",
+  "affects": "P",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-buses/s08_connect_pins_bus.py (s08a, s08b, s08c, s08e); pr57pt/probe-buses/s14_entry_symmetry.py (s14d); pr57pt/probe-buses/s10_multi_and_cap.py (s10d); pr57pt/probe-buses/bl.py (_PText)",
+  "verifier_method": "Own wrapper 'Ptext' (proposal_impl with only proper BUS crossings counted as touch, per line 34; nothing else changed) on v09_crossing_syntax_entry.py/.out v09a (L routes), v09b (aligned straight route), v09c (wire_pins_to_net, stub_length 7.62); P and M for comparison; kicad-cli.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "BUS-B1",
+  "title": "Bus member names leak across the hierarchy: a new label named like a member of a bus sheet pin or bus label joins another sheet's net, unseen by either design",
+  "affects": "both",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-buses/s07_member_leak.py (s07a, s07b, s07c, control s07d); pr57pt/probe-buses/s13_global_bus_member.py (s13a, control s13c)",
+  "verifier_method": "v08_hier_member_leak.py/.out: own two-level hierarchy (root 'top', sheet 'sub'): vector sheet pin B[0..3], group pin {SCK MOSI}, plain-pin control, child global bus label G[0..3] with and without; P and M; root exports.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "BUS-P7",
+  "title": "P accepts bus-syntax label_text and writes a bus label on a wire stub",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-buses/s06_bus_names.py (s06a, s06c, s06d); pr57pt/probe-buses/s06e_erc.py",
+  "verifier_method": "v09_crossing_syntax_entry.py/.out v09d (C[0..3], no bus), v09e (C[0..3] with a bus whose member C0 goes to R5), v09f (group S{A B}); kicad-cli netlist and ERC before/after.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "BUS-P8",
+  "title": "P admits a stub through an entry end of N's own member net, leaving a bus-entry end inside its new wire",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-buses/s02_stub_vs_entry.py (s02c)",
+  "verifier_method": "v09_crossing_syntax_entry.py/.out v09g (own fixture: stub_length 5.08 'up' passes the wire-side end of the C0 member entry, N = C0); kicad-cli netlist; ERC with item detail in v11_erc_checks.py/.out.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "BUS-B2",
+  "title": "Both refuse to wire a pin that sits on a bus endpoint or bus interior, including a no-op request",
+  "affects": "both",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-buses/s03_pin_on_bus.py (s03a, s03b2, s03c); pr57pt/probe-buses/s11_label_on_pin_on_bus.py",
+  "verifier_method": "v05_pin_on_bus.py/.out v05a (bus drawn pin to pin, unnamed), v05b (same with SIG, request SIG), v05c (bus passes through R11:1; geometry rebuilt after a first version touched pin 2s), raw label placed on R11:1; literal P/M; v11 ERC; census v06.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "BUS-OK1",
+  "title": "Both designs' touch rules handle every stub and route geometry against buses and entries; the baseline fails most of them",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-buses/s01_stub_vs_bus.py; pr57pt/probe-buses/s02_stub_vs_entry.py; pr57pt/probe-buses/s08_connect_pins_bus.py; pr57pt/probe-buses/s10_multi_and_cap.py (s10b, s10c); pr57pt/probe-buses/s14_entry_symmetry.py (s14a, s14b, s14d)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

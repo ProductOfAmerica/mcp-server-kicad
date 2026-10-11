@@ -53,7 +53,12 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["mcp_server_kicad"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["/tools/routing_harness"]  # the sdist ships the package, not the harness
+
 [tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--ignore=tools/routing_harness"  # its *_test.py scripts are not tests (they exit at import)
 pythonpath = ["tests"]
 markers = [
     "no_kicad_validation: skip kicad-cli parseability check (for tests that intentionally produce invalid files)",
@@ -64,11 +69,13 @@ markers = [
 [tool.ruff]
 target-version = "py310"
 line-length = 100
+extend-exclude = ["tools/routing_harness"]  # ported measurement scripts, kept textually close to their scratch originals
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 
 [tool.pyright]
+exclude = ["tools/routing_harness"]  # same reason; pyright keeps its default excludes on top
 pythonVersion = "3.10"
 typeCheckingMode = "basic"
 reportOptionalMemberAccess = "warning"
