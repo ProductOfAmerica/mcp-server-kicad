@@ -1,0 +1,164 @@
+{
+ "root": "scratch:coarse/rerun2",
+ "design": "Hb",
+ "probeA": {
+  "gate": {
+   "calls": 673,
+   "OK": 433,
+   "wrong_cli": 0,
+   "wrong_gui": 0,
+   "REFUSED": 193,
+   "NOOP": 47,
+   "dup_ref": 4
+  },
+  "rate_strict": {
+   "n": 647,
+   "refused": 183,
+   "pct": 28.3
+  },
+  "harness_errors": 0
+ },
+ "probeB": {
+  "gate": {
+   "calls": 798,
+   "REFUSED": 196,
+   "wrong_cli": 0,
+   "wrong_gui": 0,
+   "OK": 88,
+   "NOOP": 514,
+   "unjudged": 1,
+   "dup_ref": 28
+  },
+  "rate_first": {
+   "n": 796,
+   "refused": 194,
+   "pct": 24.4
+  }
+ },
+ "probeC": {
+  "gate": {
+   "calls": 742,
+   "OK": 498,
+   "wrong_cli": 0,
+   "wrong_gui": 0,
+   "REFUSED": 229,
+   "NOOP": 15,
+   "false_noop": 1,
+   "dup_ref": 13
+  },
+  "rate": {
+   "n": 742,
+   "refused": 229,
+   "pct": 30.9
+  }
+ },
+ "llm": {
+  "gate": {
+   "calls": 563,
+   "OK": 366,
+   "wrong_cli": 0,
+   "wrong_gui": 0,
+   "REFUSED": 123,
+   "NOOP": 74
+  },
+  "rate_first": {
+   "n": 392,
+   "refused": 112,
+   "pct": 28.6
+  },
+  "planned_off": {
+   "skill": {
+    "planned": 147,
+    "off": 40
+   },
+   "adaptive": {
+    "planned": 147,
+    "off": 0
+   }
+  }
+ },
+ "layouts": {
+  "gate": {
+   "calls": 857,
+   "OK": 718,
+   "wrong_cli": 0,
+   "wrong_gui": 0,
+   "REFUSED": 139,
+   "dup_ref": 6
+  },
+  "rates_first": {
+   "generated/adaptive": {
+    "n": 294,
+    "refused": 51,
+    "pct": 17.3
+   },
+   "generated/skill": {
+    "n": 294,
+    "refused": 51,
+    "pct": 17.3
+   },
+   "jct": {
+    "n": 11,
+    "refused": 4,
+    "pct": 36.4
+   },
+   "star": {
+    "n": 39,
+    "refused": 20,
+    "pct": 51.3
+   },
+   "stock/pairs": {
+    "n": 21,
+    "refused": 9,
+    "pct": 42.9
+   },
+   "stock/pins": {
+    "n": 112,
+    "refused": 4,
+    "pct": 3.6
+   }
+  },
+  "planned_off": {
+   "skill": {
+    "planned": 1196,
+    "off": 302,
+    "layouts_with_off": 21
+   },
+   "adaptive": {
+    "planned": 1196,
+    "off": 0,
+    "layouts_with_off": 0
+   }
+  }
+ },
+ "demo": {
+  "gate": {
+   "calls": 1206,
+   "REFUSED": 441,
+   "wrong_cli": 0,
+   "wrong_gui": 0,
+   "dup_ref": 12,
+   "OK": 765
+  },
+  "rate_wptn": {
+   "n": 718,
+   "refused": 271,
+   "pct": 37.7
+  },
+  "rate_connect": {
+   "n": 244,
+   "refused": 164,
+   "pct": 67.2
+  },
+  "rate_fallback_all": {
+   "n": 244,
+   "refused": 6,
+   "pct": 2.5
+  },
+  "rate_fallback160": {
+   "n": 160,
+   "refused": 5,
+   "pct": 3.1
+  }
+ }
+}

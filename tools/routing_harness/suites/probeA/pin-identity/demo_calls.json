@@ -1,0 +1,2379 @@
+[
+ {
+  "key": "FH",
+  "kind": "wptn",
+  "ref": "L1",
+  "pin": "1",
+  "N": "PT0",
+  "fresh": true,
+  "net_before_standalone": "Net-(D10-A)",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py FH L1:1 call A N=PT0",
+   "verify-probe-pin-identity/v02_demo.py wire L1:1 PTL1 (same call, fresh name differs)"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02_demo_pi05"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "wptn",
+  "ref": "L1",
+  "pin": "2",
+  "N": "PT1",
+  "fresh": true,
+  "net_before_standalone": "VCC",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py FH L1:2 call A N=PT1"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "wptn",
+  "ref": "L1",
+  "pin": "2",
+  "N": "VCC",
+  "fresh": false,
+  "net_before_standalone": "VCC",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py FH L1:2 call B N=VCC",
+   "verify-probe-pin-identity/v02_demo.py wire L1:2 VCC"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02_demo"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "wptn",
+  "ref": "C5",
+  "pin": "1",
+  "N": "PT2",
+  "fresh": true,
+  "net_before_standalone": "Net-(C5-Pad1)",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py FH C5:1 call A N=PT2",
+   "verify-probe-pin-identity/v02_demo.py wire C5:1 PTC5 (same call, fresh name differs)"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02_demo_pi05"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "wptn",
+  "ref": "C5",
+  "pin": "2",
+  "N": "PT3",
+  "fresh": true,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py FH C5:2 call A N=PT3"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "wptn",
+  "ref": "C5",
+  "pin": "2",
+  "N": "GND",
+  "fresh": false,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py FH C5:2 call B N=GND",
+   "probe-pin-identity/verify_c5.py wire C5:2 GND",
+   "verify-probe-pin-identity/v02_demo.py wire C5:2 GND"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "verify_c5",
+   "v02_demo"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "wptn",
+  "ref": "C4",
+  "pin": "1",
+  "N": "PT4",
+  "fresh": true,
+  "net_before_standalone": "Net-(U4-Vc)",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py FH C4:1 call A N=PT4"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "wptn",
+  "ref": "C4",
+  "pin": "2",
+  "N": "PT5",
+  "fresh": true,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py FH C4:2 call A N=PT5"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "wptn",
+  "ref": "C4",
+  "pin": "2",
+  "N": "GND",
+  "fresh": false,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py FH C4:2 call B N=GND",
+   "verify-probe-pin-identity/v02_demo.py wire C4:2 GND"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02_demo"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "wptn",
+  "ref": "R10",
+  "pin": "1",
+  "N": "PT6",
+  "fresh": true,
+  "net_before_standalone": "Net-(U4-Vc)",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py FH R10:1 call A N=PT6"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "wptn",
+  "ref": "R10",
+  "pin": "2",
+  "N": "PT7",
+  "fresh": true,
+  "net_before_standalone": "Net-(C5-Pad1)",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py FH R10:2 call A N=PT7"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "D4",
+  "pin": "1",
+  "N": "PT8",
+  "fresh": true,
+  "net_before_standalone": "/vss",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 D4:1 call A N=PT8"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "D4",
+  "pin": "1",
+  "N": "vss",
+  "fresh": false,
+  "net_before_standalone": "/vss",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 D4:1 call B N=vss",
+   "verify-probe-pin-identity/v02_demo.py wire D4:1 vss"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02_demo"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "D4",
+  "pin": "2",
+  "N": "PT9",
+  "fresh": true,
+  "net_before_standalone": "Net-(D4-A)",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 D4:2 call A N=PT9"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "Q13",
+  "pin": "1",
+  "N": "PT10",
+  "fresh": true,
+  "net_before_standalone": "/vgq13",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 Q13:1 call A N=PT10",
+   "verify-probe-pin-identity/v02_demo.py wire Q13:1 PTQ (same call, fresh name differs)"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02_demo"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "Q13",
+  "pin": "1",
+  "N": "vgq13",
+  "fresh": false,
+  "net_before_standalone": "/vgq13",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 Q13:1 call B N=vgq13",
+   "verify-probe-pin-identity/v02_demo.py wire Q13:1 vgq13"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02_demo"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "Q13",
+  "pin": "2",
+  "N": "PT11",
+  "fresh": true,
+  "net_before_standalone": "p+",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 Q13:2 call A N=PT11"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "Q13",
+  "pin": "2",
+  "N": "p+",
+  "fresh": false,
+  "net_before_standalone": "p+",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 Q13:2 call B N=p+"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "Q13",
+  "pin": "3",
+  "N": "PT12",
+  "fresh": true,
+  "net_before_standalone": "/vdd",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 Q13:3 call A N=PT12"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "Q13",
+  "pin": "3",
+  "N": "vdd",
+  "fresh": false,
+  "net_before_standalone": "/vdd",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 Q13:3 call B N=vdd"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "D3",
+  "pin": "1",
+  "N": "PT13",
+  "fresh": true,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 D3:1 call A N=PT13"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "D3",
+  "pin": "1",
+  "N": "GND",
+  "fresh": false,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 D3:1 call B N=GND",
+   "verify-probe-pin-identity/v02_demo.py wire D3:1 GND"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02_demo"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "wptn",
+  "ref": "D3",
+  "pin": "2",
+  "N": "PT14",
+  "fresh": true,
+  "net_before_standalone": "Net-(D3-A)",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py Q17 D3:2 call A N=PT14",
+   "verify-probe-pin-identity/v02_demo.py wire D3:2 PTD3 (same call, fresh name differs)"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02_demo_pi05"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C237",
+  "pin": "1",
+  "N": "PT15",
+  "fresh": true,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C237:1 call A N=PT15"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C237",
+  "pin": "1",
+  "N": "GND",
+  "fresh": false,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C237:1 call B N=GND"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C237",
+  "pin": "2",
+  "N": "PT16",
+  "fresh": true,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C237:2 call A N=PT16"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C237",
+  "pin": "2",
+  "N": "P3V3",
+  "fresh": false,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C237:2 call B N=P3V3"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C243",
+  "pin": "1",
+  "N": "PT17",
+  "fresh": true,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C243:1 call A N=PT17"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C243",
+  "pin": "1",
+  "N": "GND",
+  "fresh": false,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C243:1 call B N=GND"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C243",
+  "pin": "2",
+  "N": "PT18",
+  "fresh": true,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C243:2 call A N=PT18"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C243",
+  "pin": "2",
+  "N": "P3V3",
+  "fresh": false,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C243:2 call B N=P3V3"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C235",
+  "pin": "1",
+  "N": "PT19",
+  "fresh": true,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C235:1 call A N=PT19"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C235",
+  "pin": "1",
+  "N": "GND",
+  "fresh": false,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C235:1 call B N=GND"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C235",
+  "pin": "2",
+  "N": "PT20",
+  "fresh": true,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C235:2 call A N=PT20"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C235",
+  "pin": "2",
+  "N": "P3V3",
+  "fresh": false,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C235:2 call B N=P3V3"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C249",
+  "pin": "1",
+  "N": "PT21",
+  "fresh": true,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C249:1 call A N=PT21"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C249",
+  "pin": "1",
+  "N": "P3V3",
+  "fresh": false,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C249:1 call B N=P3V3"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C249",
+  "pin": "2",
+  "N": "PT22",
+  "fresh": true,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C249:2 call A N=PT22"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C249",
+  "pin": "2",
+  "N": "GND",
+  "fresh": false,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C249:2 call B N=GND"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C241",
+  "pin": "1",
+  "N": "PT23",
+  "fresh": true,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C241:1 call A N=PT23"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C241",
+  "pin": "1",
+  "N": "P3V3",
+  "fresh": false,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C241:1 call B N=P3V3"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C241",
+  "pin": "2",
+  "N": "PT24",
+  "fresh": true,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C241:2 call A N=PT24"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C241",
+  "pin": "2",
+  "N": "GND",
+  "fresh": false,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C241:2 call B N=GND"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C239",
+  "pin": "1",
+  "N": "PT25",
+  "fresh": true,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C239:1 call A N=PT25"
+  ],
+  "scripts": [
+   "kicad_fixture"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C239",
+  "pin": "1",
+  "N": "P3V3",
+  "fresh": false,
+  "net_before_standalone": "P3V3",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C239:1 call B N=P3V3",
+   "verify-probe-pin-identity/v02b_demo_extra.py wire C239:1 P3V3"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02b"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C239",
+  "pin": "2",
+  "N": "PT26",
+  "fresh": true,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C239:2 call A N=PT26",
+   "verify-probe-pin-identity/v02b_demo_extra.py wire C239:2 PTX (same call, fresh name differs)"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02b"
+  ]
+ },
+ {
+  "key": "VME",
+  "kind": "wptn",
+  "ref": "C239",
+  "pin": "2",
+  "N": "GND",
+  "fresh": false,
+  "net_before_standalone": "GND",
+  "origins": [
+   "probe-pin-identity/kicad_fixture.py VME C239:2 call B N=GND",
+   "verify-probe-pin-identity/v02b_demo_extra.py wire C239:2 GND"
+  ],
+  "scripts": [
+   "kicad_fixture",
+   "v02b"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C4",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "1"
+  ],
+  "dist": 16.7,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C4:1 -> U4:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C4",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "6"
+  ],
+  "dist": 18.18,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C4:1 -> U4:6",
+   "verify-probe-pin-identity/v02_demo.py connect C4:1 U4:6"
+  ],
+  "scripts": [
+   "kicad_fixture_connect",
+   "v02_demo_pi04"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C4",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "7"
+  ],
+  "dist": 20.08,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C4:1 -> U4:7"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C4",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "2"
+  ],
+  "dist": 35.31,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C4:1 -> U4:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C4",
+   "1"
+  ],
+  "b": [
+   "R15",
+   "2"
+  ],
+  "dist": 39.45,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C4:1 -> R15:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C4",
+   "1"
+  ],
+  "b": [
+   "RV1",
+   "2"
+  ],
+  "dist": 39.76,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C4:1 -> RV1:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C4",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "6"
+  ],
+  "dist": 16.51,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C4:2 -> U4:6",
+   "verify-probe-pin-identity/v02_demo.py connect C4:2 U4:6"
+  ],
+  "scripts": [
+   "kicad_fixture_connect",
+   "v02_demo"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C4",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "7"
+  ],
+  "dist": 16.94,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C4:2 -> U4:7"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C4",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "1"
+  ],
+  "dist": 19.39,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C4:2 -> U4:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C4",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "4"
+  ],
+  "dist": 35.31,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C4:2 -> U4:4"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C5",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "6"
+  ],
+  "dist": 10.24,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C5:1 -> U4:6"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C5",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "7"
+  ],
+  "dist": 11.36,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C5:1 -> U4:7"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C5",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "1"
+  ],
+  "dist": 13.5,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C5:1 -> U4:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C5",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "4"
+  ],
+  "dist": 31.44,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C5:1 -> U4:4"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C5",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "2"
+  ],
+  "dist": 35.31,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C5:1 -> U4:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C5",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "7"
+  ],
+  "dist": 10.47,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C5:2 -> U4:7"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C5",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "6"
+  ],
+  "dist": 11.98,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C5:2 -> U4:6"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C5",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "1"
+  ],
+  "dist": 19.39,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C5:2 -> U4:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C5",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "4"
+  ],
+  "dist": 26.43,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C5:2 -> U4:4"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "C5",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "3"
+  ],
+  "dist": 37.52,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH C5:2 -> U4:3"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "8"
+  ],
+  "dist": 12.76,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:1 -> U4:8"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "1"
+  ],
+  "b": [
+   "D10",
+   "2"
+  ],
+  "dist": 14.81,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:1 -> D10:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "1"
+  ],
+  "b": [
+   "R6",
+   "2"
+  ],
+  "dist": 16.56,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:1 -> R6:2",
+   "verify-probe-pin-identity/v02_demo.py connect L1:1 R6:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect",
+   "v02_demo_pi05"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "1"
+  ],
+  "b": [
+   "D10",
+   "1"
+  ],
+  "dist": 19.84,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:1 -> D10:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "1"
+  ],
+  "b": [
+   "R6",
+   "1"
+  ],
+  "dist": 23.35,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:1 -> R6:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "5"
+  ],
+  "dist": 24.16,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:1 -> U4:5"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "5"
+  ],
+  "dist": 8.98,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:2 -> U4:5"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "8"
+  ],
+  "dist": 20.83,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:2 -> U4:8"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "2"
+  ],
+  "b": [
+   "D10",
+   "2"
+  ],
+  "dist": 26.15,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:2 -> D10:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "2"
+  ],
+  "b": [
+   "R6",
+   "2"
+  ],
+  "dist": 27.88,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:2 -> R6:2",
+   "verify-probe-pin-identity/v02b_demo_extra.py connect L1:2 R6:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect",
+   "v02b"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "2"
+  ],
+  "dist": 30.29,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:2 -> U4:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "L1",
+   "2"
+  ],
+  "b": [
+   "R6",
+   "1"
+  ],
+  "dist": 32.38,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH L1:2 -> R6:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "1"
+  ],
+  "dist": 10.85,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:1 -> U4:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "6"
+  ],
+  "dist": 17.27,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:1 -> U4:6"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "7"
+  ],
+  "dist": 20.48,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:1 -> U4:7"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "1"
+  ],
+  "b": [
+   "U4",
+   "2"
+  ],
+  "dist": 26.43,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:1 -> U4:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "1"
+  ],
+  "b": [
+   "RV1",
+   "2"
+  ],
+  "dist": 31.37,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:1 -> RV1:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "1"
+  ],
+  "b": [
+   "R15",
+   "1"
+  ],
+  "dist": 33.24,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:1 -> R15:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "1"
+  ],
+  "dist": 10.85,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:2 -> U4:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "6"
+  ],
+  "dist": 11.98,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:2 -> U4:6"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "7"
+  ],
+  "dist": 14.37,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:2 -> U4:7"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "2"
+  ],
+  "dist": 31.44,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:2 -> U4:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "2"
+  ],
+  "b": [
+   "U4",
+   "4"
+  ],
+  "dist": 35.31,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:2 -> U4:4"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "FH",
+  "kind": "cp",
+  "a": [
+   "R10",
+   "2"
+  ],
+  "b": [
+   "RV1",
+   "2"
+  ],
+  "dist": 38.56,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py FH R10:2 -> RV1:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "1"
+  ],
+  "b": [
+   "C8",
+   "1"
+  ],
+  "dist": 5.14,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:1 -> C8:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "1"
+  ],
+  "b": [
+   "Q4",
+   "1"
+  ],
+  "dist": 9.57,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:1 -> Q4:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "1"
+  ],
+  "b": [
+   "C8",
+   "2"
+  ],
+  "dist": 9.8,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:1 -> C8:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "1"
+  ],
+  "b": [
+   "Q3",
+   "2"
+  ],
+  "dist": 10.41,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:1 -> Q3:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "1"
+  ],
+  "b": [
+   "Q4",
+   "3"
+  ],
+  "dist": 11.81,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:1 -> Q4:3"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "1"
+  ],
+  "b": [
+   "R21",
+   "2"
+  ],
+  "dist": 13.8,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:1 -> R21:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "2"
+  ],
+  "b": [
+   "Q3",
+   "2"
+  ],
+  "dist": 2.79,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:2 -> Q3:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "2"
+  ],
+  "b": [
+   "Q4",
+   "1"
+  ],
+  "dist": 3.78,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:2 -> Q4:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "2"
+  ],
+  "b": [
+   "C8",
+   "2"
+  ],
+  "dist": 5.14,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:2 -> C8:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "2"
+  ],
+  "b": [
+   "C8",
+   "1"
+  ],
+  "dist": 8.53,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:2 -> C8:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "2"
+  ],
+  "b": [
+   "Q3",
+   "3"
+  ],
+  "dist": 10.96,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:2 -> Q3:3"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D3",
+   "2"
+  ],
+  "b": [
+   "Q4",
+   "3"
+  ],
+  "dist": 11.81,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D3:2 -> Q4:3"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "1"
+  ],
+  "b": [
+   "Q3",
+   "3"
+  ],
+  "dist": 12.07,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:1 -> Q3:3"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "1"
+  ],
+  "b": [
+   "R20",
+   "2"
+  ],
+  "dist": 14.0,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:1 -> R20:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "1"
+  ],
+  "b": [
+   "R20",
+   "1"
+  ],
+  "dist": 14.54,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:1 -> R20:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "1"
+  ],
+  "b": [
+   "Q3",
+   "1"
+  ],
+  "dist": 14.72,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:1 -> Q3:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "1"
+  ],
+  "b": [
+   "R21",
+   "1"
+  ],
+  "dist": 16.76,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:1 -> R21:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "1"
+  ],
+  "b": [
+   "C8",
+   "2"
+  ],
+  "dist": 19.54,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:1 -> C8:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "2"
+  ],
+  "b": [
+   "Q3",
+   "3"
+  ],
+  "dist": 6.71,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:2 -> Q3:3"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "2"
+  ],
+  "b": [
+   "R21",
+   "1"
+  ],
+  "dist": 9.14,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:2 -> R21:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "2"
+  ],
+  "b": [
+   "C8",
+   "2"
+  ],
+  "dist": 13.14,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:2 -> C8:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "2"
+  ],
+  "b": [
+   "Q3",
+   "1"
+  ],
+  "dist": 13.91,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:2 -> Q3:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "2"
+  ],
+  "b": [
+   "R20",
+   "2"
+  ],
+  "dist": 14.54,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:2 -> R20:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "D4",
+   "2"
+  ],
+  "b": [
+   "Q3",
+   "2"
+  ],
+  "dist": 15.82,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 D4:2 -> Q3:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "1"
+  ],
+  "b": [
+   "C13",
+   "1"
+  ],
+  "dist": 5.84,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:1 -> C13:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "1"
+  ],
+  "b": [
+   "D6",
+   "1"
+  ],
+  "dist": 9.32,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:1 -> D6:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "1"
+  ],
+  "b": [
+   "D6",
+   "2"
+  ],
+  "dist": 10.12,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:1 -> D6:2",
+   "verify-probe-pin-identity/v02b_demo_extra.py connect Q13:1 D6:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect",
+   "v02b"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "1"
+  ],
+  "b": [
+   "R29",
+   "2"
+  ],
+  "dist": 10.36,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:1 -> R29:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "1"
+  ],
+  "b": [
+   "R29",
+   "1"
+  ],
+  "dist": 10.91,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:1 -> R29:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "1"
+  ],
+  "b": [
+   "C13",
+   "2"
+  ],
+  "dist": 13.46,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:1 -> C13:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "2"
+  ],
+  "b": [
+   "R29",
+   "1"
+  ],
+  "dist": 5.71,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:2 -> R29:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "2"
+  ],
+  "b": [
+   "R29",
+   "2"
+  ],
+  "dist": 11.71,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:2 -> R29:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "2"
+  ],
+  "b": [
+   "D6",
+   "2"
+  ],
+  "dist": 14.25,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:2 -> D6:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "2"
+  ],
+  "b": [
+   "C13",
+   "1"
+  ],
+  "dist": 14.39,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:2 -> C13:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "2"
+  ],
+  "b": [
+   "D6",
+   "1"
+  ],
+  "dist": 17.42,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:2 -> D6:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "2"
+  ],
+  "b": [
+   "C15",
+   "1"
+  ],
+  "dist": 18.15,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:2 -> C15:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "3"
+  ],
+  "b": [
+   "D6",
+   "2"
+  ],
+  "dist": 4.72,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:3 -> D6:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "3"
+  ],
+  "b": [
+   "D6",
+   "1"
+  ],
+  "dist": 11.09,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:3 -> D6:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "3"
+  ],
+  "b": [
+   "C13",
+   "1"
+  ],
+  "dist": 14.39,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:3 -> C13:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "3"
+  ],
+  "b": [
+   "R29",
+   "1"
+  ],
+  "dist": 15.29,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:3 -> R29:1"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "3"
+  ],
+  "b": [
+   "C11",
+   "2"
+  ],
+  "dist": 17.5,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:3 -> C11:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ },
+ {
+  "key": "Q17",
+  "kind": "cp",
+  "a": [
+   "Q13",
+   "3"
+  ],
+  "b": [
+   "R29",
+   "2"
+  ],
+  "dist": 18.4,
+  "origins": [
+   "probe-pin-identity/kicad_fixture_connect.py Q17 Q13:3 -> R29:2"
+  ],
+  "scripts": [
+   "kicad_fixture_connect"
+  ]
+ }
+]

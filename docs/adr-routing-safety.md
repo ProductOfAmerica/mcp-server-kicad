@@ -6,9 +6,13 @@ session that built prototypes against commit 54160c1 and judged each tool call b
 kicad-cli 9.0.8 netlists before and after, node set by node set (**measured**), and again after an
 emulation of the KiCad 9 GUI's load-time cleanup (**emulated**; eeschema itself was never driven).
 A manager re-measured two claims independently. There is no KiCad 10 reading of any of it. The
-reports and the harness live in a scratch directory (`%TEMP%\pr57work` and `%TEMP%\pr57pt`), which
+reports and the harness lived in a scratch directory (`%TEMP%\pr57work` and `%TEMP%\pr57pt`), which
 is not durable, so this record restates what the design depends on and names the report each
-figure came from (see Sources).
+figure came from (see Sources). The harness is now in `tools/routing_harness/`, ported to run from a
+clean checkout against the repository's own tools, and the six reports are copied into its `reports/`;
+run outputs are not committed, so a figure cited from an output file is reproduced by the script
+that wrote it. Its README says which figures reproduce and how (the emulated reading is not
+included).
 
 ## The problem
 
@@ -104,7 +108,9 @@ is kept because a later call by another tool that puts a label or junction on su
 merges the two nets: after a stub crossing net A's wire, `add_label` or `add_global_label` at the
 crossing merged /A and /N in both readings, and `add_junctions` or an `add_wires` that
 auto-junctions there merged them in both readings and split /N in kicad-cli (hybrid-report.md
-section 6, `crossban_probe.out`). The ban cost 20 connect_pins refusals across every sample; in
+section 6, `crossban_probe.out`, written by
+`tools/routing_harness/analysis/crossban/crossban_probe.py`). The ban cost 20 connect_pins
+refusals across every sample; in
 wire_pins_to_net it never refused, it only swapped a stub for a label on the pin.
 
 ## ADR-R3: a shared reference is one part only when the pad maps agree
@@ -174,7 +180,8 @@ a model-versus-KiCad differential on every KiCad version CI carries, since the d
 depends on KiCad not changing these rules; and the tests that blessed the old bugs rewritten.
 
 Performance: the prototype's hierarchy scan took about 8 s per call on vme-wren, the largest demo
-project, when that project was present (h_build\perf_h.out, design H). The product needs a cached
+project, when that project was present (h_build\perf_h.out, design H; the timing script is
+`tools/routing_harness/analysis/crossban/perf_h.py`). The product needs a cached
 scan and a budget test.
 
 ## Out of scope, recorded
@@ -201,18 +208,22 @@ scan and a budget test.
 
 ## Sources
 
-All in the scratch directory named in the status line; dates are when the run was made.
-- `pr57work\pressure-test-report.md` (2026-10-01): the first pressure test, the facts sections 2
-  and 5 rely on, and the probe case IDs (PI-, HIER-, UP-, DEC-, INERT-, LW-).
-- `pr57work\coarse-variant-report.md` (2026-10-02): the coarse refusal model against the precise
-  one.
-- `pr57work\hybrid-report.md` (2026-10-03): Hb against M2 and E, the crossing ban, and the
-  recovery measurements.
-- `pr57work\dupref-report.md` (2026-10-03): the pad-map rule for duplicate references, and the
-  gate figures for Hb2.
-- `pr57work\routing-proposal-v2.md` (2026-10-03, decisions 2026-10-04): the design this record
-  restates.
-- `pr57pt\HANDOFF.md` (2026-10-04): how to rerun the harness against an implementation.
+All in `tools/routing_harness/reports/`, copied from the scratch directory named in the status
+line (`tools/routing_harness/baselines/derive.py` records how); dates are when the run was made.
+- `pressure-test-report.md` (2026-10-01): the first pressure test, the facts sections 2 and 5 rely
+  on, and the probe case IDs (PI-, HIER-, UP-, DEC-, INERT-, LW-).
+- `coarse-variant-report.md` (2026-10-02): the coarse refusal model against the precise one.
+- `hybrid-report.md` (2026-10-03): Hb against M2 and E, the crossing ban, and the recovery
+  measurements.
+- `dupref-report.md` (2026-10-03): the pad-map rule for duplicate references, and the gate figures
+  for Hb2.
+- `routing-proposal-v2.md` (2026-10-03, decisions 2026-10-04): the design this record restates.
+- `HANDOFF.md` (2026-10-04): how the scratch harness was rerun against an implementation, now
+  replaced by the harness's README.
+
+The status log cites two gate outputs by their scratch paths, `pr57pt\coarse\dupref\gate_x_final2.json`
+and `gate_x_final3.json`; they are `tools/routing_harness/baselines/gate_x_final2.json` and
+`gate_x_final3.json` (the scratch run directory in their `root` field is the only change).
 
 ## Status log
 

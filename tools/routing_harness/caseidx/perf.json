@@ -1,0 +1,65 @@
+[
+ {
+  "id": "perf-01",
+  "title": "P wire_pins_to_net: the per-pin CST model rebuild dominates multi-pin calls on big sheets (7.8 to 13.6 s at 50 pins vs M 1.1 to 2.1 s and B 1.9 to 2.5 s)",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-perf/perf_wptn.py (fixtures perf_prepare.py and perf_augment.py; table perf_summary.py; build phases perf_p_phases.py; refusal path perf_refusal.py)",
+  "verifier_method": "Rebuilt from scratch under pr57pt/verify-probe-perf/. vp_fixtures.py: standalone copies of the 4 stock sheets, paper A0, Conn_02x25 J8001 placed by the repo's place_component beyond the content's max x. kicad-cli 9.0.8 confirmed stock nets unchanged, every new pin alone, and P/M/B resolving identical pin ends and directions. vp_timing.py: P, M, B wire_pins_to_net at k=1/10/50, fresh copy per call, min of 3 with rotated order, plus a 4th run with the model constructors wrapped; every output judged by kicad-cli node sets. vp_fastp.py: FastP = proposal_impl.wire_pins_to_net's decision code copied verbatim, model built once and extended incrementally ('full' variant also resolves pins from a once-built table equal to _get_pin_pos_cst). vp_refusal_k200.py: refusal cost.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "perf-02",
+  "title": "P's cost grows superlinearly with pin count and sheet density: a 200-pin call takes 71 to 87 s on tinytapeout-demo, past a 60 s client limit",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-perf/perf_k200.py, perf_k200_rerun.py, perf_scaling.py",
+  "verifier_method": "vp_refusal_k200.py on tinytapeout-demo.free200 (J8001..J8004, 200 free pins): P once at k=100 and once at k=200 with every per-pin model build timed and a linear fit of build time against pins already wired; M, B and FastP-full min of 2; every output judged by kicad-cli. vp_corpus.py: one P build on all 93 stock sheets, plus P's rule-3 loop timed alone. Read the MCP SDK 2.0.0 source in the repo venv (func_metadata.py:108) and the TypeScript SDK docs via Context7.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "perf-03",
+  "title": "P lets a new stub or L leg run collinearly over the pin's own wire; KiCad's GUI merges the two on load and the item at the old wire's far end drops off the net, which kicad-cli 9 cannot show",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-perf/perf_case_wptn_stock.py, perf_case_overlap_merge.py, perf_case_wptn_stock_detail.py",
+  "verifier_method": "Re-read every cited source: 9.0.8 sch_edit_frame.cpp:152 (holder set in the constructor); files-io.cpp:538-539 (GLOBAL_CLEANUP on load) and 557-567 (FixupJunctions only for legacy files); schematic.cpp:1090-1300 (break at junctions, junction pruning, merge loop); sch_line.cpp:453-560 (true overlaps always merge, touching only if !IsJunction); 9.0-sch_line.h:195-209 (IsStrokeEquivalent); 10.0-schematic.cpp:1706 (same merge); eeschema_helpers.cpp (never sets a holder). Wrote an independent proxy, vcommon.gui_load_proxy: a port of that CleanUp with stroke equivalence, junction pruning and the AnalyzePoint touching test, validated as the identity on the 4 untouched stock sheets and on known shapes (vp_proxy_selfcheck). Then ran synthetic fixtures built from scratch (vp_synthetic S1, S4), the stock named examples, a sweep over every eligible pin of every unnamed multi-pin net on 3 sheets, a re-judge of the probe's 18 connect pairs (vp_stock.py), and a KiCad-transform direction check (vp_directions.py).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "perf-04",
+  "title": "P keeps automatic junctions, which land inside the pin's own unsplit wire whenever a stub end or L corner rests on it; kicad-cli 9 then cuts off the far part of that net",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-perf/perf_case_wptn_stock.py, perf_case_c201_split.py, perf_case_wptn_stock_detail.py",
+  "verifier_method": "Synthetic fixtures from scratch: vp_synthetic S2/S2r (wire_pins_to_net) and S3/S3r (connect_pins), each with the own wire drawn both ways. Stock named examples and the 3-sheet sweep (vp_stock.py). Fix variants on P's own outputs (vp_nojunction.py: as written, junction removed, wire pre-split at the junction). Each judged by kicad-cli 9.0.8 node sets and by my GUI-load proxy. Confirmed update_pcb_from_schematic exports its netlist with kicad-cli (repo pcb.py:1889-1901).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "perf-05",
+  "title": "connect_pins builds one model per call in both designs: a 10-call chain costs P 1.2 to 1.9x and M 1.1 to 1.2x today's tool, so it is not a practical problem",
+  "affects": "both",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-perf/perf_connect.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "perf-06",
+  "title": "M's performance figures are not reproduced by its own prototype (one build 84 to 126 ms, 50-pin call 1.1 to 2.1 s), though M is still the fastest design",
+  "affects": "M",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-perf/perf_wptn.py, perf_scaling.py",
+  "verifier_method": "vp_timing.py for mine_impl's build and 50-pin timings (as in perf-01). vp_perfslice.py re-ran unmodified copies of the perf slice's benchmark (pr57pt/perf bench_newdesign.py and bench_current_tool.py, copied into verify-probe-perf\\perfslice\\) on the same 50 stock pins per sheet, and read the stub rule that prototype implements.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "perf-07",
+  "title": "Every free-pin perf run is clean for P, M and B by kicad-cli 9 node sets, and every refusal left the file byte-identical",
+  "affects": "both",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-perf/perf_wptn.py, perf_connect.py, perf_k200.py, perf_k200_rerun.py, perf_refusal.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

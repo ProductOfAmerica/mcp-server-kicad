@@ -1,0 +1,173 @@
+[
+ {
+  "id": "HIER-01",
+  "title": "P merges two named nets through a sheet pin whose child side carries a power, global or local name (digest H13)",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-hierarchy/h01_h13_sheetpin_carrier.py (+ h01b_erc_on_short.py, census_h13_demos.py, census_h13_nested.py)",
+  "verifier_method": "Rebuilt from scratch (verify-probe-hierarchy/vh.py: CST-extracted stock symbols, sheet pin on the sheet's RIGHT edge, new coordinates, pre-split wires); v01_hier01_sheetpin_carrier.py/.out ran P, M, B each on its own copy and judged the ROOT kicad-cli 9.0.8 netlist by node sets; ERC --severity-all before/after; v20_census_demos.py re-measured the likelihood census.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-02",
+  "title": "P connect_pins shorts rails across ports: a sheet-pin-only net counts as unnamed",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-hierarchy/h05_connect_pins_ports.py (+ repeat_export.py)",
+  "verifier_method": "v02_hier02_connect_ports.py/.out: own fixture (right-edge ports A/B, straight route to R3 and L route to R6), P/M/B on copies, root netlist node-set diff; 20 repeated exports per file for the determinism claim.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-03",
+  "title": "P: a nested sheet pin inside a multi-instance child turns one call into merges in every instance",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-hierarchy/h10_child_alone_nested.py",
+  "verifier_method": "v03_hier03_nested_multi.py/.out: own 3-level project (chan used by S1/S2, nested sheet GC with right-edge pin P, gchild +5V), edit chan alone, P/M/B on copies, root netlist diff.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-04",
+  "title": "P accepts a new name on a port net already named in the child, creating a silent alias that a later 'safe' call turns into a short",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-hierarchy/h03_alias_two_calls.py (+ h01 *_FRESH, h02_label_equals_sheetpin.py power_alone)",
+  "verifier_method": "v04_hier04_alias_then_call.py/.out: own fixture, two-call sequence per design on one copy plus a call-2-alone control; v01 and v08 for the single-call netlist-neutral cases.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-05",
+  "title": "P renames existing names: a child-local name, port-chain names, and its connect_pins auto label renames a port chain",
+  "affects": "P",
+  "kind": "rename",
+  "scenario_script": "pr57pt/probe-hierarchy/h01_h13_sheetpin_carrier.py (local_FRESH, plain_FRESH), h02_label_equals_sheetpin.py (plain_alone), h05_connect_pins_ports.py (plain R1_R4), h12_multichannel_demo.py (h12a)",
+  "verifier_method": "Read from v01 (local/none FRESH), v08 (plain_alone) and v02 (plain R1-R4:2) outputs, node-set rename detection; v08/v13 re-ran the multichannel h12a call.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-06",
+  "title": "M misses a sheet pin lying on a wire interior, so its port refusal is bypassed and rails short",
+  "affects": "M",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-hierarchy/h04_sheetpin_on_wire_interior.py (+ h04b_connect_pins_interior.py, h04c_model_check.py, census_sheetpin_interior.py)",
+  "verifier_method": "v00_sheetpin_attach.py/.out measured the premise (bare sheet pin vs wire through/along/1 IU/2 IU) plus each prototype's model readout; v06_hier06_sheetpin_interior.py/.out ran the tool calls in two geometries; source read of 9.0.8 sch_screen.cpp, 9.0 sch_sheet.cpp, sch_sheet_pin.h, 9.0.8 sch_label.cpp; v20 census.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-07",
+  "title": "M's port rule pre-empts 'already on N': a KiCad no-op is refused, and all-or-nothing blocks the rest of the call",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-hierarchy/h14_port_net_already_on_n.py (+ census_port_surface.py)",
+  "verifier_method": "v07_hier07_noop_vs_port.py/.out (own fixture, plain and global-child variants, single and batch); v21_census_port_surface.py/.out re-measured the frequency with M's own component model and with a name-joined proxy; read the reporter's census_port_surface.py.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "HIER-08",
+  "title": "M refuses every edit on port-only nets, including the sheet pin's own name and netlist-neutral labels (policy)",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-hierarchy/h01_h13_sheetpin_carrier.py (plain), h02_label_equals_sheetpin.py, h05_connect_pins_ports.py (plain), h12_multichannel_demo.py (h12a/b)",
+  "verifier_method": "v08_hier08_portonly.py/.out: own fixture with label_text equal to the sheet pin name (power/plain child, with and without a separate root /PWR) plus a copied KiCad multichannel demo (R3:1 -> MIX, GND); v02 plain for connect_pins; v21 for scale.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-09",
+  "title": "Duplicate sibling sheet names: a 'new' local label merges across files and across instances",
+  "affects": "both",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-hierarchy/h07_duplicate_sheet_names.py",
+  "verifier_method": "v09_hier09_dup_sheet_names.py/.out: two-file and two-instance projects with duplicate and control sheet names; added variant (c) with a pre-existing child label and no tool call; kicad-cli ERC on the duplicate baseline.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-10",
+  "title": "Silent open: a local label on a sub-sheet does not reach a power, global or hidden-pin name defined only on another sheet (also auto_place_decoupling_cap)",
+  "affects": "both",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-hierarchy/h08_cross_sheet_open.py (+ h11_decoupling_cap_subsheet.py 11a)",
+  "verifier_method": "v10_hier10_cross_sheet_open.py/.out: root holds power GND/+5V, global SDA and a custom hidden power_in VCC part; child holds none (and a control child that holds its own items); wire_pins_to_net and auto_place_decoupling_cap (project_path) on the child for P/M/B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-11",
+  "title": "P: label text equal to a sheet pin's name on another parent net silently misses the port (M warns)",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-hierarchy/h13_sheetpin_name_open.py",
+  "verifier_method": "v11_hier11_samename_port.py/.out: own fixture (bidirectional right-edge pin SDA, plain and +3V3 child), wire a free root pin to the pin's name, P/M/B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-12",
+  "title": "Both refuse when names are tied together on another sheet, although the request is already satisfied",
+  "affects": "both",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-hierarchy/h09_cross_sheet_identity.py",
+  "verifier_method": "v12_hier12_tied_elsewhere.py/.out: own fixtures 12a (child global G, root ties G to +5V) and 12b (child +5V, root ties +5V to global VBUS), call on the child, P/M/B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-13",
+  "title": "P's kept auto-junction lands on the pin's own unsplit wire; kicad-cli 9 truncates it, splitting nets in every instance of a child",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-hierarchy/h12_multichannel_demo.py (+ h12e_junction_readback.py)",
+  "verifier_method": "v13_hier13_own_wire_junction.py/.out: minimal FLAT fixture with the pin's own wire drawn in both directions, plus a copied KiCad multichannel demo (root R3:1 -> MIX, child C5:1 -> vbias); readback of every new junction and whether it lies on a wire interior.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-14",
+  "title": "Units of one part on different sheets: a unit-0 pad's other copies are invisible, so 'success' leaves the pad in two nets",
+  "affects": "both",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-hierarchy/h15_units_across_sheets.py",
+  "verifier_method": "v14_hier14_units_across_sheets.py/.out: 4xxx_IEEE:4011 unit 1 on the root and unit 2 on the child (own coordinates), pad positions from M's KiCad transform, one- and two-sheet call sequences, every net listing pad U1:14.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-15",
+  "title": "auto_place_decoupling_cap in a multi-instance child registers the cap for one instance only (inherited place_component instance logic)",
+  "affects": "both",
+  "kind": "partial-write",
+  "scenario_script": "pr57pt/probe-hierarchy/h11_decoupling_cap_subsheet.py (11c) + h11e_instances_readback.py",
+  "verifier_method": "v15_hier15_cap_multi_instance.py/.out: child used by S1/S2 with per-instance control resistor, auto_place_decoupling_cap with project_path for P/M/B, readback of C1's instance entries and root netlist capacitor nodes; code read of schematic.py place_component, _shared._resolve_hierarchy_path and mine_impl._compose_place.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-16",
+  "title": "OK: digest H7 (cross-instance short via a child hier-label net) is refused by both; legitimate child joins work per instance",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-hierarchy/h06_child_hier_label.py (+ h12_multichannel_demo.py h12c/h12d)",
+  "verifier_method": "'ok' spot check. v16_hier16_17_child_hier_label.py/.out: own geometry (right-edge sheet pins with parent labels BUS_A/BUS_B on pre-split wires), single and two-instance child, P/M/B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-17",
+  "title": "Per-instance references of a multi-instance child cannot be addressed",
+  "affects": "both",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-hierarchy/h06_child_hier_label.py (h06_multi_R21_H)",
+  "verifier_method": "v16_hier16_17_child_hier_label.py/.out: two-instance child, call with the S2 per-instance reference R21.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-18",
+  "title": "KiCad 10 local power symbols (source only): expected behaviour of each design",
+  "affects": "neither",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-hierarchy/h16_k10_local_power_decisions.py",
+  "verifier_method": "v18_hier18_k10_local_power.py/.out: own 20250227-stamped project with a '(power local)' copy of power:+3V3, decisions only for P and M; checked every cited KiCad 10.0 line in kisrc.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "HIER-19",
+  "title": "OK: cap refusal in a sub-sheet leaves child and root intact; PWR_FLAG with one instance path is harmless",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-hierarchy/h11_decoupling_cap_subsheet.py (11d) + h10_child_alone_nested.py (10c) + h10d_pwrflag_erc.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

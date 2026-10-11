@@ -1,0 +1,155 @@
+[
+ {
+  "id": "UP-01",
+  "title": "Unit-0 common pin or duplicated pad number: P wires only the first drawn copy, the pad lands in two nets and the board drops the requested net",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-units-pads/u2_ieee_power_pins.py (U2a, U2b); u1_rnet_common_pin.py (U1a); x_duplicate_numbers.py (X1a, X1c, X2a, X2b); erc_on_split.py",
+  "verifier_method": "Rebuilt from scratch with different geometry: 7400 gate B placed below gate A, RN1 as units 1 and 3, DUPV duplicate pad on opposite sides, stock 74278. Scripts pr57pt/verify-probe-units-pads/v01_ieee7400.py, v02_rnet.py, v03_dupnum.py (each .out next to it), own helper vk.py (pad -> list of nets from kicad-cli 9.0.8 kicadxml, kicadsexpr cross-check, repo update_pcb_from_schematic, ERC). P, M, B run on byte-identical copies. Re-read the cited KiCad source and pcb.py. Independent census v09_census.py, v09b_derived.py.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-02",
+  "title": "Another copy of the pad is already on a differently named net: P wires its own copy anyway and the pad sits in two named nets",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-units-pads/u1_rnet_common_pin.py (U1b); u2_ieee_power_pins.py (U2d); x_duplicate_numbers.py (X1b)",
+  "verifier_method": "v01_ieee7400.py case D (7400, copy B on a local '+5V' label with power:+5V on the sheet), v02_rnet.py case b (RN1 units 1/3, copy B on Q), v03_dupnum.py X1b (DUPV, copy A2 on Q); per-pad nets, board before and after, ERC.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-03",
+  "title": "False no-op: P reports 'already on N' when only one drawn copy of the pad is on N",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-units-pads/u1_rnet_common_pin.py (U1c); u2_ieee_power_pins.py (U2c)",
+  "verifier_method": "v01_ieee7400.py case C (copy A of pad 14 on VCC) plus a dead-end block; v02_rnet.py case c (RN1 copy A on COM).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-04",
+  "title": "connect_pins routes one copy of a multi-copy pad; the requested connection is absent on the board",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-units-pads/u1_rnet_common_pin.py (U1d, U1e); x_duplicate_numbers.py (X1d)",
+  "verifier_method": "v02_rnet.py cases d and e (R3:2 level with RN1 copy A, straight route), v03_dupnum.py X1d (R3:1 level with DUPV copy A).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-05",
+  "title": "Units of one package on different sheets: both designs wire only this sheet's copy; the board binds the other copy's net",
+  "affects": "both",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-units-pads/h_units_two_sheets.py (H1, H2); h3_units_two_sheets_plus5v.py",
+  "verifier_method": "pr57pt/verify-probe-units-pads/v04_two_sheets.py with my own Project builder (not hb.py): gate A on the root, gate B (instance unit 2) on child 'Sub'; judged on the ROOT netlist and the repo board import; three variants.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-06",
+  "title": "P ignores a no-connect flag on the spare copy of a unit-0 pin and splits the pad",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-units-pads/u1f_nc_on_spare_copy.py (f1, f2)",
+  "verifier_method": "v02_rnet.py cases f1 (NC flag on copy B) and f2 (NC flag on copy A).",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "UP-07",
+  "title": "auto_place_decoupling_cap: pins of other parts touched by the cap's own placement are wired into VCC/GND and reported as 'already wired'",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-units-pads/c_coincident.py (C5, C5b)",
+  "verifier_method": "pr57pt/verify-probe-units-pads/v06_cap.py in a different column (x=127): K1 free pins, K2 R4:2 named OUT, K3 control with nothing under the cap.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-08",
+  "title": "NC-type pin as target: P reports success though KiCad never connects it, and a stacked sibling is wired instead",
+  "affects": "P",
+  "kind": "wrong-pin",
+  "scenario_script": "pr57pt/probe-units-pads/s5_nc_type_target_stock.py (S5a, S5b); s_stacked.py (S3b, S3a); c_coincident.py (C4)",
+  "verifier_method": "pr57pt/verify-probe-units-pads/v07_nctype.py: stock 74LVC1G04 by number and by name; my own STKNC2 with the stack on the bottom side; v07b_erc_before.py; census v09_census.py.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-09",
+  "title": "Reused sheet whose instances draw different units: P also wires another pad in the second instance",
+  "affects": "P",
+  "kind": "wrong-pin",
+  "scenario_script": "pr57pt/probe-units-pads/r_reused_sheet_units.py (R2)",
+  "verifier_method": "pr57pt/verify-probe-units-pads/v05_reused.py: my own project, chan.kicad_sch used by S1 and S2, U1 placed once with instance units 1 and 2, power:VCC on chan, ROOT netlist; v05b_erc_board.py; demo scan v09f_demo_instance_units.py.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "UP-10",
+  "title": "M refuses a unit-0 pin on a reused sheet although every instance draws it at the same point",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-units-pads/r_reused_sheet_units.py (R1)",
+  "verifier_method": "v05_reused.py R1 plus a new local-name case R3; v05b_erc_board.py for ERC and board.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "UP-11",
+  "title": "M refuses wiring a pin whose end carries an NC-type pin end (stacked member or another part)",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-units-pads/s_stacked.py (S3a, S3c); c_coincident.py (C4)",
+  "verifier_method": "v07_nctype.py N3 (STKNC2 [U1:3]), N4 (connect_pins U1:3 to R3:1), N5 (NCP2 U2:1 coincident with R1:2 in a different column); v07b_erc_before.py.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-12",
+  "title": "M refuses a pin name shared only by stacked pins",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-units-pads/s_stacked.py (S4b); scan_names.py",
+  "verifier_method": "pr57pt/verify-probe-units-pads/v08_stacked_name.py: stock INA240A1D at (127, 101.6), by name, by 2, by 4; name census re-derived in v09_census.py.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-13",
+  "title": "M's named remedy dead-ends when the no-connect flag sits on a spare copy",
+  "affects": "M",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-units-pads/u1f_nc_on_spare_copy.py (f1, f2)",
+  "verifier_method": "v02_rnet.py f1 and f2: M refusal, then the repo's remove_no_connect(RN1, 1), then M retry.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-14",
+  "title": "M refuses connect_pins on multi-copy pads (safe, remedy works)",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-units-pads/u1_rnet_common_pin.py (U1d, U1e); x_duplicate_numbers.py (X1d)",
+  "verifier_method": "v02_rnet.py d and e, pr57pt/verify-probe-units-pads/v10_up14_remedy.py.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-15",
+  "title": "Duplicate-number library erratum: M wires differently named points as one pad without flagging the mismatch",
+  "affects": "M",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-units-pads/x_duplicate_numbers.py (X2a, X2b)",
+  "verifier_method": "v03_dupnum.py X2a/X2b (stock 74278 pad 6), X1c/X1e (DUPV by name).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "UP-16",
+  "title": "De Morgan body styles: P and M both correct",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-units-pads/d_demorgan.py (D1, D2, D3, D4, D4b)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "UP-17",
+  "title": "Stacked passive and hidden power_in members, and coincident pin ends of two parts in separate or single calls: P and M both correct",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-units-pads/s_stacked.py (S1a, S1b, S1c, S2a, S2b, S4a); c_coincident.py (C1, C2, C3)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

@@ -52,6 +52,8 @@ Config priority: explicit tool parameter > `KICAD_SCH_PATH`/`KICAD_PCB_PATH`/`KI
 
 Fixtures in `conftest.py` build schematics/boards through kiutils builders. Byte-diff helpers (`_pure_insertion`, `_span_preserved`, `_confined`) assert CST edits touch only one contiguous span; use them in any new write-path test. `kicad_native_sch` mirrors KiCad's own output format where kiutils' differs; prefer it when testing format fidelity.
 
+`tools/routing_harness/` is the measurement harness behind `docs/adr-routing-safety.md`, ported from the routing pressure test's scratch scripts and kept textually close to them, so ruff, pyright, pytest collection and the sdist all skip it (`pyproject.toml`). It is not part of the package or of this suite; its own `smoke.py` is its regression check, and its README says what it reproduces and how.
+
 The tool count is hard-coded, and tests pin only two copies (`EXPECTED_TOOL_COUNT` in `conftest.py`, the literal in `test_unified_server.py`). Nothing local checks `server.py`'s instructions, README.md (twice), `mcpb/manifest.json`, `skills/using-kicad/SKILL.md`, or `macos-discovery.yml`, which runs only on `main` and `ci/**` pushes, so grep for the old number whenever a tool is added or removed.
 
 ### CI

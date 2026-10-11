@@ -1,0 +1,137 @@
+[
+ {
+  "id": "LW-01",
+  "title": "Star node by two connect_pins: P accepts routes that overlap or tee into the first route of the same net, giving a kicad-cli split or a GUI-only split",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-llm-workflow/star_probe.py (output star_probe.out, star_probe.json, star_summary.py/.out, star1_canon_check.out); also followup_probe.py case F3 (followup_probe.out)",
+  "verifier_method": "Own script verify-probe-llm-workflow/v_lw01_star.py (.out/.json): exact replicas of the probe's star_1 and star_3 plus 24 own placements (C1/R1 offsets the probe did not use), run on P, M and B; kicad-cli 9.0.8 node sets after every call; GUI view from my own CleanUp-ordered emulation (vlib.canon: break at junctions, drop non-explicit junctions, merge identical / overlapping / junction-free touching wires). Source re-read: 9.0.8 files-io.cpp:539 (GLOBAL_CLEANUP on load) and :566-567 (FixupJunctions legacy only), schematic.cpp:1147, 1151, 1282, 1291, sch_line.cpp:551-557.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LW-02",
+  "title": "P's own connect_pins 'Net-(ref-pin)' label makes the net 'named', so later naming, test points and the skill's connect_pins fallback are refused",
+  "affects": "P",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-llm-workflow/followup_probe.py (followup_probe.out/.json) and star_probe.py (star_probe.out); classify_small.out",
+  "verifier_method": "Own geometry, v_lw02_autolabel.py (.out): U1 STM32G030 + R1 + TP1; G1 connect_pins(U1:PA0,R1:1) then wire_pins_to_net([TP1:1,R1:1],'LED_DRV'); G2 then wire_pins_to_net([U1:PA0],'LED_DRV'); P, M, B; kicad-cli node sets; P's own recovery path tried. Star fallbacks re-measured in v_lw01_star.out.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LW-03",
+  "title": "Mirrored symbol at rotation 90/270 in a KiCad-authored sheet: P reports 'Wired 1 pin' but draws the stub in empty space, and the pin stays off the net",
+  "affects": "P",
+  "kind": "wrong-pin",
+  "scenario_script": "pr57pt/probe-llm-workflow/demo_probe.py, case W on vme-wren/clocks.kicad_sch (demo_probe.out/.json, demo_c116_trace.out, demo_summary.out)",
+  "verifier_method": "v_lw03_mirror.py (.out): Part A KiCad 9.0.8 demo vme-wren/clocks.kicad_sch repathed by my own vlib.repath, wire_pins_to_net([C116:2],'WP0'); Part B own fixtures in all four mirrored 90/270 orientations: Device:C (symmetric, C1:1 pre-wired to R9:1 at KiCad-true positions, confirmed by kicad-cli before each call) asking C1:2, and Device:Q_NPN asking base B with collector pre-wired. P, M, B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LW-04",
+  "title": "Pin name shared by pads at distinct points (e.g. 'U1:VDD', 'U2:GND'): P wires only the first match, reports success, and a replay reports a false no-op",
+  "affects": "P",
+  "kind": "wrong-pin",
+  "scenario_script": "pr57pt/probe-llm-workflow/run_designs.py with designs.py (run_designs.out, summarize_designs.out), run_generated.py with gen_layouts.py (run_generated.out, analyze_generated.out), census_dupnames.py (census_dupnames.out)",
+  "verifier_method": "Stock-library read (v_libpeek.py/.out): BME280 GND = pads 1 (-2.54,-15.24) and 7 (2.54,-15.24); STM32F103C_8-B_Tx VDD = 24/36/48 at three points. v_lw04_07_dupnames.py (.out) D1/D2 with replay, P/M/B. Independent census v_census.py (.out).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LW-05",
+  "title": "auto_place_decoupling_cap: a cap pin placed on an existing +3V3 wire gets an auto-junction; if that wire was drawn label-first, kicad-cli drops the IC's VDD pin from +3V3",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-llm-workflow/decap_sweep.py (decap_sweep.out/.json) and decap_reverse.py (decap_reverse.out)",
+  "verifier_method": "v_lw05_11_decap.py (.out): own fixture (STM32G030 VDD stub to '+3V3' label drawn label-first and pin-first, VSS stub to 'GND'), auto_place_decoupling_cap(Device:C, rot 180, origin VDD+(0,-5.08)) on P, M, B; kicad-cli plus GUI emulation.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LW-06",
+  "title": "P keeps the auto PWR_FLAG: after add_power_symbol, kicad-cli ERC crashes (0xC0000005) and run_erc blames Defender, so the skills' exit gate cannot run",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-llm-workflow/run_designs.py design tiny_bme_ps (designs.py D1PS, run_tiny_bme_ps.out), erc_check.py (erc_check.out), erc_exitcode.out",
+  "verifier_method": "v_lw06_pwrflag.py (.out): own fixture, add_power_symbol(power:+3V3, power:GND) then wire_pins_to_net on U1 VDD/VSS with P, M, B; kicad-cli 'sch erc' and 'sch export netlist' run directly; repo run_erc; control without add_power_symbol.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LW-07",
+  "title": "M refuses a pin name whose pads are all stacked at one point (VSS 23/35/47, GND 8/22, IOVDD x6), although wiring that point is exactly the request",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-llm-workflow/run_designs.py (stm32_usb), run_generated.py, classify.py (classify_designs.out, classify_generated.out), census_dupnames.py",
+  "verifier_method": "Stock-library read (v_libpeek.out: STM32F103C_8-B_Tx VSS = 23 visible power_in + 35, 47 hidden passive, all at (0,-40.64)); v_lw04_07_dupnames.py D3/D3b on P, M, B; census v_census.py.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LW-08",
+  "title": "All-or-nothing batches under the skill's 'report and continue' turn one refused pin into a whole unwired net",
+  "affects": "both",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-llm-workflow/run_generated.py (policies skill / adaptive / unbatched; analyze_generated.out), run_designs.py (summarize_designs.out), followup_probe.py F1",
+  "verifier_method": "v_lw04_07_dupnames.py D4 (M batch [U1:VSS, C1:2, J1:2]); v_lw02_autolabel.py G1 (P batch [TP1:1, R1:1]); read skills/schematic-design/SKILL.md lines 93-99 and 154-157.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "LW-09",
+  "title": "connect_pins tries only straight and two L routes; legitimate pairs are refused although a clean 3-segment route exists",
+  "affects": "both",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-llm-workflow/run_generated.py and run_designs.py with classify.py (classify_generated.out, classify_designs.out)",
+  "verifier_method": "v_lw09_zroute.py (.out): own pairs Z1 (U1:PA1 to R1:2, R1 vertical) and Z2 (R3:2 to D1:A on one line, cathode facing); connect_pins on P, M, B; the 3-segment route written raw and judged by kicad-cli; skill fallback.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LW-10",
+  "title": "M's port rule refuses a no-op: a parent pin already on SDA (auto label next to the sheet pin) is refused",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-llm-workflow/hier_probe.py (hier_probe.out/.json, hier_final.out)",
+  "verifier_method": "v_lw10_port.py (.out): own project via the repo's create_project / create_schematic / add_hierarchical_sheet (pins SDA, SCL, auto local labels on the parent stubs); U1 on the root; K1 control and K2 with add_wires from U1:PB7/PB8 to the SDA stub; root export.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LW-11",
+  "title": "M refuses auto_place_decoupling_cap placements whose pin lands on a wire of the very net it is asked to join",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-llm-workflow/decap_sweep.py (decap_sweep.out/.json)",
+  "verifier_method": "v_lw05_11_decap.py (.out): M's auto_place on the LW-05 fixture; then, with the cap placed by the repo's place_component, M's wire_pins_to_net alone (no I21 check); two hand-built alternatives for C1:1 judged by kicad-cli.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "LW-12",
+  "title": "Tee left by the repo's add_wires (junction on an unsplit wire): P reports 'already on GND' while kicad-cli 9 has the pin off GND; M's literal text would too, and the prototype refuses instead",
+  "affects": "both",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-llm-workflow/tee_probe.py (tee_probe.out/.json)",
+  "verifier_method": "v_lw12_tee.py (.out): own geometry, GND rail drawn label-end-last and label-end-first, R1:2 teed in with the repo's add_wires (junction on the unsplit rail), replayed wire_pins_to_net([R1:2],'GND') on P, M, B; kicad-cli plus GUI emulation; M prototype's own P0/C component names printed.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "LW-13",
+  "title": "Fresh LLM layouts at the skills' minimum spacing: neither P nor M creates a short, split or rename (B shorts 16 of 36 runs)",
+  "affects": "both",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-llm-workflow/gen_layouts.py, run_generated.py (analyze_generated.out); run_designs.py (summarize_designs.out)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "LW-14",
+  "title": "Modification mode on KiCad demo sheets: both refuse NC-flagged pins with the right remedy, then wire cleanly to fresh and existing names",
+  "affects": "both",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-llm-workflow/demo_census.py (demo_census.out), demo_probe.py (demo_probe.out/.json, demo_summary.out)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "LW-15",
+  "title": "Replay of the whole plan, and hierarchy by name: both idempotent and correct apart from LW-04",
+  "affects": "both",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-llm-workflow/run_generated.py (replay in analyze_generated.out), run_designs.py (replay in run_designs.out), hier_probe.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

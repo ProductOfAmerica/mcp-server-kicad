@@ -1,0 +1,146 @@
+[
+ {
+  "id": "INERT-01",
+  "title": "A netclass directive on 'inert' geometry changes the requested net's class (and every pin already on N)",
+  "affects": "P",
+  "kind": "netclass",
+  "scenario_script": "pr57pt/probe-inert/s01_netclass.py (cases 1a-1f, output s01_netclass.out); 4d2 in pr57pt/probe-inert/s04_lone_items.py",
+  "verifier_method": "Own fixtures (pr57pt/verify-probe-inert/v01_netclass.py and .out, fixtures under fx/v01*), not the prober's common.py: different coordinates, a dangling wire running left, a lone flag at E1, a lone flag on the stub path, connect_pins over a lone flag, and a rotated (90) R1 with a horizontal stub, plus a no-flag control. P, M and B each ran on their own copy. Judged with kicad-cli 9.0.8 kicadxml node sets and class, and the kicadsexpr class too. Source read: 9.0.8 connection_graph.cpp:437-481 and 2468-2486, 9.0 netlist_exporter_xml.cpp:816-821.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "INERT-02",
+  "title": "Inert wire whose far end rests on a foreign named wire (T, no junction): a later GUI drag merges N into it",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-inert/s02_latent_t.py (case 2a, output s02_latent_t.out)",
+  "verifier_method": "Rebuilt in v02_latent.py case T. A dangling wire D runs left from E1 and ends on the interior of foreign wire F (R3:1 up to label FOO), with no junction. Ran P, M and B, then kicad-cli 9.0.8 on the output. A later drag was emulated with my own writer (a junction plus a split of F), applied to each output and, as a control, to the untouched fixture. Source read: 9.0 sch_move_tool.cpp:966-972, 1025-1026, 1330-1410; 9.0.8 sch_screen.cpp:480-495, 1284-1330; 9.0.8 junction_helpers.cpp AnalyzePoint; 9.0 bus-wire-junction.cpp:188-198; 9.0.8 files-io.cpp:566-567.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "INERT-03",
+  "title": "Inert wire passing over a foreign pin end (visible or hidden power_in): a later GUI drag joins that pin to N",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-inert/s02_latent_t.py (case 2b) and pr57pt/probe-inert/s05_hidden_nc.py (case 5b)",
+  "verifier_method": "Rebuilt in v02_latent.py cases X and H. D runs from E1 over a visible foreign pin end (R3:2), and, using my own custom symbol, over a HIDDEN power_in pin named VDD. Same later-drag emulation and untouched-fixture control as INERT-02. Source read: 9.0 sch_symbol.cpp:2616-2638 (doIsConnected) and 9.0.8 junction_helpers.cpp:103-139.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "INERT-04",
+  "title": "A lone junction on the new wire is 'inert', and kicad-cli 9 truncates the new wire there: the requested join is missing",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-inert/s04_lone_items.py (cases 4a, 4c, output s04_lone_items.out)",
+  "verifier_method": "Rebuilt in v04_junctions.py J1 (lone junction on the 1x stub path) and J2 (lone junction on an aligned connect_pins route). Ran P, M and B with kicad-cli 9.0.8, my own GUI-load split emulation, and an interior-cut detector. Read repo schematic.py:954-1001 (remove_wire) and 1518-1534 (add_junctions).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "INERT-05",
+  "title": "Rule areas: a stub or label entering a rule area with a netclass directive changes the requested net's class (both designs)",
+  "affects": "both",
+  "kind": "netclass",
+  "scenario_script": "pr57pt/probe-inert/s04_lone_items.py (case 4f)",
+  "verifier_method": "Rebuilt in v05_rule_area.py: a rule area with a netclass_flag on its border and the pin outside. RA1: the stub end lands inside. RA2: a thin area crossed only by the stub's interior. RA3: control without the flag. RA4: an explicit direction away from the area. Ran P, M and B and read the kicad-cli 9.0.8 class. Read 9.0 sch_rule_area.cpp:226-302 and 9.0.8 connection_graph.cpp:443-454.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "INERT-06",
+  "title": "Kept auto-junction lands on an inert wire's unsplit interior: truncation hazard and a reader-dependent net class",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-inert/s04_lone_items.py (4d, 4d2-lr, 4d2-rl) and s01_netclass.py (1f-lr, 1f-rl)",
+  "verifier_method": "Rebuilt in v04_junctions.py: J3 (plain dangling wire through E1), J4 (the same with an HV flag at its far end, both drawing directions), and J7 (a dangling wire through the pin end with HV at its end, both directions). Used the interior-cut detector, kicad-cli 9.0.8, and the GUI-load split emulation. Read repo schematic.py:1214-1231.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "INERT-07",
+  "title": "Inert wire that collinearly overlaps a foreign named wire: the 9 GUI merges them on load, so N merges into that net",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-inert/s06_model_gaps.py (case 6a)",
+  "verifier_method": "Rebuilt in v06_model_gaps.py OV: D from E1 overlaps foreign wire F (label FOO, R3:1) collinearly, with no shared endpoint. Ran kicad-cli 9.0.8 plus my own collinear-merge emulation of the 9 GUI load.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "INERT-08",
+  "title": "Bus-entry end on an inert wire's interior: kicad-cli 9 joins it, so N merges into the entry's far net",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-inert/s06_model_gaps.py (cases 6b-lr, 6b-rl)",
+  "verifier_method": "Rebuilt in v06_model_gaps.py BE-lr and BE-rl: a bus-entry end on D's interior, with its other end on a FOO wire (R3:2) and no bus. Both drawing directions, kicad-cli 9.0.8 and the GUI-load split emulation.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "INERT-09",
+  "title": "Directive label where an inert wire crosses a bus joins wire and bus: P merges a bus-endpoint pin into N",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-inert/s07_bus_directive.py (7a, control 7b)",
+  "verifier_method": "Rebuilt in v06_model_gaps.py BD, with control BD-ctl: D crosses a bus at a netclass_flag HV, and R3:1 sits on the bus end. kicad-cli 9.0.8. Read 9.0.8 connection_graph.cpp:1241-1262 and sch_line.cpp:801-812.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "INERT-10",
+  "title": "Label 1 IU off a wire crossing joins both wires in KiCad; the prototype's exact geometry calls the dangling wire inert",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-inert/s03_label_crossing.py (case 3c)",
+  "verifier_method": "Rebuilt in v06_model_gaps.py L1, with control L0: a label 1 IU off the D/F crossing on both axes. Ran P, M, B, and P1iu: the same P prototype with rule 3 using KiCad's TestSegmentHit (accuracy 1) instead of exact containment. Read 9.0 trigo.cpp:175-206.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "INERT-11",
+  "title": "P's label list omits directive labels; read literally, a directive at a crossing leaves the dangling wire 'inert' and P merges",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-inert/s03_label_crossing.py (case 3b, design 'Plit' = prototype with directive labels removed from its item lists)",
+  "verifier_method": "Rebuilt in v06_model_gaps.py DX: a netclass_flag exactly at the D/F crossing. Compared the P prototype (directives modelled as labels) with Plit (directive tokens removed from its model), plus M and B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "INERT-12",
+  "title": "NC flag on an inert wire's end is invisible to P's inert test; joining it turns no_connect_dangling into a no_connect_connected ERC error",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-inert/s08_nc_on_dangling.py",
+  "verifier_method": "Rebuilt in v07_misc.py NC: a dangling wire from E1 with a no_connect at its far end. Compared the netlist and kicad-cli 9.0.8 ERC (with severities) before and after, for P, M and B.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "INERT-13",
+  "title": "M refuses a legitimate pin because a 2-point graphic line passes over the pin end",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-inert/s04_lone_items.py (cases 4e1, 4e2, 4e3)",
+  "verifier_method": "Rebuilt in v07_misc.py: PL1 (2-point graphic polyline through the pin end) and PL2 (polyline through E1). Then I hand-built both of M's candidates (stub plus label, and label on the pin) on the PL1 fixture and netlisted them (PLx).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "INERT-14",
+  "title": "M's connect_pins refuses aligned pins when an inert object sits on the straight route (no detour candidate)",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-inert/s01_netclass.py (1e) and s04_lone_items.py (4c)",
+  "verifier_method": "Rebuilt in v01_netclass.py e, v04_junctions.py J2 and v07_misc.py AL: aligned connect_pins with a lone HV flag or a lone junction on the straight route. Then ran M's own suggested remedy on the same fixture (AL-remedy).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "INERT-15",
+  "title": "Both designs report a no_connect-type pin as 'brought along' although KiCad never connects it",
+  "affects": "both",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-inert/s05_hidden_nc.py (case 5d; 5c for the related refusal)",
+  "verifier_method": "Rebuilt in v07_misc.py NT with my own custom symbol whose pin 3 is no_connect type, wired to R1:1. Compared P, M and B messages with the kicad-cli 9.0.8 netlist.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "INERT-16",
+  "title": "Where P classifies correctly, and what deleting 'inert' costs",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-inert/s03_label_crossing.py (3a, 3b, control), s05_hidden_nc.py (5a, 5c), s04_lone_items.py (4b, 4e2, 4e3), s01_netclass.py (1g), s07_bus_directive.py (7b); table in s99_summary.out",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

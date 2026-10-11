@@ -1,0 +1,3 @@
+# The routing harness is LF on every checkout: baselines/derive.py --check compares bytes, and
+# Git for Windows' default (core.autocrlf=true) would check it out CRLF.
+/tools/routing_harness/** text=auto eol=lf

@@ -1,0 +1,119 @@
+[
+ {
+  "id": "CMP-01",
+  "title": "P's snapshot/restore leaves a placed, unwired cap on disk when the process dies or the file is held between placement and restore",
+  "affects": "P",
+  "kind": "partial-write",
+  "scenario_script": "pr57pt/probe-composite/c03_restore_failure.py (cases A2, A7; uses locker.py), c04_crash_windows.py (+ c04_child.py), c08_window_timing.py, c00_lock_semantics.py",
+  "verifier_method": "Rebuilt independently with external actors and no hooks inside B/P/M: v02_crash_hold.py runs each call in a child process (v02_child.py); this process polls the sheet's (size, mtime) without sleeping and on the k-th change either TerminateProcess-kills the child or opens a plain read handle for 3 s. Controls: C0 (a read handle in another process blocks os.replace, WinError 5) and C1 (poller alone, all calls complete). Also v03 R1/R2 and v07 OK-1. kicad-cli 9.0.8 nets_coded on every end state; KiCad's tiny_tapeout demo (1.17 MB) for the window. Scripts and .out in pr57pt/verify-probe-composite/.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "CMP-02",
+  "title": "P lets the cap's own placement join existing parts to VCC/GND and reports them as 'already wired'",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-composite/c05_placement_contacts.py (S1, S2)",
+  "verifier_method": "v01_placement_contacts.py S1/S2 on my own geometry (Device:C at (152.4,127); S1 an unnamed R5 placed exactly under it, S2 a dangling wire end from R5:1 at C1:1's landing point), run through B, P and M. kicad-cli 9.0.8 nets before and after, compared per pre-existing pin as well as by harness.diff.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "CMP-03",
+  "title": "P's kept auto-junction lands on an unsplit power rail and kicad-cli 9 drops a far-side pin from VCC",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-composite/c05_placement_contacts.py (S3, S3r, S4), c05b_rail_readers.py",
+  "verifier_method": "v01_placement_contacts.py S3/S3r/S3n/S4 with pre-split fixtures, through B, P and M. Junctions inside unsplit wires were detected geometrically. Each result was exported a second time from a copy split at every interior junction (my own splitter; the GUI/K10 shape per sourced digest G06/G18). Read pcb.py:1880-1910.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "CMP-04",
+  "title": "P keeps the cap's hard-coded up/down: at rotation 180 stubs and labels land inside the symbol",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-composite/c01_rotations.py",
+  "verifier_method": "v04_rotations.py: Device:C and Device:C_Small at 0/90/180/270 on a loose sheet, plus rotation 180 on a sub-sheet, through B, P and M. Geometry from my own integer KiCad transform (rotate, then mirror), cross-checked in every run: each computed pin end is the start of a stub or carries a label. kicad-cli nets for every run.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "CMP-05",
+  "title": "On a sub-sheet, P's cap lands on sheet-local /kid/VCC and /kid/GND instead of the project rails, reported as wired to VCC/GND",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-composite/c06_subsheet_power_names.py",
+  "verifier_method": "v05_subsheet_names.py: project root with power:VCC and power:GND on R1; cap placed on a child sheet. Cases: K1 (child has no power symbols), K2 (child has power:GND), K3 (R7:1 already wired to a local VCC on the child, then the cap), K0 (root control). Through B, P and M; kicad-cli root export; kicad-cli ERC on the root for K1/K3.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "CMP-06",
+  "title": "P prototype's restore stops at the first failing file and ignores KeyboardInterrupt",
+  "affects": "P",
+  "kind": "partial-write",
+  "scenario_script": "pr57pt/probe-composite/c03_restore_failure.py (B1, B2, C)",
+  "verifier_method": "Code read of proposal_impl.py:940-946 (_restore loops over files with no try and raises on the first failure) and :988 (except Exception). v03_restore_semantics.py R1/R2 with external holds, no hooks.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "CMP-07",
+  "title": "P's restore-to-snapshot silently discards an edit another writer made during a refused call",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-composite/c03_restore_failure.py (D)",
+  "verifier_method": "v03_restore_semantics.py L1/L2/L3. A second writer in another process (this script) appends a text node through its own tmp plus os.replace when it sees P's pin-1 write (loose) or P's root-index write (sub-sheet). Pin 2 lands on global FOO, so P refuses and restores. M is the control.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "CMP-08",
+  "title": "M refuses a cap whose pin lands on an item already on the requested net",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-composite/c05_placement_contacts.py (S5, S6)",
+  "verifier_method": "v01_placement_contacts.py S5 (C1:2 lands on an existing power:GND pin; GND also holds R3:2) and S6 (C1:2 lands on the dangling end of a wire carrying local label GND and R3:2), through B, P and M, with a per-pin kicad-cli before/after comparison.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "CMP-09",
+  "title": "M on a sub-sheet still writes two files; a failed index write reports failure after the edit landed",
+  "affects": "M",
+  "kind": "partial-write",
+  "scenario_script": "pr57pt/probe-composite/c03_restore_failure.py (A6), c04_crash_windows.py (M sub+pro, kill after write 1)",
+  "verifier_method": "v02_crash_hold.py HS (root held 4 s from when the child is ready) and the K kill after change 1 on sub+pro, through B, P and M. v07_spotchecks.py OK-2: the root symbol_instances entry rewritten, or the whole section deleted, then the netlist compared. KiCad source read: 9.0.8 eeschema_helpers.cpp:180, 9.0.8 files-io.cpp:500, 10.0 eeschema_helpers.cpp:209. Text of phase1-independent.md.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "CMP-10",
+  "title": "M's cap result does not say that its VCC/GND nets are sheet-local",
+  "affects": "M",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-composite/c06_subsheet_power_names.py",
+  "verifier_method": "v05_subsheet_names.py K1/K3 messages. Code read of mine_impl.py:1228-1233 (wire_pins_to_net join report) against 1553-1554 (cap message).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "CMP-11",
+  "title": "add_power_symbol stays a 2 to 4 write chain with no rollback in both designs",
+  "affects": "both",
+  "kind": "partial-write",
+  "scenario_script": "pr57pt/probe-composite/c07_add_power_symbol.py",
+  "verifier_method": "v06_add_power_symbol.py on B: writes per configuration, plus a custom library holding only the stock VCC symbol. Text search of both design documents. Code read of schematic.py:1880-1955.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "CMP-12",
+  "title": "P's restore is byte-exact for every in-process refusal tested, and P refuses the wrong-rail drop that B turns into a VCC/GND merge",
+  "affects": "P",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-composite/c02_rollback_exact.py, c05_placement_contacts.py (S7)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "CMP-13",
+  "title": "M's single composition: one write per file, outward stubs at every rotation, no half-edit window",
+  "affects": "M",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-composite/c01_rotations.py, c03_restore_failure.py (A3), c04_crash_windows.py, c08_window_timing.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

@@ -1,0 +1,173 @@
+[
+ {
+  "id": "GM-01",
+  "title": "P merges a foreign label that sits 1 IU beside a new stub or connect_pins route; KiCad captures it and P's exact touch test does not",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-geometry-misc/o1_label_near_stub.py (o1a, o1f, o1g); pr57pt/probe-geometry-misc/g1_diag_cross.py (g1C, g1E, g1F)",
+  "verifier_method": "Own fixtures in pr57pt/verify-probe-geometry-misc/v01_gm01_label_beside_stub.py (.out beside it): target R1:2 outward DOWN (the prober used R1:1 up). P, M and B ran on byte-identical copies, judged by kicad-cli 9.0.8 node-set diff, with raw controls. Source read: 9.0.8 sch_label.cpp:1080..1176 (UpdateDanglingState), 9.0.8 connection_graph.cpp:1240..1262 (two-or-more-lines rule), 9.0 trigo.cpp:175..206 and seg.cpp:446..481 (TestSegmentHit, SquaredDistance), 10.0 sch_label.cpp:1299/1327 and 10.0 connection_graph.cpp:1393..1415 (unchanged).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-02",
+  "title": "P's new label at the stub end joins a foreign line that passes within 1 IU (sqrt(2) IU for a diagonal), including a foreign wire END 1 IU away",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-geometry-misc/o2_wire_near_stub_end.py (o2a, o2b); pr57pt/probe-geometry-misc/o4_parallel_wire.py (o4a); pr57pt/probe-geometry-misc/g2_diag_stub_end.py (g2C); pr57pt/probe-geometry-misc/o3_offgrid_part.py (o3a2); pr57pt/probe-geometry-misc/t1_2x3x.py (t1d)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v02_gm02_line_near_label.py (.out beside it). Variants: FOO wire 1 IU beyond E1; FOO wire crossing the stub 1 IU before E1; FOO wire parallel 1 IU beside and spanning E1; an unnamed foreign wire END 1 IU right of E1; 45-degree FOO wire at d^2=2 and at 4.5; a 2x label 1 IU from a FOO wire, with 1x blocked by a foreign wire through E1. Raw controls.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-03",
+  "title": "A non-grid stub_length (2.5399 or 2.5401) produces the 1 IU near miss itself on a lattice-only sheet, and P then merges",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-geometry-misc/s3_nongrid_stub.py (s3b, s3c, s3d; s3a, s3e as controls)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v03_gm03_nongrid_stub.py (.out beside it). Lattice-only fixture with a FOO wire across the stub axis at E1. stub_length values: 2.54, 0.1*25.4, 2.5399, 2.5401, 2.5, 2.0, 3.0. Also a table of k*KiROUND(L*1e4) mod 12700 for common lengths and k=1..3.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-04",
+  "title": "P's label-on-pin fallback joins a foreign diagonal passing sqrt(2) IU from the pin when the pin's own wire ends there",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-geometry-misc/g2_diag_stub_end.py (g2E)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v04_gm04_label_on_pin_two_lines.py (.out beside it). The own wire ends exactly at P, and FOO2 labels block the 1x/2x/3x stubs. Foreign FOO line 1 IU from P (orthogonal) and at d^2=2 (45-degree). Control with a bare pin (no own wire), and a 2 IU boundary case.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-05",
+  "title": "connect_pins' kept auto label 'Net-(R1-1)' at pin 1 merges a foreign wire 1 IU from pin 1, although the route alone is harmless",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-geometry-misc/c1_connect_label_near.py (c1a, c1b)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v05_gm05_connect_auto_label.py (.out beside it). connect_pins R1:2->R4:1 straight, with a FOO wire 1 IU and 2 IU from pin 1 crossing the route. Controls: route only; route plus junction at A; route plus 'Net-(R1-2)' label at A.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-06",
+  "title": "P's model misses net names that KiCad attaches by its 1 IU capture, so a pin already on FOO is wired to N, and connect_pins joins two named nets",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-geometry-misc/m1_near_miss_names.py (m1a, m1c, m1e, m1f; m1b control)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v06_gm06_name_model_capture.py (.out beside it). Variants: an own horizontal wire with FOO 1 IU off; an own slope-2 wire with FOO at exact d^2=3.2 (offset (-6348, 12700) IU); connect_pins to a BAR pin; a 2 IU control.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-07",
+  "title": "P treats a lone directive label (netclass_flag) on the stub path or at the stub end as inert; KiCad then gives the requested net that netclass",
+  "affects": "P",
+  "kind": "netclass",
+  "scenario_script": "pr57pt/probe-geometry-misc/n1_directive_near_stub.py (n1a, n1b, n1c)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v07_gm07_directive.py (.out beside it), all lattice-exact. Variants: a lone HV netclass_flag on the stub interior; one at E1; a dangling wire ending at E1 with an HV flag on it; the same with N already on R6:1; a control with the flag on N's own net. Net class read from kicadxml.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-08",
+  "title": "A pin lying on the interior of a wire that already carries N: P's kept auto-junction truncates that wire in kicad-cli 9 and drops R2:1 off N",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-geometry-misc/i2_pin_on_own_net_wire.py (i2a, i2b)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v08_gm08_pin_on_own_net_wire.py (.out beside it). The R1:2 pin end lies on the interior of a wire carrying N between R0:2 and R2:2, drawn in both directions. Controls: no junction; pre-split plus junction; label on P only.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-09",
+  "title": "A pin on a wire that P thinks is inert but that KiCad names through a captured label: P's junction merges that name",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-geometry-misc/i1_pin_on_wire.py (i1c, i1c2)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v09_gm09_pin_on_captured_wire.py (.out beside it). A dangling wire passes through P, with FOO 1 IU above its left half, in both drawing directions. Controls: no junction; pre-split plus junction.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-10",
+  "title": "P leaves junctions inside unsplit wires and collinear overlaps in legitimate cases, plus stray junctions 1-2 IU off foreign wires",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-geometry-misc/i1_pin_on_wire.py (i1b); pr57pt/probe-geometry-misc/a1_adjacent.py (a1d); pr57pt/probe-geometry-misc/a2_facing.py (a2v762L); pr57pt/probe-geometry-misc/a3_perpendicular.py (a3a, a3b); stray junctions in o2, o4, s3, t1, i1d, c1",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v10_gm10_junctions_overlaps.py: Conn_01x04 pins 4..1 and 1..4, direction down, 5.08 mm; facing pins 7.62 apart with 5.08 mm stubs; FOO wire 2 IU beyond E1. Also v18_stray_junction_truncation.py: a stray junction 2 IU beside a wire joining two pins. .out files beside both. Source: 9.0.8 schematic.cpp:1075..1110, 9.0.8 sch_screen.cpp:1234..1256, 9.0 trigo.cpp:89..104.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-11",
+  "title": "M's 0.05 mm tolerance refuses whole calls for harmless off-grid near misses at the pin end",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-geometry-misc/o3_offgrid_part.py (o3b); pr57pt/probe-geometry-misc/o4_parallel_wire.py (o4a, o4b); pr57pt/probe-geometry-misc/i1_pin_on_wire.py (i1d); pr57pt/probe-geometry-misc/c1_connect_label_near.py (c1a, c1b)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v11_gm11_m_tolerance.py (.out beside it). Cases: a foreign pin end 0.05 mm and 0.0501 mm from P; a FOO wire 1 IU above and 1 IU below P; connect_pins with FOO 2 IU from pin 1, plus a route-only control; lattice-only any-angle FOO wires 0.0488 mm and 0.0230 mm from P. Also the v04 control c.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "GM-12",
+  "title": "A line passing exactly through the target pin end blocks the pin in both designs, although a stub from it is netlist-neutral",
+  "affects": "both",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-geometry-misc/g3_diag_through_pin.py (g3A, g3B, g3C); pr57pt/probe-geometry-misc/i1_pin_on_wire.py (i1b, i1e); pr57pt/probe-geometry-misc/i2_pin_on_own_net_wire.py (M rows)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v12_gm12_line_through_pin.py (.out beside it). A foreign 45-degree wire, an inert wire and a bus, each through P; connect_pins from such a pin. Raw controls: stub plus label without junction; label on P only. v08 covers the N-carrying wire.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-13",
+  "title": "M's prototype refuses as 'ambiguous' a pin that KiCad already puts on N through a captured label",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-geometry-misc/m1_near_miss_names.py (m1d)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v13_gm13_m_capture_models.py (.out beside it). An own 45-degree wire with label N at d^2=2 (attached in KiCad). The M prototype was compared with an emulation of literal M 5.4 step 2, in which the no-op is decided on the P0 model (monkeypatched _copy_state).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-14",
+  "title": "P's text does not validate stub_length: P as written writes zero-length wires and aims negative lengths into the body",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-geometry-misc/s2_zero_negative.py (P0 rows; P0 = proposal_impl minus its I24 block)",
+  "verifier_method": "pr57pt/verify-probe-geometry-misc/v14_gm14_stub_length_validation.py (.out beside it). P0 is my own loader that cuts out proposal_impl's I24 block. stub_length values 0, 0.00004, -2.54, -3.81 and -7.62 on R1:2 (outward down; R1:1 is 7.62 mm above). P, M and B also ran for context.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "GM-15",
+  "title": "Exact 45-degree geometry is handled by both designs: P's 2x stub crosses the diagonal, M labels the pin",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-geometry-misc/g1_diag_cross.py (g1A, g1B); pr57pt/probe-geometry-misc/g2_diag_stub_end.py (g2A, g2B, g2D)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "GM-16",
+  "title": "Explicit direction into the part's body: both designs honour it (label ends up inside the body) and both avoid the self-short",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-geometry-misc/s1_into_body.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "GM-17",
+  "title": "P's 2x/3x candidates only rescue a 1x end that lands on a passing line; the longer stub crosses that line plainly (inert), and the label lands 5.08 or 7.62 mm out, sometimes inside another part",
+  "affects": "P",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-geometry-misc/t1_2x3x.py; pr57pt/probe-geometry-misc/a3_perpendicular.py (a3c); pr57pt/probe-geometry-misc/s3_nongrid_stub.py (s3e)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "GM-18",
+  "title": "Adjacent pins (2.54 pitch) and facing pins (2.54/5.08/7.62 mm), same net in one call or different nets in two calls: netlist-clean in both designs",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-geometry-misc/a1_adjacent.py; pr57pt/probe-geometry-misc/a2_facing.py; pr57pt/probe-geometry-misc/a3_perpendicular.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "GM-19",
+  "title": "A pin on a non-inert foreign wire's interior: both designs refuse; B shorts and splits",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-geometry-misc/i1_pin_on_wire.py (i1a, i1f)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

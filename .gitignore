@@ -20,3 +20,5 @@ gout*/
 # release.yml installs the pinned MCPB packer here; the sdist takes every
 # file .gitignore does not exclude, so this keeps node_modules out of it.
 .github/tools/mcpb/node_modules/
+# Routing harness runs: fixtures copied from the installed KiCad, and results. Never repo content.
+/tools/routing_harness/work/

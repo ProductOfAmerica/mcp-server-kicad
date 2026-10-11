@@ -1,0 +1,227 @@
+[
+ {
+  "id": "DEC-01",
+  "title": "P keeps connect_pins' automatic 'Net-(ref-pin)' label, so every net it connects counts as named and P refuses the next legitimate join",
+  "affects": "P",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-decisions/d01_autolabel_trap.py (.out, .json)",
+  "verifier_method": "Own geometry in pr57pt/verify-probe-decisions/v01_autolabel.py (.out). R1:1 and R2:1 sit in a row, R5:1 is on SIG, and R3/R4 are rotated 180 so every route is a clean straight wire. W1, W2 and W3 ran on P, M and B. Truth step: after P.connect, raw labels 'SIG' and 'AAA' on R1:1's end, judged by kicad-cli 9.0.8 (nets_coded + diff).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-02",
+  "title": "P's automatic label renames a net that is named only through a sheet pin",
+  "affects": "P",
+  "kind": "rename",
+  "scenario_script": "pr57pt/probe-decisions/d02_sheetpin_only_name.py (variant C)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v02_hier.py (.out). Own hierarchy: sheet 'sub' at (127,63.5) with pin PA, parent stub label removed, the repo's child hier and local labels PA wired on to R11:1. Variants plain, GND and GLOBAL; call C is connect(R1:1,R6:1) with R6:1 free. Root export, plus a grep for the label.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-03",
+  "title": "A sheet pin hides a power or global name from the child, and P merges a named net into it (GND, GEXT)",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-decisions/d02_sheetpin_only_name.py and d03_N_equals_sheetpin.py",
+  "verifier_method": "pr57pt/verify-probe-decisions/v02_hier.py (GND and GLOBAL variants, A = wire([R1:1],'N7'), B = connect(R1:1,R5:1)); v03_hier_N_is_pin.py (h3; h4 plus a latent-alias probe); v03b_erc_merge.py (ERC JSON before and after P's GND merge). All root exports on own geometry.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-04",
+  "title": "M refuses joins to a port net that KiCad carries out exactly as requested (net named only by a sheet pin, plain child)",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-decisions/d02_sheetpin_only_name.py (plain A/B) and d03_N_equals_sheetpin.py (h1, h2)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v02_hier.py plain variant (A, B) and v03_hier_N_is_pin.py (h1, h2). P and B results serve as KiCad's verdict on the join.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-05",
+  "title": "M refuses a correct no-op on the repo's own port stub (local label SP and sheet pin SP on one net)",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-decisions/d03_N_equals_sheetpin.py (h5)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v03_hier_N_is_pin.py h5: the repo's parent stub label PA is kept and R1:1 sits on it. Truth: a raw local PA on R1:1's end. Single call and batch [R1:1, R8:1] on P, M and B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-06",
+  "title": "P reports 'already on N' or 'already connected' for joins KiCad never makes (label stacked with an NC flag, label on a pin end lying on a wire, bus-entry ends)",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-decisions/d06_false_already_on_N.py and d14_connect_pins_false_noop.py",
+  "verifier_method": "pr57pt/verify-probe-decisions/v06_false_noop.py (.out), own geometry. 6a: label N plus NC flag on a wire interior. 6b: label N on a pin end lying on the wire interior. 6c: wire to a bus entry's bus-side end. 6d: two entries sharing a point, no bus. 6e-LR and 6e-RL: junction on an unsplit wire. 6f: labels N and M stacked. Truth: raw label N on R1:1. Calls on P, M and B: wire N, wire Z, connect(R1:1,R5:1). Source re-read: 9.0.8 sch_label.cpp:1080-1180, 10.0.6 sch_label.cpp:1248-1290, 9.0.8 connection_graph.cpp:1345-1361, 9.0.8 sch_bus_entry.cpp:597-599, 10.0 connection_graph.cpp:1504-1518, 10.0 sch_bus_entry.cpp:580-582.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-07",
+  "title": "Literal M decides no-ops on its over-approximate model, so it repeats P's false no-ops for bus-entry and unsplit-junction geometry",
+  "affects": "M",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-decisions/d06_false_already_on_N.py and d14_connect_pins_false_noop.py",
+  "verifier_method": "pr57pt/verify-probe-decisions/v07_literal_M.py (.out). A literal-M emulator on mine_impl's item tables using M 5.2's own rules: every item at a point joins; two-ended items join their ends; label attach follows the K9 and K10 rules unioned (blocked only by a pin end or NC flag at the anchor); junction and entry ends join a line's interior; overlaps join; pad copies join. Decisions follow 5.4 step 2 and 5.5 step 2. Run on rebuilt 6a to 6e with the truth re-measured per fixture.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-08",
+  "title": "M's prototype refuses pins that every KiCad version reads as plainly unconnected, and its messages claim 'already on N'",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-decisions/d06_false_already_on_N.py, d14_connect_pins_false_noop.py, d13_unnamed_per_P_named_per_kicad.py (c)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v06_false_noop.py (M rows for 6a to 6d), v16_bus_bridge.py case c (wire end on a bare bus end), with attribution via v07_literal_M.py. Note: the 'literal M' column in v06 uses the prototype's capture rule; v07 is the authority for 6a and 6b.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-09",
+  "title": "P wires an NC-type pin and reports success, but KiCad never connects it",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-decisions/d07_nc_type_pin.py (a, b)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v09_nc_type.py (.out). Own custom lib (VNC, pin 2 of no_connect type), with U1:2 and R6:1 in line. Truth: a raw label N on U1:2. Wire and connect on P, M and B. Source: 9.0.8 sch_pin.cpp:1791-1794 (ConnectionPropagatesTo returns false for PT_NC).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-10",
+  "title": "Both designs list an NC-type pin among the net-mates that 'came along'",
+  "affects": "both",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-decisions/d07_nc_type_pin.py (c)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v09_nc_type.py fixture C: R1:1 and R2:1 are wired to NC-type U1:2's end; wire([R1:1],'N2') on P, M and B.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "DEC-11",
+  "title": "Pad drawn by two units: P wires only the first copy, so a pad whose other copy is on X ends up on both N and X (a short on the board)",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-decisions/d10_pad_drawn_by_two_units.py (ii, iv)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v10_units.py (.out) cases ii and iv, own geometry: RN1 units A and B at (63.5,76.2) and (88.9,76.2), copies of pin 1 at y 72.39. Judged by the pad-to-nets view. v12_erc_pads.py (.out) adds ERC JSON before and after P's write.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-12",
+  "title": "Pad drawn by two units: P leaves the second copy unconnected and calls a half-wired pad 'already on N'",
+  "affects": "P",
+  "kind": "partial-write",
+  "scenario_script": "pr57pt/probe-decisions/d10_pad_drawn_by_two_units.py (i, iii, v) and d08_same_pin_twice.py (c)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v10_units.py cases i, iii, v and vi; v12_erc_pads.py case i.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-13",
+  "title": "Literal M reports a half-wired pad as a no-op because it unions the copies' names",
+  "affects": "M",
+  "kind": "partial-write",
+  "scenario_script": "pr57pt/probe-decisions/d10_pad_drawn_by_two_units.py (iii)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v10_units.py case iii, with literal M 5.4 step 2 evaluated as the union of the copies' names on mine_impl's P model.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-14",
+  "title": "Unit-0 pad with a copy on another sheet: both designs wire this sheet's copy and short the pad to the other sheet's net",
+  "affects": "both",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-decisions/d11_pad_copies_across_sheets.py",
+  "verifier_method": "pr57pt/verify-probe-decisions/v11_units_across.py (.out), own geometry: root RN1 unit A at (63.5,76.2); child RN1 set to unit 2 (top-level and instance) at (88.9,63.5), with its pin-1 copy and R12:1 on X. Root export.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-15",
+  "title": "P ignores the placed pin alternate when deciding power names, but KiCad uses it",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-decisions/d04_power_pins_as_targets.py (f, g, h)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v15_alternates.py (.out). Own lib: VALTP is a hidden power_in VDD pin with its passive alternate selected; VALTW is a hidden passive VDD pin with its power_in alternate selected; VHP is a plain VDD member. Truths use raw labels; calls f to i ran on P, M and B. Source: 9.0.8 sch_pin.cpp:279-297 (GetType follows the alternate), :323-327 (IsGlobalPower uses GetType), :1621-1637 (global power name is the lib pin name).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-16",
+  "title": "P treats a pin as unnamed when KiCad joins it to a named net through NC flags or junctions on both ends of a bus",
+  "affects": "P",
+  "kind": "allowed-wrong",
+  "scenario_script": "pr57pt/probe-decisions/d13_unnamed_per_P_named_per_kicad.py",
+  "verifier_method": "pr57pt/verify-probe-decisions/v16_bus_bridge.py (.out), own geometry: R1:1 wired to the left end of a bus from (63.5,50.8) to (88.9,50.8); R6:1 with label M on the right end. Variants: NC flags on both ends (a), junctions (b), nothing (c).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-17",
+  "title": "Multi-pin call on two already-connected pins: P's own automatic junction makes its 'already on N' for the second pin false in kicad-cli 9",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-decisions/d09_listed_pins_connected.py (c) and d07_nc_type_pin.py (c0)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v17_junction_split.py (.out), own geometry: R1:1 at (50.8,59.69) wired up to R2:2 at (50.8,41.91), in both drawing orders. Multi [R1:1,R2:2] and single [R1:1] calls on P, M and B. The script lists every junction written and whether it lies on a wire interior.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-18",
+  "title": "Label on the pin is refused when one foreign wire passes the pin end, though KiCad joins the label to the pin only",
+  "affects": "both",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-decisions/d12_label_on_pin_fallback.py",
+  "verifier_method": "pr57pt/verify-probe-decisions/v18_label_on_pin.py (.out), own geometry: R1:1 at (63.5,59.69) lies on the interior of a foreign wire from R3:1 to R4:1 (a); in (b) a vertical foreign wire also crosses exactly there. Truth: a raw label N on R1:1's end.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-19",
+  "title": "N equal to a KiCad auto name: P creates a look-alike net and reports success",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-decisions/d15_N_is_an_auto_name.py",
+  "verifier_method": "pr57pt/verify-probe-decisions/v19_autoname.py (.out), own geometry: R1:1 and R2:1 wired together (KiCad prints 'Net-(R1-Pad1)'), R7 free. Calls wire([R7:1],'Net-(R1-Pad1)') and wire([R1:1],'Net-(R1-Pad1)').",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-20",
+  "title": "N names a power or global net that exists only on another sheet: both designs write a sheet-local label, and P reports the pin as wired to N",
+  "affects": "both",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-decisions/d16_N_global_elsewhere_only.py",
+  "verifier_method": "pr57pt/verify-probe-decisions/v20_global_elsewhere.py (.out), own hierarchy: power:GND on root R1:1, global label GG on root R2:1, child with free R11 and R12. Child calls a (GND) and b (GG); root export.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "DEC-21",
+  "title": "M on a file whose net carries the old automatic label: the refusal suggests a remedy that M's own validation forbids",
+  "affects": "M",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-decisions/d01_autolabel_trap.py (W4)",
+  "verifier_method": "pr57pt/verify-probe-decisions/v01_autolabel.py W4: B.connect writes 'Net-(R1-1)'; then M's wire and connect calls run; then the repo's remove_label('Net-(R1-1)') and a retry.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "DEC-22",
+  "title": "Already on N only through a global label, power symbol, hidden power_in pin, root hierarchical label, or a child global, power or hierarchical label: both designs report a no-op, and KiCad confirms it",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-decisions/d05_noop_via_global_power_hier.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "DEC-23",
+  "title": "Power-symbol pin or hidden power_in pin as the target: both designs decide correctly",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-decisions/d04_power_pins_as_targets.py (a, b, d, e, c)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "DEC-24",
+  "title": "Same pin listed twice, or two listed pins already connected: both designs are correct, apart from unit-0 pads (DEC-12) and the junction interplay (DEC-17)",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-decisions/d08_same_pin_twice.py and d09_listed_pins_connected.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ },
+ {
+  "id": "DEC-25",
+  "title": "P's five plain decisions behave as stated in both designs",
+  "affects": "neither",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-decisions/d17_basic_decisions.py",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]

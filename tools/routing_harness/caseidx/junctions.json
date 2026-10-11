@@ -1,0 +1,128 @@
+[
+ {
+  "id": "JCT-P1",
+  "title": "P: outward stub overlaps the pin's own wire and an auto-junction lands on its interior; kicad-cli 9 drops the far pin",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-junctions/J1_own_wire.py",
+  "verifier_method": "Rebuilt from scratch with new geometry in pr57pt/verify-probe-junctions/V1_own_wire.py (own wire 15.24 mm instead of 12.7; fixtures: raw pin-first, raw far-first, repo add_wires, and a stub_length=5.08 run), each through P, M and B. Judged by node sets with kicad-cli 9.0.8 (CLI9, measured) plus my own independent K10 proxy and 9.0.8 GUI CleanUp emulation in vj.py, calibrated in V0_calibrate.out against digest G04, G05 and the collinear-overlap fact. Source re-read: 9.0.8 schematic.cpp:1055-1072, 1147-1158, 1282-1291; sch_line.cpp:574-583; pcb.py:1887-1900.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-P2",
+  "title": "P: stub end lands on the interior of a wire already on N; the kept junction truncates N's wire, so its far pins leave N in kicad-cli 9 and on the board",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-junctions/J2_stub_end_on_N_wire.py; pr57pt/probe-junctions/J2c_cap_row_on_rail.py; pr57pt/probe-junctions/J2d_pcb_consequence.py",
+  "verifier_method": "New geometry: verify-probe-junctions\\V2_stub_end_on_N.py (variants a/b/c plus a short-stub control d), V2c_rail.py (2-cap rail named by a local label or by a power:VCC symbol, both drawing directions), V2d_board.py (repo update_pcb_from_schematic into a fresh board, pad nets read back), all through P, M, B; CLI9 measured, K10 proxy and GUI9 emulation, NOJ.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-P3",
+  "title": "P: target pin end lies on the interior of N's wire (test_wire_pins_to_net_auto_junction geometry with the wire on N); the junction at the pin drops R2:1 in kicad-cli 9",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-junctions/J2b_pin_on_N_wire.py",
+  "verifier_method": "New geometry: verify-probe-junctions\\V3_pin_on_N_wire.py (R1:1 at (127,123.19) on the interior of W from a free end labelled N to R2:1; both drawing directions; P, M, B and a hand label edit).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-P4",
+  "title": "P: test_t_junction_connect_pins (D3) geometry joins in kicad-cli 9 only by the test's argument order; reversing either call splits, and the junction-free form disconnects in the GUI",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-junctions/J3_d3_connect.py",
+  "verifier_method": "New grid geometry: verify-probe-junctions\\V4_d3.py (fixtures raw_down, raw_up, presplit, P.connect_pins forward and reversed, repo connect_pins; second call to R2:1 and to R1:2; P, M, B) and V4c_second_call_swapped.py (second call with its arguments swapped). CLI9 measured, K10 proxy, my GUI9 emulation, NOJ variants. Source checked: 9.0.8 sch_line.cpp:551-557, 10.0 schematic.cpp:1706-1715, 10.0.0 junction_helpers.cpp:105, 10.0.6:137.",
+  "verifier_verdict": "partially"
+ },
+ {
+  "id": "JCT-P5",
+  "title": "P connect_pins: pin end on the interior of the other pin's own-net wire; the junction there drops R5:2 in kicad-cli 9, and the junction-free form disconnects R1:1 in the GUI",
+  "affects": "P",
+  "kind": "split",
+  "scenario_script": "pr57pt/probe-junctions/J6_connect_pin_on_own_wire.py",
+  "verifier_method": "New geometry: verify-probe-junctions\\V5_connect_pin_on_own_wire.py (W from R2:1 over R1:1's end to R5:2, both directions; P, M, B connect_pins; P and M wire_pins_to_net fallback; hand edit with two labels). Source checked: 9.0.8 sch_label.cpp:1097-1113.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-P6",
+  "title": "P: stub passing through an existing lone (inert) junction is reported wired, but kicad-cli 9 truncates the new stub and drops its label, leaving the pin off N",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-junctions/J5_stub_through_junction.py",
+  "verifier_method": "New geometry: verify-probe-junctions\\V6_stub_through_junction.py (lone junction inside the 1x stub path, and separately inside a 5.08 mm stub path; controls with pre-split arms of N and of OTHER crossing at the junction); P, M, B.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-P7",
+  "title": "P on files with old unsplit junctions: its model joins the whole wire (GUI/K10 reading) and reports no-ops that are false in kicad-cli 9",
+  "affects": "P",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-junctions/J4_preexisting_junctions.py",
+  "verifier_method": "New geometry: verify-probe-junctions\\V7_preexisting_junctions.py (repo add_wires T leaves a junction on unsplit W1, both W1 directions; queries Q1 wire R2:1 to N, Q3 wire R3:1 to N, Q5 connect R2:1-R3:1 through P, M, B), V7b_label_fix.py (fix check).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-P8",
+  "title": "P (side finding, naming, surfaced by scenario 1's setup): P refuses to name or extend nets that its own connect_pins created, because it keeps the auto 'Net-(ref-pin)' label",
+  "affects": "P",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-junctions/J9_side_autolabel.py",
+  "verifier_method": "verify-probe-junctions\\V8_autolabel.py (sequences: name the net after connect_pins with one and with both pins; join two connect_pins nets; control extending with an unnamed pin; P, M, B) and V8b_repo_autolabel_then_m.py (net made by repo connect_pins, then M and P).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-M1",
+  "title": "M text: the no-op is decided on the over-approximate model, which joins unsplit-junction wires, so on old files it reports 'already on N' when kicad-cli 9 disagrees",
+  "affects": "M",
+  "kind": "other",
+  "scenario_script": "pr57pt/probe-junctions/J4_preexisting_junctions.py",
+  "verifier_method": "Text reading of phase1-independent.md:112, :116, :138, :149 against :47-49, plus verify-probe-junctions\\V7_preexisting_junctions.py, which queries the prototype's over-approximate P0 model (its implementation of M 5.2) on my fixtures, with CLI9 measured.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-M2",
+  "title": "M refuses the D3 connect_pins (the repo's own regression geometry): the H-first corner lands on W1, and the V-first leg passes R3's own pin 2",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-junctions/J3_d3_connect.py",
+  "verifier_method": "verify-probe-junctions\\V4_d3.py (all six fixtures), V4c_second_call_swapped.py, V4b_m_fallback.py (M's suggested fallback on the same geometry).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-M3",
+  "title": "M refuses a label on a pin end that carries KiCad's own pre-split junction (rule 4) when the stub is blocked, though that label is clean in every reading",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-junctions/J7_pin_at_presplit_junction.py",
+  "verifier_method": "New geometry: verify-probe-junctions\\V9_pin_at_presplit_junction.py (pin end with wire up, wire left and a junction, both W_up directions, plus a side-only control; P, M, B and a hand label) and V9b_m_direction_workaround.py.",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-M4",
+  "title": "M has no tool path for a pin end lying on a wire's interior: stub, label-on-pin, connect_pins and its suggested fallback are all refused, though a label on the pin is clean in every reading",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-junctions/J2b_pin_on_N_wire.py; pr57pt/probe-junctions/J6_connect_pin_on_own_wire.py",
+  "verifier_method": "verify-probe-junctions\\V3_pin_on_N_wire.py and V5_connect_pin_on_own_wire.py (M wire_pins_to_net, connect_pins and the fallback; hand label edits; a foreign-wire control).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-M5",
+  "title": "M prototype: the certain model drops the whole unsplit-junction wire, so it refuses pins that are on N, or connected, in every reading",
+  "affects": "M",
+  "kind": "refused-legit",
+  "scenario_script": "pr57pt/probe-junctions/J4_preexisting_junctions.py",
+  "verifier_method": "verify-probe-junctions\\V7_preexisting_junctions.py (M prototype on both fixtures; CLI9, K10 proxy and GUI9 readings of the fixture).",
+  "verifier_verdict": "confirmed"
+ },
+ {
+  "id": "JCT-M6",
+  "title": "M never writes junctions or collinear overlaps; every M write in J1-J7 was clean in kicad-cli 9 and in the GUI and K10 emulations, and J2d's board kept the rail pin on VCC",
+  "affects": "M",
+  "kind": "ok",
+  "scenario_script": "pr57pt/probe-junctions/J1_own_wire.py (and J2, J2c, J2d, J5, J7)",
+  "verifier_method": "",
+  "verifier_verdict": ""
+ }
+]
