@@ -13,5 +13,8 @@ Each rung checks the ports it adds in its own judges file,
 tests/test_ladder_r<N>_judges.py: rung 2 adds trigo (angles and RotatePoint),
 transform (the schematic symbol transform), parse_units (number tokens and the
 load clamps), board_item (footprint-relative positions), kicad_io_utils (point
-packing) and eda_units.format_angle, all checked in test_ladder_r2_judges.py.
+packing) and eda_units.format_angle, all checked in test_ladder_r2_judges.py;
+rung 3 adds footprint (a footprint as KiCad reads it, SetOrientation and Rotate),
+pad and pcb_text (a pad's and a text's angle, keep-upright and justification),
+checked in test_ladder_r3_judges.py.
 """

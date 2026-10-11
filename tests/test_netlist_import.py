@@ -15,6 +15,8 @@ import subprocess
 from pathlib import Path
 from xml.etree.ElementTree import ParseError
 
+import footprint_judge as FJ
+import geom_gen as G
 import pytest
 from conftest import HAS_KICAD_CLI
 from kiutils.board import Board
@@ -856,6 +858,52 @@ class TestSummarySchema:
         assert set(summary) == set(UpdatePcbResult.model_fields)
         result = UpdatePcbResult(**summary)
         assert result.status == "ok"
+
+
+#: One component on a generated library footprint, Ladder:N7, and no nets: what the
+#: update's add path needs and nothing else.
+ADD_ONE_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<export version="E">
+  <components>
+    <comp ref="R1">
+      <value>1k</value>
+      <footprint>Ladder:N7</footprint>
+      <sheetpath names="/" tstamps="/"/>
+      <tstamps>aaaa-bbbb</tstamps>
+    </comp>
+  </components>
+  <nets>
+  </nets>
+</export>
+"""
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "bug 53: footprint angles are not spelled as KiCad writes them (the footprint's"
+        " angle 270 for -90 and an explicit 0, a library angle copied as the library"
+        " spells it); fixed by step 7"
+    ),
+)
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_update_adds_footprints_with_kicads_angle_spelling(tmp_path, version):
+    """A footprint the update adds stands at orientation 0, which KiCad's writer leaves out
+    of the footprint's (at ...) (format( FOOTPRINT ), pcbnew/pcb_io/kicad_sexpr/
+    pcb_io_kicad_sexpr.cpp:1127-1131 at 9.0.8, 1231-1235 at 10.0.7): the added R1's (at)
+    holds its x and y and no angle atom, on a KiCad 9 and a KiCad 10 board alike. Today the
+    add path writes (at x y 0)."""
+    G.pretty_library(tmp_path, "N7", [("1", (-1_000_000, 0), 0.0), ("2", (1_000_000, 0), 0.0)])
+    netlist = tmp_path / "add_one.xml"
+    netlist.write_text(ADD_ONE_XML, encoding="utf-8")
+    board = tmp_path / "board.kicad_pcb"
+    board.write_text(G.board_text([], version=version), encoding="utf-8", newline="\n")
+    summary = pcb._apply_netlist_cst(str(netlist), str(board), [str(tmp_path)])
+    if summary["added"] != ["R1"]:
+        raise RuntimeError(f"the update did not add R1: {summary}")
+    at = FJ.child(FJ.footprint_group(board.read_bytes(), "R1"), b"at")
+    assert len(at.items) == 3, f"(at) holds {[t.value.decode() for t in at.items[1:]]}"
 
 
 # ===========================================================================
