@@ -66,11 +66,8 @@ while True:
                 bad.append("FALSE-NOOP")
             if r.get("status") in ("HARNESS_ERROR", "ERROR"):
                 bad.append(r.get("status"))
-            kindtxt = " ".join(str(r.get(k) or "") for k in ("kind", "sample", "record_type",
-                                                              "fallback", "tool"))
-            if "label" in kindtxt:
-                bad = []  # repo add_label fallbacks: counted in the summaries, not alarms
-            elif r.get("design") not in SELECTED:
+            if r.get("tool") == "add_label" or r.get("design") not in SELECTED:
+                # repo add_label fallbacks and other designs: errors only; summaries count the rest
                 bad = [b for b in bad if b in ("HARNESS_ERROR", "ERROR")]
             pads = r.get("pads") or []
             if bad == ["FALSE-NOOP"] and pads and all(str(x[0]).startswith("#") for x in pads):

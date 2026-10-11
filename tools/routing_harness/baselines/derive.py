@@ -37,8 +37,11 @@ Scrubbed:
                                install>\\share\\kicad\\demos
   reports/pressure-test-report.md  the "Not run: codex-spec" line, which described a local tool
                                configuration, becomes a neutral line; nothing else changes
+Repaired:
+  reports/coarse-variant-report.md  one path whose backslash-n became a line break when the report
+                               was written is restored; nothing else changes
 Copied byte for byte:
-  reports/{coarse-variant,hybrid,dupref}-report.md, reports/routing-proposal-v2.md
+  reports/{hybrid,dupref}-report.md, reports/routing-proposal-v2.md
 """
 
 import argparse
@@ -54,8 +57,7 @@ HARNESS = Path(__file__).resolve().parent.parent
 CASEIDX = ("buses", "composite", "decisions", "geometry-misc", "hierarchy", "inert", "junctions",
            "labels", "llm-workflow", "naming", "perf", "pin-identity", "units-pads")
 GATES = ("gate_rerun3_Hb2", "gate_x_final2", "gate_x_final3", "gate_rerun2_Hb")
-REPORTS = ("coarse-variant-report.md", "hybrid-report.md", "dupref-report.md",
-           "routing-proposal-v2.md")
+REPORTS = ("hybrid-report.md", "dupref-report.md", "routing-proposal-v2.md")
 LAYOUT_STOCK = ("ampli_ht", "fpga-hp-banks", "tinytapeout-demo")
 UUID_RE = re.compile(rb"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 
@@ -259,6 +261,16 @@ def scrub_pressure_test(work: Path) -> bytes:
     return t.encode("utf-8")
 
 
+def repair_coarse_variant(work: Path) -> bytes:
+    """The report's writer turned the backslash-n in rerun\\probeC\\notes into a line break;
+    the path is restored. Every other byte is the scratch original's."""
+    t = (work / "coarse-variant-report.md").read_bytes()
+    broken = b"`rerun\\probeC\notes\\llm-workflow.json`"
+    n = t.count(broken)
+    assert n == 1, f"coarse-variant-report.md: {n} broken paths, expected 1"
+    return t.replace(broken, b"`rerun\\probeC\\notes\\llm-workflow.json`")
+
+
 # ---------------------------------------------------------------------------------------- main
 
 
@@ -277,6 +289,7 @@ def build(pt: Path, work: Path):
         out[f"caseidx/{c}.json"] = scrub_caseidx(pt, c)
     out["reports/HANDOFF.md"] = scrub_handoff(pt)
     out["reports/pressure-test-report.md"] = scrub_pressure_test(work)
+    out["reports/coarse-variant-report.md"] = repair_coarse_variant(work)
     for r in REPORTS:
         out[f"reports/{r}"] = (work / r).read_bytes()
     return out, notes

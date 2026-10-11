@@ -33,8 +33,7 @@ Tags: **measured** = kicad-cli 9.0.8 netlist; **emulated** = judge3's port of th
 Wrong writes are counted in cli/gui (measured/emulated). Sources:
 - Probe A: `rerun\probeA\summary.md`.
 - Probe B: `rerun\probeB\summary.md`.
-- Probe C: `rerun\probeC\summary.md`, plus `rerun\probeC
-otes\llm-workflow.json` for llm-workflow.
+- Probe C: `rerun\probeC\summary.md`, plus `rerun\probeC\notes\llm-workflow.json` for llm-workflow.
 - Generated layouts and stock: `rerun\layouts_stock\summary.md`.
 - Demo sweeps: `rerun\demo\summary.md`.
 
