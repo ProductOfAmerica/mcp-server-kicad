@@ -81,6 +81,20 @@ def _demos_and_templates() -> list[tuple[str, Path]]:
 
 _SHIPPED = _demos_and_templates()
 
+#: A line whose first non-blank byte is '#' is a comment KiCad's lexer skips whole
+#: (dsnlexer.cpp 575-598 at 9.0.8, the blanks of kicad_ref.dsn_lexer's _SPACE); the CST
+#: reads it as tokens, and a paren in it as structure (bug 65). KiCad 9.0.8 ships no such
+#: file; KiCad 10's jetson-agx-thor-baseboard demo rules (.kicad_dru) hold several.
+_COMMENT_LINE = re.compile(rb"(?m)^[ \t\r\x00]*#")
+_BUG_65 = (
+    "bug 65: the CST reads a '#' comment line of a shipped file as tokens, where KiCad's"
+    " lexer skips the line; fixed by step 11"
+)
+
+
+def _has_comment_line(data: bytes) -> bool:
+    return _COMMENT_LINE.search(data) is not None
+
 
 def _installed_groups() -> list[tuple[str, list[Path]]]:
     """Every s-expression file under the share directories, grouped by directory, a
@@ -142,9 +156,18 @@ def _reading_difference(tree, data: bytes, knows_bar: bool) -> str | None:
     )
 
 
-def _check_file(data: bytes) -> None:
+def _check_file(data: bytes, *, with_comment_lines: bool = False) -> None:
     """Round trip; refused exactly when, and where, KiCad's lexer refuses; else the
-    same reading as KiCad's lexer, with the bar as the file's parser sets it."""
+    same reading as KiCad's lexer, with the bar as the file's parser sets it. A file
+    with a '#' comment line is bug 65's: only its round trip is checked here, unless
+    with_comment_lines (the bug's own strict xfail)."""
+    if not with_comment_lines and _has_comment_line(data):
+        try:
+            tree = _cst.parse(data)
+        except SyntaxError:
+            return  # a paren inside a comment line: bug 65's refusal, its test's subject
+        assert _cst.serialize(tree) == data, "serialize(parse(file)) is not the file"
+        return
     knows_bar = L.knows_bar_of(data)
     try:
         L.tree(data, knows_bar=knows_bar)
@@ -179,6 +202,17 @@ def _check_file(data: bytes) -> None:
 def test_shipped_file_round_trips_and_reads_as_kicads_lexer(path):
     """One demo or template file KiCad ships, against the three properties above."""
     _check_file(path.read_bytes())
+
+
+@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_65)
+def test_shipped_files_with_comment_lines_read_as_kicads_lexer():
+    """Every shipped demo or template with a '#' comment line, against all three
+    properties: KiCad's lexer skips the line, the CST does not (bug 65)."""
+    commented = [path for _name, path in _SHIPPED if _has_comment_line(path.read_bytes())]
+    if not commented:
+        pytest.skip("no shipped demo or template here holds a '#' comment line")
+    for path in commented:
+        _check_file(path.read_bytes(), with_comment_lines=True)
 
 
 def test_shipped_corpus_is_found():
