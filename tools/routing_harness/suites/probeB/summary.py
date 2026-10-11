@@ -159,8 +159,8 @@ def main():
     fbc = Counter()
     for r in fbs.values():
         v = ("refused" if r["status"] == "REFUSED" else r["status"].lower() if r["status"] != "OK"
-             else ("wrong" if (r.get("cli_wrong") or r.get("gui_wrong")) else
-                   "clean_delivered" if (r.get("delivered_cli") and r.get("delivered_gui"))
+             else ("wrong" if readings.wrong(r) else
+                   "clean_delivered" if all(r.get(f"delivered_{rd}") for rd in readings.READINGS)
                    else "clean_not_delivered"))
         fbc[(r["for_design"], r["fallback"], v)] += 1
     out["fallback_outcomes"] = {f"{a}|{b}|{c}": n for (a, b, c), n in sorted(fbc.items())}

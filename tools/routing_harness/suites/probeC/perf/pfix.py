@@ -49,11 +49,8 @@ SHEETS = {  # verifier order (vcommon.SHEETS)
 }
 IU = 10000
 G = 12700
-TIMING_NOTE = ("unjudged runs, fresh copy per run, design order rotated (M2 K, K M2, M2 K); measured"
-               " while the machine was saturated by parallel agents (observed 100% CPU on 16 logical"
-               " CPUs, about 48 python and 9 kicad-cli processes; at most 2 of them this script's),"
-               " so absolute figures are inflated and noisy; compare M2 with K, not with the"
-               " original probe's seconds")
+TIMING_NOTE = ("unjudged runs, fresh copy per run, three runs in one fixed design order (the run's"
+               " designs); figures depend on the machine's load at the time")
 
 
 def _iu(v) -> int:
@@ -423,12 +420,11 @@ def load_pins():
 
 
 TIMINGS: dict = {}  # (variant, design) -> {"runs_s": [...], "statuses": [...]} (or per-step lists)
-# Follow-up 2: four designs; the order is rotated across the three runs.
-_ROT = (tuple(R.DESIGNS),) * 3  # follow-up 3: one fixed order (the run's designs), not rotated
+_ROT = (tuple(R.DESIGNS),) * 3  # three runs, each in the run's design order (not rotated)
 
 
 def time3(variant, tool, base_file, kw):
-    """Min of 3 unjudged runs per design on fresh copies (order rotated). Stored in TIMINGS."""
+    """Min of 3 unjudged runs per design on fresh copies (one fixed order). Stored in TIMINGS."""
     base_file = Path(base_file)
     scratch = Path(H.BASE) / "_timing"
     scratch.mkdir(exist_ok=True)

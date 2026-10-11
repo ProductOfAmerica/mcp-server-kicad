@@ -22,8 +22,8 @@ Speed-only workarounds (no effect on any reading or fixture), installed in every
   function does.
 - judge3.nets_full is cached on the bytes of the root's whole directory tree (same tree, same
   kicad-cli netlist); failed exports are not cached.
---resume skips jobs whose records are already complete in the records file (each job is written
-in one block when it finishes, so a job is either complete there or absent).
+Re-running resumes: rlib.main keeps the records of every job that is complete in the records
+file and reruns the rest (RLIB_FRESH=1 starts over).
 
 Run: uv run python tools/routing_harness/suites/probeA/pin-identity/pi_jobs.py [--workers N]
      [--only SUBSTR ...] [--out PATH] [--list]
@@ -1041,26 +1041,7 @@ if __name__ == "__main__":
     ap.add_argument("--only", nargs="*")
     ap.add_argument("--out")
     ap.add_argument("--list", action="store_true")
-    ap.add_argument("--resume", action="store_true")
     a = ap.parse_args()
-    jobs = JOBS
-    if a.resume:
-        out = Path(a.out or rlib.OUT / f"records_{CAT}.jsonl")
-        have: dict = {}
-        if out.exists():
-            for line in open(out, encoding="utf-8"):
-                try:
-                    r = json.loads(line)
-                except ValueError:
-                    continue
-                if r.get("status") != "HARNESS_ERROR":
-                    have[r["variant"]] = have.get(r["variant"], 0) + 1
-        done = {j.variant for j in JOBS if have.get(j.variant, 0) == len(rlib.DESIGNS) * len(j.cases) * len(j.steps)}
-        bad = {v for v in have if v not in done}
-        if bad:
-            sys.exit(f"incomplete or unexpected records in {out}: {sorted(bad)}")
-        jobs = [j for j in JOBS if j.variant not in done]
-        print(f"resume: {len(done)} jobs complete in {out}, {len(jobs)} to run")
     if a.list:
         from collections import Counter
 
@@ -1070,4 +1051,4 @@ if __name__ == "__main__":
         for j in JOBS[:3]:
             print(" ", j.variant, j.cases)
         sys.exit(0)
-    rlib.main(jobs, CAT, str(Path(__file__).resolve()), out=a.out, workers=a.workers, only=a.only)
+    rlib.main(JOBS, CAT, str(Path(__file__).resolve()), out=a.out, workers=a.workers, only=a.only)
