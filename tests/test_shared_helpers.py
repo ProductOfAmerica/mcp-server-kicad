@@ -38,6 +38,17 @@ from mcp_server_kicad._shared import (
 )
 
 
+def _sym_lib(marker: str, eol: str = "\n") -> bytes:
+    """A symbol library with no symbols, which kicad-cli loads (measured on 9.0.8,
+    2026-10-10), told apart from another by its generator string.
+
+    Where a test only moves a library's bytes around, these stand in for its content:
+    a stub such as "(kicad_symbol_lib original)" starts like a library, so the autouse
+    kicad-cli oracle checks it, and kicad-cli cannot load it.
+    """
+    return f'(kicad_symbol_lib (version 20241209) (generator "{marker}")){eol}'.encode()
+
+
 class TestResolveHierarchyPath:
     def test_root_schematic_returns_own_uuid(self, tmp_path: Path):
         """When schematic IS the root, return project name and /{uuid}."""
@@ -97,6 +108,9 @@ class TestResolveHierarchyPath:
 
 
 class TestResolveRoot:
+    """_resolve_root reads names, never contents, so these schematics are empty placeholders."""
+
+    @pytest.mark.kicad_placeholder("myproj.kicad_sch", "child.kicad_sch")
     def test_returns_root_from_project_path(self, tmp_path: Path):
         """When project_path is given, derive root .kicad_sch from it."""
         from mcp_server_kicad._shared import _resolve_root
@@ -111,6 +125,7 @@ class TestResolveRoot:
         result = _resolve_root(str(sub_sch), project_path=str(pro))
         assert result == str(root_sch)
 
+    @pytest.mark.kicad_placeholder("myproj.kicad_sch")
     def test_returns_none_when_already_root_via_project(self, tmp_path: Path):
         from mcp_server_kicad._shared import _resolve_root
 
@@ -122,6 +137,7 @@ class TestResolveRoot:
         result = _resolve_root(str(root_sch), project_path=str(pro))
         assert result is None
 
+    @pytest.mark.kicad_placeholder("myproj.kicad_sch", "child.kicad_sch")
     def test_falls_back_to_glob_when_no_project_path(self, tmp_path: Path):
         from mcp_server_kicad._shared import _resolve_root
 
@@ -135,6 +151,7 @@ class TestResolveRoot:
         result = _resolve_root(str(sub_sch))
         assert result == str(root_sch)
 
+    @pytest.mark.kicad_placeholder("standalone.kicad_sch")
     def test_returns_none_when_no_project_found(self, tmp_path: Path):
         from mcp_server_kicad._shared import _resolve_root
 
@@ -824,12 +841,13 @@ class TestBackupForExternalWrite:
 
     def test_a_file_is_copied_beside_itself(self, tmp_path):
         src = tmp_path / "lib.kicad_sym"
-        src.write_bytes(b"(kicad_symbol_lib original)\r\n")
+        src.write_bytes(_sym_lib("original", "\r\n"))
         dest = _backup_for_external_write(src, "symbol library")
         assert dest == tmp_path / "lib.kicad_sym.bak"
         # Bytes, not text: a backup that normalises line endings is not a backup.
-        assert dest.read_bytes() == b"(kicad_symbol_lib original)\r\n"
+        assert dest.read_bytes() == _sym_lib("original", "\r\n")
 
+    @pytest.mark.kicad_placeholder("lib.kicad_sym")  # bytes that only tell runs apart
     def test_a_second_run_overwrites_rather_than_accumulates(self, tmp_path):
         """The bounded-at-one property, which is the answer to the ADR's
         objection. If this ever fails, the reversal stops being justified."""
@@ -851,6 +869,12 @@ class TestBackupForExternalWrite:
         assert sorted(p.name for p in dest.iterdir()) == ["C_0402.kicad_mod", "R_0603.kicad_mod"]
         assert (dest / "R_0603.kicad_mod").read_bytes() == b'(footprint "R_0603")'
 
+    @pytest.mark.kicad_placeholder(
+        "MyLib.pretty/a.kicad_mod",
+        "MyLib.pretty/b.kicad_mod",
+        "MyLib.pretty.bak/a.kicad_mod",
+        "MyLib.pretty.bak/b.kicad_mod",
+    )
     def test_a_directory_backup_also_stays_at_one(self, tmp_path):
         pretty = tmp_path / "MyLib.pretty"
         pretty.mkdir()
@@ -867,6 +891,7 @@ class TestBackupForExternalWrite:
         # No staging directory left behind.
         assert not [p for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
 
+    @pytest.mark.kicad_placeholder("lib.kicad_sym")
     def test_a_failed_backup_refuses_rather_than_proceeding(self, tmp_path, monkeypatch):
         """Proceeding without a backup is the thing this exists to prevent."""
         src = tmp_path / "lib.kicad_sym"
@@ -896,6 +921,7 @@ class TestBackupForExternalWrite:
 
         monkeypatch.setattr(_shared.os, "replace", replace)
 
+    @pytest.mark.kicad_placeholder("MyLib.pretty/a.kicad_mod", "MyLib.pretty.bak/a.kicad_mod")
     def test_a_failed_refresh_puts_the_previous_backup_back(self, tmp_path, monkeypatch):
         """os.replace will not put a directory over a directory, so the old
         backup is moved aside before the new one goes in. When the new one then
@@ -915,6 +941,7 @@ class TestBackupForExternalWrite:
         assert (tmp_path / "MyLib.pretty.bak" / "a.kicad_mod").read_bytes() == b"one"
         assert sorted(p.name for p in tmp_path.iterdir()) == ["MyLib.pretty", "MyLib.pretty.bak"]
 
+    @pytest.mark.kicad_placeholder("MyLib.pretty/a.kicad_mod", "MyLib.pretty.bak/a.kicad_mod")
     def test_a_stranded_backup_is_recovered_not_deleted(self, tmp_path, monkeypatch):
         """If putting it back failed too, the next run from this process finds
         the backup under its retired name with no .bak beside it. With no .bak
@@ -939,7 +966,7 @@ class TestBackupForExternalWrite:
     @staticmethod
     def _private_sym(tmp_path: Path) -> Path:
         src = tmp_path / "lib.kicad_sym"
-        src.write_bytes(b"(kicad_symbol_lib private)\n")
+        src.write_bytes(_sym_lib("private"))
         src.chmod(0o600)
         return src
 
@@ -1028,7 +1055,7 @@ class TestBackupForExternalWrite:
         with pytest.raises(ToolError, match="is a link"):
             symbol.upgrade_symbol_lib(str(linked))
         assert sorted(p.name for p in tmp_path.iterdir()) == ["lib.kicad_sym", "linked.kicad_sym"]
-        assert real.read_bytes() == b"(kicad_symbol_lib private)\n"
+        assert real.read_bytes() == _sym_lib("private")
 
     @pytest.mark.skipif(os.name == "nt", reason="POSIX ownership")
     def test_a_backup_takes_the_library_group(self, tmp_path):
@@ -1114,6 +1141,7 @@ class TestPlainLibraryTree:
         """Everything named after the library: itself, any .bak, any staging."""
         return sorted(p.name for p in tmp_path.iterdir() if p.name.startswith(pretty.name))
 
+    @pytest.mark.kicad_placeholder("Lib.pretty/evil.kicad_mod")  # a link to a text file
     def test_a_link_inside_is_refused_by_name(self, tmp_path):
         pretty = self._pretty(tmp_path)
         outside = tmp_path / "outside.txt"
@@ -1226,8 +1254,18 @@ class TestPlainLibraryTree:
         return seen
 
     @pytest.mark.skipif(os.name == "nt", reason="Windows has no O_NOFOLLOW; the walk is its check")
+    @pytest.mark.kicad_placeholder("outside/secret.kicad_mod")  # the bytes outside the library
     @pytest.mark.parametrize("copy", ["backup", "scratch"])
-    @pytest.mark.parametrize("swap", ["file", "folder"])
+    @pytest.mark.parametrize(
+        "swap",
+        [
+            # The member swapped for a link to the secret ends as that link.
+            pytest.param(
+                "file", marks=pytest.mark.kicad_placeholder("Lib.pretty/C_0402.kicad_mod")
+            ),
+            "folder",
+        ],
+    )
     def test_a_swap_after_the_listing_is_refused(self, tmp_path, monkeypatch, copy, swap):
         """The walk before the copy binds nothing: copytree lists the library
         again and opens each member by name. A member swapped for a link after
@@ -1295,6 +1333,7 @@ class TestPlainLibraryTree:
         assert (outside / "secret.kicad_mod").read_bytes() == secret
 
     @pytest.mark.skipif(os.name == "nt", reason="needs a symlink to a directory")
+    @pytest.mark.kicad_placeholder("outside/X.kicad_mod")  # the file the write must not reach
     def test_the_write_back_never_resolves_a_folder_again(self, tmp_path, monkeypatch):
         """Writing a changed footprint back resolved src/rel by name again, so a
         folder in the library swapped for a link after every check carried the
@@ -1577,7 +1616,7 @@ class TestUpgradeOutOfPlace:
         made kicad-cli exit 2 with "Unable to save library" on STDOUT while
         stderr stayed empty. The scratch copy has to be made writable."""
         lib = tmp_path / "Probe.kicad_sym"
-        lib.write_bytes(b"(kicad_symbol_lib)\n")
+        lib.write_bytes(_sym_lib("original"))
         lib.chmod(0o444)
         seen = {}
 
@@ -1587,7 +1626,7 @@ class TestUpgradeOutOfPlace:
             # The same bytes back. This test is about the copy handed to
             # kicad-cli being writable; writing to a read-only ORIGINAL is a
             # separate and correct refusal, pinned in the next test.
-            target.write_bytes(b"(kicad_symbol_lib)\n")
+            target.write_bytes(_sym_lib("original"))
             return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
         monkeypatch.setattr(_shared, "_run_cli", fake)
@@ -1613,11 +1652,11 @@ class TestUpgradeOutOfPlace:
         Windows at all, and this keeps the outcome pinned.
         """
         lib = tmp_path / "Probe.kicad_sym"
-        lib.write_bytes(b"(kicad_symbol_lib)\n")
+        lib.write_bytes(_sym_lib("original"))
         lib.chmod(0o444)
 
         def fake(args, check=True):
-            Path(args[-1]).write_bytes(b"(kicad_symbol_lib upgraded)\n")
+            Path(args[-1]).write_bytes(_sym_lib("upgraded"))
             return type("R", (), {"returncode": 0, "stdout": "", "stderr": ""})()
 
         monkeypatch.setattr(_shared, "_run_cli", fake)
@@ -1627,10 +1666,10 @@ class TestUpgradeOutOfPlace:
                     _upgrade_out_of_place(lib, "symbol library", ["sym", "upgrade"])
                 assert ".tmp" not in str(exc.value), f"names a temp path: {exc.value}"
                 assert "Probe.kicad_sym" in str(exc.value)
-                assert lib.read_bytes() == b"(kicad_symbol_lib)\n", "the original was modified"
+                assert lib.read_bytes() == _sym_lib("original"), "the original was modified"
             else:
                 assert _upgrade_out_of_place(lib, "symbol library", ["sym", "upgrade"]) == [lib]
-                assert lib.read_bytes() == b"(kicad_symbol_lib upgraded)\n"
+                assert lib.read_bytes() == _sym_lib("upgraded")
         finally:
             lib.chmod(0o644)
         # Either way, no temp survives: the failure path unlinks it and the

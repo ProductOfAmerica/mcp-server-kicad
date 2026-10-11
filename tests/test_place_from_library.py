@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import edit_judge as J
 import pytest
 from conftest import requires_cli
 from mcp.server.mcpserver.exceptions import ToolError
@@ -199,12 +200,11 @@ class TestPlaceFootprintFromLibrary:
 
     def test_placing_is_a_pure_insertion(self, scratch_pcb):
         """The governing invariant: bytes the caller did not ask to change reach
-        the disk unchanged."""
-        from conftest import _pure_insertion
-
+        the disk unchanged. Placing adds one footprint to the board and nothing else."""
         before = scratch_pcb.read_bytes()
         _place(scratch_pcb, library=LIB, footprint=FP)
-        _pure_insertion(before, scratch_pcb.read_bytes())
+        (placed,) = J.assert_inserted(before, scratch_pcb.read_bytes(), heads=["footprint"])
+        assert placed.path == ((0, "kicad_pcb"),)
 
     def test_an_unknown_library_names_where_it_looked(self, scratch_pcb):
         with pytest.raises(ToolError) as exc:

@@ -989,36 +989,6 @@ def _open_sym_lib(symbol_lib_path: str):
     return tree, root
 
 
-def _extract_raw_symbol(lib_path: str, symbol_name: str) -> str | None:
-    """Extract raw S-expression text for a top-level symbol from a .kicad_sym file.
-
-    Uses balanced-paren counting.  Skips sub-unit matches like ``PWR_FLAG_0_0``.
-    """
-    text = Path(lib_path).read_text(encoding="utf-8")
-    target = f'(symbol "{symbol_name}"'
-    pos = 0
-    while True:
-        idx = text.find(target, pos)
-        if idx == -1:
-            return None
-        after = idx + len(target)
-        # Reject sub-unit names (e.g. PWR_FLAG_0_0)
-        if after < len(text) and text[after] not in (" ", "\n", "\r"):
-            pos = after
-            continue
-        depth = 0
-        i = idx
-        while i < len(text):
-            if text[i] == "(":
-                depth += 1
-            elif text[i] == ")":
-                depth -= 1
-                if depth == 0:
-                    return text[idx : i + 1]
-            i += 1
-        return None
-
-
 # macOS keeps kicad-cli inside the .app bundle and never puts it on PATH.
 _KICAD_APP = "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli"
 

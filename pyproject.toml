@@ -48,7 +48,17 @@ mcp-server-kicad-project = "mcp_server_kicad.project:main"
 # kiutils builds board and schematic fixtures in the test suite and reads
 # written files back as an independent oracle. No runtime path parses
 # through it, so it is not a runtime dependency.
-dev = ["pytest>=9.0", "pytest-xdist>=3.6", "ruff", "pyright", "kiutils>=1.4"]
+# hypothesis generates the test ladder's cases (tests/sexpr_gen.py). Its floor is
+# the release measured running on CPython 3.10 to 3.14; upstream's next minor
+# drops 3.10, and the universal lock then resolves it per Python version.
+dev = [
+    "pytest>=9.0",
+    "pytest-xdist>=3.6",
+    "ruff",
+    "pyright",
+    "kiutils>=1.4",
+    "hypothesis>=6.168.5",
+]
 
 [build-system]
 requires = ["hatchling"]
@@ -66,8 +76,10 @@ addopts = "--ignore=tools/routing_harness"  # its *_test.py scripts are not test
 pythonpath = ["tests"]
 markers = [
     "no_kicad_validation: skip kicad-cli parseability check (for tests that intentionally produce invalid files)",
+    "kicad_placeholder(*paths): files, by path under tmp_path, the test writes as placeholders or malformed inputs; the output oracle skips them, and fails a passing test that left one out",
     "slow: builds a fresh uv environment; deselect with -m 'not slow'",
     "allow_network: this test genuinely needs the internet (see the _no_network fixture)",
+    "nightly: a large generated run against kicad-cli or pcbnew; skipped unless HYPOTHESIS_PROFILE=nightly",
 ]
 
 [tool.ruff]

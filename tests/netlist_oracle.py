@@ -45,26 +45,54 @@ Node = tuple[str, str]
 #: (code, printed name, net class, nodes)
 Net = tuple[str, str, str, frozenset[Node]]
 
+#: The sheet paths of a design with no sub-sheets: the root alone.
+ROOT: tuple[str, ...] = ("/",)
+
 # KiCad's own names for unnamed nets. Tested on the raw name: stripping a sheet path first cuts
 # "unconnected-(U1-PB7/PB8-Pad1)" to "PB8-Pad1)", which would then read as a user name.
 _AUTO_NAME = re.compile(r"(^|/)(Net|unconnected)-\(")
 
 
-def parse_kicadxml(data: bytes | str) -> list[Net]:
-    """The nets of a kicadxml netlist, in file order."""
+class Netlist(list):
+    """A list of Nets that also carries the design's sheet paths, as kicadxml prints them.
+
+    ``sheets`` holds each ``<design><sheet name="...">`` entry: "/" for the root, "/A/"
+    for a sheet named A on it, "/A/B/" below that (SCH_SHEET_PATH::PathHumanReadable,
+    eeschema/sch_sheet_path.cpp:344-373 at 9.0.8, 493-550 at 10.0.7, called with its
+    defaults by netlist_exporter_xml.cpp:574 at 9.0.8, 911 at 10.0.7). A plain list of
+    Nets, as the synthetic tests build, reads as a design whose only sheet is the root.
+    """
+
+    def __init__(self, items=(), sheets: tuple[str, ...] = ROOT):
+        super().__init__(items)
+        self.sheets = tuple(sheets)
+
+
+def sheets_of(netlist: list[Net]) -> tuple[str, ...]:
+    """The sheet paths a netlist carries, or the root alone for a plain list."""
+    return getattr(netlist, "sheets", ROOT)
+
+
+def parse_kicadxml(data: bytes | str) -> Netlist:
+    """The nets of a kicadxml netlist, in file order, with the design's sheet paths."""
     root = ET.fromstring(data)
-    return [
-        (
-            net.get("code", ""),
-            net.get("name", ""),
-            net.get("class", "") or "",
-            frozenset((n.get("ref", ""), n.get("pin", "")) for n in net.findall("node")),
-        )
-        for net in root.iter("net")
-    ]
+    design = root.find("design")
+    sheets = tuple(s.get("name", "") for s in design.findall("sheet")) if design is not None else ()
+    return Netlist(
+        [
+            (
+                net.get("code", ""),
+                net.get("name", ""),
+                net.get("class", "") or "",
+                frozenset((n.get("ref", ""), n.get("pin", "")) for n in net.findall("node")),
+            )
+            for net in root.iter("net")
+        ],
+        sheets=sheets or ROOT,
+    )
 
 
-def nets(path: str | Path) -> list[Net]:
+def nets(path: str | Path) -> Netlist:
     """KiCad's netlist of the schematic at *path* (judge the root of a hierarchy)."""
     path = Path(path)
     out = path.with_name(path.name + ".oracle.xml")
@@ -89,10 +117,21 @@ def bare_name(name: str) -> str:
     return name.rsplit("/", 1)[-1] if "/" in name else name
 
 
-def is_named(name: str, n: str) -> bool:
-    """A printed net name is N, with or without a sheet path. kicadxml prints a name's "/"
-    unescaped ("A{slash}B" as /A/B), so the path cannot be split off at the last "/"."""
-    return name == n or name.endswith("/" + n)
+def is_named(name: str, n: str, sheets: tuple[str, ...] = ROOT) -> bool:
+    """Whether a printed net name is N: N itself (a global label or a power net) or N after
+    one of the design's sheet paths (a local label on that sheet).
+
+    KiCad names a local net by the sheet's path plus the label (SCH_CONNECTION::recacheName,
+    eeschema/sch_connection.cpp:387-415 at 9.0.8) and kicadxml prints it unescaped
+    (netlist_exporter_xml.cpp:800-804 at 9.0.8). So the path cannot be split off at the
+    last "/", and a name that merely ends in "/N" is not N: a root label "A{slash}VCC"
+    prints /A/VCC and is named VCC only if the design has a sheet A.
+
+    One ambiguity remains, because the printing itself loses it: with a sheet A, a root
+    label "A{slash}B" and sheet A's local label B both print /A/B (measured on kicad-cli
+    9.0.8, 2026-10-10), so such a net reads as named both A/B and B.
+    """
+    return name == n or any(name == sheet + n for sheet in sheets)
 
 
 def _user_name(name: str) -> bool:
@@ -152,11 +191,13 @@ def judge(
 
     *groups* are the requested joins: for wire_pins_to_net one group holding every requested
     pad, with *n* the net name; for connect_pins one group of the two pins and no *n*. The
-    allowed join is the before-nets of the requested nodes plus every before-net named *n*.
+    allowed join is the before-nets of the requested nodes plus every before-net named *n*
+    (is_named, against each netlist's own sheet paths: the root alone for a plain list).
     *wrote* says the call changed the file, which is when a requested pad left in two nets
     counts against it.
     """
     groups = [frozenset(g) for g in groups]
+    bsheets, asheets = sheets_of(before), sheets_of(after)
     bw, aw = _where(before), _where(after)
     bnet = {node: ix[0] for node, ix in bw.items()}
     anet = {node: ix[0] for node, ix in aw.items()}
@@ -164,7 +205,7 @@ def judge(
     for g in groups:
         allowed |= {bnet[node] for node in g if node in bnet}
     if n is not None:
-        allowed |= {i for i, (_c, name, _k, _v) in enumerate(before) if is_named(name, n)}
+        allowed |= {i for i, (_c, name, _k, _v) in enumerate(before) if is_named(name, n, bsheets)}
     v = Verdict()
 
     for _c, name, _k, nodes in after:
@@ -217,8 +258,10 @@ def judge(
             continue
         if n is not None:
             (j,) = homes
-            was_n = any(is_named(before[bnet[node]][1], n) for node in after[j][3] if node in bnet)
-            delivered &= is_named(after[j][1], n) or was_n
+            was_n = any(
+                is_named(before[bnet[node]][1], n, bsheets) for node in after[j][3] if node in bnet
+            )
+            delivered &= is_named(after[j][1], n, asheets) or was_n
     v.delivered = delivered
     return v
 

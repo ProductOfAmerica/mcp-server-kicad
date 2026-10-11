@@ -6,8 +6,9 @@ import uuid
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import edit_judge as J
 import pytest
-from conftest import _confined, _default_effects, build_test_footprint
+from conftest import _default_effects, build_test_footprint
 from kiutils.board import Board
 from kiutils.footprint import Footprint, Pad
 from kiutils.items.brditems import Segment, Via
@@ -691,7 +692,18 @@ class TestApplyNetlistCst:
         before = board.read_bytes()
         summary = self._apply(board, tmp_path, value="22k")
         assert summary["value_updated"] == ["R99"]
-        assert _confined(before, board.read_bytes())
+        # KiCad's update writes the new value into the footprint's Value field; with
+        # nothing else in the netlist changed, that one atom is the whole edit.
+        (value,) = J.find_paths(
+            before,
+            lambda loc, item: (
+                [label for _, label in loc] == ["kicad_pcb", "footprint", "property"]
+                and item.items[1].value == b"Value"
+            ),
+        )
+        assert J.atom_changes(before, board.read_bytes()) == [
+            J.AtomChange(value, 2, b'"10k"', b'"22k"')
+        ]
 
     def test_a_stale_footprint_is_reported_but_kept(self, tmp_path):
         board = tmp_path / "b.kicad_pcb"

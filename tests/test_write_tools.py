@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import edit_judge as J
 import pytest
 from conftest import (
     HAS_KICAD_CLI,
-    _pure_insertion,
     assert_kicad_parseable,
     build_r_symbol,
     make_dual_unit_sch,
@@ -1500,7 +1500,8 @@ class TestMultiUnitWrites:
         before = p.read_bytes()
         result = schematic.no_connect_pin("U1", "4", schematic_path=str(p))
         assert result == "No-connect on U1:4 at (155.08, 100.0)"
-        assert _pure_insertion(before, p.read_bytes())
+        (flag,) = J.assert_inserted(before, p.read_bytes(), heads=["no_connect"])
+        assert flag.path == ((0, "kicad_sch"),)
         nc = reparse(p).noConnects[0]
         assert (nc.position.X, nc.position.Y) == (155.08, 100.0)
         result = schematic.remove_no_connect("U1", "4", schematic_path=str(p))

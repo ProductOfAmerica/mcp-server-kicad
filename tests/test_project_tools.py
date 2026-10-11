@@ -37,6 +37,11 @@ _NON_REGULAR = [
         marks=pytest.mark.skipif(sys.platform == "win32", reason="POSIX device path"),
     ),
 ]
+# An empty Sheetfile target, the stand-in for a procfs pseudo-file (TestNonRegularChildSheet
+# says why): a placeholder, which the kicad-cli oracle leaves out.
+_EMPTY_SHEET = pytest.param(
+    "empty.kicad_sch", id="empty", marks=pytest.mark.kicad_placeholder("proj/empty.kicad_sch")
+)
 
 
 @pytest.fixture
@@ -121,6 +126,7 @@ class TestCreateSchematic:
         assert sch.uuid is not None
         assert sch.schematicSymbols == []
 
+    @pytest.mark.kicad_placeholder("dup.kicad_sch")  # an existing name, not a design
     def test_errors_if_exists(self, tmp_path: Path):
         sch_path = tmp_path / "dup.kicad_sch"
         sch_path.write_text("")
@@ -141,6 +147,7 @@ class TestCreateSymbolLibrary:
         assert lib.generator == "kicad_symbol_editor"
         assert lib.symbols == []
 
+    @pytest.mark.kicad_placeholder("dup.kicad_sym")  # an existing name, not a library
     def test_errors_if_exists(self, tmp_path: Path):
         lib_path = tmp_path / "dup.kicad_sym"
         lib_path.write_text("")
@@ -512,6 +519,7 @@ class TestRemoveHierarchicalSheet:
         assert "Deleted child file" in result
         assert not child.exists()
 
+    @pytest.mark.kicad_placeholder("victim.kicad_sch")  # a sentinel the delete must not reach
     def test_delete_child_file_refuses_to_escape_the_parent_dir(self, tmp_path: Path):
         """Sheetfile is file content, so it can name a path outside the project.
 
@@ -528,9 +536,8 @@ class TestRemoveHierarchicalSheet:
         victim.write_text("keep me")
 
         # Point the sheet at the file outside the project directory.
-        parent.write_bytes(
-            parent.read_bytes().replace(b'"child.kicad_sch"', b'"../victim.kicad_sch"')
-        )
+        original = parent.read_bytes()
+        parent.write_bytes(original.replace(b'"child.kicad_sch"', b'"../victim.kicad_sch"'))
         pointed = parent.read_bytes()
 
         with pytest.raises(ToolError, match="resolves outside"):
@@ -542,6 +549,9 @@ class TestRemoveHierarchicalSheet:
 
         assert victim.read_text() == "keep me"
         assert parent.read_bytes() == pointed, "parent schematic must be untouched"
+        # A sheet naming a file that is no schematic cannot load; the kicad-cli oracle,
+        # which loads every sheet of a hierarchy, gets the tools' output, not this edit.
+        parent.write_bytes(original)
 
     def test_delete_child_file_still_referenced(self, tmp_path: Path):
         parent, child = self._make_parent_and_child(tmp_path)
@@ -572,6 +582,7 @@ class TestRemoveHierarchicalSheet:
         self._add_sheet(parent, child, name="Power")
         pro = tmp_path / "proj.kicad_pro"
         pro.write_text("{}")
+        original = parent.read_bytes()
         pointed = self._point(parent, "proj.kicad_pro")
 
         with pytest.raises(ToolError, match="not a .kicad_sch file"):
@@ -581,6 +592,8 @@ class TestRemoveHierarchicalSheet:
 
         assert pro.read_text() == "{}"
         assert parent.read_bytes() == pointed, "parent schematic must be untouched"
+        # The same as above: the oracle gets the tools' output, not this test's edit.
+        parent.write_bytes(original)
 
     def test_delete_child_file_refuses_the_parent_itself(self, tmp_path: Path):
         """A parent naming itself was unlinked, then rewritten on a fresh inode at the
@@ -1245,7 +1258,7 @@ class TestListCrossSheetNets:
 
 @pytest.mark.parametrize(
     "pointed_root",
-    [*_NON_REGULAR, pytest.param("empty.kicad_sch", id="empty")],
+    [*_NON_REGULAR, _EMPTY_SHEET],
     indirect=True,
 )
 class TestNonRegularChildSheet:
@@ -1450,7 +1463,7 @@ class TestDuplicateSheet:
 
     @pytest.mark.parametrize(
         "pointed_root",
-        [*_NON_REGULAR, pytest.param("empty.kicad_sch", id="empty")],
+        [*_NON_REGULAR, _EMPTY_SHEET],
         indirect=True,
     )
     def test_refuses_a_source_that_is_not_a_schematic_file(self, pointed_root: Path):

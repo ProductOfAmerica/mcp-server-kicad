@@ -2,7 +2,8 @@
 
 Contract net for output shapes stays in test_pcb_read_tools.py and
 test_pcb_write_tools.py; these tests pin the substrate properties:
-byte preservation, KiCad 10 readability, cache behavior.
+byte preservation, KiCad 10 readability, cache behavior. What a writer changed
+is judged by tests/edit_judge.py on KiCad's own lexer, never on the CST.
 """
 
 from __future__ import annotations
@@ -10,8 +11,9 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+import edit_judge as J
 import pytest
-from conftest import _confined, _pure_insertion, _span_preserved, requires_cli
+from conftest import requires_cli
 from kiutils.board import Board
 from kiutils.items.brditems import Segment, Via
 from kiutils.items.common import Net, Position
@@ -143,6 +145,33 @@ def _write_board(tmp_path, content: str) -> str:
     return str(p)
 
 
+#: edit_judge's location of a board's root list: the path of every edit to a
+#: top-level item (a footprint, a segment, a zone).
+ROOT = ((0, "kicad_pcb"),)
+
+
+def _the(data: bytes, *labels: str, where=lambda location, item: True) -> J.Path:
+    """The location of the one list in ``data`` whose labels, outermost first, are
+    ``labels`` and that ``where(location, item)`` accepts. Raises LookupError, never
+    AssertionError."""
+    found = J.find_paths(
+        data,
+        lambda loc, item: (
+            item.items is not None
+            and [label for _, label in loc] == list(labels)
+            and where(loc, item)
+        ),
+    )
+    if len(found) != 1:
+        raise LookupError(f"{len(found)} items match where one was expected: {found[:4]}")
+    return found[0]
+
+
+def _uuid_of(item) -> bytes | None:
+    """The value of a list item's (uuid ...) child, as the lexer reads it."""
+    return next((c.items[1].value for c in item.items if c.head == "uuid"), None)
+
+
 class TestBoardRoundTrip:
     def test_scratch_pcb(self, scratch_pcb):
         data = Path(scratch_pcb).read_bytes()
@@ -231,10 +260,12 @@ class TestAddTraceViaCst:
         before = Path(p).read_bytes()
         pcb.add_trace(10, 20, 30, 20, net=1, pcb_path=p)
         mid = Path(p).read_bytes()
-        assert _pure_insertion(before, mid)
+        (segment,) = J.assert_inserted(before, mid, heads=["segment"])
+        assert segment.path == ROOT
         pcb.add_via(20, 20, net=1, pcb_path=p)
         after = Path(p).read_bytes()
-        assert _pure_insertion(mid, after)
+        (via,) = J.assert_inserted(mid, after, heads=["via"])
+        assert via.path == ROOT
         board = Board.from_file(p)
         assert sum(1 for t in board.traceItems if isinstance(t, Segment)) == 2
         assert sum(1 for t in board.traceItems if isinstance(t, Via)) == 1
@@ -245,7 +276,8 @@ class TestAddTraceViaCst:
         before = Path(p).read_bytes()
         pcb.add_trace(50, 50, 60, 50, net=1, pcb_path=p)
         after = Path(p).read_bytes()
-        assert _pure_insertion(before, after)
+        (segment,) = J.assert_inserted(before, after, heads=["segment"])
+        assert segment.path == ROOT
         i = after.index(b"(start 50 50)")
         span = after[i - 100 : i + 250]
         assert b"(net 1)" in span
@@ -256,7 +288,8 @@ class TestAddTraceViaCst:
         before = Path(p).read_bytes()
         pcb.add_trace(50, 50, 60, 50, net=1, pcb_path=p)
         after = Path(p).read_bytes()
-        assert _pure_insertion(before, after)
+        (segment,) = J.assert_inserted(before, after, heads=["segment"])
+        assert segment.path == ROOT
         i = after.index(b"(start 50 50)")
         span = after[i - 100 : i + 250]
         assert b'(net "Net1")' in span
@@ -291,7 +324,8 @@ class TestAddTraceViaCst:
         before = Path(p).read_bytes()
         pcb.add_trace(50, 50, 60, 50, net=2, pcb_path=p)
         after = Path(p).read_bytes()
-        assert _pure_insertion(before, after)
+        (segment,) = J.assert_inserted(before, after, heads=["segment"])
+        assert segment.path == ROOT
         i = after.index(b"(start 50 50)")
         assert b'(net "/GND")' in after[i - 100 : i + 250]
         assert [(t.type, t.net) for t in pcb.list_pcb_traces(p)] == [
@@ -334,7 +368,8 @@ class TestFootprintWritersCst:
         # The suffix is not decoration: naming no library places a marker with no
         # pads, and the result has to say which of the two the caller got.
         assert result == "Placed R2 (4.7K) at (50, 60) on B.Cu as a pad-less marker"
-        assert _pure_insertion(before, Path(p).read_bytes())
+        (placed,) = J.assert_inserted(before, Path(p).read_bytes(), heads=["footprint"])
+        assert placed.path == ROOT
         board = Board.from_file(p)
         assert "R2" in [fp.properties.get("Reference") for fp in board.footprints]
         r2 = next(f for f in pcb.list_pcb_footprints(p) if f.reference == "R2")
@@ -344,7 +379,8 @@ class TestFootprintWritersCst:
         p = _write_board(tmp_path, _K10_BOARD)
         before = Path(p).read_bytes()
         pcb.place_footprint("R2", "1K", 50, 60, pcb_path=p)
-        assert _pure_insertion(before, Path(p).read_bytes())
+        (placed,) = J.assert_inserted(before, Path(p).read_bytes(), heads=["footprint"])
+        assert placed.path == ROOT
         assert any(f.reference == "R2" for f in pcb.list_pcb_footprints(p))
 
     def test_move_k9(self, scratch_pcb):
@@ -359,7 +395,13 @@ class TestFootprintWritersCst:
         before = Path(p).read_bytes()
         pcb.move_footprint("R1", 50, 50, layer="F.Cu", pcb_path=p)
         after = Path(p).read_bytes()
-        assert _confined(before, after)
+        # KiCad stores a footprint's pads and texts relative to the footprint, so a
+        # translation on the same side is the footprint's own x and y and nothing more.
+        at = _the(before, "kicad_pcb", "footprint", "at")
+        assert J.atom_changes(before, after) == [
+            J.AtomChange(at, 1, b"100", b"50"),
+            J.AtomChange(at, 2, b"100", b"50"),
+        ]
         r1 = next(f for f in pcb.list_pcb_footprints(p) if f.reference == "R1")
         assert (r1.x, r1.y, r1.layer) == (50.0, 50.0, "F.Cu")
 
@@ -469,14 +511,16 @@ class TestFootprintWritersCst:
         p = str(scratch_pcb)
         before = Path(p).read_bytes()
         assert pcb.remove_footprint("R1", pcb_path=p) == "Removed R1"
-        assert _span_preserved(before, Path(p).read_bytes())
+        (removed,) = J.assert_removed(before, Path(p).read_bytes(), heads=["footprint"])
+        assert removed.path == ROOT
         assert pcb.list_pcb_footprints(p) == []
 
     def test_remove_k10(self, tmp_path):
         p = _write_board(tmp_path, _K10_BOARD)
         before = Path(p).read_bytes()
         pcb.remove_footprint("R1", pcb_path=p)
-        assert _span_preserved(before, Path(p).read_bytes())
+        (removed,) = J.assert_removed(before, Path(p).read_bytes(), heads=["footprint"])
+        assert removed.path == ROOT
         assert pcb.list_pcb_footprints(p) == []
 
 
@@ -486,7 +530,8 @@ class TestGraphicWritersCst:
         before = Path(p).read_bytes()
         result = pcb.add_pcb_text("BOARD V1", 100, 110, layer="F.SilkS", pcb_path=p)
         assert result == "Text 'BOARD V1' at (100, 110) on F.SilkS"
-        assert _pure_insertion(before, Path(p).read_bytes())
+        (text,) = J.assert_inserted(before, Path(p).read_bytes(), heads=["gr_text"])
+        assert text.path == ROOT
         texts = [g for g in pcb.list_pcb_graphic_items(p) if g.type == "text"]
         assert [(t.text, t.x, t.y, t.layer) for t in texts] == [
             ("BOARD V1", 100.0, 110.0, "F.SilkS")
@@ -497,7 +542,8 @@ class TestGraphicWritersCst:
         before = Path(p).read_bytes()
         result = pcb.add_pcb_line(80, 80, 120, 80, layer="Edge.Cuts", pcb_path=p)
         assert result == "Line: (80, 80) -> (120, 80) on Edge.Cuts"
-        assert _pure_insertion(before, Path(p).read_bytes())
+        (line,) = J.assert_inserted(before, Path(p).read_bytes(), heads=["gr_line"])
+        assert line.path == ROOT
         lines = [g for g in pcb.list_pcb_graphic_items(p) if g.type == "line"]
         assert (lines[-1].start_x, lines[-1].end_x) == (80.0, 120.0)
 
@@ -506,7 +552,8 @@ class TestGraphicWritersCst:
         before = Path(p).read_bytes()
         pcb.add_pcb_text("note", 10, 10, pcb_path=p)
         pcb.add_pcb_line(0, 0, 50, 0, pcb_path=p)
-        assert _confined(before, Path(p).read_bytes(), limit=500)
+        added = J.assert_inserted(before, Path(p).read_bytes(), heads=["gr_text", "gr_line"])
+        assert [item.path for item in added] == [ROOT, ROOT]
         kinds = [g.type for g in pcb.list_pcb_graphic_items(p)]
         assert "text" in kinds and "line" in kinds
 
@@ -518,7 +565,9 @@ class TestTraceFiltersCst:
         result = pcb.set_trace_width(width=0.5, net_name="/SIG", pcb_path=p)
         assert result.traces_modified == 1
         after = Path(p).read_bytes()
-        assert _confined(before, after)
+        # The one /SIG segment's width atom, and nothing else.
+        width = _the(before, "kicad_pcb", "segment", "width")
+        assert J.atom_changes(before, after) == [J.AtomChange(width, 1, b"0.25", b"0.5")]
         assert b"(width 0.5)" in after
 
     def test_remove_by_net_k10(self, tmp_path):
@@ -527,7 +576,8 @@ class TestTraceFiltersCst:
         result = pcb.remove_traces(net_name="/SIG", pcb_path=p)
         assert result.traces_removed == 1
         after = Path(p).read_bytes()
-        assert _span_preserved(before, after)
+        (removed,) = J.assert_removed(before, after, heads=["segment"])
+        assert removed.path == ROOT
         assert pcb.list_pcb_traces(p) == []
 
     def test_unknown_net_message_parity(self, scratch_pcb):
@@ -553,7 +603,8 @@ class TestZoneWritersCst:
         result = pcb.add_copper_zone("Net1", "F.Cu", self._CORNERS, priority=1, pcb_path=p)
         assert (result.net, result.layer, result.corners) == ("Net1", "F.Cu", 4)
         after = Path(p).read_bytes()
-        assert _pure_insertion(before, after)
+        (zone,) = J.assert_inserted(before, after, heads=["zone"])
+        assert zone.path == ROOT
         i = after.index(b"(zone")
         span = after[i : i + 700]
         assert b"(net 1)" in span
@@ -579,7 +630,8 @@ class TestZoneWritersCst:
         before = Path(p).read_bytes()
         pcb.add_copper_zone("/GND", "F.Cu", self._CORNERS, pcb_path=p)
         after = Path(p).read_bytes()
-        assert _pure_insertion(before, after)
+        (zone,) = J.assert_inserted(before, after, heads=["zone"])
+        assert zone.path == ROOT
         i = after.index(b"(zone")
         span = after[i : i + 700]
         assert b'(net "/GND")' in span
@@ -603,7 +655,8 @@ class TestZoneWritersCst:
         assert result.restrictions["tracks"] == "allowed"
         assert result.restrictions["vias"] == "not_allowed"
         after = Path(p).read_bytes()
-        assert _pure_insertion(before, after)
+        (zone,) = J.assert_inserted(before, after, heads=["zone"])
+        assert zone.path == ROOT
         i = after.index(b"(keepout")
         span = after[i : i + 250]
         assert b"(tracks allowed)" in span and b"(vias not_allowed)" in span
@@ -663,7 +716,8 @@ class TestDanglingCst:
         assert result.tracks_removed == 1
         assert result.iterations == 1
         after = Path(p).read_bytes()
-        assert _span_preserved(before, after)
+        (removed,) = J.assert_removed(before, after, heads=["segment"])
+        assert removed.path == ROOT
         assert b"(segment" not in after
 
     def test_noop_is_byte_identical(self, tmp_path):
@@ -682,7 +736,8 @@ class TestThermalViasCst:
         result = pcb.add_thermal_vias("R1", pad_number="1", rows=2, cols=2, pcb_path=p)
         assert result.vias_added == 4
         assert result.net == "Net1"
-        assert _pure_insertion(before, Path(p).read_bytes())
+        vias = J.assert_inserted(before, Path(p).read_bytes(), heads=["via"] * 4)
+        assert [via.path for via in vias] == [ROOT] * 4
         board = Board.from_file(p)
         assert sum(1 for t in board.traceItems if isinstance(t, Via)) == 4
 
@@ -1030,7 +1085,11 @@ class TestZoneFillSplice:
         after = _cst.serialize(tree)
         assert n == 1
         assert b"filled_polygon" in after
-        assert _pure_insertion(before, after), "the fill must be a single insertion"
+        # The fill is one filled_polygon inside its own zone, and nothing else.
+        (fill,) = J.assert_inserted(before, after, heads=["filled_polygon"])
+        assert fill.path == _the(
+            before, "kicad_pcb", "zone", where=lambda loc, zone: _uuid_of(zone) == uuid_.encode()
+        )
 
     def test_refilling_replaces_rather_than_doubles(self, scratch_pcb):
         """A zone filled before carries last time's polygons. Appending would
