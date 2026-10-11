@@ -49,8 +49,11 @@ jobs:
       # across them decides: the tree is the same, so a suite dispatched on the
       # bump commit itself still counts. A commit is only treated as a bump when
       # github-actions[bot] authored it with the bump subject, it touches exactly
-      # the four files the commit step stages, and every changed line outside
-      # uv.lock is a version line.
+      # the four files the commit step stages, every changed line in the three
+      # manifests is a version line, and uv.lock changed nothing but this
+      # project's own version line. The last rule is not hypothetical: the bumps
+      # to v0.11.0 and v0.12.0 re-locked dependency markers, which is a tree the
+      # earlier runs never tested, so such a commit needs runs of its own.
       #
       # A dispatch can name any branch, and a ci/** branch has green push runs
       # of its own, so the ref is checked too: releases are cut from main only.
@@ -74,7 +77,15 @@ jobs:
             stray=$(git diff -U0 "$c^" "$c" -- .claude-plugin/plugin.json pyproject.toml server.json \
               | grep -E '^[+-]' | grep -vE '^(\+\+\+|---) ' \
               | grep -vE '^[+-][[:space:]]*("version": "|version = ")' || true)
-            [ -z "$stray" ]
+            [ -z "$stray" ] || return 1
+            git diff -U1 "$c^" "$c" -- uv.lock | sed -n '/^@@/,$p' | awk '
+              NR == 1 { ok = /^@@ /; next }
+              NR == 2 { ok = ok && $0 == " name = \"mcp-server-kicad\""; next }
+              NR == 3 { ok = ok && /^-version = "[^"]+"$/; next }
+              NR == 4 { ok = ok && /^\+version = "[^"]+"$/; next }
+              NR == 5 { ok = ok && /^ /; next }
+              { ok = 0 }
+              END { exit !(ok && NR == 5) }'
           }
           candidates="$SHA"
           c="$SHA"
@@ -82,6 +93,9 @@ jobs:
             c=$(git rev-parse "$c^")
             candidates="$candidates $c"
           done
+          if git log -1 --format=%s "$c" | grep '^chore: bump version to v' > /dev/null; then
+            echo "::notice::$(git rev-parse --short "$c") has the bump subject but is not treated as a bump (author, files, or a changed line beyond the version lines), so it needs runs of its own: dispatch ci.yml, kicad-suite.yml, macos-discovery.yml and windows.yml on main"
+          fi
           echo "judging the runs on: $candidates"
           failed=0
           for wf in ci.yml kicad-suite.yml macos-discovery.yml windows.yml; do
