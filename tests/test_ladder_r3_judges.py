@@ -621,9 +621,11 @@ def _flip_problems(cases, work: Path, *, copper: int = 2, users=USER_LAYERS) -> 
     holds after the flip equals the port's flip of the start as the port reads it
     (_held_flip_problems); the angle atoms, unlocked words and justify words SaveBoard
     writes are the port's writer spellings; and the saved footprint reads as the port's
-    footprint does once written (kicad_ref.footprint.written: FormatAngle keeps ten
-    digits), pad details and graphics included, positions within footprint_judge's D3
-    tolerance off the quarter turns. Returns (footprints checked, problems)."""
+    footprint does once written on that board (kicad_ref.footprint.written: FormatAngle
+    keeps ten digits, and a pad on every copper layer of the board is spelt *.Cu, which
+    reads back as all 32), pad details and graphics included, positions within
+    footprint_judge's D3 tolerance off the quarter turns. Returns (footprints checked,
+    problems)."""
     major = _pcbnew_major()
     board_in = _layered_board(work / "layered.kicad_pcb", copper=copper, users=users)
     groups: dict[tuple[float, str], list[tuple[str, Path, tuple[int, int]]]] = {}
@@ -654,6 +656,7 @@ def _flip_problems(cases, work: Path, *, copper: int = 2, users=USER_LAYERS) -> 
         found = results[2 * k + 1]
         before, after = starts[k].read_bytes(), outs[k].read_bytes()
         table = FJ.layer_table(before)
+        saved_copper = FJ.copper_count(after)
         tolerance = _tolerance(angle)
         for ref, path, _ in items:
             port = F.board_flip(FJ.read(before, ref, major=major), table, major=major)
@@ -670,7 +673,11 @@ def _flip_problems(cases, work: Path, *, copper: int = 2, users=USER_LAYERS) -> 
             problems += [
                 f"{what}: {p}"
                 for p in FJ.differences(
-                    saved, F.written(port), tolerance_nm=tolerance, shapes=True, details=True
+                    saved,
+                    F.written(port, copper_count=saved_copper),
+                    tolerance_nm=tolerance,
+                    shapes=True,
+                    details=True,
                 )
             ]
             checked += 1
@@ -729,7 +736,8 @@ def test_footprint_port_matches_pcbnew_flip_on_inner_copper(tmp_path, copper):
     """INNER, placed and flipped by pcbnew on boards of two, four and six copper layers:
     the inner layers its text and pads name land where kicad_ref.board_layers says this
     pcbnew's major puts them (KiCad 9 leaves them in place on a board it read; KiCad 10
-    mirrors them through the board's inner stack), in memory and as saved."""
+    mirrors them through the board's inner stack), in memory and as saved (where pad 1,
+    on every copper layer of the four-layer board, is spelt *.Cu)."""
     library = E.write_library(tmp_path / "inner", INNER) / "Inner.kicad_mod"
     cases = [(library, angle, "F.Cu") for angle in (0.0, 90.0, 30.0)]
     _, problems = _flip_problems(cases, tmp_path, copper=copper, users=())

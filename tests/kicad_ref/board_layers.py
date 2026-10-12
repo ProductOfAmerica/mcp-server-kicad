@@ -50,6 +50,9 @@ type is front or back (BOARD::GetLayerType, board.cpp:734-750 [844-860]).
 
 An item's layer list may use the parser's wildcards (init, 115-123 [120-128]): *.Cu for
 all 32 copper layers, *In.Cu, F&B.Cu, *.Adhes, *.Paste, *.Mask, *.SilkS, *.Fab, *.CrtYd.
+KiCad's writer spells a pad on every copper layer of its board *.Cu (formatLayers,
+written_pad_layers below), so a pad holding the board's copper layers and no others
+reads back on all 32.
 
 This module imports nothing from mcp_server_kicad.
 """
@@ -186,6 +189,24 @@ def layer_set(names) -> frozenset[str]:
             layer_id(name)
             out.add(name)
     return frozenset(out)
+
+
+def written_pad_layers(layers: frozenset[str], copper_count: int) -> frozenset[str]:
+    """The layers a pad holding ``layers`` reads as once KiCad has written it on a board of
+    ``copper_count`` copper layers. A pad's layers go through formatLayers unenumerated
+    (pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.cpp:1545 at 9.0.8, 1791 at 10.0.7),
+    which writes *.Cu for a pad on every copper layer of the board, clearing every copper
+    bit, and for a pad on F.Cu and B.Cu and no other copper layer of the board, clearing
+    those two and naming any other copper layer it holds after (1345-1429 at 9.0.8,
+    1550-1632 at 10.0.7); the parser reads *.Cu as all 32 copper layers (WILDCARDS).
+    Either way the pad reads back on all 32 and on the rest of its layers. Every other
+    layer list reads back as it was: a layer named one by one, or a wildcard pair whose
+    two layers the pad holds."""
+    board = all_cu(copper_count)
+    on_board = layers & board
+    if on_board == board or on_board == WILDCARDS["F&B.Cu"]:
+        return layers | WILDCARDS["*.Cu"]
+    return layers
 
 
 class Row(NamedTuple):

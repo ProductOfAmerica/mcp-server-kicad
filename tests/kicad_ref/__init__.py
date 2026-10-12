@@ -17,7 +17,8 @@ packing) and eda_units.format_angle, all checked in test_ladder_r2_judges.py;
 rung 3 adds footprint (a footprint as KiCad reads it, SetOrientation, Rotate and
 Flip), pad and pcb_text (a pad's and a text's angle, keep-upright and justification,
 and what a flip does to them), board_layers (a board's layer table, the layer pairs
-a flip uses and the layers it treats as side specific) and exchange (the footprint
+a flip uses, the layers it treats as side specific and the layers a pad written on the
+board reads back on) and exchange (the footprint
 exchange the board update runs when a symbol's footprint changes, the uuids it carries
 and the footprint lock), checked in test_ladder_r3_judges.py.
 """

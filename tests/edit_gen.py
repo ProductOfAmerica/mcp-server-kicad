@@ -31,8 +31,9 @@ layout pcbnew 9.0.8 saves (harvested from a board it saved, 2026-10-11).
 children and pad tokens the tools do not move or flip; ``with_construct`` adds one to a
 footprint's text and ``construct_library`` writes a library footprint holding one.
 
-``netlist_text`` writes the netlist the board update reads, in kicad-cli's kicadxml form
-(checked against a kicad-cli export in test_ladder_r3_judges.py).
+``netlist_text`` writes the netlist the board update reads, in kicad-cli's kicadxml form,
+each field as the running kicad-cli's major prints it (checked against a kicad-cli export
+in test_ladder_r3_judges.py).
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ from typing import NamedTuple
 import geom_gen as G
 import kicad_corpus as K
 import pytest
+from conftest import _kicad_cli_major
 from hypothesis import strategies as st
 from kicad_ref import board_layers as BL
 from kicad_ref import dsn_lexer as L
@@ -1153,7 +1155,8 @@ def with_lock(text: str, spelling: str) -> str:
 
 class NetComponent(NamedTuple):
     """One symbol of a netlist: its reference, value and footprint id, the uuid of the
-    symbol ("" for none), the fields the symbol carries besides its footprint, its
+    symbol ("" for none), the fields the symbol carries besides its footprint (each text
+    as a KiCad 9 schematic writes it, which netlist_text prints as kicad-cli does), its
     footprint filters and the file of its sheet ("" for none)."""
 
     ref: str
@@ -1176,6 +1179,7 @@ def netlist_text(
     nets: Sequence[tuple[str, Sequence[tuple[str, str]]]] = (),
     *,
     tool: str = "Eeschema 9.0.8",
+    major: int | None = None,
 ) -> str:
     """A netlist in the kicadxml form kicad-cli 9.0.8 exports (measured with ``sch export
     netlist --format kicadxml``, 2026-10-11), trimmed to what the board update reads: each
@@ -1183,7 +1187,20 @@ def netlist_text(
     Sheetname and Sheetfile properties, footprint filters, root sheet path and uuid; each
     net (name, nodes as (ref, pin)) with its nodes. ``tool`` is the <design><tool>, whose
     major version says whether the netlist can mark a symbol excluded from position files
-    (KiCad 10)."""
+    (KiCad 10).
+
+    Each component's ``fields`` print as the kicad-cli of ``major`` prints them from a
+    KiCad 9 schematic (format 20250114, the suite's), ``major`` being by default the
+    running kicad-cli's (conftest._kicad_cli_major): from KiCad 10 on, a field whose text
+    is exactly "~" prints empty. KiCad 10 reads a property's "~" as empty text in a
+    schematic older than format 20250318, "~ no longer means empty text" (parseSchField,
+    eeschema/sch_io/kicad_sexpr/sch_io_kicad_sexpr_parser.cpp:2330-2333 at 10.0.7;
+    eeschema/sch_file_versions.h:127 there), where KiCad 9 keeps the text as written
+    (sch_io_kicad_sexpr_parser.cpp:2234 at 9.0.8), and both exporters print each field's
+    text as read (addSymbolFields, eeschema/netlist_exporters/netlist_exporter_xml.cpp:
+    187-194 and 233-241 at 9.0.8, 200-207 and 246-254 at 10.0.7)."""
+    if major is None:
+        major = _kicad_cli_major()
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<export version="E">',
@@ -1199,7 +1216,8 @@ def netlist_text(
             f"      <footprint>{_xml(comp.footprint)}</footprint>",
             "      <fields>",
         ]
-        for name, value in (("Footprint", comp.footprint), *comp.fields):
+        fields = [(name, "" if major >= 10 and text == "~" else text) for name, text in comp.fields]
+        for name, value in (("Footprint", comp.footprint), *fields):
             if value:
                 lines.append(f'        <field name="{_xml(name)}">{_xml(value)}</field>')
             else:

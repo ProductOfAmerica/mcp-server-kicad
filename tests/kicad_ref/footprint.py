@@ -769,18 +769,24 @@ def fp_angle_token(orientation: float) -> str | None:
     return None if orientation == 0 else format_angle(orientation)
 
 
-def written(fp: Footprint) -> Footprint:
+def written(fp: Footprint, *, copper_count: int | None = None) -> Footprint:
     """``fp`` as KiCad reads back the tokens it writes for it: every angle through its
     writer's spelling and the parser's arithmetic again (a text's through the orientation
-    read back). KiCad writes every field, so none is a default any more."""
+    read back). KiCad writes every field, so none is a default any more. With
+    ``copper_count``, the copper layer count of the board KiCad writes it on, every pad's
+    layers as its writer spells them (kicad_ref.board_layers.written_pad_layers)."""
     token = fp_angle_token(fp.orientation)
     orientation = 0.0 if token is None else normalize180(parse_double(token))
     pads = []
     for p in fp.pads:
         pad_token = PAD.angle_token(p.angle)
+        layers = p.layers
+        if copper_count is not None:
+            layers = BL.written_pad_layers(layers, copper_count)
         pads.append(
             p._replace(
-                angle=PAD.loaded_angle(None if pad_token is None else parse_double(pad_token))
+                angle=PAD.loaded_angle(None if pad_token is None else parse_double(pad_token)),
+                layers=layers,
             )
         )
     texts = []

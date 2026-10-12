@@ -2,8 +2,9 @@
 board update, judged by KiCad.
 
 Code under test: pcb._apply_netlist_cst, the board update behind update_pcb_from_schematic,
-when a symbol's footprint id no longer matches its board footprint's (the swap), and its
-removal of stale footprints; driven with netlists edit_gen.netlist_text builds in
+when a symbol's footprint id no longer matches its board footprint's (the swap), its
+removal of stale footprints, and its refusal to add a footprint carrying a construct it
+does not move (N4's add rows); driven with netlists edit_gen.netlist_text builds in
 kicad-cli's form (rung 3's D11), with no schematic and no kicad-cli.
 
 KiCad's rule (kicad_ref.exchange, which test_ladder_r3_judges.py checks against pcbnew
@@ -30,8 +31,9 @@ Judges, none of them the code under test:
   where it was;
 - pcbnew replaying the exchange (pcbnew_fp_ops.exchange_job), per footprint;
 - the invariant: a swap the tool refuses (a construct it does not port) keeps the old
-  footprint and says so; a swap changes nothing outside the swapped footprint but pad
-  nets (the pad pass rewrites those, bug 22, step 10's).
+  footprint and says so, and so does an addition it refuses, which adds nothing; a swap
+  changes nothing outside the swapped footprint but pad nets (the pad pass rewrites
+  those, bug 22, step 10's).
 
 Rung 3's D4 kept each test to one cause while its bug was open: bug 7's tests compare
 footprint geometry and pad positions, never pad angles, with library pad angles 0; bug
@@ -768,6 +770,95 @@ def test_inner_copper_swap_on_the_back_is_refused(tmp_path, version):
     reasons = [s["reason"] for s in summary["skipped"] if s["ref"] == "U1"]
     assert any("In1.Cu" in reason for reason in reasons), summary
     assert _fpid(after, "U1") == _fpid(before, "U1")
+
+
+# ---------------------------------------------------------------------------
+# constructs the update does not add (N4, the add rows)
+# ---------------------------------------------------------------------------
+
+_BUG_15_ADD = pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "bug 15: the update adds a footprint carrying a construct KiCad moves with it and the"
+        " tool does not, moving the footprint off that construct, instead of skipping the"
+        " symbol and saying so; fixed by step 7"
+    ),
+)
+
+
+def _add_construct_params():
+    for construct in E.MOVED_CONSTRUCTS:
+        marks = [_BUG_15_ADD]
+        if construct == "future_item":
+            marks.append(pytest.mark.kicad_placeholder("Constructs.pretty/Host.kicad_mod"))
+        yield pytest.param(construct, id=construct, marks=marks)
+
+
+def _pad_nets(data: bytes, ref: str) -> dict[str, str]:
+    """Each pad of footprint ``ref`` by number, with the net its (net ...) names: the last
+    atom of KiCad 9's (net N "name") and of KiCad 10's (net "name")."""
+    out = {}
+    for pad in F.pad_groups(FJ.footprint_group(data, ref)):
+        net = F.child(pad, b"net")
+        if net is not None:
+            out[pad.items[1].value.decode()] = net.items[-1].value.decode()
+    return out
+
+
+@pytest.mark.parametrize("construct", list(_add_construct_params()))
+def test_unported_constructs_in_an_added_footprint_are_refused(tmp_path, construct):
+    """N4's add rows: two symbols new to the board, U1 on a footprint carrying a construct
+    KiCad moves with the footprint and the tool does not (a dimension or an image, which
+    KiCad writes in board coordinates, a table, a barcode, or a child no KiCad knows), U2
+    on one the tool moves whole, the two on nets N1 and N2, which a KiCad 9 board declares
+    already. The update lists U1 in skipped with a footprint_unsupported reason naming the
+    construct, reports incomplete and adds nothing for it, and the rest of the update
+    applies: the board gains U2 and nothing else, U2 as KiCad places its library footprint
+    unturned where the update put it (kicad_ref.footprint.place), its pads on their nets.
+    The tool added U1 and moved it to its grid slot, leaving the construct at the
+    library's origin."""
+    version = E.construct_version(construct)
+    major = _major(version)
+    hosts = E.construct_library(tmp_path, construct)
+    plain = E.footprint_with_pad_at(0.0)
+    ladder = E.write_library(tmp_path, plain)
+    text = E.layered_board_text(version=version)
+    if version == "k9":
+        declared = '\t(net 0 "")\n'
+        if text.count(declared) != 1:
+            raise RuntimeError(f"the KiCad 9 board holds {declared!r} {text.count(declared)} times")
+        text = text.replace(declared, declared + '\t(net 1 "N1")\n\t(net 2 "N2")\n')
+    board = tmp_path / "board.kicad_pcb"
+    board.write_text(text, encoding="utf-8", newline="\n")
+    before = board.read_bytes()
+    netlist = E.netlist_text(
+        [
+            E.NetComponent("U1", "V", f"{hosts.stem}:Host"),
+            E.NetComponent("U2", "V", f"{ladder.stem}:{plain.name}"),
+        ],
+        [("N1", [("U1", "1"), ("U2", "1")]), ("N2", [("U1", "2"), ("U2", "2")])],
+    )
+    summary = _update(board, netlist, [hosts, ladder])
+    after = board.read_bytes()
+    reasons = [s["reason"] for s in summary["skipped"] if s["ref"] == "U1"]
+    assert any(r.startswith("footprint_unsupported") and construct in r for r in reasons), summary
+    assert summary["status"] == "incomplete", summary
+    assert summary["added"] == ["U2"], summary
+    J.assert_inserted(before, after, heads=["footprint"])
+    got = FJ.read(after, "U2", major=major)
+    library = FJ.read_library((ladder / f"{plain.name}.kicad_mod").read_bytes(), major=major)
+    want = F.place(library, got.position, 0.0, semantics="rotate", major=major)
+    problems = FJ.differences(
+        got,
+        want,
+        shapes=True,
+        details=True,
+        written_fields_only=True,
+        copper_count=FJ.copper_count(after),
+    )
+    assert not problems, "\n".join(problems)
+    assert _pad_nets(after, "U2") == {"1": "N1", "2": "N2"}
 
 
 # ---------------------------------------------------------------------------
