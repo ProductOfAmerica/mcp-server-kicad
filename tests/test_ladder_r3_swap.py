@@ -130,24 +130,6 @@ def _kicads_swap(before: bytes, ref: str, library: Path, version: str) -> F.Foot
     return F.written(X.exchange(old, new, FJ.layer_table(before), major=major))
 
 
-def _xfail(bug: int, what: str):
-    return pytest.mark.xfail(
-        strict=True, raises=AssertionError, reason=f"bug {bug}: {what}; fixed by step 7"
-    )
-
-
-_BUG_16_UPRIGHT = _xfail(
-    16,
-    "the swap turns the new footprint with Rotate, whose KeepUpright KiCad 9's exchange"
-    " never runs and KiCad 10's runs on the texts it pairs with old ones only",
-)
-_BUG_16_PAD_UUIDS = _xfail(
-    16,
-    "on a KiCad 10 board the swap gives every new pad of a number the first old pad's"
-    " uuid, so pads of one number share it",
-)
-
-
 def _swapped(
     old: E.SynFootprint,
     new: E.SynFootprint,
@@ -377,7 +359,6 @@ _WITH_KEEP = E.footprint_with_pad_at(0.0)._replace(
 )
 
 
-@_BUG_16_UPRIGHT
 @pytest.mark.parametrize("version", ["k9", "k10"])
 @settings(max_examples=sexpr_gen.budget(4))
 @example(old=E.footprint_with_pad_at(0.0), new=E.footprint_with_pad_at(0.0), theta=90.0)
@@ -405,7 +386,7 @@ def test_swap_turns_texts_as_kicad_does(version, old, new, theta):
 _TEXTS_AT_200 = E.footprint_with_pad_at(0.0, rotation_text=200.0)
 
 
-@pytest.mark.parametrize("version", ["k9", pytest.param("k10", marks=_BUG_16_UPRIGHT)])
+@pytest.mark.parametrize("version", ["k9", "k10"])
 @settings(max_examples=sexpr_gen.budget(4))
 @example(old=E.footprint_with_pad_at(0.0), new=_TEXTS_AT_200, theta=0.0)
 @given(
@@ -570,7 +551,6 @@ def _tabbed(name: str, y: int) -> E.SynFootprint:
     return E.SynFootprint(name, pads, E.footprint_with_pad_at(0.0).texts)
 
 
-@_BUG_16_PAD_UUIDS
 def test_kicad10_swap_writes_no_uuid_twice(tmp_path):
     """On a KiCad 10 board, a footprint with two pads 2 swapped for another such footprint:
     no uuid is written twice in the new footprint, since KiCad 10.0.7 pairs old and new
@@ -1049,8 +1029,8 @@ def _pcbnew_problems(runs, side: str, part: str) -> list[str]:
     [
         pytest.param("F.Cu", "pads", id="front pads"),
         pytest.param("B.Cu", "geometry", id="back geometry"),
-        pytest.param("F.Cu", "texts", id="front texts", marks=_BUG_16_UPRIGHT),
-        pytest.param("B.Cu", "texts", id="back texts", marks=_BUG_16_UPRIGHT),
+        pytest.param("F.Cu", "texts", id="front texts"),
+        pytest.param("B.Cu", "texts", id="back texts"),
     ],
 )
 def test_swap_matches_pcbnew_exchange(runs, side, part):

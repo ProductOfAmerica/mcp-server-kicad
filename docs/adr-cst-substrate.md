@@ -575,9 +575,10 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
 - 2026-10-11: one footprint orientation helper behind every board write that moves, turns
   or flips a footprint (step 7, #110), which corrects three entries above. place_footprint,
   move_footprint and the board update's add and swap run KiCad's own operations in file
-  terms: `_fp_translate` (FOOTPRINT::SetPosition), `_fp_rotate_to` (FOOTPRINT::Rotate to
-  the angle asked for, KeepUpright included) and `_fp_flip` (FOOTPRINT::Flip LEFT_RIGHT
-  over the board's own layer pairs, `_board_flip_layers`), behind one refusal gate,
+  terms: `_fp_translate` (FOOTPRINT::SetPosition), `_fp_turn` (FOOTPRINT::SetOrientation,
+  with the KeepUpright of FOOTPRINT::Rotate when `_fp_rotate_to` turns a placed or moved
+  footprint to the angle asked for) and `_fp_flip` (FOOTPRINT::Flip LEFT_RIGHT over the
+  board's own layer pairs, `_board_flip_layers`), behind one refusal gate,
   `_fp_unsupported`, run before the cache pop. What a board stores, read from both tags'
   writers and checked against pcbnew 9.0.8 by the ladder's `tests/kicad_ref` ports: the
   footprint's angle Normalize180 and left out at 0, pad and text angles absolute, other
@@ -588,10 +589,16 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   second time, now copies them as stored. The flip leaves a 3D model as it is and refuses
   only what it does not port (text boxes, a pad's own padstack, KiCad 10's back drills,
   and inner copper on boards of four or more copper layers, which KiCad 9 and 10 flip
-  apart). The swap is ExchangeFootprint's (pcb_edit_frame.cpp:2346-2587 at 9.0.8): it
-  keeps position, side and angle, carries the footprint's, pads' and fields' uuids by
-  KiCad 9.0.8's rules so groups keep their members, and never replaces a locked
-  footprint; a swap that does not happen leaves the footprint to the rest of the update,
-  as KiCad's updater does, and stale removal reads the lock as KiCad's parser does. Gates:
+  apart). The swap follows ExchangeFootprint (pcb_edit_frame.cpp:2346-2587 at 9.0.8,
+  2597-3068 at 10.0.7): it keeps position, side and angle, the new footprint set to the
+  old angle by SetOrientation with no KeepUpright after it on a KiCad 9 board, and on a
+  KiCad 10 board with the KeepUpright 10.0.7's processTextItem runs on each text it
+  pairs with an old one, at a whole turn too; it carries the footprint's, fields' and
+  fp_texts' uuids by KiCad 9.0.8's rules and the pads' by number, on a KiCad 10 board
+  only for a number each footprint holds once, so groups keep their members. 10.0.7
+  pairs those items by similarity, which is not ported: a KiCad 10 swap pairs texts as
+  KiCad 9 does. It never replaces a locked footprint; a swap that does not happen leaves
+  the footprint to the rest of the update, as KiCad's updater does, and stale removal
+  reads the lock as KiCad's parser does. Gates:
   the ladder's tests for bugs 2, 7, 13, 14, 15, 16, 17, 52, 53, 63, 80 and 88, KiCad 10 on
   the CI legs.

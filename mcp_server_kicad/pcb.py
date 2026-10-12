@@ -1594,26 +1594,68 @@ def _fp_translate(fp, x_text: str, y_text: str, major: int) -> None:
         _move_board_points(fp, lambda x, y: (x + dx, y + dy), major)
 
 
+def _fp_turn(fp, target: float | None, major: int, upright=None) -> None:
+    """FOOTPRINT::SetOrientation( target ) in file terms (pcbnew/footprint.cpp:2641-2669
+    at 9.0.8, 3099-3137 at 10.0.7), then KeepUpright on each text ``upright( text )``
+    names, on every text when ``upright`` is None; with ``target`` None, KeepUpright
+    alone. One pass, so every angle is written once, from the double it ends at.
+
+    The change is ``target`` minus the orientation the footprint holds, A, the
+    Normalize180 of its angle atom (0 without one). The footprint's angle becomes
+    Normalize180( target ), written by FormatAngle and left out at 0. Every pad's
+    absolute angle P becomes Normalize( Normalize( P ) + change ) (PAD::Rotate,
+    pcbnew/pad.cpp:1614-1620 at 9.0.8, 2183-2189 at 10.0.7), left out at 0. Every field
+    and fp_text with an (at) takes Normalize( T + change ), T being what the parser holds
+    for its written angle, Normalize( ( T - A ) + A ) (PCB_TEXT::Rotate,
+    pcbnew/pcb_text.cpp:381-390 at 9.0.8, 460-469 at 10.0.7), and its angle is written.
+    KeepUpright turns a keep-upright text at 180 or more half a turn and negates its
+    justification (321-339 at 9.0.8, 389-407 at 10.0.7). Positions, graphics, pad shapes
+    and text boxes are footprint-relative and stay as they are. The zones and KiCad 10
+    points the footprint owns are board coordinates, which SetOrientation turns about the
+    footprint's position by the change with the integer RotatePoint (ZONE::Rotate,
+    pcbnew/zone.cpp:959-967 at 9.0.8; PCB_POINT::Rotate, pcbnew/pcb_point.cpp:138-141 at
+    10.0.7), rounded as KiCad ``major`` rounds.
+    """
+    at = fp.find("at")
+    atom = _at_angle_atom(at)
+    held = _n180(float(atom.text)) if atom is not None else 0.0
+    change = 0.0
+    if target is not None:
+        stored = _n180(target)
+        change = target - held
+        _set_at_angle(at, None if stored == 0 else _angle_text(stored))
+        _move_board_points(fp, _turn_about(_board_nm(at, major), change, major), major)
+        for pad in fp.find_all("pad"):
+            pad_at = pad.find("at")
+            if pad_at is None:
+                continue
+            pad_atom = _at_angle_atom(pad_at)
+            angle = _n360((_n360(float(pad_atom.text)) if pad_atom is not None else 0.0) + change)
+            _set_at_angle(pad_at, None if angle == 0 else _angle_text(angle))
+    for text in _fp_texts(fp):
+        text_at = text.find("at")
+        text_atom = _at_angle_atom(text_at)
+        written = float(text_atom.text) if text_atom is not None else 0.0
+        angle = _n360(_n360((written - held) + held) + change)
+        turned = angle >= 180.0 and _text_keeps_upright(text) and (upright is None or upright(text))
+        if turned:
+            angle = _n360(angle + 180.0)
+            effects = text.find("effects")
+            if effects is not None:
+                words = _justify_words(effects)
+                negated = [_JUSTIFY_FLIP.get(word, word) for word in words]
+                if negated != words:
+                    _set_justify(effects, negated)
+        if target is not None or turned:
+            _set_at_angle(text_at, _angle_text(angle))
+
+
 def _fp_rotate_to(fp, target: float, major: int) -> None:
     """Turn a footprint to the angle ``target`` as KiCad's FOOTPRINT::Rotate turns
     it about its own position: what the editor's rotate command and its footprint
     properties dialog run (pcbnew/footprint.cpp:2456-2479 at 9.0.8, 2898-2918 at
-    10.0.7).
-
-    The change is ``target`` minus the orientation the footprint holds, A, the
-    Normalize180 of its angle atom (0 without one), as FOOTPRINT::SetOrientation
-    computes it (2641-2669 at 9.0.8, 3099-3137 at 10.0.7). The footprint's angle
-    becomes Normalize180( target ), written by FormatAngle and left out at 0.
-    Every pad's absolute angle P becomes Normalize( Normalize( P ) + change )
-    (PAD::Rotate, pcbnew/pad.cpp:1614-1620 at 9.0.8, 2183-2189 at 10.0.7), left
-    out at 0. Every field and fp_text with an (at) takes Normalize( T + change ),
-    T being what the parser holds for its written angle, Normalize( ( T - A ) + A )
-    (PCB_TEXT::Rotate, pcbnew/pcb_text.cpp:381-390 at 9.0.8, 460-469 at 10.0.7);
-    then KeepUpright turns a keep-upright text that lands at 180 or more half a
-    turn and negates its justification (321-339 at 9.0.8, 389-407 at 10.0.7), so it
-    stays readable on the side of its anchor its justification names. A text's
-    angle is always written. Positions, graphics, pad shapes and text boxes are
-    footprint-relative and stay as they are.
+    10.0.7): SetOrientation to ``target``, then KeepUpright on every field and fp_text
+    (_fp_turn).
 
     Rotate, with KeepUpright, rather than SetOrientation, without it: Rotate is
     what KiCad writes when a user turns a part, and only its result keeps a left-
@@ -1628,43 +1670,12 @@ def _fp_rotate_to(fp, target: float, major: int) -> None:
     (dialogs/dialog_footprint_properties.cpp:636-639 at 9.0.8). A rotation names
     the footprint's final angle here, and a request that leaves it where it is
     leaves the file byte-identical.
-
-    The zones and KiCad 10 points the footprint owns are board coordinates, which
-    SetOrientation turns about the footprint's position by the change with the
-    integer RotatePoint (ZONE::Rotate, pcbnew/zone.cpp:959-967 at 9.0.8;
-    PCB_POINT::Rotate, pcbnew/pcb_point.cpp:138-141 at 10.0.7), rounded as KiCad
-    ``major`` rounds.
     """
-    at = fp.find("at")
-    atom = _at_angle_atom(at)
+    atom = _at_angle_atom(fp.find("at"))
     held = _n180(float(atom.text)) if atom is not None else 0.0
-    stored = _n180(target)
-    if stored == held:
+    if _n180(target) == held:
         return
-    change = target - held
-    _set_at_angle(at, None if stored == 0 else _angle_text(stored))
-    _move_board_points(fp, _turn_about(_board_nm(at, major), change, major), major)
-    for pad in fp.find_all("pad"):
-        pad_at = pad.find("at")
-        if pad_at is None:
-            continue
-        pad_atom = _at_angle_atom(pad_at)
-        angle = _n360((_n360(float(pad_atom.text)) if pad_atom is not None else 0.0) + change)
-        _set_at_angle(pad_at, None if angle == 0 else _angle_text(angle))
-    for text in _fp_texts(fp):
-        text_at = text.find("at")
-        text_atom = _at_angle_atom(text_at)
-        written = float(text_atom.text) if text_atom is not None else 0.0
-        angle = _n360(_n360((written - held) + held) + change)
-        if angle >= 180.0 and _text_keeps_upright(text):
-            angle = _n360(angle + 180.0)
-            effects = text.find("effects")
-            if effects is not None:
-                words = _justify_words(effects)
-                turned = [_JUSTIFY_FLIP.get(word, word) for word in words]
-                if turned != words:
-                    _set_justify(effects, turned)
-        _set_at_angle(text_at, _angle_text(angle))
+    _fp_turn(fp, target, major)
 
 
 def _require_finite_rotation(rotation: float | None) -> None:
@@ -2130,7 +2141,14 @@ def place_footprint(
     footprint's), and a keep-upright text that would read upside down is turned
     half a turn with its justification mirrored, so it stays readable on the same
     side of its anchor. Angles are written as KiCad writes them: the footprint's
-    between -180 and 180 and left out at 0, each pad's and text's absolute.
+    between -180 and 180 and left out at 0, each pad's and text's absolute. Off the
+    quarter turns the result reads as KiCad's placement without matching pcbnew's
+    save byte for byte: footprint-relative coordinates stay as the library writes
+    them where pcbnew re-derives them through two RotatePoint roundings, an fp_rect
+    stays where pcbnew writes an fp_poly, and arc mid points stay as written. A
+    library footprint without a Datasheet or Description field is placed without
+    it, so KiCad reads that hidden field at its default on F.Fab, whereas pcbnew
+    writes it, on B.Fab for a placement on the back.
 
     Zones the footprint owns (keepouts, say) and a KiCad 10 footprint's points are
     stored in board coordinates (format( ZONE ), pcb_io_kicad_sexpr.cpp:2628-2637 at
@@ -2668,7 +2686,11 @@ def move_footprint(
     keep-upright text that would read upside down is turned half a turn with its
     justification mirrored, so it stays readable on the same side of its anchor.
     Angles are written as KiCad writes them: the footprint's between -180 and 180
-    and left out at 0. A footprint carrying what this tool does not move with it
+    and left out at 0. Off the quarter turns the result reads as KiCad's turn
+    without matching pcbnew's save byte for byte: footprint-relative coordinates
+    stay as written where pcbnew re-derives them through two RotatePoint roundings,
+    an fp_rect stays where pcbnew writes an fp_poly, and arc mid points stay as
+    written. A footprint carrying what this tool does not move with it
     (a dimension, image, table or barcode, or a child no KiCad it knows reads) is
     refused and nothing is written. The keep-out warning reads keepouts as
     check_placement does.
@@ -3178,8 +3200,16 @@ def update_pcb_from_schematic(
     footprints are matched by reference and keep their position. A changed
     footprint assignment swaps the footprint as KiCad's exchange does
     (pcbnew/pcb_edit_frame.cpp:2346-2587 at 9.0.8): it keeps its position,
-    angle and side, and its uuid, its pads' (by number) and its fields' (by
-    name), so a group still finds it. A locked footprint is not swapped
+    angle and side, its texts turned with it as the exchange turns them
+    (SetOrientation, then on a KiCad 10 board KeepUpright on those it pairs
+    with old ones), and its uuid, its pads' (by number; on a KiCad 10 board
+    only a number each footprint holds once) and its fields' (by name), so a
+    group still finds it. Off the quarter turns a swapped footprint reads as
+    KiCad's exchange leaves it without matching pcbnew's save byte for byte:
+    footprint-relative coordinates stay as the library writes them where
+    pcbnew re-derives them through two RotatePoint roundings, an fp_rect stays
+    where pcbnew writes an fp_poly, and arc mid points stay as written. A
+    locked footprint is not swapped
     (skipped: footprint_locked), nor is one whose new footprint carries what
     this tool cannot move or flip (skipped: footprint_unsupported); either
     still takes the symbol's value, fields and nets. Stale board footprints
@@ -4033,16 +4063,28 @@ def _carry_swap_uuids(old, new, major: int) -> None:
     reads (_kicad_pad_number), to the first old pad of that number. KiCad also requires
     the two pads' IsOnCopperLayer to agree, which holds for every pad with a number,
     since a pad on no copper has none, so that test is not repeated here. An old item
-    without a uuid in the file has nothing to carry. KiCad 10 matches by similarity instead
-    (matchItemsBySimilarity, 2527-2594 at 10.0.7), which agrees in the common case of
-    unique pad numbers and field names."""
+    without a uuid in the file has nothing to carry.
+
+    KiCad 10.0.7 pairs pads, fields and texts one to one by similarity instead
+    (matchItemsBySimilarity, pcb_edit_frame.cpp:2527-2594 at 10.0.7), which is not
+    ported. On a KiCad 10 board (``major``) a pad carries the old pad's uuid only when
+    its number appears once in each footprint, the one pairing that similarity makes
+    certain (a pad pair of one number scores 2 more than any other), and otherwise keeps
+    the fresh one its library copy has: 9.0.8's first match would give the pads of a
+    repeated number one uuid, which KiCad 10 never writes."""
     footprint = _uuid_text(old)
     if footprint is not None:
         new.find("uuid").atoms[1].set_text(footprint)
     old_pads = [(_kicad_pad_number(pad), _uuid_text(pad)) for pad in old.find_all("pad")]
-    for pad in new.find_all("pad"):
-        number = _kicad_pad_number(pad)
-        match = next((uuid for n, uuid in old_pads if number and n == number), None)
+    new_pads = [(_kicad_pad_number(pad), pad) for pad in new.find_all("pad")]
+    old_numbers = [n for n, _ in old_pads]
+    new_numbers = [n for n, _ in new_pads]
+    for number, pad in new_pads:
+        if not number:
+            continue
+        if major >= 10 and not old_numbers.count(number) == new_numbers.count(number) == 1:
+            continue
+        match = next((uuid for n, uuid in old_pads if n == number), None)
         if match is not None:
             _set_uuid(pad, match, "padstack")
     fields = {}
@@ -4061,6 +4103,33 @@ def _carry_swap_uuids(old, new, major: int) -> None:
             _set_uuid(target[0], uuid, "effects")
 
 
+#: The fields every footprint holds from its constructor, whatever its file writes
+#: (FOOTPRINT::addMandatoryFields, pcbnew/footprint.cpp:94-111 at 9.0.8; the constructor,
+#: 114-117 at 10.0.7).
+_MANDATORY_FIELDS = ("Reference", "Value", "Datasheet", "Description")
+
+
+def _swap_paired_texts(old, new, major: int) -> list:
+    """The texts of the swapped footprint ``new`` that KiCad 10.0.7's exchange hands an old
+    text, whose processTextItem then runs KeepUpright on them (pcb_edit_frame.cpp:2504 at
+    10.0.7): every field whose name the old footprint holds, its file's fields and the
+    four every footprint holds; every plain fp_text getMatchingTextItem picks for an old
+    one. KiCad 10.0.7 pairs by similarity (_carry_swap_uuids), which is not ported: this
+    is KiCad 9.0.8's pairing, which 10.0.7 shares where each footprint holds a field name
+    or an fp_text text once and those texts lie far apart, but not where an fp_text whose
+    text the other footprint lacks meets an unpaired one of another text there, which
+    10.0.7 may pair with it. Call it after the flip, as KiCad pairs the flipped
+    footprint's texts."""
+    names = ({_field_name(text) for text in old.lists} - {None}) | set(_MANDATORY_FIELDS)
+    paired = [text for text in _fp_texts(new) if _field_name(text) in names]
+    candidates = _swap_texts(new, major)
+    for entry in _swap_texts(old, major):
+        target = _matching_text(entry, candidates)
+        if target is not None:
+            paired.append(target[0])
+    return paired
+
+
 def _swap_footprint(old, comp: dict, resolver: _FpLibResolver, layers: _FlipLayers, summary):
     """The footprint the update puts in place of ``old`` when its symbol names another,
     as KiCad's updater swaps it (BOARD_NETLIST_UPDATER::replaceFootprint,
@@ -4070,13 +4139,15 @@ def _swap_footprint(old, comp: dict, resolver: _FpLibResolver, layers: _FlipLaye
     and one this tool refuses, the new footprint carrying a construct it does not move or
     flip (_fp_unsupported).
 
-    The swap is ExchangeFootprint's (pcb_edit_frame.cpp:2346-2587 at 9.0.8): the library
-    copy is moved to the old position, flipped when its side differs, and turned to the
-    old angle, so it keeps the old footprint's position, side and angle with its pads,
-    texts and zones turned and flipped with it (_fp_translate, _fp_flip, _fp_rotate_to;
-    KiCad turns it with SetOrientation, this with Rotate, which adds the KeepUpright
-    KiCad 10's processTextItem runs as well); then it takes the old uuids
-    (_carry_swap_uuids), the symbol's Reference, Value, path and fields."""
+    The swap follows ExchangeFootprint (pcb_edit_frame.cpp:2346-2587 at 9.0.8,
+    2597-3068 at 10.0.7): the library copy is moved to the old position, flipped when
+    its side differs, and set to the old orientation by SetOrientation when its own
+    differs, so it keeps the old footprint's position, side and angle with its pads,
+    texts and zones turned and flipped with it (_fp_translate, _fp_flip, _fp_turn). No
+    KeepUpright follows on a KiCad 9 board; on a KiCad 10 board processTextItem runs
+    KeepUpright on each text the exchange pairs with an old one (_swap_paired_texts),
+    whether or not the footprint turned. Then it takes the old uuids (_carry_swap_uuids),
+    the symbol's Reference, Value, path and fields."""
     node, reason = _load_netlist_footprint(comp["footprint"], resolver)
     if node is None:
         summary["skipped"].append({"ref": comp["ref"], "reason": reason})
@@ -4096,7 +4167,15 @@ def _swap_footprint(old, comp: dict, resolver: _FpLibResolver, layers: _FlipLaye
     if flipping:
         _fp_flip(node, layers)
     atom = _at_angle_atom(at) if at is not None else None
-    _fp_rotate_to(node, float(atom.text) if atom is not None else 0.0, layers.major)
+    target = _n180(float(atom.text)) if atom is not None else 0.0
+    new_atom = _at_angle_atom(node.find("at"))
+    held = _n180(float(new_atom.text)) if new_atom is not None else 0.0
+    turn = None if target == held else target
+    if layers.major >= 10:
+        paired = {id(text) for text in _swap_paired_texts(old, node, layers.major)}
+        _fp_turn(node, turn, layers.major, lambda text: id(text) in paired)
+    elif turn is not None:
+        _fp_turn(node, turn, layers.major, lambda text: False)
     _carry_swap_uuids(old, node, layers.major)
     _set_fp_property(node, "Reference", comp["ref"])
     _set_fp_property(node, "Value", comp["value"])
