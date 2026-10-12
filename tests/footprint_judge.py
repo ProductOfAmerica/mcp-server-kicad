@@ -30,6 +30,13 @@ tool editing that file could change, so ``differences( written_fields_only=True 
 out every field the first footprint holds as a default: KiCad's own flip takes such a
 field to the back, where KiCad reading the edited file still finds it on the front.
 
+A footprint's zones and KiCad 10 points hold board coordinates, which KiCad writes
+straight from the integers it holds (kicad_ref.footprint), so they compare exactly: a
+zone's polygons and fills point for point in order, its layers as a set (on the board's
+copper layers only when ``copper_count`` is given, as a pad's), a point's position and
+layer. Compared without the footprints' positions (``position=False``), they compare
+relative to each footprint's position, which is how SetPosition moves them.
+
 Pads are paired by number and texts by key (a field's name, an fp_text's text) and layer;
 within a number or a key, by the nearest footprint-relative position, ties broken by the
 nearest angle and then, for pads, by the same layers, because pcbnew's writer sorts pads
@@ -393,7 +400,9 @@ def differences(
     justification are left out (the footprint's own angle is kept), and without
     ``mirrors`` the texts' mirror flags. With ``written_fields_only`` the mandatory
     fields ``got`` holds as defaults are left out of both (module docstring). Positions
-    within ``tolerance_nm``. Empty when they agree."""
+    within ``tolerance_nm``, but the zones and KiCad 10 points exactly, relative to the
+    footprints' positions when ``position`` is False (module docstring). Empty when they
+    agree."""
     got, want = F.canonical(got), F.canonical(want)
     if written_fields_only:
         unwritten = {t.key for t in got.texts if t.default}
@@ -451,6 +460,76 @@ def differences(
             problems.append(f"text {mine.key!r}: at {mine.local} where KiCad has {theirs.local}")
     if shapes:
         problems += _shape_problems(got.shapes, want.shapes, tolerance_nm, "graphic")
+    problems += _board_child_problems(got, want, position=position, copper_count=copper_count)
+    return problems
+
+
+def _relative_zones(fp: F.Footprint, position: bool) -> list[tuple]:
+    """(layers, polygons, fills) of each zone of ``fp``, relative to its position unless
+    ``position``."""
+    ox, oy = (0, 0) if position else fp.position
+
+    def shift(points):
+        return tuple((x - ox, y - oy) for x, y in points)
+
+    return [
+        (
+            zone.layers,
+            tuple(shift(polygon) for polygon in zone.polygons),
+            tuple((layer, shift(pts)) for layer, pts in zone.fills),
+        )
+        for zone in fp.zones
+    ]
+
+
+def _zone_gap(a: tuple, b: tuple) -> float:
+    """How far apart two zones' outlines are: the summed distance of their points in
+    order, infinite when their polygons differ in number or size."""
+    if [len(p) for p in a[1]] != [len(p) for p in b[1]]:
+        return math.inf
+    return sum(math.dist(p, q) for pa, pb in zip(a[1], b[1]) for p, q in zip(pa, pb))
+
+
+def _board_child_problems(
+    got: F.Footprint, want: F.Footprint, *, position: bool, copper_count: int | None
+) -> list[str]:
+    """Where the zones and the KiCad 10 points of two footprints differ (module
+    docstring): zones paired by layers, then by the nearest outline; points by layer,
+    then by the nearest position."""
+
+    def layers_key(zone: tuple) -> tuple:
+        return tuple(sorted(_on_board(zone[0], copper_count)))
+
+    zones, problems = pair(
+        _relative_zones(got, position),
+        _relative_zones(want, position),
+        layers_key,
+        lambda z: z[1],
+        "zone",
+        distance=_zone_gap,
+    )
+    for mine, theirs in zones:
+        if mine[1] != theirs[1]:
+            problems.append(
+                f"zone on {list(layers_key(mine))}: {mine[1]} where KiCad has {theirs[1]}"
+            )
+        if [(layer, pts) for layer, pts in mine[2]] != [(layer, pts) for layer, pts in theirs[2]]:
+            problems.append(
+                f"zone on {list(layers_key(mine))}: fills {mine[2]} where KiCad has {theirs[2]}"
+            )
+    ox, oy = (0, 0) if position else got.position
+    wx, wy = (0, 0) if position else want.position
+    points, found = pair(
+        [((p.position[0] - ox, p.position[1] - oy), p.layer) for p in got.points],
+        [((p.position[0] - wx, p.position[1] - wy), p.layer) for p in want.points],
+        lambda p: p[1] or "",
+        lambda p: p[0],
+        "point",
+    )
+    problems += found
+    for mine, theirs in points:
+        if mine[0] != theirs[0]:
+            problems.append(f"point on {mine[1]}: at {mine[0]} where KiCad has {theirs[0]}")
     return problems
 
 

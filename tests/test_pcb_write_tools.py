@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import edit_judge as J
+import pcbnew_judge as PJ
 import pytest
 from conftest import _default_effects, build_test_footprint
 from kiutils.board import Board
@@ -1099,6 +1100,20 @@ class TestMoveFootprintKeepout:
         assert "WARNING" not in result
 
 
+#: Each footprint zone pcbnew reads: its footprint, whether it is a rule area, and its
+#: outline's bounding box in nanometres.
+_FOOTPRINT_ZONE_BOXES = r"""
+import pcbnew
+board = pcbnew.LoadBoard(payload["board"])
+result = []
+for fp in board.GetFootprints():
+    for zone in fp.Zones():
+        box = zone.Outline().BBox()
+        result.append([fp.GetReference(), bool(zone.GetIsRuleArea()),
+                       [box.GetLeft(), box.GetTop(), box.GetRight(), box.GetBottom()]])
+"""
+
+
 class TestCheckPlacement:
     def test_safe_position(self, tmp_path):
         pcb_path = _make_keepout_pcb(tmp_path)
@@ -1111,8 +1126,22 @@ class TestCheckPlacement:
         assert result.status == "violations_found"
         assert len(result.keepout_violations) >= 1
 
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason=(
+            "bug 15: a footprint's keepout is read as footprint-local where KiCad stores"
+            " board coordinates; fixed by step 7"
+        ),
+    )
     def test_footprint_embedded_keepout(self, tmp_path):
-        """Footprint with embedded keepout zone: placement inside triggers violation."""
+        """A footprint's keepout, written where KiCad stores it: in board coordinates,
+        since format( ZONE ) writes a footprint's zone without the footprint
+        (pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.cpp:2628-2637 at 9.0.8, 3061-3074
+        at 10.0.7). U1 at (50, 50) owns one over 40..60: R1 checked at (50, 50) is inside
+        it, at (0, 0) it is not. Where pcbnew is installed it first confirms the premise:
+        the rule area it reads spans 40..60. The fixture used to write the zone at
+        -10..10, footprint-local, which KiCad reads round the board's origin."""
         board = Board.create_new()
         board.nets = [Net(number=0, name=""), Net(number=1, name="Net1")]
 
@@ -1133,7 +1162,7 @@ class TestCheckPlacement:
             ),
         ]
 
-        # Embedded keepout zone in footprint-local coords: (-10,-10) to (10,10)
+        # The keepout in board coordinates, as KiCad stores a footprint's zone: 40..60
         ekz = Zone()
         ekz.net = 0
         ekz.netName = ""
@@ -1149,10 +1178,10 @@ class TestCheckPlacement:
         )
         epoly = ZonePolygon()
         epoly.coordinates = [
-            Position(X=-10, Y=-10),
-            Position(X=10, Y=-10),
-            Position(X=10, Y=10),
-            Position(X=-10, Y=10),
+            Position(X=40, Y=40),
+            Position(X=60, Y=40),
+            Position(X=60, Y=60),
+            Position(X=40, Y=60),
         ]
         ekz.polygons = [epoly]
         esp.zones = [ekz]
@@ -1180,12 +1209,18 @@ class TestCheckPlacement:
         board.filePath = str(path)
         board.to_file()
 
-        # Check placement at ESP32's center (50, 50) — inside the embedded keepout
+        if PJ.skip_reason() is None:
+            found = PJ.run(_FOOTPRINT_ZONE_BOXES, {"board": str(path)})
+            if found != [["U1", True, [40_000_000, 40_000_000, 60_000_000, 60_000_000]]]:
+                raise RuntimeError(f"pcbnew reads the footprint's keepout as {found}")
+
+        # Check placement at ESP32's center (50, 50), inside the embedded keepout
         result = pcb.check_placement("R1", 50, 50, pcb_path=str(path))
         assert result.status == "violations_found"
         assert len(result.keepout_violations) >= 1
         sources = [v["source"] for v in result.keepout_violations]
-        assert any(s.startswith("footprint:") for s in sources)
+        assert "footprint:U1" in sources
+        assert pcb.check_placement("R1", 0, 0, pcb_path=str(path)).keepout_violations == []
 
     def test_outside_board_edge(self, tmp_path):
         pcb_path = _make_keepout_pcb(tmp_path)

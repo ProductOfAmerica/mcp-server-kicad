@@ -966,6 +966,219 @@ def test_flip_port_laws(fp, a, d, label):
 
 
 # ---------------------------------------------------------------------------
+# zones and points: board coordinates
+# ---------------------------------------------------------------------------
+
+#: Stock footprints owning a zone: Tag-Connect's rectangle on F.Cu forbidding footprints,
+#: and ESP-01's keepout on every copper layer named one by one.
+ZONE_STOCK = ("Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical", "ESP-01")
+#: How far the move rows of the zone judge move a footprint, and the turn they add.
+_ZONE_MOVE = (7_654_321, -3_456_789)
+_ZONE_TURN = 75.0
+
+
+def _zone_port_problems(
+    cases: list[tuple[Path, float]], work: Path, *, version: str = "k9"
+) -> tuple[int, list]:
+    """For each (library footprint file, angle): pcbnew places it on a layered board of
+    ``version`` at the angle by Rotate and saves that start board; then, from the start,
+    moves every footprint by _ZONE_MOVE and turns it to the angle plus _ZONE_TURN (SetPosition,
+    then Rotate by the change) and saves, and flips every footprint (FOOTPRINT::Flip about
+    its position, LEFT_RIGHT) and saves. Each saved footprint reads, its zones and points
+    exactly and the rest as footprint_judge compares it, as the port's: place with
+    Rotate; set_position then rotate; board_flip of the start as saved. Zone layers are
+    compared on the board's copper layers, which is what pcbnew's writer enumerates
+    (format( ZONE ) cuts a zone's layers to the board's enabled ones,
+    pcb_io_kicad_sexpr.cpp:2459-2469 at 9.0.8, 2881-2891 at 10.0.7). Returns (footprints
+    checked, problems)."""
+    major = _pcbnew_major()
+    board_in = work / "layered.kicad_pcb"
+    board_in.write_text(
+        E.layered_board_text(version=version, users=USER_LAYERS), encoding="utf-8", newline="\n"
+    )
+    groups: dict[float, list[tuple[str, Path, tuple[int, int]]]] = {}
+    for index, (path, angle) in enumerate(cases):
+        at = (25 * MM * (1 + index % 8), 25 * MM * (1 + index // 8))
+        groups.setdefault(angle, []).append((f"U{index + 1}", path, at))
+    jobs, runs = [], []
+    for k, (angle, items) in enumerate(groups.items()):
+        start = work / f"zstart{k}.kicad_pcb"
+        moved, flipped = work / f"zmoved{k}.kicad_pcb", work / f"zflipped{k}.kicad_pcb"
+        jobs.append(
+            OPS.place_job(
+                board_in,
+                [
+                    OPS.place_item(p.parent, p.stem, ref, at, ("rotate", angle))
+                    for ref, p, at in items
+                ],
+                start,
+            )
+        )
+        moves = [
+            OPS.move_item(
+                ref,
+                (at[0] + _ZONE_MOVE[0], at[1] + _ZONE_MOVE[1]),
+                ("rotate_to", angle + _ZONE_TURN),
+            )
+            for ref, _, at in items
+        ]
+        jobs.append(OPS.move_job(start, moves, moved))
+        jobs.append(
+            OPS.move_job(
+                start, [OPS.move_item(ref, at, ("flip", None)) for ref, _, at in items], flipped
+            )
+        )
+        runs.append((angle, items, start, moved, flipped))
+    OPS.run(jobs)
+    problems, checked = [], 0
+    for angle, items, start, moved, flipped in runs:
+        begun, shifted, turned = start.read_bytes(), moved.read_bytes(), flipped.read_bytes()
+        table = FJ.layer_table(begun)
+        copper = FJ.copper_count(begun)
+        for ref, path, at in items:
+            what = f"{path.stem} at {angle}"
+            library = FJ.read_library(path.read_bytes())
+            held = FJ.read(begun, ref, major=major)
+            to = (at[0] + _ZONE_MOVE[0], at[1] + _ZONE_MOVE[1])
+            expected = {
+                "placed": (begun, F.place(library, at, angle, semantics="rotate", major=major)),
+                "moved": (
+                    shifted,
+                    F.rotate(
+                        F.set_position(held, to),
+                        (angle + _ZONE_TURN) - held.orientation,
+                        major=major,
+                    ),
+                ),
+                "flipped": (turned, F.board_flip(held, table, major=major)),
+            }
+            for label, (data, port) in expected.items():
+                saved = FJ.read(data, ref, major=major)
+                if len(saved.zones) != len(library.zones) or len(saved.points) != len(
+                    library.points
+                ):
+                    raise RuntimeError(f"{what} {label}: pcbnew saved another number of zones")
+                problems += [
+                    f"{what} {label}: {p}"
+                    for p in FJ.differences(
+                        saved,
+                        F.written(port),
+                        tolerance_nm=FJ.ROTATION_TOLERANCE_NM,
+                        copper_count=copper,
+                    )
+                ]
+            checked += 1
+    return checked, problems
+
+
+def test_zone_port_matches_pcbnew(tmp_path):
+    """ZONE_STOCK and edit_gen.ZONED (zones on F.Cu, on every copper layer with a hole, on
+    F.Cu and Dwgs.User, on F&B.Cu, some corners off the micrometre grid), placed by pcbnew
+    at 0, 90, 180, 270, 30, -90, 45 and 37.5 degrees, then moved and turned, and flipped:
+    every zone pcbnew writes is kicad_ref.footprint's, point for point and layer for layer
+    (ZONE::Move by the delta, ZONE::Rotate about the footprint through the integer
+    RotatePoint, ZONE::Flip mirrored about the footprint then turned by d, as board
+    coordinates), and the rest of each footprint as the port's."""
+    zoned = E.write_library(tmp_path / "zoned", E.ZONED) / "Zoned.kicad_mod"
+    paths = [E.stock_footprint(name) for name in ZONE_STOCK] + [zoned]
+    cases = [(path, angle) for angle in _ANGLES for path in paths]
+    checked, problems = _zone_port_problems(cases, tmp_path)
+    assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:30])
+    if checked != len(cases):
+        raise RuntimeError(f"checked {checked} footprints of {len(cases)}")
+
+
+def test_point_port_matches_pcbnew(tmp_path):
+    """KiCad 10 only (points came with board format 20250901, which pcbnew 9 cannot load):
+    edit_gen.POINTED placed by pcbnew at the zone judge's angles, moved and turned, and
+    flipped: every point pcbnew writes is at the board position kicad_ref.footprint puts
+    it and on its layer (PCB_POINT::Rotate, PCB_POINT::Flip, pcbnew/pcb_point.cpp:138-149
+    at 10.0.7)."""
+    if _pcbnew_major() < 10:
+        pytest.skip(f"pcbnew {PJ.major()} has no points (KiCad 10's board format 20250901)")
+    pointed = E.write_library(tmp_path / "pointed", E.POINTED) / "Pointed.kicad_mod"
+    cases = [(pointed, angle) for angle in _ANGLES]
+    checked, problems = _zone_port_problems(cases, tmp_path, version="k10")
+    assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:30])
+    if checked != len(cases):
+        raise RuntimeError(f"checked {checked} footprints of {len(cases)}")
+
+
+def test_builder_zones_load_in_pcbnew_unchanged(tmp_path):
+    """The premise of building zone boards with edit_gen: edit_gen.ZONED written in KiCad's
+    board form at the zone judge's angles, loaded and saved again by pcbnew, reads as
+    before, its zones exactly, on boards of both majors pcbnew loads."""
+    major = _pcbnew_major()
+    for version in ("k9", "k10") if major >= 10 else ("k9",):
+        items = [
+            E.board_footprint_text(
+                E.ZONED, f"U{k + 1}", (25 * MM * (k + 1), 40 * MM), angle, version=version
+            )
+            for k, angle in enumerate(_ANGLES)
+        ]
+        built = tmp_path / f"built_{version}.kicad_pcb"
+        built.write_text(
+            E.layered_board_text(items, version=version), encoding="utf-8", newline="\n"
+        )
+        resaved = tmp_path / f"resaved_{version}.kicad_pcb"
+        moves = [
+            OPS.move_item(f"U{k + 1}", (25 * MM * (k + 1), 40 * MM)) for k in range(len(_ANGLES))
+        ]
+        OPS.run([OPS.move_job(built, moves, resaved)])
+        copper = FJ.copper_count(built.read_bytes())
+        problems = []
+        for k, angle in enumerate(_ANGLES):
+            before = FJ.read(built.read_bytes(), f"U{k + 1}", major=major)
+            after = FJ.read(resaved.read_bytes(), f"U{k + 1}", major=major)
+            problems += [
+                f"{version} at {angle}: {p}"
+                for p in FJ.differences(
+                    after, before, tolerance_nm=_tolerance(angle), copper_count=copper
+                )
+            ]
+        assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:30])
+
+
+@settings(max_examples=sexpr_gen.budget())
+@given(
+    E.synthetic_footprints(zones=True),
+    G.half_degree_angles(),
+    st.tuples(G.nm_coordinates(100 * MM), G.nm_coordinates(100 * MM)),
+)
+@example(fp=E.ZONED, a=30.0, d=(MM, -2 * MM))
+def test_zone_port_laws(fp, a, d):
+    """On library footprints owning zones, at angles that are multiples of half a degree:
+    a flip takes every zone point (x, y) to (2 fx - x, y), the mirror about the
+    footprint's y followed by the half turn d, which is exactly 180 there, and each layer
+    to its opposite; two flips are the identity for every zone, on both majors; four
+    quarter turns are; a move by d and back is; and a footprint placed at the origin
+    unturned holds its zones where its library writes them."""
+    library = E.library_footprint(fp)
+    assert F.place(library, (0, 0), 0.0, semantics="rotate").zones == library.zones
+    table = BL.LayerTable(tuple(BL.Row(n, t, u or "") for n, t, u in USER_LAYERS))
+    start = F.rotate(F.set_position(library, (10 * MM, 20 * MM)), a)
+    fx = start.position[0]
+    for major in (9, 10):
+        opposite = BL.opposites(table, major=major)
+        flipped = F.board_flip(start, table, major=major)
+        assert [(z.layers, z.polygons) for z in flipped.zones] == [
+            (
+                frozenset(opposite[layer] for layer in z.layers),
+                tuple(tuple((2 * fx - x, y) for x, y in polygon) for polygon in z.polygons),
+            )
+            for z in start.zones
+        ], f"one flip, KiCad {major}"
+        twice = F.board_flip(flipped, table, major=major)
+        assert twice.zones == start.zones, f"two flips, KiCad {major}"
+        turned = start
+        for _ in range(4):
+            turned = F.rotate(turned, 90.0, major=major)
+        assert turned.zones == start.zones, f"four quarter turns, KiCad {major}"
+    there = F.set_position(start, (start.position[0] + d[0], start.position[1] + d[1]))
+    assert F.set_position(there, start.position).zones == start.zones
+
+
+# ---------------------------------------------------------------------------
 # the judges' own contracts
 # ---------------------------------------------------------------------------
 

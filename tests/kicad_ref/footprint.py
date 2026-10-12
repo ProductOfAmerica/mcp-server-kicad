@@ -40,6 +40,15 @@ written in a .kicad_mod or on a board, the way the board parser does
   [61-79]);
 - graphics (fp_line, fp_rect, fp_circle, fp_arc, fp_poly, fp_curve): their points in the
   footprint's own frame, as written;
+- zones the footprint owns, and KiCad 10's points (PCB_POINT): in BOARD coordinates, as
+  written, since format( ZONE ) writes a zone's outline through formatPolyPts without
+  the footprint (pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.cpp:2628-2637 at 9.0.8,
+  3061-3074 at 10.0.7) where a footprint's own shapes pass it, and format( PCB_POINT )
+  writes the point's position as it stands (1157-1168 at 10.0.7; parsePCB_POINT,
+  pcb_io_kicad_sexpr_parser.cpp:8709-8756 at 10.0.7). A zone's layers are the names its
+  (layer ...) or (layers ...) gives, the parser's wildcards expanded
+  (kicad_ref.board_layers); KiCad cuts a board-level zone's layers to the board's
+  enabled ones after loading, but not a footprint's zone's (1239-1249 [1510-1520]);
 - the four fields every footprint holds from its constructor (addMandatoryFields,
   pcbnew/footprint.cpp:94-111 at 9.0.8; the constructor's own body, 105-117 at 10.0.7):
   Reference on F.SilkS, Value, Datasheet and Description on F.Fab, keep-upright (the
@@ -64,10 +73,18 @@ nanometre or two (BOARD_ITEM::GetFPRelativePosition, pcbnew/board_item.cpp:334-3
 The operations (pcbnew/footprint.cpp, identical in substance at both tags):
 
 - SetPosition (2553-2584 [3002-3039]): every child moves with the footprint, so nothing
-  footprint-relative changes;
+  footprint-relative changes; each zone and each point is moved by the same delta
+  (zone->Move( delta ) and point->Move( delta ) in its loops at 10.0.7; ZONE::Move,
+  pcbnew/zone.cpp:904-929 at 9.0.8, adds it to every outline and fill point), exact
+  integer additions;
 - SetOrientation (2641-2669 [3099-3137]): change = new - old (doubles), the orientation
   becomes Normalize180( new ), every pad and text is turned by the change (PAD::Rotate,
-  PCB_TEXT::Rotate); graphics keep their footprint-relative geometry;
+  PCB_TEXT::Rotate); graphics keep their footprint-relative geometry; every zone point
+  and point is turned about the footprint's position by the change with the integer
+  RotatePoint (ZONE::Rotate, zone.cpp:959-967 at 9.0.8, through SHAPE_LINE_CHAIN::Rotate,
+  libs/kimath/src/geometry/shape_line_chain.cpp:483-490 at 9.0.8; PCB_POINT::Rotate,
+  pcbnew/pcb_point.cpp:138-141 at 10.0.7; kicad_ref.trigo.rotate_point_about), whose
+  rounding is the major's KiROUND;
 - Rotate (2456-2479 [2898-2918]): returns at once when the angle is exactly 0, else
   SetOrientation( orientation + angle ) and then KeepUpright on every field and every
   fp_text (PCB_TEXT_T; a text box is not one);
@@ -90,8 +107,14 @@ The operations (pcbnew/footprint.cpp, identical in substance at both tags):
   start and end swapped (EDA_SHAPE::flip, common/eda_shape.cpp:697-737 [991-1033];
   PCB_SHAPE::Flip, pcbnew/pcb_shape.cpp:492-497 [600-605]), and a rectangle becomes the
   polygon of its corners when d is not a multiple of 90 (EDA_SHAPE::rotate, 636-694
-  [930-988]). Which layer is whose opposite, and which layers are side specific, is the
-  board's (kicad_ref.board_layers); a 3D model is left as it is.
+  [930-988]). A zone is mirrored top to bottom about the footprint's position, y going
+  to 2 fy - y, and its layers and its fills' layers go to their opposites (ZONE::Flip,
+  zone.cpp:970-993 at 9.0.8, through SHAPE_LINE_CHAIN::Mirror, shape_line_chain.cpp:
+  962-974); a KiCad 10 point is mirrored the same way and its layer goes to its opposite
+  (PCB_POINT::Flip, pcb_point.cpp:144-149 at 10.0.7, whatever the comment above its call
+  in FOOTPRINT::Flip says); then the turn by d turns both about the position. Which
+  layer is whose opposite, and which layers are side specific, is the board's
+  (kicad_ref.board_layers); a 3D model is left as it is.
 - placing a library footprint (FootprintLoad, then SetPosition, then Rotate or
   SetOrientation): the library footprint reads with orientation 0 at the origin.
 
@@ -114,7 +137,7 @@ from kicad_ref import pad as PAD
 from kicad_ref import pcb_text as T
 from kicad_ref.eda_units import format_angle
 from kicad_ref.parse_units import ParseRefusal, parse_board_units, parse_double
-from kicad_ref.trigo import normalize, normalize180
+from kicad_ref.trigo import normalize, normalize180, rotate_point_about
 
 Point = tuple[int, int]
 
@@ -168,6 +191,26 @@ class Text(NamedTuple):
     default: bool = False
 
 
+class Zone(NamedTuple):
+    """A zone the footprint owns, in board coordinates: the layers its (layer ...) or
+    (layers ...) reads as (wildcards expanded); each (polygon (pts ...)) as its points in
+    order, an (arc ...) among them giving its start, mid and end (the first polygon is
+    the outline, KiCad reads any later one as a hole in it); each (filled_polygon (layer)
+    (pts ...)) as (layer, points)."""
+
+    layers: frozenset[str]
+    polygons: tuple[tuple[Point, ...], ...]
+    fills: tuple[tuple[str, tuple[Point, ...]], ...] = ()
+
+
+class BoardPoint(NamedTuple):
+    """A KiCad 10 point (PCB_POINT) the footprint owns: its position in board
+    coordinates and its layer."""
+
+    position: Point
+    layer: str | None
+
+
 class Footprint(NamedTuple):
     position: Point
     orientation: float  # Normalize180
@@ -175,6 +218,8 @@ class Footprint(NamedTuple):
     pads: tuple[Pad, ...]
     texts: tuple[Text, ...]
     shapes: tuple[Shape, ...]
+    zones: tuple[Zone, ...] = ()
+    points: tuple[BoardPoint, ...] = ()
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +502,37 @@ def read_footprint(group, *, major: int, copper_count: int | None = None) -> Foo
                     _shape_points(item, major=major),
                 )
             )
-    return Footprint(position, orientation, layer, pads, tuple(texts), tuple(shapes))
+    zones = tuple(_read_zone(item, major=major) for item in children(group, b"zone"))
+    points = tuple(_read_point(item, major=major) for item in children(group, b"point"))
+    return Footprint(position, orientation, layer, pads, tuple(texts), tuple(shapes), zones, points)
+
+
+def _layer_word(group) -> str | None:
+    """The layer name of a (layer "name") list, or None."""
+    return group.items[1].value.decode() if group is not None and len(group.items) > 1 else None
+
+
+def _read_zone(group, *, major: int) -> Zone:
+    """A footprint's (zone ...), its points in board coordinates as written."""
+    names = [
+        token.value.decode()
+        for node in (*children(group, b"layer"), *children(group, b"layers"))
+        for token in node.items[1:]
+    ]
+    polygons = tuple(_shape_points(item, major=major) for item in children(group, b"polygon"))
+    fills = tuple(
+        (_layer_word(child(item, b"layer")) or "", _shape_points(item, major=major))
+        for item in children(group, b"filled_polygon")
+    )
+    return Zone(BL.layer_set(names), polygons, fills)
+
+
+def _read_point(group, *, major: int) -> BoardPoint:
+    """A footprint's KiCad 10 (point (at x y) (size s) (layer "name") (uuid ...))."""
+    at = child(group, b"at")
+    if at is None:
+        raise ParseRefusal(f"the point at byte {group.start} has no (at)")
+    return BoardPoint(_point(at, major=major), _layer_word(child(group, b"layer")))
 
 
 # ---------------------------------------------------------------------------
@@ -465,18 +540,49 @@ def read_footprint(group, *, major: int, copper_count: int | None = None) -> Foo
 # ---------------------------------------------------------------------------
 
 
+def _board_children(
+    fp: Footprint, move: Callable[[Point], Point], opposite: Mapping[str, str] | None = None
+) -> dict:
+    """``fp``'s zones and points with ``move`` applied to every board point they hold and,
+    with ``opposite``, every layer taken to its opposite: _replace arguments."""
+
+    def flipped(layer):
+        return opposite[layer] if opposite is not None and layer else layer
+
+    zones = tuple(
+        zone._replace(
+            layers=frozenset(flipped(layer) for layer in zone.layers),
+            polygons=tuple(tuple(move(p) for p in polygon) for polygon in zone.polygons),
+            fills=tuple((flipped(layer), tuple(move(p) for p in pts)) for layer, pts in zone.fills),
+        )
+        for zone in fp.zones
+    )
+    points = tuple(BoardPoint(move(point.position), flipped(point.layer)) for point in fp.points)
+    return {"zones": zones, "points": points}
+
+
+def _turned_about(centre: Point, degrees: float, major: int) -> Callable[[Point], Point]:
+    """The integer RotatePoint about ``centre`` by ``degrees`` (kicad_ref.trigo)."""
+    return lambda p: rotate_point_about(p[0], p[1], centre[0], centre[1], degrees, major=major)
+
+
 def set_position(fp: Footprint, position: Point) -> Footprint:
-    """FOOTPRINT::SetPosition: nothing footprint-relative changes."""
-    return fp._replace(position=position)
+    """FOOTPRINT::SetPosition: nothing footprint-relative changes; zones and points move
+    by the delta."""
+    dx, dy = position[0] - fp.position[0], position[1] - fp.position[1]
+    return fp._replace(position=position, **_board_children(fp, lambda p: (p[0] + dx, p[1] + dy)))
 
 
-def set_orientation(fp: Footprint, degrees: float) -> Footprint:
-    """FOOTPRINT::SetOrientation: every pad and text turned by the change, no KeepUpright."""
+def set_orientation(fp: Footprint, degrees: float, *, major: int = 10) -> Footprint:
+    """FOOTPRINT::SetOrientation: every pad and text turned by the change, no KeepUpright;
+    zones and points turned about the position by the change, rounded as KiCad
+    ``major`` rounds."""
     change = degrees - fp.orientation
     return fp._replace(
         orientation=normalize180(degrees),
         pads=tuple(p._replace(angle=PAD.rotate(p.angle, change)) for p in fp.pads),
         texts=tuple(t._replace(style=T.rotate(t.style, change)) for t in fp.texts),
+        **_board_children(fp, _turned_about(fp.position, change, major)),
     )
 
 
@@ -485,11 +591,11 @@ def keep_upright(fp: Footprint) -> Footprint:
     return fp._replace(texts=tuple(t._replace(style=T.keep_upright(t.style)) for t in fp.texts))
 
 
-def rotate(fp: Footprint, degrees: float) -> Footprint:
+def rotate(fp: Footprint, degrees: float, *, major: int = 10) -> Footprint:
     """FOOTPRINT::Rotate about the footprint's own position."""
     if degrees == 0:
         return fp
-    return keep_upright(set_orientation(fp, fp.orientation + degrees))
+    return keep_upright(set_orientation(fp, fp.orientation + degrees, major=major))
 
 
 def is_cardinal(degrees: float) -> bool:
@@ -530,13 +636,21 @@ def _rotated_shape(shape: Shape, change: float) -> Shape:
 
 
 def flip(
-    fp: Footprint, opposite: Mapping[str, str], side_specific: Callable[[str], bool]
+    fp: Footprint,
+    opposite: Mapping[str, str],
+    side_specific: Callable[[str], bool],
+    *,
+    major: int = 10,
 ) -> Footprint:
     """FOOTPRINT::Flip about the footprint's own position, LEFT_RIGHT (module docstring).
     ``opposite`` maps every layer to its opposite and ``side_specific`` says which layers
-    are, both the board's (kicad_ref.board_layers.opposites and is_side_specific)."""
+    are, both the board's (kicad_ref.board_layers.opposites and is_side_specific); the
+    turn of zones and points rounds as KiCad ``major`` rounds."""
     new = normalize180(-fp.orientation)
     change = (new + 180.0) - new
+    cy = fp.position[1]
+    mirrored = fp._replace(**_board_children(fp, lambda p: (p[0], 2 * cy - p[1]), opposite))
+    board = _board_children(mirrored, _turned_about(fp.position, change, major))
     pads = []
     for p in fp.pads:
         pads.append(
@@ -568,13 +682,14 @@ def flip(
         pads=tuple(pads),
         texts=tuple(texts),
         shapes=shapes,
+        **board,
     )
 
 
 def board_flip(fp: Footprint, table: BL.LayerTable, *, major: int) -> Footprint:
     """``flip`` on the board whose layer table is ``table``, as KiCad ``major`` reads it."""
     opposite = BL.opposites(table, major=major)
-    return flip(fp, opposite, lambda layer: BL.is_side_specific(table, layer))
+    return flip(fp, opposite, lambda layer: BL.is_side_specific(table, layer), major=major)
 
 
 def place(
@@ -584,22 +699,24 @@ def place(
     *,
     semantics: str,
     flipped: Callable[[Footprint], Footprint] | None = None,
+    major: int = 10,
 ) -> Footprint:
     """A library footprint (orientation 0) placed at ``position`` and turned to ``degrees``
     by Rotate (``semantics="rotate"``, the editor's rotate command and properties dialog)
     or by SetOrientation (``"set"``, the Python API). With ``flipped`` (a flip of the
     board, such as board_flip bound to its table) the footprint is flipped after
     SetPosition and before the turn, which then turns it from the orientation the flip
-    left (SetLayerAndFlip( B_Cu ), then the turn to ``degrees``)."""
+    left (SetLayerAndFlip( B_Cu ), then the turn to ``degrees``). Zones and points turn
+    as KiCad ``major`` rounds."""
     if library.orientation != 0:
         raise ValueError(f"a library footprint reads at orientation 0, not {library.orientation}")
     placed = set_position(library, position)
     if flipped is not None:
         placed = flipped(placed)
     if semantics == "rotate":
-        return rotate(placed, degrees - placed.orientation)
+        return rotate(placed, degrees - placed.orientation, major=major)
     if semantics == "set":
-        return set_orientation(placed, degrees)
+        return set_orientation(placed, degrees, major=major)
     raise ValueError(f"no such semantics {semantics!r}")
 
 

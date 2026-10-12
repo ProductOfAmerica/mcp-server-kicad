@@ -27,8 +27,14 @@ Judges, none of them the code under test:
   pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.cpp:1127-1131 at 9.0.8, 1231-1235 at
   10.0.7).
 
-Stock footprints are read from the install at test time (skipped without one); the zone
-owning Tag-Connect of the rung 3 plan's curated set waits for the board-coordinates slice.
+Stock footprints are read from the install at test time (skipped without one).
+
+A footprint's zones and KiCad 10's points are another matter: KiCad stores them in board
+coordinates (format( ZONE ) writes a zone's outline without the footprint,
+pcb_io_kicad_sexpr.cpp:2628-2637 at 9.0.8, 3061-3074 at 10.0.7; format( PCB_POINT ),
+1157-1168 at 10.0.7), so SetPosition moves them by the delta and SetOrientation turns them
+about the footprint with the integer RotatePoint (kicad_ref.footprint, checked against
+pcbnew in test_ladder_r3_judges.py). Their tests here are bug 15's.
 """
 
 from __future__ import annotations
@@ -47,9 +53,11 @@ import pytest
 import sexpr_gen
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
+from kicad_ref import board_item as B
 from kicad_ref import footprint as F
 from kicad_ref.eda_units import format_angle
 from kicad_ref.trigo import normalize, normalize180
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import pcb
 
@@ -76,6 +84,11 @@ _ZERO_ANGLES = (0.0, 360.0)
 #: N14's angles, and the angle its move rows start from.
 _TOKEN_ANGLES = (90.0, 180.0, 270.0, 45.0, 37.5)
 _MOVE_START = 30.0
+#: The rung 3 plan's zone-owning curated footprint, a keepout on F.Cu round its origin,
+#: and a footprint whose keepout names every copper layer one by one; the angles the
+#: rung 3 plan places them at.
+ZONE_CURATED = ("Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical", "ESP-01")
+_ZONE_ANGLES = (0.0, 90.0, 30.0)
 
 
 def _forget(path: Path) -> None:
@@ -102,7 +115,9 @@ def _kicads_reading(fp: F.Footprint) -> F.Footprint:
     return F.written(F.canonical(fp))
 
 
-def _place(board: Path, ref: str, at_nm, angle, pretty: Path, name: str) -> None:
+def _place(
+    board: Path, ref: str, at_nm, angle, pretty: Path, name: str, layer: str = "F.Cu"
+) -> None:
     try:
         pcb.place_footprint(
             ref,
@@ -110,6 +125,7 @@ def _place(board: Path, ref: str, at_nm, angle, pretty: Path, name: str) -> None
             at_nm[0] / MM,
             at_nm[1] / MM,
             rotation=angle,
+            layer=layer,
             library=str(pretty),
             footprint=name,
             pcb_path=str(board),
@@ -118,13 +134,21 @@ def _place(board: Path, ref: str, at_nm, angle, pretty: Path, name: str) -> None
         _forget(board)
 
 
-def _move(board: Path, ref: str, at_nm, rotation=None) -> None:
+def _move(board: Path, ref: str, at_nm, rotation=None, layer: str = "") -> None:
     try:
         pcb.move_footprint(
-            ref, at_nm[0] / MM, at_nm[1] / MM, rotation=rotation, pcb_path=str(board)
+            ref, at_nm[0] / MM, at_nm[1] / MM, rotation=rotation, layer=layer, pcb_path=str(board)
         )
     finally:
         _forget(board)
+
+
+def _performed(call) -> None:
+    """Run ``call``, where a refusal is the defect: KiCad performs the edit."""
+    try:
+        call()
+    except ToolError as exc:
+        raise AssertionError(f"refused an edit KiCad performs: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -458,6 +482,248 @@ def test_place_writes_library_angles_as_kicad_loads_them(fp, version):
 
 
 # ---------------------------------------------------------------------------
+# zones and points: board coordinates
+# ---------------------------------------------------------------------------
+
+_BUG_15 = pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "bug 15: a footprint's zones and KiCad 10 points are board coordinates, which the"
+        " tool copies, moves, turns and flips as footprint-local or not at all; fixed by step 7"
+    ),
+)
+
+
+def _major(version: str) -> int:
+    """The KiCad that reads a board of ``version``."""
+    return 10 if version == "k10" else 9
+
+
+def _layered(path: Path, items=(), version: str = "k9") -> Path:
+    """A board with every technical layer in its table (edit_gen.layered_board_text), so
+    a zone on any of them stays on the board's own layers."""
+    path.write_text(E.layered_board_text(items, version=version), encoding="utf-8", newline="\n")
+    return path
+
+
+def _zone_board(work: Path, fp: E.SynFootprint, theta0: float, version: str) -> Path:
+    """A board holding ``fp`` as KiCad holds it placed at ``theta0`` (U1), its zones and
+    points in board coordinates, and a second footprint (U2) the edit must leave alone."""
+    items = [
+        E.board_footprint_text(fp, "U1", _AT, theta0, version=version),
+        E.board_footprint_text(E.ZONED, "U2", (90 * MM, 40 * MM), 30.0, version=version),
+    ]
+    return _layered(work / "start.kicad_pcb", items, version)
+
+
+@_BUG_15
+@settings(max_examples=sexpr_gen.budget(4))
+@example(fp=E.ZONED, at=(50 * MM, 50 * MM), angle=0.0, version="k9")
+@example(fp=E.ZONED, at=(50 * MM, 50 * MM), angle=30.0, version="k10")
+@given(
+    fp=E.synthetic_footprints(zones=True),
+    at=st.tuples(G.nm_coordinates(300 * MM), G.nm_coordinates(300 * MM)),
+    angle=G.angles(),
+    version=_VERSIONS,
+)
+def test_place_writes_footprint_zones_in_board_coordinates(fp, at, angle, version):
+    """A library footprint owning zones placed by place_footprint at any position and
+    angle: every zone point KiCad reads is the library's point put where KiCad puts it,
+    BOARD_ITEM::SetFPRelativePosition's arithmetic (kicad_ref.board_item: RotatePoint by
+    the angle, then the footprint's position), since FootprintLoad reads the library's
+    zone at the origin and SetPosition and Rotate carry it from there; its layers are the
+    library's. The tool left the library's points where they were, at the origin."""
+    with tempfile.TemporaryDirectory() as work:
+        pretty = E.write_library(work, fp)
+        board = _layered(Path(work) / "zones.kicad_pcb", version=version)
+        _place(board, "U1", at, angle, pretty, fp.name)
+        data = board.read_bytes()
+    major = _major(version)
+    got = FJ.read(data, "U1", major=major)
+    want = [
+        (
+            zone.layers,
+            tuple(
+                tuple(B.fp_relative_to_board(got.position, angle, p, major=major) for p in polygon)
+                for polygon in zone.polygons
+            ),
+        )
+        for zone in E.library_footprint(fp).zones
+    ]
+    assert [(zone.layers, zone.polygons) for zone in got.zones] == want
+
+
+@_BUG_15
+@settings(max_examples=sexpr_gen.budget(4))
+@example(fp=E.ZONED, theta0=30.0, to=(60 * MM, 70 * MM), angle=90.0, version="k9")
+@example(fp=E.ZONED, theta0=-90.0, to=(61_234_567, 40 * MM), angle=None, version="k10")
+@given(
+    fp=E.synthetic_footprints(zones=True),
+    theta0=G.angles(),
+    to=st.tuples(G.nm_coordinates(300 * MM), G.nm_coordinates(300 * MM)),
+    angle=st.one_of(st.none(), G.angles()),
+    version=_VERSIONS,
+)
+def test_move_carries_footprint_zones(fp, theta0, to, angle, version):
+    """A footprint owning zones as KiCad holds it at theta0, its zones in board
+    coordinates, moved by move_footprint anywhere and turned to any rotation or not:
+    KiCad reads the footprint, every zone point included, as its own SetPosition and
+    SetOrientation of the footprint it read, each zone moved by the delta (ZONE::Move)
+    and then turned about the new position by the change (ZONE::Rotate, the integer
+    RotatePoint). The tool left the zones where they were."""
+    major = _major(version)
+    with tempfile.TemporaryDirectory() as work:
+        board = _zone_board(Path(work), fp, theta0, version)
+        start = FJ.read(board.read_bytes(), "U1", major=major)
+        _move(board, "U1", to, rotation=angle)
+        got = FJ.read(board.read_bytes(), "U1", major=major)
+    want = F.set_position(start, to)
+    if angle is not None:
+        want = F.set_orientation(want, angle, major=major)
+    problems = FJ.differences(got, _kicads_reading(want))
+    assert not problems, "\n".join(problems)
+
+
+def _kicads_move_edit(edit: J.Edit) -> bool:
+    """Whether ``edit`` is one KiCad's SetPosition and Rotate make in the file: the
+    footprint's own (at) x and y, an angle atom of any (at) set, added or left out, a
+    text's justify words, and the x and y of a zone's points and of a KiCad 10 point."""
+    heads = [label for _, label in edit.path]
+    if heads[-1] == "at" and edit.index == 3:
+        return True
+    if edit.op != "atom":
+        return False
+    if heads[-1] == "justify":
+        return edit.index >= 1
+    if edit.index not in (1, 2):
+        return False
+    if heads == ["kicad_pcb", "footprint", "at"] or heads[-3:] == ["footprint", "point", "at"]:
+        return True
+    return "zone" in heads and "pts" in heads and heads[-1] in ("xy", "start", "mid", "end")
+
+
+@settings(max_examples=sexpr_gen.budget(4))
+@example(fp=E.ZONED, theta0=30.0, to=(60 * MM, 70 * MM), angle=90.0, version="k9")
+@example(fp=E.POINTED, theta0=30.0, to=(60 * MM, 70 * MM), angle=-45.0, version="k10")
+@given(
+    fp=E.synthetic_footprints(zones=True),
+    theta0=G.angles(),
+    to=st.tuples(G.nm_coordinates(300 * MM), G.nm_coordinates(300 * MM)),
+    angle=st.one_of(st.none(), G.angles()),
+    version=_VERSIONS,
+)
+def test_moving_a_zone_footprint_changes_only_what_kicads_move_changes(
+    fp, theta0, to, angle, version
+):
+    """The byte-preservation guard over the same domain (it holds before and after the
+    zones follow the footprint): a move of a footprint owning zones or points, turned or
+    not, changes nothing outside it (edit_judge.assert_confined, U2 and its zones
+    included) and, inside it, only what KiCad's SetPosition and Rotate change in the file
+    (_kicads_move_edit)."""
+    with tempfile.TemporaryDirectory() as work:
+        board = _zone_board(Path(work), fp, theta0, version)
+        before = board.read_bytes()
+        _move(board, "U1", to, rotation=angle)
+        after = board.read_bytes()
+    if after == before:
+        return
+    footprint = _at_path(before, "U1")[:2]
+    stray = [
+        e.describe()
+        for e in J.assert_confined(before, after, footprint)
+        if not _kicads_move_edit(e)
+    ]
+    assert not stray, stray
+
+
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_moving_a_zone_footprint_where_it_stands_changes_no_byte(tmp_path, version):
+    """A footprint owning zones (and, on KiCad 10, points) moved to its own position, with
+    no rotation and with the rotation it holds: the board is byte-identical, its zone
+    points included, as a move by nothing is (FOOTPRINT::SetPosition by a zero delta, and
+    Rotate returns at once for no change)."""
+    fp = E.ZONED._replace(points=E.POINTED.points) if version == "k10" else E.ZONED
+    board = _zone_board(tmp_path, fp, 30.0, version)
+    before = board.read_bytes()
+    _move(board, "U1", _AT)
+    _move(board, "U1", _AT, rotation=30.0)
+    _move(board, "U1", _AT, rotation=390.0)
+    assert board.read_bytes() == before
+
+
+def test_placing_a_zone_footprint_is_a_pure_insertion(tmp_path):
+    """place_footprint of a footprint owning zones, turned: the board gains exactly one
+    footprint, every other byte where it was (edit_judge.assert_inserted)."""
+    pretty = E.write_library(tmp_path / "lib", E.ZONED)
+    board = _zone_board(tmp_path, E.footprint_with_pad_at(0.0), 0.0, "k9")
+    before = board.read_bytes()
+    _place(board, "U3", (70 * MM, 70 * MM), 37.5, pretty, E.ZONED.name)
+    J.assert_inserted(before, board.read_bytes(), heads=["footprint"])
+
+
+#: N3's edits: place_footprint on each side, and move_footprint turning the footprint or
+#: flipping it, of a KiCad 10 footprint holding two points.
+_POINT_EDITS = ("place at 30", "place on the back at 90", "move and turn", "move to the back")
+
+
+def _point_edit(tmp_path: Path, operation: str) -> tuple[F.Footprint, bytes]:
+    """(KiCad's footprint for ``operation``, the board the tool wrote): edit_gen.POINTED
+    placed by the tool on a KiCad 10 board, or as KiCad holds it at 30 then moved by it."""
+    table = FJ.layer_table(E.layered_board_text(version="k10").encode())
+
+    def flip(fp: F.Footprint) -> F.Footprint:
+        return F.board_flip(fp, table, major=10)
+
+    if operation.startswith("place"):
+        lib = E.write_library(tmp_path / "lib", E.POINTED)
+        board = _layered(tmp_path / "points.kicad_pcb", version="k10")
+        library = E.library_footprint(E.POINTED)
+        back = "back" in operation
+        angle = 90.0 if back else 30.0
+        _performed(
+            lambda: _place(
+                board, "U1", _AT, angle, lib, E.POINTED.name, layer="B.Cu" if back else "F.Cu"
+            )
+        )
+        want = F.place(
+            library, _AT, angle, semantics="rotate", flipped=flip if back else None, major=10
+        )
+        return want, board.read_bytes()
+    board = _zone_board(tmp_path, E.POINTED, 30.0, "k10")
+    start = FJ.read(board.read_bytes(), "U1", major=10)
+    if operation == "move and turn":
+        to = (60 * MM, 70 * MM)
+        _performed(lambda: _move(board, "U1", to, rotation=120.0))
+        return F.set_orientation(F.set_position(start, to), 120.0, major=10), board.read_bytes()
+    _performed(lambda: _move(board, "U1", _AT, layer="B.Cu"))
+    return flip(start), board.read_bytes()
+
+
+@_BUG_15
+@pytest.mark.parametrize("operation", _POINT_EDITS)
+def test_kicad10_footprint_points_are_board_coordinates(tmp_path, operation):
+    """N3. A KiCad 10 footprint holding points (PCB_POINT, in board coordinates: format(
+    PCB_POINT ), pcb_io_kicad_sexpr.cpp:1157-1168 at 10.0.7, and parsePCB_POINT,
+    pcb_io_kicad_sexpr_parser.cpp:8709-8756): placed on the front at 30 or on the back at
+    90, moved and turned to 120, or flipped where it stands, every point reads where
+    KiCad's own edit puts it and on its layer: moved by the delta, turned about the
+    footprint (PCB_POINT::Rotate, pcbnew/pcb_point.cpp:138-141 at 10.0.7), mirrored and
+    taken to its opposite layer by a flip (PCB_POINT::Flip, 144-149), and the rest of the
+    footprint as KiCad's. The tool left the points where they were, and refused the flip."""
+    want, data = _point_edit(tmp_path, operation)
+    got = FJ.read(data, "U1", major=10)
+    problems = FJ.differences(
+        got,
+        _kicads_reading(want),
+        written_fields_only=True,
+        shapes=True,
+        copper_count=FJ.copper_count(data),
+    )
+    assert not problems, "\n".join(problems)
+
+
+# ---------------------------------------------------------------------------
 # against pcbnew
 # ---------------------------------------------------------------------------
 
@@ -516,7 +782,22 @@ class _Runs:
             jobs.append(OPS.move_job(start, moves, out))
         describe_at = {angle: len(jobs) + k for k, angle in enumerate((90.0, 45.0))}
         jobs += [OPS.describe_job(tool_boards[angle]) for angle in describe_at]
+        self.zone_paths = [E.stock_footprint(name) for name in ZONE_CURATED]
+        zone_tool, zone_kicad = {}, {}
+        for angle in _ZONE_ANGLES:
+            board = _board(work / f"tool_zone_{angle}.kicad_pcb")
+            for index, path in enumerate(self.zone_paths):
+                _place(board, f"Z{index}", _slot(index), angle, path.parent, path.stem)
+            zone_tool[angle] = board
+            zone_kicad[angle] = work / f"kicad_zone_{angle}.kicad_pcb"
+            items = [
+                OPS.place_item(path.parent, path.stem, f"Z{index}", _slot(index), ("rotate", angle))
+                for index, path in enumerate(self.zone_paths)
+            ]
+            jobs.append(OPS.place_job(empty, items, zone_kicad[angle]))
         results = OPS.run(jobs)
+        self.zone_tool = {angle: board.read_bytes() for angle, board in zone_tool.items()}
+        self.zone_kicad = {angle: out.read_bytes() for angle, out in zone_kicad.items()}
         self.tool = {angle: board.read_bytes() for angle, board in tool_boards.items()}
         self.kicad = {angle: out.read_bytes() for angle, out in kicad_out.items()}
         self.described = {angle: results[k] for angle, k in describe_at.items()}
@@ -697,6 +978,90 @@ def test_place_and_move_match_pcbnew_rotate_token_for_token(runs, operation, par
             found = FJ.token_problems(got, want, tolerance_nm=tolerance, footprint=False)
             problems += [f"{path.stem} {operation} to {angle}: {p}" for p in found]
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])
+
+
+@_BUG_15
+def test_footprint_zone_placement_matches_pcbnew(runs):
+    """One item: Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical and ESP-01 placed by
+    place_footprint and by pcbnew (FootprintLoad, SetPosition, Rotate) at 0, 90 and 30
+    degrees: each footprint the tool wrote reads as pcbnew's, every zone point exactly
+    (pcbnew holds and writes them as board integers) and the zones' layers on the board's
+    copper. The tool left the zones at the library's coordinates, round the origin."""
+    problems = []
+    for angle in _ZONE_ANGLES:
+        for index, path in enumerate(runs.zone_paths):
+            ref = f"Z{index}"
+            got = FJ.read(runs.zone_tool[angle], ref, major=runs.major)
+            want = FJ.read(runs.zone_kicad[angle], ref, major=runs.major)
+            if not want.zones:
+                raise RuntimeError(f"pcbnew placed {path.stem} without a zone")
+            found = FJ.differences(
+                got,
+                want,
+                tolerance_nm=_tolerance(angle),
+                copper_count=FJ.copper_count(runs.zone_tool[angle]),
+            )
+            problems += [f"{path.stem} at {angle}: {p}" for p in found]
+    assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])
+
+
+@_BUG_15
+def test_kicad10_footprint_points_match_pcbnew(tmp_path):
+    """N3's pcbnew sibling, on KiCad 10 only (KiCad 9 has no points, which came with board
+    format 20250901): edit_gen.POINTED placed by the tool and by pcbnew on the front at 30
+    and on the back at 90 (FootprintLoad, SetPosition, then Rotate, or Flip and Rotate),
+    and, from pcbnew's placement at 30, moved and turned to 120 and flipped where it
+    stands by both: each footprint the tool wrote reads as pcbnew's, every point exactly
+    and on its layer."""
+    reason = PJ.skip_reason()
+    if reason:
+        pytest.skip(reason)
+    if PJ.major() < 10:
+        pytest.skip(f"pcbnew {PJ.major()} has no points (KiCad 10's board format 20250901)")
+    lib = E.write_library(tmp_path / "lib", E.POINTED)
+    empty = _layered(tmp_path / "empty.kicad_pcb", version="k10")
+    to = (60 * MM, 70 * MM)
+    kicad = {name: tmp_path / f"kicad_{name}.kicad_pcb" for name in ("front", "back", "turned")}
+    kicad["flipped"] = tmp_path / "kicad_flipped.kicad_pcb"
+    OPS.run(
+        [
+            OPS.place_job(
+                empty, [OPS.place_item(lib, "Pointed", "U1", _AT, ("rotate", 30.0))], kicad["front"]
+            ),
+            OPS.place_job(
+                empty,
+                [OPS.place_item(lib, "Pointed", "U1", _AT, [("flip", None), ("rotate_to", 90.0)])],
+                kicad["back"],
+            ),
+            OPS.move_job(
+                kicad["front"], [OPS.move_item("U1", to, ("rotate_to", 120.0))], kicad["turned"]
+            ),
+            OPS.move_job(
+                kicad["front"], [OPS.move_item("U1", _AT, ("flip", None))], kicad["flipped"]
+            ),
+        ]
+    )
+    tool = {name: tmp_path / f"tool_{name}.kicad_pcb" for name in kicad}
+    for name in ("front", "back"):
+        shutil.copyfile(empty, tool[name])
+    for name in ("turned", "flipped"):
+        shutil.copyfile(kicad["front"], tool[name])
+    _performed(lambda: _place(tool["front"], "U1", _AT, 30.0, lib, "Pointed"))
+    _performed(lambda: _place(tool["back"], "U1", _AT, 90.0, lib, "Pointed", layer="B.Cu"))
+    _performed(lambda: _move(tool["turned"], "U1", to, rotation=120.0))
+    _performed(lambda: _move(tool["flipped"], "U1", _AT, layer="B.Cu"))
+    problems = []
+    for name in kicad:
+        data, theirs = tool[name].read_bytes(), kicad[name].read_bytes()
+        found = FJ.differences(
+            FJ.read(data, "U1", major=10),
+            FJ.read(theirs, "U1", major=10),
+            tolerance_nm=FJ.ROTATION_TOLERANCE_NM,
+            written_fields_only=True,
+            copper_count=FJ.copper_count(data),
+        )
+        problems += [f"{name}: {p}" for p in found]
+    assert not problems, "\n".join(problems)
 
 
 def test_curated_set_exercises_what_the_pcbnew_tests_need():

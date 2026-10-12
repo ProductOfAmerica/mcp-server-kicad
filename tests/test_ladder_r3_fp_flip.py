@@ -35,10 +35,14 @@ Judges, none of them the code under test:
   pcb_io_kicad_sexpr_parser.cpp:4510-4519 at 9.0.8, 5198-5207 at 10.0.7), and the
   invariant that a refused edit leaves the file byte-identical.
 
+A footprint's zones are board coordinates (kicad_ref.footprint): KiCad's flip mirrors
+each one about the footprint, y going to 2 fy - y, takes its layers to their opposites
+and turns it by d with the rest, so in the file every zone point's x goes to 2 fx - x
+and its y stays. Their tests here are bug 15's.
+
 Generated tests build their boards in temporary directories (rung 3's D17); the
 hand-picked ones write into tmp_path, where the autouse oracle loads every board with
-kicad-cli. Footprints owning a zone are the board-coordinates slice's subject and are
-judged here only by the refusal invariant.
+kicad-cli.
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ import zlib
 from pathlib import Path
 
 import edit_gen as E
+import edit_judge as J
 import footprint_judge as FJ
 import geom_gen as G
 import pcbnew_fp_ops as OPS
@@ -816,6 +821,136 @@ def test_a_refused_flip_leaves_the_board_byte_identical(kind, theta0, version):
     assert not problems, "\n".join(problems)
 
 
+_BUG_15 = pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "bug 15: a footprint's zones and KiCad 10 points are board coordinates, which the"
+        " tool copies, moves, turns and flips as footprint-local or not at all; fixed by step 7"
+    ),
+)
+
+
+def _zone_start_board(
+    work: Path, fp: E.SynFootprint, theta0: float, version: str, *, copper: int = 2
+) -> Path:
+    """_start_board for a footprint owning zones: U1 as KiCad holds it at ``theta0``, its
+    zones in board coordinates written for ``version``, and U2 beside it."""
+    items = [
+        E.board_footprint_text(fp, "U1", _AT, theta0, version=version),
+        E.board_footprint_text(E.footprint_with_pad_at(45.0), "U2", _NEIGHBOUR, 30.0),
+    ]
+    work.mkdir(parents=True, exist_ok=True)
+    return _board(work / "start.kicad_pcb", items, version, copper=copper)
+
+
+@_BUG_15
+@settings(max_examples=sexpr_gen.budget(4))
+@example(fp=E.ZONED, theta0=30.0, version="k9")
+@example(fp=E.ZONED, theta0=179.9, version="k10")
+@given(fp=E.synthetic_footprints(zones=True), theta0=G.angles(), version=_VERSIONS)
+def test_flip_carries_footprint_zones(fp, theta0, version):
+    """A footprint owning zones as KiCad holds it at any angle, moved to the back where it
+    stands: the flip happens and KiCad reads every zone as its own flip leaves it, each
+    point mirrored about the footprint and turned by d (ZONE::Flip then ZONE::Rotate: x
+    to 2 fx - x, y kept, through the integer RotatePoint when d is not exactly 180, as at
+    179.9), its layers and its fills' layers on their opposites, and the rest of the
+    footprint as KiCad's. The tool refused the flip."""
+    with tempfile.TemporaryDirectory() as work:
+        board = _zone_start_board(Path(work), fp, theta0, version)
+        before = board.read_bytes()
+        _performed_flip(board)
+        after = board.read_bytes()
+    problems = _flip_problems(before, after, version, shapes=True)
+    assert not problems, "\n".join(problems)
+
+
+@_BUG_15
+@settings(max_examples=sexpr_gen.budget(4))
+@example(fp=E.ZONED, angle=30.0, version="k9")
+@given(fp=E.synthetic_footprints(zones=True), angle=G.angles(), version=_VERSIONS)
+def test_place_on_the_back_carries_footprint_zones(fp, angle, version):
+    """A library footprint owning zones placed by place_footprint on B.Cu at any angle:
+    the board gains exactly that footprint (edit_judge.assert_inserted), and KiCad reads
+    it as its own FootprintLoad, SetPosition, Flip and turn to the angle (the turn by the
+    change from the angle the flip left, as SetOrientation computes it), its zones in
+    board coordinates mirrored and turned with it. The tool refused it."""
+    with tempfile.TemporaryDirectory() as work:
+        pretty = E.write_library(work, fp)
+        board = _board(Path(work) / "back.kicad_pcb", version=version)
+        before = board.read_bytes()
+        try:
+            _place(board, "U1", _AT, angle, pretty, fp.name, layer="B.Cu")
+        except ToolError as exc:
+            raise AssertionError(f"place_footprint refused what KiCad places: {exc}") from exc
+        data = board.read_bytes()
+    J.assert_inserted(before, data, heads=["footprint"])
+    major = _major(version)
+    table = FJ.layer_table(data)
+    got = FJ.read(data, "U1", major=major)
+    want = F.place(
+        E.library_footprint(fp),
+        got.position,
+        angle,
+        semantics="set",
+        flipped=lambda f: F.board_flip(f, table, major=major),
+        major=major,
+    )
+    problems = FJ.differences(
+        got,
+        _kicads_reading(want),
+        written_fields_only=True,
+        shapes=True,
+        copper_count=FJ.copper_count(data),
+    )
+    assert not problems, "\n".join(problems)
+
+
+def _inner_zone(layers: tuple[str, ...]) -> E.SynFootprint:
+    """A footprint owning one zone on ``layers``."""
+    outline = ((-MM, -MM), (MM, -MM), (MM, MM), (-MM, MM))
+    return E.footprint_with_pad_at(0.0)._replace(zones=(E.SynZone(layers, (outline,)),))
+
+
+#: Every copper layer KiCad 9 and 10 know, named one by one, as 69 of KiCad 9.0.8's stock
+#: footprints write a keepout's layers (counted 2026-10-11).
+_ALL_COPPER = ("F.Cu", "B.Cu", *(f"In{k}.Cu" for k in range(1, 31)))
+
+
+@_BUG_15
+@pytest.mark.parametrize("copper", [4, 6])
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_inner_copper_zones_flip_on_four_layer_boards(tmp_path, copper, version):
+    """N2 for zones. On a board of four or more copper layers, a zone naming an inner
+    copper layer without the board's whole inner stack reads apart to KiCad 9 and 10
+    after a flip (test_inner_copper_flip_on_four_layer_boards): flipping its footprint is
+    refused with the board byte-identical. A zone naming every copper layer one by one,
+    or on *.Cu, reads the same to both: its footprint flips, F.Cu and B.Cu swap and the
+    inner names are written unchanged. The tool refused every zone's flip."""
+    partial = _zone_start_board(
+        tmp_path / "partial", _inner_zone(("F.Cu", "In1.Cu")), 0.0, version, copper=copper
+    )
+    problems = []
+    found = _refused_with_the_file_intact(partial, lambda: _flip(partial))
+    if found:
+        problems.append(f"zone on F.Cu and In1.Cu: {found}")
+    for label, layers in (("every copper layer named", _ALL_COPPER), ("*.Cu", ("*.Cu",))):
+        board = _zone_start_board(
+            tmp_path / label.replace(" ", "_").replace("*", "star"),
+            _inner_zone(layers),
+            0.0,
+            version,
+            copper=copper,
+        )
+        _performed_flip(board)
+        (zone,) = F.children(FJ.footprint_group(board.read_bytes(), "U1"), b"zone")
+        written = [t.value.decode() for t in FJ.child(zone, b"layers").items[1:]]
+        flipped = [{"F.Cu": "B.Cu", "B.Cu": "F.Cu"}.get(name, name) for name in layers]
+        if sorted(written) != sorted(flipped):
+            problems.append(f"{label}: zone written on {written}, KiCad's flip gives {flipped}")
+    assert not problems, problems
+
+
 def _zone_points(data: bytes) -> list[tuple[str, list[tuple[int, int]]]]:
     """(layer, board points in nm) of each zone U1 owns, read by the lexer port."""
     out = []
@@ -1272,6 +1407,12 @@ _FLIP_ANGLES = (0.0, 90.0, 180.0, 270.0, 30.0, 45.0)
 #: N14's angles for the flip rows, and the angle those start from.
 _TOKEN_ANGLES = (90.0, 180.0, 270.0, 45.0, 37.5)
 _TOKEN_START = 30.0
+#: Footprints owning zones, flipped against pcbnew: Tag-Connect's keepout on F.Cu round
+#: its origin and ESP-01's on every copper layer named one by one; the angles pcbnew places
+#: them at before the flips, and the angle the back placements turn to.
+ZONE_FLIP = ("Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical", "ESP-01")
+_ZONE_FLIP_ANGLES = (0.0, 30.0, 90.0)
+_ZONE_BACK = 30.0
 #: The F1 footprint of the rung 3 design: texts on F.SilkS, Cmts.User and a plain User.1.
 F1 = E.SynFootprint(
     "F1",
@@ -1311,7 +1452,10 @@ class _FlipRuns:
     the custom pads on (models removed), pcbnew's flip of it and the tool's; pcbnew's
     flip then turn of the board at _TOKEN_START and the tool's one call; pcbnew's and the
     tool's placements on the back at 0 (models kept); F1 and _USER_TEXTS placed at 30 and
-    flipped; and R_0805 with its model, placed at 30 and flipped."""
+    flipped; R_0805 with its model, placed at 30 and flipped; and the footprints owning
+    zones (ZONE_FLIP, models removed) as pcbnew placed them at _ZONE_FLIP_ANGLES, flipped
+    by both, and placed on the back at _ZONE_BACK by both, each refusal of the tool's
+    recorded rather than raised."""
 
     def __init__(self, work: Path):
         self.major = PJ.major()
@@ -1383,6 +1527,33 @@ class _FlipRuns:
         jobs.append(
             OPS.move_job(model_start, [OPS.move_item("U1", _AT, ("flip", None))], model_flip)
         )
+        zone_copies = [
+            E.model_free_copy(E.stock_footprint(name), work / "zone_stock") for name in ZONE_FLIP
+        ]
+        self.zone_names = [path.stem for path in zone_copies]
+        zone_starts: dict[float, Path] = {}
+        zone_kicad: dict[float, Path] = {}
+        for angle in _ZONE_FLIP_ANGLES:
+            start = work / f"zone_start_{angle}.kicad_pcb"
+            items = [
+                OPS.place_item(c.parent, c.stem, f"Z{i}", _slot(i), ("rotate", angle))
+                for i, c in enumerate(zone_copies)
+            ]
+            jobs.append(OPS.place_job(empty, items, start))
+            out = work / f"zone_kicad_flip_{angle}.kicad_pcb"
+            moves = [
+                OPS.move_item(f"Z{i}", _slot(i), ("flip", None)) for i in range(len(zone_copies))
+            ]
+            jobs.append(OPS.move_job(start, moves, out))
+            zone_starts[angle], zone_kicad[angle] = start, out
+        zone_back = work / "zone_kicad_back.kicad_pcb"
+        items = [
+            OPS.place_item(
+                c.parent, c.stem, f"Z{i}", _slot(i), [("flip", None), ("rotate_to", _ZONE_BACK)]
+            )
+            for i, c in enumerate(zone_copies)
+        ]
+        jobs.append(OPS.place_job(empty, items, zone_back))
         OPS.run(jobs)
 
         self.kicad_flips = {angle: path.read_bytes() for angle, path in kicad_flips.items()}
@@ -1428,6 +1599,26 @@ class _FlipRuns:
         except ToolError as exc:
             self.model_refused = str(exc)
         self.model_tool = board.read_bytes()
+        self.zone_kicad = {angle: path.read_bytes() for angle, path in zone_kicad.items()}
+        self.zone_tool: dict[float, bytes] = {}
+        self.zone_refused: dict[tuple[str, int], str] = {}
+        for angle, start in zone_starts.items():
+            board = work / f"zone_tool_flip_{angle}.kicad_pcb"
+            shutil.copyfile(start, board)
+            for i in range(len(zone_copies)):
+                try:
+                    _flip(board, f"Z{i}", _slot(i))
+                except ToolError as exc:
+                    self.zone_refused[(f"flipped from {angle}", i)] = str(exc)
+            self.zone_tool[angle] = board.read_bytes()
+        self.zone_kicad_back = zone_back.read_bytes()
+        board = _board(work / "zone_tool_back.kicad_pcb")
+        for i, copy in enumerate(zone_copies):
+            try:
+                _place(board, f"Z{i}", _slot(i), _ZONE_BACK, copy.parent, copy.stem, layer="B.Cu")
+            except ToolError as exc:
+                self.zone_refused[("placed on the back", i)] = str(exc)
+        self.zone_tool_back = board.read_bytes()
 
 
 @pytest.fixture(scope="module")
@@ -1558,6 +1749,43 @@ def test_flip_keeps_the_3d_model_as_pcbnew_does(runs):
         raise RuntimeError(f"the installed {MODEL_FOOTPRINT} carries no (model ...)")
     assert _model_tokens(runs.model_tool, "U1") == before
     assert _model_tokens(runs.model_kicad, "U1") == before
+
+
+@_BUG_15
+def test_footprint_zone_flip_matches_pcbnew(runs):
+    """One item: Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical and ESP-01 (3D models
+    removed) as pcbnew placed them at 0, 30 and 90 degrees, flipped by move_footprint and
+    by pcbnew's FOOTPRINT::Flip, and placed on the back at 30 by place_footprint and by
+    pcbnew (FootprintLoad, SetPosition, Flip, then the turn): each footprint the tool
+    wrote reads as pcbnew's, every zone point exactly and the zones' layers on the board's
+    copper, the rest as test_flip_matches_pcbnew compares it. The tool refused both."""
+    problems = [
+        f"{runs.zone_names[i]} {what}: refused: {why}"
+        for (what, i), why in runs.zone_refused.items()
+    ]
+    pairs = [
+        (f"flipped from {a}", runs.zone_tool[a], runs.zone_kicad[a], a) for a in _ZONE_FLIP_ANGLES
+    ]
+    pairs.append(("placed on the back", runs.zone_tool_back, runs.zone_kicad_back, _ZONE_BACK))
+    for what, tool, kicad, angle in pairs:
+        copper = FJ.copper_count(tool)
+        for i, name in enumerate(runs.zone_names):
+            want = FJ.read(kicad, f"Z{i}", major=runs.major)
+            if not want.zones:
+                raise RuntimeError(f"pcbnew {what} {name} without a zone")
+            if (what, i) in runs.zone_refused:
+                continue
+            found = FJ.differences(
+                FJ.read(tool, f"Z{i}", major=runs.major),
+                want,
+                tolerance_nm=_tolerance(angle),
+                copper_count=copper,
+                shapes=True,
+                details=True,
+                written_fields_only=True,
+            )
+            problems += [f"{name} {what}: {p}" for p in found]
+    assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])
 
 
 def test_curated_flip_set_exercises_what_the_pcbnew_tests_need():
