@@ -70,71 +70,6 @@ from mcp_server_kicad import pcb
 MM = 1_000_000
 
 
-def _xfail(reason: str):
-    """The one xfail the ladder allows: strict, and only for the bug's own assertion."""
-    return pytest.mark.xfail(strict=True, raises=AssertionError, reason=reason)
-
-
-_BUG13 = (
-    "bug 13: place_footprint on B.Cu rewrites only the footprint's layer atom, leaving its"
-    " pads, texts and graphics on the front; fixed by step 7"
-)
-_BUG14_ANGLES = (
-    "bug 14: the flip leaves pad and text angles where they were, where KiCad's turns them"
-    " (180 minus the angle, then KeepUpright); fixed by step 7"
-)
-_BUG14_DETAILS = (
-    "bug 14: the flip leaves chamfered corners, trapezoid deltas and shape offsets as they"
-    " were, where PAD::Flip mirrors them; fixed by step 7"
-)
-_BUG14_PRIMITIVES = (
-    "bug 14: a custom pad is refused a flip KiCad performs (PAD::FlipPrimitives), and the"
-    " unguarded flip of the swap path leaves its primitives unmirrored; fixed by step 7"
-)
-_BUG14_MIRROR = (
-    "bug 14: the flip toggles the mirror of every text, where PCB_TEXT::Flip toggles it"
-    " only on a side specific layer (Cmts.User, Dwgs.User, plain user layers keep it);"
-    " fixed by step 7"
-)
-_BUG14_USER_LAYERS = (
-    "bug 14: the flip keeps a front or back user layer where it is, where KiCad moves its"
-    " items to the paired layer, and mirrors texts on unsided layers; fixed by step 7"
-)
-_BUG14_JUSTIFY = (
-    "bug 14: the flip removes a text's (justify ...) and appends it again on the font's"
-    " line, so two flips are not the identity on a justified text; fixed by step 7"
-)
-_BUG14_LAYERLESS = (
-    "bug 14: a text written without (layer) gets no layer when flipped, so KiCad reads it"
-    " on its front default, mirrored; fixed by step 7"
-)
-_BUG14_INNER = (
-    "bug 14: an item on inner copper is flipped on a board of four or more copper layers,"
-    " where KiCad 9 leaves it on its layer and KiCad 10 mirrors it through the stack, so"
-    " no file reads the same to both; fixed by step 7"
-)
-_BUG14_POLY_ARCS = (
-    "bug 14: the flip negates a polygon's (xy) points but leaves the points of an (arc ...)"
-    " in its outline where they were, where KiCad mirrors the whole outline; fixed by step 7"
-)
-_BUG14_UNPORTED = (
-    "bug 14: a footprint carrying a construct the flip does not port is flipped half (a"
-    " dimension's board coordinates mirrored, a text box's angle kept), not refused;"
-    " fixed by step 7"
-)
-_BUG17 = (
-    "bug 17: place_footprint and move_footprint accept an inner copper layer as a"
-    " footprint's side, which KiCad reads as F.Cu; fixed by step 7"
-)
-_BUG52 = (
-    "bug 52: move_footprint refuses to flip a footprint carrying a 3D model, which KiCad's"
-    " flip leaves as it is; fixed by step 7"
-)
-_BUG53 = (
-    "bug 53: two flips respell the footprint's angle (an explicit 0 where KiCad writes"
-    " none, -90 written 270); fixed by step 7"
-)
-
 _VERSIONS = st.sampled_from(("k9", "k10"))
 _HALF = G.half_degree_angles()
 #: Written angles in (0, 180] that are multiples of half a degree (rung 3's D4: the
@@ -293,7 +228,6 @@ _CMTS_EXAMPLE = E.footprint_with_pad_at(0.0)._replace(
 )
 
 
-@_xfail(_BUG14_MIRROR)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=_CMTS_EXAMPLE, theta0=0.0, version="k9")
 @given(fp=E.synthetic_footprints(text_layers=_UNSIDED), theta0=_HALF, version=_VERSIONS)
@@ -307,7 +241,6 @@ def test_flip_leaves_unsided_text_mirrors_alone(fp, theta0, version):
     assert not problems, "\n".join(problems)
 
 
-@_xfail(_BUG14_ANGLES)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=E.footprint_with_pad_at(45.0), theta0=0.0, version="k9")
 @given(
@@ -333,7 +266,6 @@ _DETAILED = E.SynFootprint(
 )
 
 
-@_xfail(_BUG14_DETAILS)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=_DETAILED, theta0=0.0, version="k9")
 @given(
@@ -368,7 +300,6 @@ _CUSTOM = E.SynFootprint(
 )
 
 
-@_xfail(_BUG14_PRIMITIVES)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=_CUSTOM, theta0=30.0, version="k9")
 @given(
@@ -388,7 +319,6 @@ def test_flip_mirrors_custom_pad_primitives(fp, theta0, version):
     assert not problems, "\n".join(problems)
 
 
-@_xfail(_BUG14_POLY_ARCS)
 @pytest.mark.parametrize("theta0", [0.0, 30.0])
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_flip_mirrors_polygon_arcs(tmp_path, theta0, version):
@@ -426,7 +356,7 @@ def _with_justification(fp: E.SynFootprint) -> E.SynFootprint:
     "justified",
     [
         pytest.param(False, id="texts without justification"),
-        pytest.param(True, id="justified texts", marks=_xfail(_BUG14_JUSTIFY)),
+        pytest.param(True, id="justified texts"),
     ],
 )
 @settings(max_examples=sexpr_gen.budget(4))
@@ -473,7 +403,6 @@ def test_flip_twice_reads_as_the_start(fp, theta0, version):
     assert not problems, "\n".join(problems)
 
 
-@_xfail(_BUG53)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(theta0=0.0, version="k9")
 @example(theta0=-90.0, version="k10")
@@ -561,7 +490,6 @@ _USER_TEXTS = E.SynFootprint(
 )
 
 
-@_xfail(_BUG14_USER_LAYERS)
 @pytest.mark.parametrize(
     "users", [USER_LAYERS, UNNAMED_PAIR], ids=["named pair", "unnamed consecutive pair"]
 )
@@ -633,7 +561,6 @@ def _refused_with_the_file_intact(board: Path, call) -> str | None:
     return "accepted"
 
 
-@_xfail(_BUG14_INNER)
 @pytest.mark.parametrize("copper", [4, 6])
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_inner_copper_flip_on_four_layer_boards(tmp_path, copper, version):
@@ -720,7 +647,6 @@ _LAYERLESS = """\t(footprint "T:R"
 """
 
 
-@_xfail(_BUG14_LAYERLESS)
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_flip_gives_a_layerless_text_its_flipped_default(tmp_path, version):
     """N13. A footprint whose Reference and Value carry (at) but no (layer): KiCad reads
@@ -752,7 +678,6 @@ def test_flip_gives_a_layerless_text_its_flipped_default(tmp_path, version):
 # ---------------------------------------------------------------------------
 
 
-@_xfail(_BUG13)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=E.footprint_with_pad_at(45.0), version="k9")
 @given(fp=E.synthetic_footprints(text_layers=E.SIDED_TEXT_LAYERS), version=_VERSIONS)
@@ -787,7 +712,6 @@ def test_place_on_the_back_matches_kicads_placement(fp, version):
     assert not problems, "\n".join(problems)
 
 
-@_xfail(_BUG17)
 @pytest.mark.parametrize("tool", ["place_footprint", "move_footprint"])
 @settings(max_examples=sexpr_gen.budget(4))
 @example(copper=4, inner=1, version="k9")
@@ -935,9 +859,9 @@ def _png_1x1() -> str:
 #: pcb_io_kicad_sexpr.cpp:1035-1064 and 2090-2140 at 9.0.8; format( PCB_BARCODE ) and the
 #: footprint's (stackup), 2199-2262 and 1371-1383 at 10.0.7). The KiCad 10 constructs
 #: (barcode, stackup) sit on KiCad 10 boards and libraries, which only the KiCad 10 legs
-#: load. A child no KiCad knows is refused by every KiCad parser, so its row carries
-#: no_kicad_validation: the file is unloadable by design, and the subject is the tool
-#: refusing it with every byte intact.
+#: load. A child no KiCad knows is refused by every KiCad parser, so its rows name
+#: their files in kicad_placeholder: they are unloadable by design, and the subject is
+#: the tool refusing them with every byte intact.
 _FOOTPRINT_CONSTRUCTS = {
     "fp_text_box": (
         "k9",
@@ -1083,11 +1007,10 @@ _FOOTPRINT_CONSTRUCTS = {
     "future_item": ("k9", "{t}(future_item\n{t}\t(at 0 0)\n{t})\n"),
 }
 #: Pad tokens the flip does not port: a padstack of its own (which KiCad's flip swaps
-#: layer by layer, PADSTACK::FlipLayers), tenting that differs front and back (which KiCad
-#: 9.0.8 leaves and 10.0.7 swaps), and KiCad 10's back drills and post machining, in the
-#: layout of format( PAD ) (formatTenting and the padstack block, pcb_io_kicad_sexpr.cpp:
-#: 1935-1953 and 1898-1929 at 9.0.8; the drills and post machining, 1745-1785 at
-#: 10.0.7), on a through-hole pad 1.
+#: layer by layer, PADSTACK::FlipLayers) and KiCad 10's back drills and post machining,
+#: in the layout of format( PAD ) (the padstack block, pcb_io_kicad_sexpr.cpp:1898-1929
+#: at 9.0.8; the drills and post machining, 1745-1785 at 10.0.7), on a through-hole pad
+#: 1.
 _PAD_CONSTRUCTS = {
     "padstack": (
         "k9",
@@ -1104,7 +1027,6 @@ _PAD_CONSTRUCTS = {
 {t})
 """,
     ),
-    "tenting": ("k9", "{t}(tenting front)\n"),
     "backdrill": ("k10", '{t}(backdrill (size 0.3) (layers "B.Cu" "In2.Cu"))\n'),
     "tertiary_drill": ("k10", '{t}(tertiary_drill (size 0.3) (layers "F.Cu" "In1.Cu"))\n'),
     "front_post_machining": ("k10", "{t}(front_post_machining counterbore (size 1) (depth 0.3))\n"),
@@ -1120,16 +1042,21 @@ _CONSTRUCT_HOST = E.SynFootprint(
 )
 
 
+def _with_pad_token(text: str, token: str, depth: int) -> str:
+    """``text``, a footprint written at ``depth`` TABs, with ``token`` (a template whose
+    "{t}" is a pad child's indent) added before pad 1's close."""
+    t = "\t" * depth
+    opening = text.index(f'{t}(pad "1"')
+    close = text.index(f"\n{t})\n", opening) + 1
+    return text[:close] + token.format(t=t + "\t") + text[close:]
+
+
 def _with_construct(text: str, construct: str, depth: int) -> str:
     """``text``, a footprint written at ``depth`` TABs, with ``construct`` added: a
     footprint child before (embedded_fonts no), a pad token before pad 1's close."""
-    t = "\t" * depth
     if construct in _FOOTPRINT_CONSTRUCTS:
         return E.with_footprint_child(text, _FOOTPRINT_CONSTRUCTS[construct][1], depth)
-    opening = text.index(f'{t}(pad "1"')
-    close = text.index(f"\n{t})\n", opening) + 1
-    added = _PAD_CONSTRUCTS[construct][1].format(t=t + "\t")
-    return text[:close] + added + text[close:]
+    return _with_pad_token(text, _PAD_CONSTRUCTS[construct][1], depth)
 
 
 def _construct_version(construct: str) -> str:
@@ -1158,35 +1085,53 @@ def _construct_library(directory: Path, construct: str) -> Path:
 
 
 _CONSTRUCTS = [*_FOOTPRINT_CONSTRUCTS, *_PAD_CONSTRUCTS]
+#: The constructs refused whatever the edit, not only by a flip: KiCad moves them with
+#: the footprint (in board coordinates, or as items the tool does not transform), and a
+#: child no KiCad knows may hold board coordinates of its own.
+_MOVED_CONSTRUCTS = ("dimension", "image", "table", "barcode", "future_item")
+_FLIPS = ("move to the back", "place on the back")
+_MOVES = ("move", "place on the front")
 
 
 def _construct_params():
+    """(construct, operation): every construct under both flips, and the ones refused
+    whatever the edit under a move and a placement on the front as well. The rows of a
+    child no KiCad knows name their unloadable files in kicad_placeholder."""
     for construct in _CONSTRUCTS:
-        marks = [pytest.mark.no_kicad_validation] if construct == "future_item" else []
-        yield pytest.param(construct, id=construct, marks=marks)
+        for operation in _FLIPS + (_MOVES if construct in _MOVED_CONSTRUCTS else ()):
+            marks = []
+            if construct == "future_item":
+                names = ["board.kicad_pcb"]
+                if operation.startswith("place"):
+                    names.append("lib/Constructs.pretty/Host.kicad_mod")
+                marks = [pytest.mark.kicad_placeholder(*names)]
+            yield pytest.param(construct, operation, id=f"{construct}-{operation}", marks=marks)
 
 
-@_xfail(_BUG14_UNPORTED)
-@pytest.mark.parametrize("operation", ["move to the back", "place on the back"])
-@pytest.mark.parametrize("construct", list(_construct_params()))
+@pytest.mark.parametrize(("construct", "operation"), list(_construct_params()))
 def test_unported_constructs_are_refused_with_the_file_intact(tmp_path, construct, operation):
-    """N4, the rows that flip: a footprint carrying a construct the flip does not port
-    (a text box, which PCB_TEXTBOX::Flip turns in its own way; a dimension, image, table
-    or barcode, whose board coordinates or item kinds the tool does not transform; a
-    KiCad 10 footprint stackup; a pad with a padstack of its own, with tenting that
-    differs front and back, or with KiCad 10's back drills or post machining; a child no
-    KiCad knows), moved to the back or placed there: a ToolError naming the construct,
-    the board byte-identical. The tool flipped the rest around it."""
+    """N4: a footprint carrying a construct the tool does not port: a ToolError naming
+    the construct, the board byte-identical. Under any edit (moved, placed, on either
+    side): a dimension, image, table or barcode, whose board coordinates or item kinds
+    the tool does not transform, and a child no KiCad knows. Under a flip (moved to the
+    back, placed on the back): also a text box, which PCB_TEXTBOX::Flip turns in its own
+    way, a KiCad 10 footprint stackup, and a pad with a padstack of its own or with KiCad
+    10's back drills or post machining. The tool moved and flipped the rest around it."""
     board = _construct_board(tmp_path / "board.kicad_pcb", construct)
-    if operation == "move to the back":
+    if operation.startswith("place"):
+        pretty = _construct_library(tmp_path / "lib", construct)
+        side = "B.Cu" if operation == "place on the back" else "F.Cu"
+
+        def call():
+            _place(board, "U3", (70 * MM, 70 * MM), 0.0, pretty, "Host", layer=side)
+    elif operation == "move to the back":
 
         def call():
             _flip(board)
     else:
-        pretty = _construct_library(tmp_path / "lib", construct)
 
         def call():
-            _place(board, "U3", (70 * MM, 70 * MM), 0.0, pretty, "Host", layer="B.Cu")
+            _move(board, "U1", (60 * MM, 40 * MM))
 
     before = board.read_bytes()
     try:
@@ -1198,6 +1143,104 @@ def test_unported_constructs_are_refused_with_the_file_intact(tmp_path, construc
     except Exception as exc:
         raise AssertionError(f"{type(exc).__name__} instead of a ToolError: {exc}") from exc
     raise AssertionError(f"{operation} of a footprint carrying {construct!r} was accepted")
+
+
+#: A through-hole pad's tenting, front only, as KiCad 9 writes it (formatTenting,
+#: pcb_io_kicad_sexpr.cpp:1935-1953 at 9.0.8) and as KiCad 10 does (2072-2080 at 10.0.7),
+#: on boards of each version; KiCad 10 reads KiCad 9's words as well.
+_TENTING = {
+    "KiCad 9 words on a KiCad 9 board": ("k9", "{t}(tenting front)\n"),
+    "KiCad 10 lists on a KiCad 10 board": ("k10", "{t}(tenting (front yes) (back no))\n"),
+    "KiCad 9 words on a KiCad 10 board": ("k10", "{t}(tenting front)\n"),
+}
+_OPT_BOOL = {b"yes": True, b"no": False, b"none": None}
+
+
+def _read_tenting(data: bytes, major: int) -> tuple:
+    """(front, back) of U1's pad 1 as KiCad ``major`` reads its (tenting ...): KiCad 9's
+    parseTenting sets a side for its word, each side off without one
+    (pcb_io_kicad_sexpr_parser.cpp:6585-6603 at 9.0.8); KiCad 10's parseFrontBackOptBool
+    reads (front yes|no|none) and (back ...), or KiCad 9's words, each side unset without
+    one and both unset by none (7815-7880 at 10.0.7)."""
+    pad = F.pad_groups(FJ.footprint_group(data, "U1"))[0]
+    node = F.child(pad, b"tenting")
+    if node is None:
+        raise RuntimeError("pad 1 carries no (tenting ...)")
+    unset = False if major < 10 else None
+    front = back = unset
+    for item in node.items[1:]:
+        if item.kind == FJ.L.GROUP:
+            value = _OPT_BOOL[item.items[1].value]
+            if F.head(item) == b"front":
+                front = value
+            else:
+                back = value
+        elif item.value == b"front":
+            front = True
+        elif item.value == b"back":
+            back = True
+        elif item.value == b"none" and major >= 10:
+            front = back = unset
+    return front, back
+
+
+@pytest.mark.parametrize("label", list(_TENTING))
+def test_flip_carries_pad_tenting_as_the_boards_kicad_does(tmp_path, label):
+    """A through-hole pad tented on the front only, flipped: on a KiCad 9 board its
+    tenting reads as before, since KiCad 9.0.8's flip leaves a pad without a padstack of
+    its own as it is (PADSTACK::FlipLayers, pcbnew/padstack.cpp:722-759 at 9.0.8); on a
+    KiCad 10 board front and back swap, since 10.0.7's swaps the front and back mask
+    properties of every pad (padstack.cpp:1490-1522 at 10.0.7). Read as each KiCad
+    reads (tenting ...) (_read_tenting)."""
+    version, token = _TENTING[label]
+    major = _major(version)
+    text = _with_pad_token(E.board_footprint_text(_CONSTRUCT_HOST, "U1", _AT, 30.0), token, 2)
+    board = _board(tmp_path / "tenting.kicad_pcb", [text], version, copper=4)
+    before = _read_tenting(board.read_bytes(), major)
+    _performed_flip(board)
+    after = _read_tenting(board.read_bytes(), major)
+    assert after == (before if major < 10 else before[::-1]), (before, after)
+
+
+#: An fp_text with (at) and (layer) but no (effects ...), "{t}" its indent.
+_BARE_TEXT = """{t}(fp_text user "BARE"
+{t}\t(at 1 1 30)
+{t}\t(layer "F.SilkS")
+{t}\t(uuid "00000007-0000-4000-8000-00000000b0b0")
+{t})
+"""
+
+
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_a_text_without_effects_is_refused_a_flip(tmp_path, version):
+    """A footprint whose fp_text has no (effects ...), moved to the back: KiCad's flip
+    mirrors that text, and a file can say so only inside an (effects ...), whose font
+    the tool would have to invent; a ToolError naming the missing (effects ...), the
+    board byte-identical."""
+    text = E.board_footprint_text(E.footprint_with_pad_at(0.0), "U1", _AT, 30.0)
+    board = _board(tmp_path / "bare.kicad_pcb", [E.with_footprint_child(text, _BARE_TEXT, 2)])
+    before = board.read_bytes()
+    with pytest.raises(ToolError, match=r"\(effects \.\.\.\)"):
+        _flip(board)
+    assert board.read_bytes() == before
+
+
+def test_an_arc_by_centre_and_angle_is_refused_a_flip():
+    """KiCad 5's fp_arc, whose (start) is its centre, (end) its start point and (angle)
+    its sweep (the parser's legacy branch, pcb_io_kicad_sexpr_parser.cpp:2860-2888 at
+    9.0.8), is refused a flip and named; an fp_arc by start, mid and end is not."""
+    board = pcb._cst.parse(E.layered_board_text().encode()).lists[0]
+    layers = pcb._board_flip_layers(board)
+    arcs = {
+        "legacy": b"(fp_arc (start 0 0) (end 1 0) (angle 90) (layer F.SilkS))",
+        "start, mid, end": b"(fp_arc (start 1 0) (mid 0.7 0.7) (end 0 1) (layer F.SilkS))",
+    }
+    found = {}
+    for label, arc in arcs.items():
+        fp = pcb._cst.parse(b'(footprint "X" (layer "F.Cu") (at 0 0) ' + arc + b")").lists[0]
+        found[label] = pcb._fp_unsupported(fp, layers, True)
+    assert found["start, mid, end"] is None, found
+    assert "fp_arc" in (found["legacy"] or ""), found
 
 
 # ---------------------------------------------------------------------------
@@ -1413,7 +1456,6 @@ def _pcbnew_flip_problems(runs: _FlipRuns, indices, **compare) -> list[str]:
     return problems
 
 
-@_xfail(_BUG14_ANGLES)
 def test_flip_matches_pcbnew(runs):
     """One item: the curated set and a footprint with custom pads, as pcbnew placed them at
     0, 90, 180, 270, 30 and 45 degrees (3D models removed), flipped by move_footprint and
@@ -1436,7 +1478,6 @@ def test_flip_positions_match_pcbnew(runs):
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])
 
 
-@_xfail(_BUG14_ANGLES)
 @pytest.mark.parametrize("part", ["pads", "texts"])
 def test_flip_and_rotate_match_pcbnew_token_for_token(runs, part):
     """N14, the flip rows: the curated set as pcbnew placed it at 30, moved to the back and
@@ -1459,7 +1500,6 @@ def test_flip_and_rotate_match_pcbnew_token_for_token(runs, part):
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])
 
 
-@_xfail(_BUG13)
 def test_place_on_the_back_matches_pcbnew(runs):
     """One item: the curated set, 3D models kept, placed on the back at 0 by place_footprint
     and by pcbnew (FootprintLoad, SetPosition, Flip, then the turn to 0): each footprint
@@ -1488,7 +1528,6 @@ def _synthetic_problems(runs: _FlipRuns, label: str) -> list[str]:
     )
 
 
-@_xfail(_BUG14_MIRROR)
 def test_flip_of_unsided_texts_matches_pcbnew(runs):
     """The F1 footprint (texts on F.SilkS, Cmts.User and a plain User.1) as pcbnew placed
     it at 30, flipped by the tool and by pcbnew: each text's layer and mirror flag are
@@ -1497,7 +1536,6 @@ def test_flip_of_unsided_texts_matches_pcbnew(runs):
     assert not problems, "\n".join(problems)
 
 
-@_xfail(_BUG14_USER_LAYERS)
 @pytest.mark.parametrize("label", ["named pair", "unnamed consecutive pair"])
 def test_flip_of_user_layers_matches_pcbnew(runs, label):
     """N1's pcbnew sibling: _USER_TEXTS as pcbnew placed it at 30 on a board whose User.1
@@ -1508,7 +1546,6 @@ def test_flip_of_user_layers_matches_pcbnew(runs, label):
     assert not problems, "\n".join(problems)
 
 
-@_xfail(_BUG52)
 def test_flip_keeps_the_3d_model_as_pcbnew_does(runs):
     """R_0805_2012Metric with its 3D model, as pcbnew placed it at 30, flipped by the tool
     and by pcbnew: the flip happens (FOOTPRINT::Flip has no model code,
@@ -1547,7 +1584,6 @@ def test_curated_flip_set_exercises_what_the_pcbnew_tests_need():
         raise RuntimeError(f"the curated flip set holds no {', '.join(missing)}")
 
 
-@_xfail(_BUG14_ANGLES)
 @pytest.mark.nightly
 @settings(max_examples=sexpr_gen.budget(25))
 @example(picks=[(0, 30.0)])

@@ -268,7 +268,7 @@ def test_board_mm_writes_kicads_text(nm):
 @example(-U.INT_MAX)
 @given(st.one_of(st.integers(-U.INT_MAX, U.INT_MAX), G.nm_coordinates()))
 def test_numish_text_negates_kicads_text(nm):
-    """A flip negates a coordinate KiCad wrote: pcb._flip_footprint_cst calls
+    """A flip negates a coordinate KiCad wrote: pcb._fp_flip writes
     _numish_text(-float(text)). Whatever the coordinate (from -INT_MAX, so that -nm is an
     int too, to INT_MAX), the result is the text KiCad writes for -nm."""
     text = U.format_internal_units(nm, PCB)

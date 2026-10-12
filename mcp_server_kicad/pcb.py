@@ -10,7 +10,7 @@ import re
 import sys
 import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
@@ -2062,6 +2062,10 @@ def place_footprint(
     side of its anchor. Angles are written as KiCad writes them: the footprint's
     between -180 and 180 and left out at 0, each pad's and text's absolute.
 
+    A footprint carrying what this tool does not move with it (a dimension, image,
+    table or barcode, or a child no KiCad it knows reads), or on the back what it does
+    not flip (see move_footprint), is refused and nothing is written.
+
     Args:
         reference: Reference designator (e.g. "R2")
         value: Component value (e.g. "4.7K")
@@ -2070,7 +2074,9 @@ def place_footprint(
         rotation: The footprint's angle in degrees, counter-clockwise as seen on
             screen; any finite value (270 is stored as -90, 360 as 0). inf and nan
             are refused and nothing is written.
-        layer: Layer (F.Cu or B.Cu)
+        layer: F.Cu or B.Cu; any other layer is refused. B.Cu places the footprint
+            flipped as KiCad's own flip does, then turns it to rotation
+            (FOOTPRINT::Flip, pcbnew/footprint.cpp:2491-2550 at 9.0.8).
         library: Footprint library nickname (e.g. "Resistor_SMD"), or a path to a
             .pretty directory. A nickname is resolved as update_pcb_from_schematic
             resolves it: the project's fp-lib-table beside the board, .pretty
@@ -2089,9 +2095,9 @@ def place_footprint(
         )
     _require_finite_rotation(rotation)
     tree, root, key = _open_pcb_cst(pcb_path)
-    # Validate before the cache pop, so a refusal leaves the cached tree valid.
+    # Every check before the cache pop, so a refusal leaves the cached tree valid.
     _resolve_layer_cst(root, layer, copper_only=True)
-    node = None
+    _require_side(layer)
     if library:
         pretty = _resolve_pretty_dir(library, pcb_path)
         node = _copy_lib_footprint_cst(pretty, footprint, f"{Path(pretty).stem}:{footprint}")
@@ -2100,17 +2106,25 @@ def place_footprint(
                 f"Footprint {footprint!r} not found in {pretty}. Use list_lib_footprints"
                 " to see what the library holds."
             )
-    _BOARD_CACHE.pop(key, None)
-    if node is None:
+    else:
         node = _FOOTPRINT_TPL.copy()
         node.find("uuid").atoms[1].set_text(_gen_uuid())
         for prop in node.find_all("property"):
             prop.find("uuid").atoms[1].set_text(_gen_uuid())
-    node.find("layer").atoms[1].set_text(layer)
+    layers = _board_flip_layers(root)
+    flipping = (layer == "B.Cu") != _fp_is_back(node)
+    reason = _fp_unsupported(node, layers, flipping)
+    if reason:
+        raise ToolError(
+            f"{reference} would carry {reason}. Nothing was written; place it in KiCad instead."
+        )
+    _BOARD_CACHE.pop(key, None)
     for prop in node.find_all("property"):
         if prop.atoms[1].text in ("Reference", "Value"):
             prop.atoms[2].set_text(reference if prop.atoms[1].text == "Reference" else value)
     _fp_translate(node, _num(x), _num(y))
+    if flipping:
+        _fp_flip(node, layers)
     _fp_rotate_to(node, rotation)
     _splice_after(root, node, ("footprint",), _PCB_TAIL_HEADS)
     _atomic_write(key, _cst.serialize(tree))
@@ -2118,104 +2132,397 @@ def place_footprint(
     return f"Placed {reference} ({value}) at ({x}, {y}) on {layer} as {what}"
 
 
-#: Constructs whose flip has not been measured. A footprint carrying one is
-#: refused rather than half-transformed, which is the same call the invariant
-#: asks for everywhere else. Each needs its own measurement against KiCad's own
-#: Flip() before it can be handled here.
-_UNMEASURED_FOR_FLIP = ("primitives", "zone", "model")
+# ---------------------------------------------------------------------------
+# A footprint's side, as KiCad flips it
+# ---------------------------------------------------------------------------
+
+#: The layers ::FlipLayer swaps on every board: the F and B copper, silk, adhesive, mask,
+#: paste, courtyard and fab layers (common/layer_id.cpp:169-212 at 9.0.8, 173-218 at
+#: 10.0.7). With every copper layer they are LSET::SideSpecificMask (common/lset.cpp:
+#: 719-723 at 9.0.8, 736-740 at 10.0.7).
+_FLIP_PAIRS = {
+    f"{a}.{kind}": f"{b}.{kind}"
+    for kind in ("Cu", "SilkS", "Adhes", "Mask", "Paste", "CrtYd", "Fab")
+    for a, b in (("F", "B"), ("B", "F"))
+}
+_INNER_CU = re.compile(r"In[0-9]+\.Cu")
+_USER_LAYER = re.compile(r"User\.([0-9]+)")
 
 
-def _mirror_layer(name: str) -> str:
-    """F.x becomes B.x and back. Anything else is returned unchanged.
+class _FlipLayers(NamedTuple):
+    """What a flip needs of a board's layers (_board_flip_layers)."""
 
-    Measured against KiCad's own Flip(): F.Cu/F.Mask/F.Paste/F.SilkS/F.Fab/
-    F.CrtYd all cross to their B. counterparts. A `*.Cu` pad layer set spans
-    both sides already and must not be touched, and inner copper has no side.
+    opposite: dict[str, str]  # each layer whose opposite is another layer
+    sided: frozenset[str]  # the layers the board's table types front or back
+    inner: frozenset[str]  # the board's inner copper layers
+    major: int  # the KiCad whose format the board carries (_board_major)
+
+    def flip(self, name: str) -> str:
+        return self.opposite.get(name, name)
+
+    def side_specific(self, name: str) -> bool:
+        return name in _FLIP_PAIRS or name in self.sided or bool(_INNER_CU.fullmatch(name))
+
+
+def _board_flip_layers(root) -> _FlipLayers:
+    """A board's layer pairs and side-specific layers as KiCad holds them once it has
+    read the board's (layers ...) table, whose rows are (ordinal "name" type ["user"]).
+
+    BOARD::recalcOpposites (pcbnew/board.cpp:795-853 at 9.0.8, 913-970 at 10.0.7) adds
+    to _FLIP_PAIRS the user layers typed front or back that it pairs: a layer with the
+    first later one of the other type whose user name, after its first '.', is the same
+    text and not empty; then User.N typed front with User.N+1 typed back when neither is
+    paired and neither user name is its canonical name. A row written without a user
+    name reads as an empty one, so two such layers pair (measured with pcbnew 9.0.8 in
+    test_ladder_r3_judges.py). Inner copper is its own opposite here, which is where
+    KiCad 9 leaves it on a board it read; KiCad 10 mirrors it through the stack, and
+    _fp_unsupported refuses a flip whose file the two would read apart. An item is side
+    specific on a layer of _FLIP_PAIRS, on any copper layer and on a layer the table
+    types front or back (BOARD_ITEM::IsSideSpecific, pcbnew/board_item.cpp:156-170 at
+    9.0.8, 224-238 at 10.0.7)."""
+    rows = []
+    table = root.find("layers")
+    for row in table.lists if table is not None else ():
+        atoms = row.atoms
+        if len(atoms) >= 3:
+            rows.append((atoms[1].text, atoms[2].text, atoms[3].text if len(atoms) > 3 else ""))
+    users = {}
+    for name, kind, user in rows:
+        match = _USER_LAYER.fullmatch(name)
+        if match:
+            users[int(match.group(1))] = (kind, user)
+    opposite = dict(_FLIP_PAIRS)
+
+    def free(n: int) -> bool:
+        return f"User.{n}" not in opposite and users[n][0] in ("front", "back")
+
+    def principal(n: int) -> str:
+        user = users[n][1]
+        return user.split(".", 1)[1] if "." in user else ""
+
+    def pair(n: int, m: int) -> None:
+        opposite[f"User.{n}"], opposite[f"User.{m}"] = f"User.{m}", f"User.{n}"
+
+    order = sorted(users)
+    for i, n in enumerate(order):
+        for m in order[i + 1 :] if free(n) else ():
+            if free(m) and users[m][0] != users[n][0] and principal(m) == principal(n) != "":
+                pair(n, m)
+                break
+    for n in order:
+        m = n + 1
+        if (
+            m in users
+            and free(n)
+            and free(m)
+            and (users[n][0], users[m][0]) == ("front", "back")
+            and users[n][1] != f"User.{n}"
+            and users[m][1] != f"User.{m}"
+        ):
+            pair(n, m)
+    return _FlipLayers(
+        opposite,
+        frozenset(name for name, kind, _ in rows if kind in ("front", "back")),
+        frozenset(name for name, _, _ in rows if _INNER_CU.fullmatch(name)),
+        _board_major(root),
+    )
+
+
+def _fp_is_back(fp) -> bool:
+    """Whether KiCad reads the footprint on the back: its (layer) is B.Cu, and any other
+    layer reads as F.Cu (pcb_io_kicad_sexpr_parser.cpp:4510-4519 at 9.0.8, 5198-5207 at
+    10.0.7)."""
+    layer = fp.find("layer")
+    return layer is not None and len(layer.atoms) > 1 and layer.atoms[1].text == "B.Cu"
+
+
+def _require_side(layer: str) -> None:
+    """Refuse a side other than F.Cu or B.Cu: FOOTPRINT::SetLayerAndFlip asserts one of
+    the two (pcbnew/footprint.cpp:2482-2488 at 9.0.8, 2921-2927 at 10.0.7), and KiCad
+    reads any other footprint layer as F.Cu."""
+    if layer not in ("F.Cu", "B.Cu"):
+        raise ToolError(
+            f"layer must be F.Cu or B.Cu, not {layer!r}: a footprint sits on the front or the"
+            " back, and KiCad reads any other footprint layer as F.Cu. Nothing was written."
+        )
+
+
+#: Footprint children KiCad moves with a footprint and this package does not transform:
+#: dimensions and images, which KiCad writes in board coordinates (pcb_io_kicad_sexpr.cpp:
+#: 820-870 and 1035-1066 at 9.0.8), tables and barcodes.
+_FP_UNPORTED = ("dimension", "image", "table", "barcode")
+#: The other footprint children KiCad's parser reads (parseFOOTPRINT_unchecked,
+#: pcb_io_kicad_sexpr_parser.cpp:4417-5015 at 9.0.8, 5104-5830 at 10.0.7). Any child
+#: outside them is refused as well: a later KiCad's item may hold board coordinates.
+_FP_KNOWN = frozenset(
     """
-    if name.startswith("F."):
-        return "B." + name[2:]
-    if name.startswith("B."):
-        return "F." + name[2:]
-    return name
+    version generator generator_version locked placed layer tedit tstamp uuid at descr
+    tags path sheetname sheetfile units autoplace_cost90 autoplace_cost180 private_layers
+    net_tie_pad_groups duplicate_pad_numbers_are_jumpers jumper_pad_groups
+    solder_mask_margin solder_paste_margin solder_paste_ratio solder_paste_margin_ratio
+    clearance zone_connect thermal_width thermal_gap attr model group embedded_fonts
+    embedded_files component_classes variant stackup property fp_text fp_text_box fp_line
+    fp_rect fp_circle fp_arc fp_poly fp_curve pad zone point
+    """.split()
+)
+#: Children whose flip is not ported, refused on a flip only: a text box, which
+#: PCB_TEXTBOX::Flip turns its own way (pcbnew/pcb_textbox.cpp:547 at 9.0.8, 573 at
+#: 10.0.7), a KiCad 10 footprint stackup, and zones and KiCad 10 points, which KiCad
+#: writes in board coordinates.
+_FP_UNFLIPPED = ("fp_text_box", "stackup", "zone", "point")
+#: Pad tokens whose flip is not ported: a padstack of its own and KiCad 10's back drills
+#: and post machining, which PADSTACK::FlipLayers swaps layer by layer (pcbnew/
+#: padstack.cpp:722-759 at 9.0.8, 1490-1522 at 10.0.7).
+_PAD_UNFLIPPED = (
+    "padstack",
+    "backdrill",
+    "tertiary_drill",
+    "front_post_machining",
+    "back_post_machining",
+)
+#: A custom pad's primitives (pcb_io_kicad_sexpr.cpp:1702-1795 at 9.0.8).
+_PRIMITIVES = frozenset(
+    "gr_line gr_vector gr_rect gr_bbox gr_arc gr_circle gr_curve gr_poly".split()
+)
+_FP_GRAPHICS = ("fp_line", "fp_rect", "fp_circle", "fp_arc", "fp_poly", "fp_curve")
 
 
-def _flip_footprint_cst(fp) -> None:
-    """Mirror a footprint to the other side of the board, in place.
-
-    The transform is measured, not derived from the format documentation.
-    Probed on the macOS runner against a stock Resistor_SMD footprint through
-    pcbnew's own ``Flip(pos, FLIP_DIRECTION_LEFT_RIGHT)``, at 0 and 90 degrees:
-
-      footprint (layer)   F.Cu -> B.Cu
-      footprint (at)      position unchanged, angle becomes (180 - angle) % 360
-                          (0 -> 180, and 90 -> 90, which is why an earlier probe
-                          run at 90 degrees alone saw no change at all)
-      every layer token   F.x <-> B.x
-      every local Y       negated: pad at, graphic start/end/mid/center, pts,
-                          text at. X is untouched.
-      text effects        gain (justify mirror)
-
-    Local Y rather than X, with the footprint's own angle carrying the rest, is
-    what makes this a left-right flip in board space at any orientation.
-    """
-    layer_node = fp.find("layer")
-    layer_node.atoms[1].set_text(_mirror_layer(layer_node.atoms[1].text))
-
-    at = fp.find("at")
-    angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0.0
-    _fill_at(fp, float(at.atoms[1].text), float(at.atoms[2].text), (180.0 - angle) % 360.0)
-
-    def mirror_points(node) -> None:
-        """Negate the Y of every coordinate pair under *node*."""
-        for key in ("at", "start", "end", "mid", "center"):
-            child = node.find(key)
-            if child is not None and len(child.atoms) > 2:
-                child.atoms[2].set_text(_numish_text(-float(child.atoms[2].text)))
-        pts = node.find("pts")
-        if pts is not None:
-            for xy in pts.find_all("xy"):
-                xy.atoms[2].set_text(_numish_text(-float(xy.atoms[2].text)))
-
+def _fp_unsupported(fp, layers: _FlipLayers, flipping: bool) -> str | None:
+    """What makes an edit of ``fp`` impossible to do as KiCad does it, named for the
+    refusal, or None. Every edit refuses a child in _FP_UNPORTED or outside _FP_KNOWN. A
+    flip also refuses _FP_UNFLIPPED, a pad token in _PAD_UNFLIPPED, a primitive outside
+    _PRIMITIVES, an arc written by its centre and angle (KiCad 5's form), a text with no
+    (effects ...) to write its mirror in, and, on a board of four or more copper layers,
+    an item on inner copper that does not name every inner layer: KiCad 9 leaves it
+    where it is and KiCad 10 mirrors it through the stack, so no file reads the same to
+    both. A plated through hole is exempt, since KiCad gives it every copper layer
+    whatever it names (FOOTPRINT::FixUpPadsForBoard, pcbnew/footprint.cpp:4167-4185 at
+    9.0.8, 4834-4853 at 10.0.7)."""
     for child in fp.lists:
-        if child.head in ("at", "layer", "uuid", "tags", "descr", "attr", "property_ids"):
+        if child.head in _FP_UNPORTED or child.head not in _FP_KNOWN:
+            return f"a ({child.head} ...), which this tool does not move with the footprint"
+    if not flipping:
+        return None
+    for child in fp.lists:
+        if child.head in _FP_UNFLIPPED:
+            return f"a ({child.head} ...), whose flip this tool does not port"
+        if child.head == "fp_arc" and child.find("mid") is None:
+            return "an (fp_arc ...) written by its centre and angle, KiCad 5's form"
+    for pad in fp.find_all("pad"):
+        for head in _PAD_UNFLIPPED:
+            if pad.find(head) is not None:
+                return f"a pad with ({head} ...), whose flip this tool does not port"
+        primitives = pad.find("primitives")
+        for shape in primitives.lists if primitives is not None else ():
+            legacy_arc = shape.head == "gr_arc" and shape.find("mid") is None
+            if shape.head not in _PRIMITIVES or legacy_arc:
+                return f"a pad primitive ({shape.head} ...) whose flip this tool does not port"
+    for text in _fp_texts(fp):
+        if text.find("effects") is None:
+            return f"a ({text.head} ...) with no (effects ...) to write its mirror in"
+    if len(layers.inner) < 2:
+        return None
+    for item in fp.lists:
+        if item.head == "pad" and len(item.atoms) > 2 and item.atoms[2].text == "thru_hole":
             continue
-        # The footprint's own (at ...) is handled above; everything below is in
-        # the footprint's local frame.
-        if child.head != "property" or child.find("at") is not None:
-            mirror_points(child)
-        for lay in [child.find("layer")] + ([child.find("layers")] if child.find("layers") else []):
-            if lay is None:
-                continue
-            for atom in lay.atoms[1:]:
-                atom.set_text(_mirror_layer(atom.text))
-        if child.head in ("fp_text", "property"):
-            _toggle_mirror(child)
+        node = item.find("layers" if item.head == "pad" else "layer")
+        atoms = node.atoms[1:] if node is not None else []
+        named = {atom.text for atom in atoms if _INNER_CU.fullmatch(atom.text)}
+        if named and not layers.inner <= named:
+            return (
+                f"a ({item.head} ...) on {min(named)}, an inner copper layer, which KiCad 9"
+                " keeps there when it flips the footprint and KiCad 10 mirrors through the"
+                " board's stack, so no file reads the same to both"
+            )
+    return None
 
 
-def _toggle_mirror(node) -> None:
-    """Add or remove a text's mirrored justification.
+def _negate_y(node) -> None:
+    """Negate the y atom of an (at|start|mid|end|center|xy|offset|rect_delta x y ...)."""
+    if len(node.atoms) > 2:
+        node.atoms[2].set_text(_numish_text(-float(node.atoms[2].text)))
 
-    A toggle rather than an add, because the flip has to be its own inverse:
-    flipping a footprint to the back and straight to the front again must leave
-    the file as it was, and an add-only version leaves every text carrying a
-    justification it did not have. Caught by the double-flip test, which is the
-    strongest check available without pcbnew on this machine.
-    """
-    effects = node.find("effects")
-    if effects is None:
-        return
-    justify = effects.find("justify")
-    if justify is None:
-        effects.append_child(_cst.parse(b"(justify mirror)").lists[0], b" ")
-        return
-    words = [a.text for a in justify.atoms[1:]]
-    words = [w for w in words if w != "mirror"] if "mirror" in words else [*words, "mirror"]
-    effects.remove_child(justify)
-    if words:
-        # Rebuilt rather than mutated: the CST exposes no atom-list edit, and a
-        # reparse keeps the node's own spacing rules.
-        rebuilt = _cst.parse(("(justify %s)" % " ".join(words)).encode()).lists[0]
-        effects.append_child(rebuilt, b" ")
+
+def _flip_shape(node) -> None:
+    """EDA_SHAPE::flip top to bottom about its frame's origin (common/eda_shape.cpp:
+    697-737 at 9.0.8, 991-1033 at 10.0.7): every y negated, the points of an (arc ...)
+    in a polygon's outline included and in their order (measured with pcbnew 9.0.8 in
+    test_ladder_r3_judges.py), and an arc's start and end swapped, which is the same
+    arc."""
+    for key in ("start", "mid", "end", "center"):
+        child = node.find(key)
+        if child is not None:
+            _negate_y(child)
+    pts = node.find("pts")
+    for entry in pts.lists if pts is not None else ():
+        if entry.head == "xy":
+            _negate_y(entry)
+        elif entry.head == "arc":
+            for part in entry.lists:
+                if part.head in ("start", "mid", "end"):
+                    _negate_y(part)
+    start, end = node.find("start"), node.find("end")
+    if node.head in ("fp_arc", "gr_arc") and start is not None and end is not None:
+        texts = [atom.text for atom in start.atoms[1:3]], [atom.text for atom in end.atoms[1:3]]
+        for atoms, words in ((start.atoms[1:3], texts[1]), (end.atoms[1:3], texts[0])):
+            for atom, word in zip(atoms, words):
+                atom.set_text(word)
+
+
+#: PAD::Flip's top to bottom swap of the chamfered corners, and the order KiCad writes
+#: them in (pcb_io_kicad_sexpr.cpp:1587-1601 at 9.0.8, 1833-1847 at 10.0.7).
+_CHAMFER_FLIP = {
+    "top_left": "bottom_left",
+    "bottom_left": "top_left",
+    "top_right": "bottom_right",
+    "bottom_right": "top_right",
+}
+_CHAMFER_ORDER = ("top_left", "top_right", "bottom_left", "bottom_right")
+_SIDE_SWAP = {"front": "back", "back": "front"}
+
+
+def _flip_pad(pad, layers: _FlipLayers, turn: float) -> None:
+    """PAD::Flip as FOOTPRINT::Flip runs it, then the turn by 180 (pcbnew/pad.cpp:
+    1029-1093 at 9.0.8, 1504-1565 at 10.0.7): local y negated; the absolute angle P
+    becomes Normalize( Normalize( -P ) + turn ); the drill offset and the trapezoid delta
+    mirror in y; the top and bottom chamfered corners swap; the primitives flip in the
+    pad's own frame; the layers go to their opposites. On a KiCad 10 board the tenting
+    swaps front and back, as 10.0.7's PADSTACK::FlipLayers swaps the mask properties of
+    every pad (padstack.cpp:1490-1522); 9.0.8's leaves a pad without a padstack of its
+    own as it is (722-759), so on a KiCad 9 board it stays."""
+    at = pad.find("at")
+    if at is not None:
+        _negate_y(at)
+        atom = _at_angle_atom(at)
+        held = _n360(float(atom.text)) if atom is not None else 0.0
+        angle = _n360(_n360(-(held - 0.0) + 0.0) + turn)
+        _set_at_angle(at, None if angle == 0 else _angle_text(angle))
+    names = pad.find("layers")
+    for atom in names.atoms[1:] if names is not None else ():
+        if layers.flip(atom.text) != atom.text:
+            atom.set_text(layers.flip(atom.text))
+    drill = pad.find("drill")
+    for node in (drill.find("offset") if drill is not None else None, pad.find("rect_delta")):
+        if node is not None:
+            _negate_y(node)
+    chamfer = pad.find("chamfer")
+    if chamfer is not None:
+        words = [str(atom.text) for atom in chamfer.atoms[1:]]
+        rank = {corner: k for k, corner in enumerate(_CHAMFER_ORDER)}
+        corners = sorted(
+            (_CHAMFER_FLIP.get(word, word) for word in words),
+            key=lambda corner: rank.get(corner, len(rank)),
+        )
+        for atom, corner in zip(chamfer.atoms[1:], corners):
+            if atom.text != corner:
+                atom.set_text(corner)
+    primitives = pad.find("primitives")
+    for shape in primitives.lists if primitives is not None else ():
+        _flip_shape(shape)
+    tenting = pad.find("tenting")
+    if tenting is not None and layers.major >= 10:
+        sides = [node for node in tenting.lists if node.head in _SIDE_SWAP]
+        if len(sides) == 2 and all(len(node.atoms) == 2 for node in sides):
+            first, second = sides[0].atoms[1].text, sides[1].atoms[1].text
+            sides[0].atoms[1].set_text(second)
+            sides[1].atoms[1].set_text(first)
+        else:
+            for node in sides:
+                node.atoms[0].set_text(_SIDE_SWAP[node.head])
+        for atom in tenting.atoms[1:]:
+            if atom.text in _SIDE_SWAP:
+                atom.set_text(_SIDE_SWAP[atom.text])
+
+
+#: The layers FOOTPRINT::addMandatoryFields gives the four fields every footprint holds,
+#: which a field written without (layer) keeps whatever the footprint's side
+#: (pcbnew/footprint.cpp:94-111 at 9.0.8).
+_FIELD_LAYERS = {
+    "Reference": "F.SilkS",
+    "Value": "F.Fab",
+    "Datasheet": "F.Fab",
+    "Description": "F.Fab",
+}
+
+
+def _text_default_layer(text, back: bool) -> str:
+    """The layer KiCad holds for a text written without (layer): a mandatory field's
+    _FIELD_LAYERS; another field F.Fab or B.Fab by the footprint's side (the parser,
+    pcb_io_kicad_sexpr_parser.cpp:4644-4651 at 9.0.8, 5330-5338 at 10.0.7); an fp_text
+    F.SilkS or B.SilkS by the side (PCB_TEXT's constructor, pcbnew/pcb_text.cpp:56-76 at
+    9.0.8, 61-79 at 10.0.7). Measured with pcbnew 9.0.8 in test_ladder_r3_judges.py."""
+    if text.head == "property":
+        return _FIELD_LAYERS.get(text.atoms[1].text, "B.Fab" if back else "F.Fab")
+    return "B.SilkS" if back else "F.SilkS"
+
+
+def _flip_text(text, layers: _FlipLayers, held: float, turn: float, back: bool) -> None:
+    """PCB_TEXT::Flip as FOOTPRINT::Flip runs it, then the turn by 180 and KeepUpright
+    (pcbnew/pcb_text.cpp:414-431 and 321-339 at 9.0.8, 493-510 and 389-407 at 10.0.7):
+    local y negated; the angle T KiCad holds, Normalize( ( T_written - A ) + A ) on a
+    footprint holding A, becomes Normalize( ( 180 - T ) + turn ); the layer goes to its
+    opposite, a text written without one getting its default's opposite written after
+    (at) and (unlocked), where KiCad's writer puts it; the mirror toggles only when the
+    new layer is side specific; then a keep-upright text at 180 or more turns half a
+    turn with its justification negated."""
+    at = text.find("at")
+    _negate_y(at)
+    atom = _at_angle_atom(at)
+    written = float(atom.text) if atom is not None else 0.0
+    angle = _n360((180.0 - _n360((written - held) + held)) + turn)
+    node = text.find("layer")
+    old = node.atoms[1].text if node is not None else _text_default_layer(text, back)
+    new = layers.flip(old)
+    if node is None:
+        node = _cst.parse(b'(layer "x")').lists[0]
+        node.atoms[1].set_text(new)
+        unlocked = text.find("unlocked")
+        text.insert_after(unlocked if unlocked is not None else at, node)
+    elif new != old:
+        node.atoms[1].set_text(new)
+    effects = text.find("effects")
+    words = _justify_words(effects) if effects is not None else []
+    turned = [word for word in words if word != "mirror"]
+    mirror = ("mirror" in words) != layers.side_specific(new)
+    if angle >= 180.0 and _text_keeps_upright(text):
+        angle = _n360(angle + 180.0)
+        turned = [_JUSTIFY_FLIP.get(word, word) for word in turned]
+    final = turned + (["mirror"] if mirror else [])
+    if effects is not None and final != words:
+        _set_justify(effects, final)
+    _set_at_angle(at, _angle_text(angle))
+
+
+def _fp_flip(fp, layers: _FlipLayers) -> None:
+    """Flip a footprint to the other side as KiCad's FOOTPRINT::Flip about its own
+    position, LEFT_RIGHT, does (pcbnew/footprint.cpp:2491-2550 at 9.0.8, 2930-2999 at
+    10.0.7), in file terms: B.Cu becomes F.Cu and any other side B.Cu; the angle A
+    becomes Normalize180( Normalize180( -A ) + 180 ), and every pad and text turns by
+    turn = ( new + 180 ) - new, new being Normalize180( -A ), which the doubles do not
+    always make 180; pads, texts and graphics flip in the footprint's own frame
+    (_flip_pad, _flip_text, _flip_shape) and their layers go to their opposites on this
+    board (_board_flip_layers). Models and everything else stay as they are: the flip
+    has no code for them. The caller has run _fp_unsupported."""
+    side = fp.find("layer")
+    back = _fp_is_back(fp)
+    side.atoms[1].set_text("F.Cu" if back else "B.Cu")
+    at = fp.find("at")
+    atom = _at_angle_atom(at)
+    held = _n180(float(atom.text)) if atom is not None else 0.0
+    new = _n180(-held)
+    turn = (new + 180.0) - new
+    angle = _n180(new + 180.0)
+    _set_at_angle(at, None if angle == 0 else _angle_text(angle))
+    for pad in fp.find_all("pad"):
+        _flip_pad(pad, layers, turn)
+    for text in _fp_texts(fp):
+        _flip_text(text, layers, held, turn, back)
+    for child in fp.lists:
+        if child.head in _FP_GRAPHICS:
+            _flip_shape(child)
+            node = child.find("layer")
+            if node is not None and layers.flip(node.atoms[1].text) != node.atoms[1].text:
+                node.atoms[1].set_text(layers.flip(node.atoms[1].text))
 
 
 def _numish_text(value: float) -> str:
@@ -2227,45 +2534,6 @@ def _numish_text(value: float) -> str:
     version, so it rounds as KiCad 9 does: on whole nanometres, which is what
     KiCad writes, KiCad 10 rounds the same (_shared.kiround)."""
     return _mm(kiround(value * 1e6))
-
-
-def _require_same_side(fp, layer: str, reference: str) -> bool:
-    """True when *layer* is the other side and the footprint can be flipped.
-
-    Measured 2026-08-14 on this tool before the guard: asking for layer="B.Cu"
-    on a front-side footprint rewrote the footprint's own (layer ...) atom and
-    nothing else. Its pads stayed on F.Cu, F.Paste and F.Mask and its texts on
-    F.SilkS, so KiCad reads the result as a bottom-side part whose copper is on
-    top. kicad-cli loads that file without complaint, and a board made from it
-    would be wrong.
-
-    Moving a footprint to the other side is a flip, which _flip_footprint_cst
-    now performs against a transform measured from KiCad's own Flip(). What is
-    still refused is a footprint carrying a construct whose flip has not been
-    measured: custom pad primitives, an embedded zone, or a 3D model block.
-    Mirroring everything around one of those and leaving it untouched is worse
-    than not moving the footprint at all, so the file is left intact, which is
-    what the invariant at the top of docs/adr-cst-substrate.md asks for.
-    """
-    current = _fp_layer(fp)
-    if current.split(".")[0] == layer.split(".")[0]:
-        return False
-    unmeasured = sorted(
-        {
-            head
-            for head in _UNMEASURED_FOR_FLIP
-            if fp.find(head) is not None or any(p.find(head) for p in fp.find_all("pad"))
-        }
-    )
-    if unmeasured:
-        raise ToolError(
-            f"{reference} carries {', '.join(unmeasured)}, and how KiCad's own"
-            " flip transforms those has not been measured here. Moving it to"
-            f" {layer} would mirror everything else and leave those untouched,"
-            " which is worse than not moving it. Nothing was changed. Flip it"
-            " in KiCad instead."
-        )
-    return True
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -2285,7 +2553,10 @@ def move_footprint(
     turns by the change from the angle it had, and a keep-upright text that would
     read upside down is turned half a turn with its justification mirrored, so it
     stays readable on the same side of its anchor. Angles are written as KiCad
-    writes them: the footprint's between -180 and 180 and left out at 0.
+    writes them: the footprint's between -180 and 180 and left out at 0. A
+    footprint carrying what this tool does not move with it (a dimension, image,
+    table or barcode, or a child no KiCad it knows reads) is refused and nothing
+    is written.
 
     Args:
         reference: Reference designator (e.g. "R1")
@@ -2296,29 +2567,40 @@ def move_footprint(
             360 for one at 0) changes nothing and leaves the file byte-identical,
             where KiCad's footprint properties dialog would still re-run its
             rotate by a full turn. inf and nan are refused and nothing is written.
-        layer: New layer. Naming the other side flips the footprint: every pad,
-            graphic and text layer mirrors with it, the local geometry mirrors,
-            and text gains a mirrored justification, which is what KiCad's own
-            flip does. A footprint carrying a construct whose flip has not been
-            measured here is refused rather than half-transformed.
+        layer: F.Cu or B.Cu (empty keeps the side; anything else is refused). The
+            other side flips the footprint as KiCad's own flip does (FOOTPRINT::Flip,
+            pcbnew/footprint.cpp:2491-2550 at 9.0.8): pads, texts and graphics
+            mirror, their layers go to their opposites on this board (user layers it
+            pairs included), a text's mirror toggles on side-specific layers only,
+            and 3D models stay as they are. With a rotation the flip comes first, so
+            rotation names the angle the footprint ends at. Refused, with nothing
+            written: a text box, a pad's own padstack, KiCad 10's back drills, a
+            footprint zone or point, and on a board of four or more copper layers an
+            item on inner copper, which KiCad 9 and 10 flip apart.
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _require_finite_rotation(rotation)
     tree, root, key = _open_pcb_cst(pcb_path)
+    # Every check before the cache pop, so a refusal leaves the cached tree valid.
     if layer:
         _resolve_layer_cst(root, layer, copper_only=True)
-    _BOARD_CACHE.pop(key, None)
+        _require_side(layer)
     fp = _find_fp_cst(root, reference)
-    flipping = _require_same_side(fp, layer, reference) if layer else False
+    layers = _board_flip_layers(root)
+    flipping = bool(layer) and (layer == "B.Cu") != _fp_is_back(fp)
+    reason = _fp_unsupported(fp, layers, flipping)
+    if reason:
+        raise ToolError(
+            f"{reference} carries {reason}. Nothing was changed; move it in KiCad instead."
+        )
+    _BOARD_CACHE.pop(key, None)
     _fp_translate(fp, _num(x), _num(y))
     if flipping:
         # The flip before the angle: the flip rewrites the footprint's own angle
         # from the one it had, and the rotation names the angle it ends at.
-        _flip_footprint_cst(fp)
+        _fp_flip(fp, layers)
     if rotation is not None:
         _fp_rotate_to(fp, rotation)
-    if layer:
-        fp.find("layer").atoms[1].set_text(layer)
     # Advisory only: moving into a keep-out or off the board edge is legal
     # KiCad, just usually a mistake, so this warns and never refuses. It runs
     # before the write purely so a fault in the checks cannot leave a moved
@@ -3595,9 +3877,8 @@ def _apply_netlist_cst(
             _place_pads_at_rotation(node, rot)
             if was_back:
                 # Flip, never SetLayer: the layer atom alone leaves pads, text
-                # and courtyard on the front. _flip_footprint_cst is the same
-                # transform move_footprint uses, measured on CI.
-                _flip_footprint_cst(node)
+                # and courtyard on the front. The flip move_footprint uses.
+                _fp_flip(node, _board_flip_layers(root))
             if locked is not None:
                 node.insert_after(node.find("at"), locked.copy())
             # After placement and the flip, so a new field takes the final

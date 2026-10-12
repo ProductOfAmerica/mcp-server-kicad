@@ -149,10 +149,6 @@ _K10_BOARD = """(kicad_pcb
 )"""
 
 
-_BUG52 = (
-    "bug 52: move_footprint refuses to flip a footprint carrying a 3D model, which KiCad's"
-    " flip leaves as it is; fixed by step 7"
-)
 #: A 3D model block at a nonzero offset and rotation, in the layout pcbnew 9.0.8 writes
 #: inside a footprint on a board.
 _MODEL = (
@@ -495,7 +491,6 @@ class TestFootprintWritersCst:
             just = t.find("effects").find("justify")
             assert just is not None and "mirror" in [a.text for a in just.atoms[1:]]
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG52)
     @pytest.mark.parametrize("version", ["k9", "k10"])
     def test_a_footprint_with_a_3d_model_flips_and_keeps_its_model(self, tmp_path, version):
         """KiCad's flip leaves a 3D model as it is (FOOTPRINT::Flip has no model code,
