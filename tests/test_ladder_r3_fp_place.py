@@ -485,15 +485,6 @@ def test_place_writes_library_angles_as_kicad_loads_them(fp, version):
 # zones and points: board coordinates
 # ---------------------------------------------------------------------------
 
-_BUG_15 = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 15: a footprint's zones and KiCad 10 points are board coordinates, which the"
-        " tool copies, moves, turns and flips as footprint-local or not at all; fixed by step 7"
-    ),
-)
-
 
 def _major(version: str) -> int:
     """The KiCad that reads a board of ``version``."""
@@ -517,7 +508,6 @@ def _zone_board(work: Path, fp: E.SynFootprint, theta0: float, version: str) -> 
     return _layered(work / "start.kicad_pcb", items, version)
 
 
-@_BUG_15
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=E.ZONED, at=(50 * MM, 50 * MM), angle=0.0, version="k9")
 @example(fp=E.ZONED, at=(50 * MM, 50 * MM), angle=30.0, version="k10")
@@ -554,7 +544,6 @@ def test_place_writes_footprint_zones_in_board_coordinates(fp, at, angle, versio
     assert [(zone.layers, zone.polygons) for zone in got.zones] == want
 
 
-@_BUG_15
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=E.ZONED, theta0=30.0, to=(60 * MM, 70 * MM), angle=90.0, version="k9")
 @example(fp=E.ZONED, theta0=-90.0, to=(61_234_567, 40 * MM), angle=None, version="k10")
@@ -700,7 +689,6 @@ def _point_edit(tmp_path: Path, operation: str) -> tuple[F.Footprint, bytes]:
     return flip(start), board.read_bytes()
 
 
-@_BUG_15
 @pytest.mark.parametrize("operation", _POINT_EDITS)
 def test_kicad10_footprint_points_are_board_coordinates(tmp_path, operation):
     """N3. A KiCad 10 footprint holding points (PCB_POINT, in board coordinates: format(
@@ -980,7 +968,6 @@ def test_place_and_move_match_pcbnew_rotate_token_for_token(runs, operation, par
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])
 
 
-@_BUG_15
 def test_footprint_zone_placement_matches_pcbnew(runs):
     """One item: Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical and ESP-01 placed by
     place_footprint and by pcbnew (FootprintLoad, SetPosition, Rotate) at 0, 90 and 30
@@ -1005,7 +992,6 @@ def test_footprint_zone_placement_matches_pcbnew(runs):
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])
 
 
-@_BUG_15
 def test_kicad10_footprint_points_match_pcbnew(tmp_path):
     """N3's pcbnew sibling, on KiCad 10 only (KiCad 9 has no points, which came with board
     format 20250901): edit_gen.POINTED placed by the tool and by pcbnew on the front at 30

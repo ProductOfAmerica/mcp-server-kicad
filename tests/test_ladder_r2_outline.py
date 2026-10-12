@@ -853,14 +853,6 @@ result = [
 """
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 80: keepout layers are matched by name, so a rule area on KiCad's F&B.Cu"
-        " or *.Cu layer set is missed; fixed by step 7"
-    ),
-)
 @pytest.mark.parametrize("layer_set", ["F&B.Cu", "*.Cu"], ids=["front_and_back", "all_copper"])
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_keepouts_on_kicads_layer_sets_are_read(tmp_path, layer_set, version):
@@ -912,14 +904,6 @@ for fp in board.GetFootprints():
 """
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 15: a footprint's keepout is read as footprint-local where KiCad stores board"
-        " coordinates; fixed by step 7"
-    ),
-)
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_a_footprints_keepout_is_read_in_board_coordinates(tmp_path, version):
     """Footprint K1 at (80, 80) turned 90 degrees owns a keepout whose points, as KiCad
@@ -1022,17 +1006,6 @@ def _flagged(path: str) -> list[str]:
     ]
 
 
-_BUG_88 = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 88: a footprint's own keepout is applied to that footprint, which KiCad never"
-        " does; fixed by step 7"
-    ),
-)
-
-
-@_BUG_88
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_a_footprints_own_keepout_does_not_count_against_it(tmp_path, version):
     """N8. K1 at the origin, unturned (so its keepout's points read the same as board or
@@ -1069,7 +1042,6 @@ def test_a_footprints_own_keepout_does_not_count_against_it(tmp_path, version):
     assert _WARNING not in pcb.move_footprint("K1", 1, 1, pcb_path=path)
 
 
-@_BUG_88
 def test_a_placed_tag_connect_is_not_flagged_by_its_own_keepout(tmp_path):
     """N8's stock case: KiCad 9.0.8's Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical owns
     a keepout forbidding footprints round its own origin. Placed by place_footprint at
@@ -1111,14 +1083,6 @@ result = [
 """
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 80: keepout layers are matched by name, so a rule area on KiCad's F&B.Cu"
-        " or *.Cu layer set is missed; fixed by step 7"
-    ),
-)
 @pytest.mark.parametrize("layer_set", ["F&B.Cu", "*.Cu"], ids=["front_and_back", "all_copper"])
 @pytest.mark.parametrize("owner", ["board", "footprint"])
 @pytest.mark.parametrize("version", ["k9", "k10"])

@@ -821,16 +821,6 @@ def test_a_refused_flip_leaves_the_board_byte_identical(kind, theta0, version):
     assert not problems, "\n".join(problems)
 
 
-_BUG_15 = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 15: a footprint's zones and KiCad 10 points are board coordinates, which the"
-        " tool copies, moves, turns and flips as footprint-local or not at all; fixed by step 7"
-    ),
-)
-
-
 def _zone_start_board(
     work: Path, fp: E.SynFootprint, theta0: float, version: str, *, copper: int = 2
 ) -> Path:
@@ -844,7 +834,6 @@ def _zone_start_board(
     return _board(work / "start.kicad_pcb", items, version, copper=copper)
 
 
-@_BUG_15
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=E.ZONED, theta0=30.0, version="k9")
 @example(fp=E.ZONED, theta0=179.9, version="k10")
@@ -865,7 +854,6 @@ def test_flip_carries_footprint_zones(fp, theta0, version):
     assert not problems, "\n".join(problems)
 
 
-@_BUG_15
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=E.ZONED, angle=30.0, version="k9")
 @given(fp=E.synthetic_footprints(zones=True), angle=G.angles(), version=_VERSIONS)
@@ -917,7 +905,6 @@ def _inner_zone(layers: tuple[str, ...]) -> E.SynFootprint:
 _ALL_COPPER = ("F.Cu", "B.Cu", *(f"In{k}.Cu" for k in range(1, 31)))
 
 
-@_BUG_15
 @pytest.mark.parametrize("copper", [4, 6])
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_inner_copper_zones_flip_on_four_layer_boards(tmp_path, copper, version):
@@ -1751,7 +1738,6 @@ def test_flip_keeps_the_3d_model_as_pcbnew_does(runs):
     assert _model_tokens(runs.model_kicad, "U1") == before
 
 
-@_BUG_15
 def test_footprint_zone_flip_matches_pcbnew(runs):
     """One item: Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical and ESP-01 (3D models
     removed) as pcbnew placed them at 0, 30 and 90 degrees, flipped by move_footprint and

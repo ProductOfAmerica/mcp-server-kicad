@@ -72,6 +72,7 @@ from mcp_server_kicad._shared import (
     _keepout_dict,
     _kicad_cli_major,
     _kicad_root,
+    _kiround_for,
     _linearize_arc,
     _n180,
     _n360,
@@ -79,6 +80,7 @@ from mcp_server_kicad._shared import (
     _read_kicad_bytes,
     _require_kicad_path,
     _resolve_root,
+    _rotate_point_iu,
     _run_cli,
     _run_pcbnew,
     _transform_local_to_board,
@@ -397,15 +399,49 @@ def _edge_polygon_cst(root) -> list[tuple[float, float]] | None:
     return _chain_edge_polygon(segments)
 
 
-def _zone_forbids_footprints(zone, x: float, y: float, layer: str, pts) -> bool:
+#: The parser's layer set names and the layers each reads as
+#: (pcb_io_kicad_sexpr_parser.cpp:115-123 at 9.0.8, 120-128 at 10.0.7).
+_INNER_CU_NAMES = tuple(f"In{k}.Cu" for k in range(1, 31))
+_LAYER_SETS = {
+    "*.Cu": frozenset(("F.Cu", "B.Cu", *_INNER_CU_NAMES)),
+    "*In.Cu": frozenset(_INNER_CU_NAMES),
+    "F&B.Cu": frozenset(("F.Cu", "B.Cu")),
+    **{
+        f"*.{kind}": frozenset((f"F.{kind}", f"B.{kind}"))
+        for kind in ("Adhes", "Paste", "Mask", "SilkS", "Fab", "CrtYd")
+    },
+}
+
+
+def _zone_layers(zone) -> frozenset[str]:
+    """The layers KiCad reads a zone on: the names its (layer ...) or (layers ...)
+    writes, a layer set name read through the parser's table (_LAYER_SETS)."""
+    names: set[str] = set()
+    for node in zone.find_all("layer") + zone.find_all("layers"):
+        for atom in node.atoms[1:]:
+            names |= _LAYER_SETS.get(atom.text, {atom.text})
+    return frozenset(names)
+
+
+def _fp_side(fp) -> str:
+    """The side KiCad reads a footprint on: B.Cu when its (layer) says so, F.Cu for
+    anything else (_fp_is_back)."""
+    return "B.Cu" if _fp_is_back(fp) else "F.Cu"
+
+
+def _zone_forbids_footprints(zone, x: float, y: float, side: str, pts) -> bool:
+    """Whether ``zone`` forbids a footprint on ``side`` whose origin is (x, y): a rule
+    area forbidding footprints whose layers, as KiCad reads them, hold that side, as
+    intersectsArea needs a layer common to the area and the footprint
+    (pcbnew/pcbexpr_functions.cpp:712-715 at 9.0.8), and whose outline holds the
+    point."""
     ko = zone.find("keepout")
     if ko is None:
         return False
     rule = ko.find("footprints")
     if rule is None or rule.atoms[1].text != "not_allowed":
         return False
-    layers_node = zone.find("layers") or zone.find("layer")
-    if layers_node is None or layer not in [a.text for a in layers_node.atoms[1:]]:
+    if side not in _zone_layers(zone):
         return False
     return bool(pts) and _point_in_polygon(x, y, pts)
 
@@ -417,31 +453,25 @@ def _zone_pts(zone):
     return [(round(x, 3), round(y, 3)) for x, y in map(_xy, poly.find("pts").find_all("xy"))]
 
 
-def _keepout_violations_cst(root, x: float, y: float, layer: str) -> list[dict]:
-    """CST twin of _check_footprint_keepout_violations.
-
-    Board-level zones first, then footprint-embedded ones with their
-    polygons transformed into board coordinates.
-    """
-    candidates = [("board", z, _zone_pts(z)) for z in root.find_all("zone")]
-    major = _board_major(root)
+def _keepout_violations_cst(root, x: float, y: float, side: str, own=None) -> list[dict]:
+    """The rule areas that forbid a footprint on ``side`` at (x, y), as KiCad reads them:
+    board-level zones first, then each footprint's zones, whose points are board
+    coordinates as stored (format( ZONE ) writes them without the footprint,
+    pcb_io_kicad_sexpr.cpp:2628-2637 at 9.0.8, 3061-3074 at 10.0.7), less those of
+    ``own``, the footprint being checked: KiCad never tests a footprint against an area
+    it owns (intersectsArea skips an area whose parent is the item,
+    pcbnew/pcbexpr_functions.cpp:697 at 9.0.8, 825 at 10.0.7). The layers each area
+    holds are read through the parser's layer set names (_zone_layers)."""
+    candidates = [("board", z) for z in root.find_all("zone")]
     for fp in root.find_all("footprint"):
-        at = fp.find("at")
-        if at is None:
+        if fp is own:
             continue
-        fx, fy = _xy(at)
-        angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
         source = f"footprint:{_fp_prop_cst(fp, 'Reference')}"
-        for zone in fp.find_all("zone"):
-            pts = []
-            for px, py in _zone_pts(zone):
-                bx, by = _transform_local_to_board(fx, fy, angle, px, py, major=major)
-                pts.append((round(bx, 3), round(by, 3)))
-            candidates.append((source, zone, pts))
+        candidates += [(source, zone) for zone in fp.find_all("zone")]
 
     violations: list[dict] = []
-    for source, zone, pts in candidates:
-        if not _zone_forbids_footprints(zone, x, y, layer, pts):
+    for source, zone in candidates:
+        if not _zone_forbids_footprints(zone, x, y, side, _zone_pts(zone)):
             continue
         layers_node = zone.find("layers") or zone.find("layer")
         violations.append(
@@ -1493,20 +1523,78 @@ def _respell_library_angles(node) -> None:
         _set_at_angle(at, _angle_text(_n360(float(atom.text) if atom is not None else 0.0)))
 
 
-def _fp_translate(fp, x_text: str, y_text: str) -> None:
-    """FOOTPRINT::SetPosition in file terms: the footprint's own (at) x and y.
+def _board_point_nodes(fp):
+    """The lists of a footprint that hold a point in BOARD coordinates, as (x y ...):
+    every (xy) of its zones' outlines and fills and the start, mid and end of an (arc)
+    among them, and the (at) of each KiCad 10 (point). KiCad writes a footprint's zones
+    and points without the footprint (format( ZONE ), pcb_io_kicad_sexpr.cpp:2628-2637
+    at 9.0.8, 3061-3074 at 10.0.7; format( PCB_POINT ), 1157-1168 at 10.0.7), where its
+    pads, texts and graphics are footprint-relative. A KiCad 10 zone's (property (layer)
+    (hatch_position (xy))) is an offset, which ZONE::Move, Rotate and Flip leave alone,
+    and is not among them."""
+    for zone in fp.find_all("zone"):
+        for polygon in zone.find_all("polygon") + zone.find_all("filled_polygon"):
+            pts = polygon.find("pts")
+            for entry in pts.lists if pts is not None else ():
+                if entry.head == "xy":
+                    yield entry
+                elif entry.head == "arc":
+                    yield from (p for p in entry.lists if p.head in ("start", "mid", "end"))
+    for point in fp.find_all("point"):
+        at = point.find("at")
+        if at is not None:
+            yield at
 
-    Pads, texts and graphics are footprint-relative, so they move with it and
-    nothing of theirs is rewritten (pcbnew/footprint.cpp:2553-2584 at 9.0.8,
-    3002-3039 at 10.0.7). KiCad stores a footprint's own zones in board
-    coordinates and moves them by the same delta; they are left where they are
-    here."""
+
+def _board_nm(node, major: int) -> tuple[int, int]:
+    """The board point an (x y ...) list holds, read as KiCad ``major``'s parser reads
+    it: KiROUND( mm * 1e6 ) (parseBoardUnits; its clamp is not modelled)."""
+    rnd = _kiround_for(major)
+    return rnd(float(node.atoms[1].text) * 1e6), rnd(float(node.atoms[2].text) * 1e6)
+
+
+def _move_board_points(fp, move, major: int) -> None:
+    """Rewrite every board-coordinate point of ``fp`` (_board_point_nodes) to
+    ``move( x, y )``, in integer nanometres: a coordinate is written with _mm, KiCad's
+    text for it, only where its value changes, so a point that stays keeps its bytes."""
+    for node in _board_point_nodes(fp):
+        old = _board_nm(node, major)
+        new = move(*old)
+        for k in (0, 1):
+            if new[k] != old[k]:
+                node.atoms[k + 1].set_text(_mm(new[k]))
+
+
+def _turn_about(centre: tuple[int, int], degrees: float, major: int):
+    """KiCad ``major``'s RotatePoint about ``centre`` (trigo.cpp:267-278 at 9.0.8): the
+    offset from the centre turned by the integer RotatePoint, the centre added back."""
+
+    def turn(x: int, y: int) -> tuple[int, int]:
+        rx, ry = _rotate_point_iu(x - centre[0], y - centre[1], degrees, major=major)
+        return rx + centre[0], ry + centre[1]
+
+    return turn
+
+
+def _fp_translate(fp, x_text: str, y_text: str, major: int) -> None:
+    """FOOTPRINT::SetPosition in file terms: the footprint's own (at) x and y, and every
+    zone and KiCad 10 point it owns moved by the same delta, since those are board
+    coordinates (pcbnew/footprint.cpp:2553-2584 at 9.0.8, 3002-3039 at 10.0.7;
+    ZONE::Move, pcbnew/zone.cpp:904-929 at 9.0.8). The delta is between KiCad
+    ``major``'s readings of the old and new atoms, in integer nanometres. Pads, texts
+    and graphics are footprint-relative, so they move with it and nothing of theirs is
+    rewritten."""
     at = fp.find("at")
+    old = _board_nm(at, major)
     at.atoms[1].set_text(x_text)
     at.atoms[2].set_text(y_text)
+    new = _board_nm(at, major)
+    dx, dy = new[0] - old[0], new[1] - old[1]
+    if dx or dy:
+        _move_board_points(fp, lambda x, y: (x + dx, y + dy), major)
 
 
-def _fp_rotate_to(fp, target: float) -> None:
+def _fp_rotate_to(fp, target: float, major: int) -> None:
     """Turn a footprint to the angle ``target`` as KiCad's FOOTPRINT::Rotate turns
     it about its own position: what the editor's rotate command and its footprint
     properties dialog run (pcbnew/footprint.cpp:2456-2479 at 9.0.8, 2898-2918 at
@@ -1541,8 +1629,11 @@ def _fp_rotate_to(fp, target: float) -> None:
     the footprint's final angle here, and a request that leaves it where it is
     leaves the file byte-identical.
 
-    Footprint-owned zones, which KiCad stores in board coordinates and turns
-    about the footprint, are left as they are here.
+    The zones and KiCad 10 points the footprint owns are board coordinates, which
+    SetOrientation turns about the footprint's position by the change with the
+    integer RotatePoint (ZONE::Rotate, pcbnew/zone.cpp:959-967 at 9.0.8;
+    PCB_POINT::Rotate, pcbnew/pcb_point.cpp:138-141 at 10.0.7), rounded as KiCad
+    ``major`` rounds.
     """
     at = fp.find("at")
     atom = _at_angle_atom(at)
@@ -1552,6 +1643,7 @@ def _fp_rotate_to(fp, target: float) -> None:
         return
     change = target - held
     _set_at_angle(at, None if stored == 0 else _angle_text(stored))
+    _move_board_points(fp, _turn_about(_board_nm(at, major), change, major), major)
     for pad in fp.find_all("pad"):
         pad_at = pad.find("at")
         if pad_at is None:
@@ -2062,6 +2154,11 @@ def place_footprint(
     side of its anchor. Angles are written as KiCad writes them: the footprint's
     between -180 and 180 and left out at 0, each pad's and text's absolute.
 
+    Zones the footprint owns (keepouts, say) and a KiCad 10 footprint's points are
+    stored in board coordinates (format( ZONE ), pcb_io_kicad_sexpr.cpp:2628-2637 at
+    9.0.8), so they land where KiCad's placement puts them: moved with the footprint,
+    turned about it and, on the back, mirrored with it.
+
     A footprint carrying what this tool does not move with it (a dimension, image,
     table or barcode, or a child no KiCad it knows reads), or on the back what it does
     not flip (see move_footprint), is refused and nothing is written.
@@ -2122,10 +2219,10 @@ def place_footprint(
     for prop in node.find_all("property"):
         if prop.atoms[1].text in ("Reference", "Value"):
             prop.atoms[2].set_text(reference if prop.atoms[1].text == "Reference" else value)
-    _fp_translate(node, _num(x), _num(y))
+    _fp_translate(node, _num(x), _num(y), layers.major)
     if flipping:
         _fp_flip(node, layers)
-    _fp_rotate_to(node, rotation)
+    _fp_rotate_to(node, rotation, layers.major)
     _splice_after(root, node, ("footprint",), _PCB_TAIL_HEADS)
     _atomic_write(key, _cst.serialize(tree))
     what = f"{Path(pretty).stem}:{footprint}" if library else "a pad-less marker"
@@ -2267,9 +2364,8 @@ _FP_KNOWN = frozenset(
 )
 #: Children whose flip is not ported, refused on a flip only: a text box, which
 #: PCB_TEXTBOX::Flip turns its own way (pcbnew/pcb_textbox.cpp:547 at 9.0.8, 573 at
-#: 10.0.7), a KiCad 10 footprint stackup, and zones and KiCad 10 points, which KiCad
-#: writes in board coordinates.
-_FP_UNFLIPPED = ("fp_text_box", "stackup", "zone", "point")
+#: 10.0.7), and a KiCad 10 footprint stackup.
+_FP_UNFLIPPED = ("fp_text_box", "stackup")
 #: Pad tokens whose flip is not ported: a padstack of its own and KiCad 10's back drills
 #: and post machining, which PADSTACK::FlipLayers swaps layer by layer (pcbnew/
 #: padstack.cpp:722-759 at 9.0.8, 1490-1522 at 10.0.7).
@@ -2293,11 +2389,12 @@ def _fp_unsupported(fp, layers: _FlipLayers, flipping: bool) -> str | None:
     flip also refuses _FP_UNFLIPPED, a pad token in _PAD_UNFLIPPED, a primitive outside
     _PRIMITIVES, an arc written by its centre and angle (KiCad 5's form), a text with no
     (effects ...) to write its mirror in, and, on a board of four or more copper layers,
-    an item on inner copper that does not name every inner layer: KiCad 9 leaves it
-    where it is and KiCad 10 mirrors it through the stack, so no file reads the same to
-    both. A plated through hole is exempt, since KiCad gives it every copper layer
-    whatever it names (FOOTPRINT::FixUpPadsForBoard, pcbnew/footprint.cpp:4167-4185 at
-    9.0.8, 4834-4853 at 10.0.7)."""
+    an item on inner copper that does not name every inner layer (a zone's own layers,
+    each of its fills and each of its KiCad 10 layer properties counting as an item):
+    KiCad 9 leaves it where it is and KiCad 10 mirrors it through the stack, so no file
+    reads the same to both. A plated through hole is exempt, since KiCad gives it every
+    copper layer whatever it names (FOOTPRINT::FixUpPadsForBoard,
+    pcbnew/footprint.cpp:4167-4185 at 9.0.8, 4834-4853 at 10.0.7)."""
     for child in fp.lists:
         if child.head in _FP_UNPORTED or child.head not in _FP_KNOWN:
             return f"a ({child.head} ...), which this tool does not move with the footprint"
@@ -2325,16 +2422,35 @@ def _fp_unsupported(fp, layers: _FlipLayers, flipping: bool) -> str | None:
     for item in fp.lists:
         if item.head == "pad" and len(item.atoms) > 2 and item.atoms[2].text == "thru_hole":
             continue
-        node = item.find("layers" if item.head == "pad" else "layer")
-        atoms = node.atoms[1:] if node is not None else []
-        named = {atom.text for atom in atoms if _INNER_CU.fullmatch(atom.text)}
-        if named and not layers.inner <= named:
-            return (
-                f"a ({item.head} ...) on {min(named)}, an inner copper layer, which KiCad 9"
-                " keeps there when it flips the footprint and KiCad 10 mirrors through the"
-                " board's stack, so no file reads the same to both"
-            )
+        for names in _named_layer_sets(item):
+            named = {name for name in names if _INNER_CU.fullmatch(name)}
+            if named and not layers.inner <= named:
+                return (
+                    f"a ({item.head} ...) on {min(named)}, an inner copper layer, which KiCad"
+                    " 9 keeps there when it flips the footprint and KiCad 10 mirrors through"
+                    " the board's stack, so no file reads the same to both"
+                )
     return None
+
+
+def _layer_words(node) -> list[str]:
+    """The layer names a (layer ...) or (layers ...) list writes; [] for None."""
+    return [atom.text for atom in node.atoms[1:]] if node is not None else []
+
+
+def _named_layer_sets(item):
+    """The layer names each thing in a footprint's child ``item`` sits on, one list per
+    thing: a pad's (layers ...); a zone's (layer ...) or (layers ...), then each of its
+    (filled_polygon ...) and KiCad 10 (property ...) layers; any other child's
+    (layer ...)."""
+    if item.head == "pad":
+        yield _layer_words(item.find("layers"))
+    elif item.head == "zone":
+        yield _layer_words(item.find("layer")) + _layer_words(item.find("layers"))
+        for part in item.find_all("filled_polygon") + item.find_all("property"):
+            yield _layer_words(part.find("layer"))
+    else:
+        yield _layer_words(item.find("layer"))
 
 
 def _negate_y(node) -> None:
@@ -2501,8 +2617,14 @@ def _fp_flip(fp, layers: _FlipLayers) -> None:
     turn = ( new + 180 ) - new, new being Normalize180( -A ), which the doubles do not
     always make 180; pads, texts and graphics flip in the footprint's own frame
     (_flip_pad, _flip_text, _flip_shape) and their layers go to their opposites on this
-    board (_board_flip_layers). Models and everything else stay as they are: the flip
-    has no code for them. The caller has run _fp_unsupported."""
+    board (_board_flip_layers). The zones and KiCad 10 points it owns are board
+    coordinates: each point is mirrored top to bottom about the footprint's position, y
+    to 2 fy - y, then turned about it by turn with the integer RotatePoint, which in the
+    file takes x to 2 fx - x and keeps y (ZONE::Flip and Rotate, pcbnew/zone.cpp:959-993
+    at 9.0.8; PCB_POINT::Flip, pcbnew/pcb_point.cpp:144-149 at 10.0.7); a zone's layers,
+    its fills' and its KiCad 10 layer properties' go to their opposites, and so does a
+    point's. Models and everything else stay as they are: the flip has no code for them.
+    The caller has run _fp_unsupported."""
     side = fp.find("layer")
     back = _fp_is_back(fp)
     side.atoms[1].set_text("F.Cu" if back else "B.Cu")
@@ -2517,12 +2639,23 @@ def _fp_flip(fp, layers: _FlipLayers) -> None:
         _flip_pad(pad, layers, turn)
     for text in _fp_texts(fp):
         _flip_text(text, layers, held, turn, back)
+    flipped_layers = []
     for child in fp.lists:
-        if child.head in _FP_GRAPHICS:
-            _flip_shape(child)
-            node = child.find("layer")
-            if node is not None and layers.flip(node.atoms[1].text) != node.atoms[1].text:
-                node.atoms[1].set_text(layers.flip(node.atoms[1].text))
+        if child.head in _FP_GRAPHICS or child.head == "point":
+            if child.head != "point":
+                _flip_shape(child)
+            flipped_layers.append(child.find("layer"))
+        elif child.head == "zone":
+            flipped_layers += [child.find("layer"), child.find("layers")]
+            for part in child.find_all("filled_polygon") + child.find_all("property"):
+                flipped_layers.append(part.find("layer"))
+    for node in flipped_layers:
+        for word in node.atoms[1:] if node is not None else ():
+            if layers.flip(word.text) != word.text:
+                word.set_text(layers.flip(word.text))
+    centre = _board_nm(at, layers.major)
+    turned = _turn_about(centre, turn, layers.major)
+    _move_board_points(fp, lambda x, y: turned(x, 2 * centre[1] - y), layers.major)
 
 
 def _numish_text(value: float) -> str:
@@ -2548,15 +2681,19 @@ def move_footprint(
     """Move a footprint to a new position.
 
     A move rewrites the footprint's own position and nothing of its pads, texts
-    or graphics, which KiCad stores relative to the footprint. A rotation turns
-    the footprint to that angle as KiCad's own rotate turns it: every pad and text
-    turns by the change from the angle it had, and a keep-upright text that would
-    read upside down is turned half a turn with its justification mirrored, so it
-    stays readable on the same side of its anchor. Angles are written as KiCad
-    writes them: the footprint's between -180 and 180 and left out at 0. A
-    footprint carrying what this tool does not move with it (a dimension, image,
-    table or barcode, or a child no KiCad it knows reads) is refused and nothing
-    is written.
+    or graphics, which KiCad stores relative to the footprint. The zones it owns
+    and a KiCad 10 footprint's points are stored in board coordinates, so they
+    move by the same delta, as KiCad's FOOTPRINT::SetPosition moves them
+    (pcbnew/footprint.cpp:2553-2584 at 9.0.8). A rotation turns the footprint to
+    that angle as KiCad's own rotate turns it: every pad and text turns by the
+    change from the angle it had, its zones and points turn about it, and a
+    keep-upright text that would read upside down is turned half a turn with its
+    justification mirrored, so it stays readable on the same side of its anchor.
+    Angles are written as KiCad writes them: the footprint's between -180 and 180
+    and left out at 0. A footprint carrying what this tool does not move with it
+    (a dimension, image, table or barcode, or a child no KiCad it knows reads) is
+    refused and nothing is written. The keep-out warning reads keepouts as
+    check_placement does.
 
     Args:
         reference: Reference designator (e.g. "R1")
@@ -2572,11 +2709,13 @@ def move_footprint(
             pcbnew/footprint.cpp:2491-2550 at 9.0.8): pads, texts and graphics
             mirror, their layers go to their opposites on this board (user layers it
             pairs included), a text's mirror toggles on side-specific layers only,
-            and 3D models stay as they are. With a rotation the flip comes first, so
+            zones and points mirror about the footprint with their layers, and 3D
+            models stay as they are. With a rotation the flip comes first, so
             rotation names the angle the footprint ends at. Refused, with nothing
-            written: a text box, a pad's own padstack, KiCad 10's back drills, a
-            footprint zone or point, and on a board of four or more copper layers an
-            item on inner copper, which KiCad 9 and 10 flip apart.
+            written: a text box, a pad's own padstack, KiCad 10's back drills, and on
+            a board of four or more copper layers an item (a zone included) on inner
+            copper that does not name every inner layer, which KiCad 9 and 10 flip
+            apart.
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _require_finite_rotation(rotation)
@@ -2594,13 +2733,13 @@ def move_footprint(
             f"{reference} carries {reason}. Nothing was changed; move it in KiCad instead."
         )
     _BOARD_CACHE.pop(key, None)
-    _fp_translate(fp, _num(x), _num(y))
+    _fp_translate(fp, _num(x), _num(y), layers.major)
     if flipping:
         # The flip before the angle: the flip rewrites the footprint's own angle
         # from the one it had, and the rotation names the angle it ends at.
         _fp_flip(fp, layers)
     if rotation is not None:
-        _fp_rotate_to(fp, rotation)
+        _fp_rotate_to(fp, rotation, layers.major)
     # Advisory only: moving into a keep-out or off the board edge is legal
     # KiCad, just usually a mistake, so this warns and never refuses. It runs
     # before the write purely so a fault in the checks cannot leave a moved
@@ -2608,7 +2747,7 @@ def move_footprint(
     # mutated tree, so the answers are the same either side of the write.
     warnings: list[str] = []
     try:
-        if _keepout_violations_cst(root, x, y, _fp_layer(fp)):
+        if _keepout_violations_cst(root, x, y, _fp_side(fp), own=fp):
             warnings.append("WARNING: position is inside a keep-out zone (footprints not allowed)")
         edge_poly = _edge_polygon_cst(root)
         if edge_poly is not None and not _point_in_polygon(x, y, edge_poly):
@@ -2644,6 +2783,13 @@ def check_placement(
     the origin cannot move the origin, so an angle could not change either
     answer.
 
+    Keep-outs are read as KiCad reads them: a footprint's own keep-outs in board
+    coordinates, as the file stores them; a layer set such as *.Cu or F&B.Cu as
+    the layers it names; the footprint on its side, B.Cu or else F.Cu, as KiCad
+    reads any other footprint layer; and the footprint's own keep-outs never
+    count against it (intersectsArea skips an area whose parent is the item,
+    pcbnew/pcbexpr_functions.cpp:697 at 9.0.8).
+
     Args:
         reference: Footprint reference designator
         x: Proposed X position
@@ -2653,7 +2799,7 @@ def check_placement(
     _, root, _ = _open_pcb_cst(pcb_path)
     fp = _find_fp_cst(root, reference)
 
-    keepout_violations = _keepout_violations_cst(root, x, y, _fp_layer(fp))
+    keepout_violations = _keepout_violations_cst(root, x, y, _fp_side(fp), own=fp)
     edge_poly = _edge_polygon_cst(root)
     outside_board_edge = edge_poly is not None and not _point_in_polygon(x, y, edge_poly)
 
@@ -3859,7 +4005,7 @@ def _apply_netlist_cst(
             # angle, as KiCad's writer leaves one of 0 out.
             x, y = _grid_slot(k, ax, ay, 10.0)
             k += 1
-            _fp_translate(node, _num(x), _num(y))
+            _fp_translate(node, _num(x), _num(y), _board_major(root))
             _sync_fp_from_component(node, comp)
             _splice_after(root, node, ("footprint",), _PCB_TAIL_HEADS)
             by_ref[ref] = node
@@ -4461,8 +4607,13 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
     pcbnew's ExportSpecctraDSN does not export keepout zones defined inside
     a footprint, so the autorouter would never see them. This parses
     *pcb_path*, appends one board-level zone per footprint keepout zone with
-    every polygon's points transformed into board coordinates, and writes the
-    result to *output_path*. The source board is never modified.
+    its points copied as stored, and writes the result to *output_path*. The
+    source board is never modified.
+
+    A footprint's zone is already in board coordinates: format( ZONE ) writes
+    it without the footprint (pcb_io_kicad_sexpr.cpp:2628-2637 at 9.0.8,
+    3061-3074 at 10.0.7), so its points mean the same at board level, and a
+    footprint with no (at) is promoted like any other.
 
     A zone's polygons stay together. KiCad's zone parser makes the first one
     the outline and every later one a hole in it, so promoting each polygon as
@@ -4475,24 +4626,12 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
     tree = _cst.parse(_read_kicad_bytes(pcb_path, "board"))
     root = tree.lists[0]
     count = 0
-    major = _board_major(root)
 
     for fp in root.find_all("footprint"):
-        at = fp.find("at")
-        if at is None:
-            continue
-        fp_x, fp_y = _xy(at)
-        fp_angle = float(at.atoms[3].text) if len(at.atoms) > 3 else 0
-
         for source_zone in fp.find_all("zone"):
             if source_zone.find("keepout") is None or source_zone.find("polygon") is None:
                 continue
             zone = source_zone.copy()
-            for polygon in zone.find_all("polygon"):
-                for xy in polygon.find("pts").find_all("xy"):
-                    bx, by = _transform_local_to_board(fp_x, fp_y, fp_angle, *_xy(xy), major=major)
-                    xy.atoms[1].set_text(_num(round(bx, 6)))
-                    xy.atoms[2].set_text(_num(round(by, 6)))
             _replace_child(zone, _HATCH_TPL.copy())
             fresh_uuid = _UUID_TPL.copy()
             fresh_uuid.atoms[1].set_text(_gen_uuid())
@@ -4799,6 +4938,11 @@ def get_footprint_bounds(reference: str, pcb_path: str = PCB_PATH) -> FootprintB
 def validate_board(pcb_path: str = PCB_PATH) -> BoardValidationResult:
     """Validate all footprint placements against keep-out zones and board edge.
 
+    Each footprint's origin is checked as check_placement checks it: keep-outs read
+    as KiCad reads them, footprint keep-outs in board coordinates and layer sets
+    such as *.Cu included, and a footprint never flagged by its own keep-outs, which
+    KiCad's DRC never tests it against (pcbnew/pcbexpr_functions.cpp:697 at 9.0.8).
+
     Args:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
@@ -4815,7 +4959,7 @@ def validate_board(pcb_path: str = PCB_PATH) -> BoardValidationResult:
         fp_layer = _fp_layer(fp)
 
         fp_violations: list[str] = []
-        if _keepout_violations_cst(root, fp_x, fp_y, fp_layer):
+        if _keepout_violations_cst(root, fp_x, fp_y, _fp_side(fp), own=fp):
             fp_violations.append("keepout_zone")
         if edge_poly is not None and not _point_in_polygon(fp_x, fp_y, edge_poly):
             fp_violations.append("outside_board_edge")

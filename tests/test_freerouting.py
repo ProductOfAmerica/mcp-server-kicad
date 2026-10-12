@@ -482,14 +482,6 @@ class TestRunFreerouting:
 # ---------------------------------------------------------------------------
 
 
-_BUG_15 = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 15: a footprint's keepout is promoted as footprint-local where KiCad stores"
-        " board coordinates; fixed by step 7"
-    ),
-)
 MM = 1_000_000
 
 
@@ -585,7 +577,6 @@ def _assert_promoted_as_stored(pcb_path, out_path) -> None:
 
 
 class TestPromoteFootprintKeepouts:
-    @_BUG_15
     def test_happy_path(self, tmp_path):
         """A footprint's keepout is promoted with its points as stored.
 
@@ -633,7 +624,6 @@ class TestPromoteFootprintKeepouts:
         assert count == 0
         assert not Path(out_path).exists()
 
-    @_BUG_15
     def test_rotated_footprint(self, tmp_path):
         """FP at 90 degrees: the zone KiCad stores is already turned, and is
         promoted as stored.
@@ -665,7 +655,6 @@ class TestPromoteFootprintKeepouts:
         assert ys[2] == pytest.approx(90.0, abs=0.01)
         _assert_promoted_as_stored(pcb_path, out_path)
 
-    @_BUG_15
     def test_multiple_polygons(self, tmp_path):
         """A zone's later polygons are holes in its first, so it stays one zone.
 
@@ -699,7 +688,6 @@ class TestPromoteFootprintKeepouts:
         ]
         _assert_promoted_as_stored(pcb_path, out_path)
 
-    @_BUG_15
     def test_back_side_footprint_keepout(self, tmp_path):
         """FP on B.Cu: its zone is promoted as stored, with no mirroring.
 
@@ -727,7 +715,6 @@ class TestPromoteFootprintKeepouts:
         assert ys[1] == pytest.approx(100.0, abs=0.01)
         _assert_promoted_as_stored(pcb_path, out_path)
 
-    @_BUG_15
     def test_fp_without_position_is_promoted(self, tmp_path):
         """An FP written without (at) sits at the origin, unturned, and its
         zone's points are board coordinates whatever the footprint's
@@ -850,7 +837,6 @@ class TestPromoteFootprintKeepouts:
         result = run_drc(pcb_path=out_path, output_dir=str(tmp_path))
         assert result.violation_count >= 0
 
-    @_BUG_15
     def test_promoted_keepouts_keep_their_board_coordinates(self, tmp_path):
         """N10. A KiCad-form board, a footprint at (100, 50) turned 30 degrees whose
         keepout, with a hole, is stored in board coordinates: pcbnew reads the

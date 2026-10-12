@@ -1126,14 +1126,6 @@ class TestCheckPlacement:
         assert result.status == "violations_found"
         assert len(result.keepout_violations) >= 1
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason=(
-            "bug 15: a footprint's keepout is read as footprint-local where KiCad stores"
-            " board coordinates; fixed by step 7"
-        ),
-    )
     def test_footprint_embedded_keepout(self, tmp_path):
         """A footprint's keepout, written where KiCad stores it: in board coordinates,
         since format( ZONE ) writes a footprint's zone without the footprint
