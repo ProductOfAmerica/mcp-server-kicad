@@ -30,11 +30,11 @@ Judges, none of them the code under test:
   footprint and says so; a swap changes nothing outside the swapped footprint but pad
   nets (the pad pass rewrites those, bug 22, step 10's).
 
-Rung 3's D4 holds each strict xfail to one cause: bug 7's tests compare footprint
-geometry and pad positions, never pad angles, with library pad angles 0; bug 2's swap
-tests stand on the front, or on the back at plus or minus 90, where bug 7's angle agrees;
-bug 16's text test swaps on the front and compares texts only; bug 15's zone test is a
-front swap comparing zones only. Generated tests build their boards in temporary
+Rung 3's D4 kept each test to one cause while its bug was open: bug 7's tests compare
+footprint geometry and pad positions, never pad angles, with library pad angles 0; bug
+2's swap tests stand on the front, or on the back at plus or minus 90, where bug 7's
+angle agreed; bug 16's text test swaps on the front and compares texts only; bug 15's
+zone test is a front swap comparing zones only. Generated tests build their boards in temporary
 directories (D17); the hand-picked ones write into tmp_path, where the autouse oracle
 loads every board and footprint with kicad-cli.
 """
@@ -71,31 +71,6 @@ _NEIGHBOUR = (90 * MM, 40 * MM)
 #: footprints come from "Ladder" (edit_gen.board_footprint_text), so a footprint of one
 #: name in both is a swap all the same.
 _SWAP = "Swap"
-
-
-def _xfail(bug: int, what: str):
-    return pytest.mark.xfail(
-        strict=True, raises=AssertionError, reason=f"bug {bug}: {what}; fixed by step 7"
-    )
-
-
-_BUG_7 = _xfail(
-    7,
-    "the swap sets the old angle and then flips, so a back-side part comes back at"
-    " 180 minus its angle",
-)
-_BUG_2 = _xfail(2, "the swap writes the footprint's angle on every pad, dropping library angles")
-_BUG_16_TEXTS = _xfail(16, "the swap leaves every text at its library angle")
-_BUG_16_UUIDS = _xfail(16, "the swap discards the footprint's, pads' and fields' uuids")
-_BUG_16_LOCK = _xfail(16, "the swap replaces a locked footprint, which KiCad refuses")
-_BUG_16_STALE = _xfail(16, "stale removal reads a footprint's lock by its (locked) list alone")
-_BUG_15 = _xfail(15, "the swap leaves a footprint's zones at the library's coordinates")
-_BUG_UNPORTED = _xfail(
-    14,
-    "the swap takes in a footprint carrying a construct the tool does not move or flip and"
-    " moves or flips it around that construct, instead of keeping the old footprint and"
-    " saying so",
-)
 
 
 def _major(version: str) -> int:
@@ -230,7 +205,6 @@ def test_self_swap_on_the_front_keeps_every_pad_in_place(fp, theta, version):
     assert not problems, "\n".join(problems)
 
 
-@_BUG_7
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=E.footprint_with_pad_at(0.0), theta=180.0, version="k9")
 @example(fp=E.footprint_with_pad_at(0.0), theta=0.0, version="k10")
@@ -273,7 +247,7 @@ def _geometry_problems(old, new, theta, side, version) -> list[str]:
     "side",
     [
         pytest.param("F.Cu", id="front"),
-        pytest.param("B.Cu", id="back", marks=_BUG_7),
+        pytest.param("B.Cu", id="back"),
     ],
 )
 @settings(max_examples=sexpr_gen.budget(4))
@@ -322,7 +296,6 @@ def _pad_angle_problems(got: F.Footprint, want: F.Footprint) -> list[str]:
         pytest.param("B.Cu", -90.0, id="back at -90"),
     ],
 )
-@_BUG_2
 @settings(max_examples=sexpr_gen.budget(4))
 @example(old=E.footprint_with_pad_at(0.0), new=E.footprint_with_pad_at(90.0), turn=90.0)
 @given(old=E.synthetic_footprints(), new=E.synthetic_footprints(), turn=_HALF)
@@ -353,7 +326,6 @@ def _text_problems(old: E.SynFootprint, new: E.SynFootprint, theta: float) -> li
     return FJ.differences(got._replace(pads=()), want._replace(pads=()), written_fields_only=True)
 
 
-@_BUG_16_TEXTS
 @settings(max_examples=sexpr_gen.budget(4))
 @example(old=E.footprint_with_pad_at(0.0), new=E.footprint_with_pad_at(0.0), theta=90.0)
 @given(
@@ -406,7 +378,6 @@ def test_back_swap_at_90_flips_pads_as_kicad_does(old, new, theta):
     assert not problems, "\n".join(problems)
 
 
-@_BUG_15
 @pytest.mark.parametrize("theta", [0.0, 90.0, 30.0])
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_front_swap_writes_footprint_zones_in_board_coordinates(tmp_path, theta, version):
@@ -482,7 +453,6 @@ def _uuid_problems(before: bytes, after: bytes, library: Path, version: str) -> 
     return problems
 
 
-@_BUG_16_UUIDS
 @settings(max_examples=sexpr_gen.budget(4))
 @example(old=E.footprint_with_pad_at(0.0), new=E.footprint_with_pad_at(90.0), theta=30.0)
 @given(old=E.synthetic_footprints(), new=E.synthetic_footprints(), theta=_HALF)
@@ -531,7 +501,6 @@ def _fpid(data: bytes, ref: str) -> str:
     return FJ.footprint_group(data, ref).items[1].value.decode()
 
 
-@_BUG_16_LOCK
 @pytest.mark.parametrize("spelling", _LOCKED)
 def test_swap_leaves_a_locked_footprint_untouched(tmp_path, spelling):
     """A footprint KiCad reads as locked (kicad_ref.exchange.is_locked: a bare locked,
@@ -557,7 +526,6 @@ def test_swap_leaves_a_locked_footprint_untouched(tmp_path, spelling):
     assert not problems, "\n".join(problems)
 
 
-@_BUG_16_LOCK
 @pytest.mark.parametrize("spelling", _LOCKED)
 def test_locked_swap_is_reported_and_the_rest_still_updates(tmp_path, spelling):
     """N11. The same footprint, its symbol naming another footprint, a new value and a
@@ -614,7 +582,7 @@ def _stale_removed(work: Path, spelling: str | None) -> bool:
 
 @pytest.mark.parametrize(
     "spelling",
-    [pytest.param(s, marks=_BUG_16_STALE) if s == "bare locked" else s for s in _LOCKED],
+    _LOCKED,
 )
 def test_stale_removal_keeps_a_locked_footprint(tmp_path, spelling):
     """delete_stale keeps a stale footprint KiCad reads as locked, as KiCad's updater
@@ -626,7 +594,7 @@ def test_stale_removal_keeps_a_locked_footprint(tmp_path, spelling):
 
 @pytest.mark.parametrize(
     "spelling",
-    [pytest.param(s, marks=_BUG_16_STALE) for s in _UNLOCKED] + [None],
+    [*_UNLOCKED, None],
 )
 def test_stale_removal_removes_an_unlocked_footprint(tmp_path, spelling):
     """delete_stale removes a stale footprint KiCad reads as unlocked: (locked no),
@@ -648,7 +616,7 @@ _SWAP_CONSTRUCTS = [
 
 def _swap_construct_params():
     for construct, side in _SWAP_CONSTRUCTS:
-        marks = [_BUG_UNPORTED]
+        marks = []
         if construct == "future_item":
             marks.append(pytest.mark.kicad_placeholder("Constructs.pretty/Host.kicad_mod"))
         yield pytest.param(construct, side, id=f"{construct}-{side}", marks=marks)
@@ -694,7 +662,6 @@ _INNER_TEXT = E.footprint_with_pad_at(0.0)._replace(
 )
 
 
-@_BUG_UNPORTED
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_inner_copper_swap_on_the_back_is_refused(tmp_path, version):
     """N4's inner-copper row: on a board of four copper layers, a back footprint whose
@@ -959,8 +926,8 @@ def _pcbnew_problems(runs, side: str, part: str) -> list[str]:
     ("side", "part"),
     [
         pytest.param("F.Cu", "pads", id="front pads"),
-        pytest.param("B.Cu", "geometry", id="back geometry", marks=_BUG_7),
-        pytest.param("F.Cu", "texts", id="front texts", marks=_BUG_16_TEXTS),
+        pytest.param("B.Cu", "geometry", id="back geometry"),
+        pytest.param("F.Cu", "texts", id="front texts"),
     ],
 )
 def test_swap_matches_pcbnew_exchange(runs, side, part):
@@ -988,7 +955,6 @@ def test_pcbnew_pairs_exercise_what_the_swap_tests_need():
 
 
 @pytest.mark.nightly
-@_BUG_7
 @settings(max_examples=sexpr_gen.budget(25))
 @example(picks=[(0, 1, 180.0)])
 @given(
