@@ -37,6 +37,9 @@ copper layers only when ``copper_count`` is given, as a pad's), a point's positi
 layer. Compared without the footprints' positions (``position=False``), they compare
 relative to each footprint's position, which is how SetPosition moves them.
 
+``uuid_problems`` judges the uuids a swapped footprint's file writes against the ones
+kicad_ref.exchange.carried_ids says KiCad's exchange carries over, items paired as here.
+
 Pads are paired by number and texts by key (a field's name, an fp_text's text) and layer;
 within a number or a key, by the nearest footprint-relative position, ties broken by the
 nearest angle and then, for pads, by the same layers, because pcbnew's writer sorts pads
@@ -54,6 +57,7 @@ from fractions import Fraction
 
 from kicad_ref import board_layers as BL
 from kicad_ref import dsn_lexer as L
+from kicad_ref import exchange as X
 from kicad_ref import footprint as F
 from kicad_ref import pad as PAD
 from kicad_ref import pcb_text as T
@@ -530,6 +534,62 @@ def _board_child_problems(
     for mine, theirs in points:
         if mine[0] != theirs[0]:
             problems.append(f"point on {mine[1]}: at {mine[0]} where KiCad has {theirs[0]}")
+    return problems
+
+
+def uuid_problems(
+    got: F.Footprint,
+    got_ids: X.Ids,
+    want: F.Footprint,
+    want_ids: X.Ids,
+    old_uuids: set[str],
+) -> list[str]:
+    """Where the uuids a footprint's file writes (``got`` and read_ids of its Group,
+    ``got_ids``) differ from the ones kicad_ref.exchange.carried_ids says its items carry
+    (``want`` and ``want_ids``): the footprint's own, and each pad's and text's, items
+    paired as ``differences`` pairs them, of the pad numbers and text keys both hold. A
+    predicted uuid must be written; X.OWN means none of ``old_uuids`` may be; None (an old
+    uuid the old file did not write) asks nothing. Empty when they agree."""
+    problems = []
+    if want_ids.footprint is not None and got_ids.footprint != want_ids.footprint:
+        problems.append(
+            f"footprint uuid {got_ids.footprint}, the old one's is {want_ids.footprint}"
+        )
+    for what, mine, theirs, key, tiebreak in (
+        (
+            "pad",
+            list(zip(got.pads, got_ids.pads)),
+            list(zip(want.pads, want_ids.pads)),
+            lambda e: e[0].number,
+            lambda a, b: _pad_tiebreak(a[0], b[0]),
+        ),
+        (
+            "text",
+            list(zip(got.texts, got_ids.texts)),
+            list(zip(want.texts, want_ids.texts)),
+            lambda e: (e[0].key, e[0].layer),
+            lambda a, b: _text_tiebreak(a[0], b[0]),
+        ),
+    ):
+        common = {key(e) for e in mine} & {key(e) for e in theirs}
+        pairs, found = pair(
+            [e for e in mine if key(e) in common],
+            [e for e in theirs if key(e) in common],
+            key,
+            lambda e: e[0].local,
+            what,
+            tiebreak,
+        )
+        problems += found
+        for (item, written), (_, carried) in pairs:
+            label = key((item, written))
+            if carried is None:
+                continue
+            if carried == X.OWN:
+                if written in old_uuids:
+                    problems.append(f"{what} {label!r} took the old uuid {written}")
+            elif written != carried:
+                problems.append(f"{what} {label!r}: uuid {written}, the old item's is {carried}")
     return problems
 
 

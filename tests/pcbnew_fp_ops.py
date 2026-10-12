@@ -12,6 +12,20 @@ result per job. A job is a dict built by the helpers below:
 - ``layers_job``: LoadBoard( board_in ), then per canonical layer name its opposite
   (BOARD::FlipLayer) and whether a PCB_TEXT on it is side specific
   (BOARD_ITEM::IsSideSpecific), and the board's copper layer count.
+- ``exchange_job``: LoadBoard( board_in ), then per item what Update PCB from Schematic
+  does to a footprint whose symbol names another footprint (kicad_ref.exchange):
+  FootprintLoad( library, name ), which gives every item a fresh uuid as the board
+  editor's loadFootprint does, and SetFPID; nothing more for a locked footprint, which
+  the updater refuses to change; else FixUpPadsForBoard and ExchangeFootprint replayed
+  step for step with every reset flag true (pcbnew/pcb_edit_frame.cpp:2346-2587 at
+  9.0.8: group membership, the parent board, SetPosition, Flip LEFT_RIGHT when the
+  layers differ, SetOrientation when the orientations differ, the lock, pad uuids and
+  nets by number and copper side, fp_text uuids through getMatchingTextItem, the
+  Reference's and Value's text and uuid, other fields' uuids by name, the footprint's
+  uuid, path and sheet), KiCad 10's KeepUpright on each matched text included when
+  pcbnew is 10 or later (pcb_edit_frame.cpp:2504 at 10.0.7); then SetValue of the
+  item's value, as the updater's updateFootprintParameters does; SaveBoard( board_out ).
+  Its uuid matching is KiCad 9.0.8's on every major (KiCad 10 matches by similarity).
 
 A turn is ("rotate", d): FOOTPRINT::Rotate( position, d ); ("rotate_to", a): Rotate by
 a minus the orientation the footprint holds, which is what the editor's footprint
@@ -24,8 +38,9 @@ touched (all of them for describe_job), keyed by reference, as pcbnew holds it i
 memory: position, orientation and layer, per pad its number, board position, absolute
 and footprint-relative orientation, and under "pad_layers" the canonical names of its
 layers, and per text (the fields, then the fp_text items) its key, board position,
-angle, keep-upright flag, justification, mirror flag and canonical layer name. Angles
-come back as the doubles pcbnew holds, positions in nanometres.
+angle, keep-upright flag, justification, mirror flag and canonical layer name. Under
+"pad_copper" each pad's PAD::IsOnCopperLayer and under "locked" the footprint's lock.
+Angles come back as the doubles pcbnew holds, positions in nanometres.
 
 pcbnew's Python API is used as measured on 9.0.8 (``FOOTPRINT.Rotate( VECTOR2I,
 EDA_ANGLE )``, ``FOOTPRINT.Flip( VECTOR2I, FLIP_DIRECTION_LEFT_RIGHT )``,
@@ -35,6 +50,8 @@ included, raises RuntimeError through pcbnew_judge.run, never AssertionError, so
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pcbnew_judge as PJ
 
@@ -91,8 +108,118 @@ def describe(fp):
         "pad_layers": [
             sorted(layer_name(layer) for layer in pad.GetLayerSet().Seq()) for pad in fp.Pads()
         ],
+        "pad_copper": [bool(pad.IsOnCopperLayer()) for pad in fp.Pads()],
+        "locked": bool(fp.IsLocked()),
         "texts": texts,
     }
+
+
+KICAD10 = int(pcbnew.GetMajorMinorVersion().split(".")[0]) >= 10
+KEEP = []
+
+
+def set_uuid(item, source):
+    if hasattr(item, "SetUuid"):
+        item.SetUuid(source.m_Uuid)
+    else:
+        item.m_Uuid.Clone(source.m_Uuid)
+
+
+def field_named(fp, name):
+    # FOOTPRINT::GetFieldByName at 9.0.8, GetField( name ) at 10.0.7 (footprint.h:830)
+    if hasattr(fp, "HasFieldByName"):
+        return fp.GetFieldByName(name) if fp.HasFieldByName(name) else None
+    return fp.GetField(name) if fp.HasField(name) else None
+
+
+def text_items(fp):
+    return [i.Cast() for i in fp.GraphicalItems() if i.GetClass() == "PCB_TEXT"]
+
+
+def matching_text(old, new_fp):
+    # getMatchingTextItem, pcb_edit_frame.cpp:2298-2343 at 9.0.8
+    candidates = [t for t in text_items(new_fp) if t.GetText() == old.GetText()]
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+    same_layer = [t for t in candidates if t.GetLayer() == old.GetLayer()]
+    if len(same_layer) == 1:
+        return same_layer[0]
+    rel = old.GetFPRelativePosition()
+    at_place = [
+        t
+        for t in (same_layer or candidates)
+        if t.GetFPRelativePosition().x == rel.x and t.GetFPRelativePosition().y == rel.y
+    ]
+    if at_place:
+        return at_place[0]
+    return same_layer[0] if same_layer else candidates[0]
+
+
+def process_text(src, dest, reset_text):
+    # processTextItem with the layer, effects (and at 10.0.7 position) resets true
+    if not reset_text:
+        dest.SetText(src.GetText())
+    if KICAD10:
+        dest.KeepUpright()
+    dest.SetLocked(src.IsLocked())
+    set_uuid(dest, src)
+
+
+def exchange(board, existing, new):
+    # PCB_EDIT_FRAME::ExchangeFootprint, pcb_edit_frame.cpp:2346-2587 at 9.0.8
+    group = existing.GetParentGroup()
+    if group:
+        group.RemoveItem(existing)
+        group.AddItem(new)
+    new.SetParent(board)
+    new.SetPosition(existing.GetPosition())
+    if new.GetLayer() != existing.GetLayer():
+        new.Flip(new.GetPosition(), pcbnew.FLIP_DIRECTION_LEFT_RIGHT)
+    if new.GetOrientation().AsDegrees() != existing.GetOrientation().AsDegrees():
+        new.SetOrientation(existing.GetOrientation())
+    new.SetLocked(existing.IsLocked())
+    for pad in new.Pads():
+        if not pad.GetNumber():
+            pad.SetNetCode(0)
+            continue
+        old, last = None, None
+        while True:
+            old = existing.FindPadByNumber(pad.GetNumber(), last)
+            if old is None or pad.IsOnCopperLayer() == old.IsOnCopperLayer():
+                break
+            last = old
+        if old is not None:
+            set_uuid(pad, old)
+        if pad.IsOnCopperLayer() and old is not None:
+            pad.SetNetCode(old.GetNetCode())
+        else:
+            pad.SetNetCode(0)
+    for old_text in text_items(existing):
+        match = matching_text(old_text, new)
+        if match is not None:
+            process_text(old_text, match, True)
+    process_text(existing.Reference(), new.Reference(), False)
+    value_is_fpid = existing.GetValue() == str(existing.GetFPID().GetLibItemName())
+    process_text(existing.Value(), new.Value(), value_is_fpid)
+    for old_field in existing.GetFields():
+        if old_field.IsReference() or old_field.IsValue():
+            continue
+        new_field = field_named(new, old_field.GetName())
+        if new_field is not None:
+            process_text(old_field, new_field, True)
+    set_uuid(new, existing)
+    new.SetPath(existing.GetPath())
+    new.SetSheetfile(existing.GetSheetfile())
+    new.SetSheetname(existing.GetSheetname())
+    new.SetFilters(existing.GetFilters())
+    board.Remove(existing)
+    # KiCad keeps the removed footprint in its undo list; freeing it here corrupted later
+    # SWIG calls in pcbnew 9.0.8, so it is kept alive instead.
+    existing.thisown = 0
+    KEEP.append(existing)
+    board.Add(new)
 
 
 def turn(fp, how):
@@ -157,6 +284,24 @@ for job in payload["jobs"]:
         board = load(job["board_in"])
         for fp in board.GetFootprints():
             out[fp.GetReference()] = describe(fp)
+    elif job["op"] == "exchange":
+        board = load(job["board_in"])
+        for item in job["items"]:
+            existing = board.FindFootprintByReference(item["ref"])
+            if existing is None:
+                raise RuntimeError(f"no footprint {item['ref']} on {job['board_in']}")
+            new = pcbnew.FootprintLoad(item["library"], item["name"])
+            if new is None:
+                raise RuntimeError(f"FootprintLoad found no {item['name']} in {item['library']}")
+            new.SetFPID(pcbnew.LIB_ID(item["nickname"], item["name"]))
+            if existing.IsLocked():
+                out[item["ref"]] = describe(existing)
+                continue
+            new.FixUpPadsForBoard(board)
+            exchange(board, existing, new)
+            new.SetValue(item["value"])
+            out[item["ref"]] = describe(new)
+        save(board, job["board_out"])
     elif job["op"] == "layers":
         board = load(job["board_in"])
         out["copper_count"] = board.GetCopperLayerCount()
@@ -224,6 +369,27 @@ def move_job(board_in, items: list[dict], board_out=None) -> dict:
 
 def describe_job(board_in) -> dict:
     return {"op": "describe", "board_in": str(board_in)}
+
+
+def exchange_item(ref: str, library, name: str, value: str = "V") -> dict:
+    """One footprint for exchange_job: footprint ``ref`` replaced by ``name`` from the
+    .pretty directory ``library``, whose stem is its nickname, and given ``value``."""
+    return {
+        "ref": ref,
+        "library": str(library),
+        "nickname": Path(library).stem,
+        "name": name,
+        "value": value,
+    }
+
+
+def exchange_job(board_in, items: list[dict], board_out) -> dict:
+    return {
+        "op": "exchange",
+        "board_in": str(board_in),
+        "board_out": str(board_out),
+        "items": items,
+    }
 
 
 def layers_job(board_in, names) -> dict:

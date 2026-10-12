@@ -10,9 +10,10 @@ graphics (geom_gen shape tuples), the rule areas it owns and KiCad 10's points. 
   it holds a point) and ``write_library`` puts that in a .pretty directory;
 - ``board_footprint_text`` writes the footprint KiCad holds once it has placed that
   library footprint at a position and an angle (kicad_ref.footprint.place, Rotate or
-  SetOrientation), in the board form KiCad saves: the footprint's angle Normalize180 and
-  left out at 0, pad and text angles absolute, every position footprint-relative but a
-  zone's and a point's, which are board coordinates.
+  SetOrientation), on the front or flipped onto the back, in the board form KiCad saves:
+  the footprint's angle Normalize180 and left out at 0, pad and text angles absolute,
+  every position footprint-relative but a zone's and a point's, which are board
+  coordinates; ``with_lock`` gives it one of the lock spellings KiCad reads (LOCKS).
 
 Every number is spelled as KiCad spells it (FormatInternalUnits and FormatAngle through
 geom_gen and kicad_ref), never through kiutils or the code under test; whether KiCad reads
@@ -25,12 +26,22 @@ and ``model_free_copy`` copies one without its 3D models.
 ``layered_board_text`` writes a board whose layer table has every technical layer, two,
 four or six copper layers and the user layers asked for, typed and named as given, in the
 layout pcbnew 9.0.8 saves (harvested from a board it saved, 2026-10-11).
+
+``FOOTPRINT_CONSTRUCTS`` and ``PAD_CONSTRUCTS`` hold, as KiCad writes them, the footprint
+children and pad tokens the tools do not move or flip; ``with_construct`` adds one to a
+footprint's text and ``construct_library`` writes a library footprint holding one.
+
+``netlist_text`` writes the netlist the board update reads, in kicad-cli's kicadxml form
+(checked against a kicad-cli export in test_ladder_r3_judges.py).
 """
 
 from __future__ import annotations
 
+import base64
 import functools
 import itertools
+import struct
+import zlib
 from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
@@ -39,6 +50,7 @@ import geom_gen as G
 import kicad_corpus as K
 import pytest
 from hypothesis import strategies as st
+from kicad_ref import board_layers as BL
 from kicad_ref import dsn_lexer as L
 from kicad_ref import footprint as F
 from kicad_ref import pad as PAD
@@ -186,6 +198,12 @@ def _primitive(depth: int, shape: tuple) -> str:
     return f"{t}({kind}\n{body}{t}\t(width {width})\n{fill}{t})\n"
 
 
+#: Pad kinds written with a hole: a plated one, and a non-plated one whose circle is the
+#: size of its drill, so it has no annular ring and no copper (PAD::IsOnCopperLayer,
+#: pcbnew/pad.cpp:1129-1180 at 9.0.8).
+_HOLES = ("thru_hole", "np_thru_hole")
+
+
 def pad_shape(syn: SynPad) -> str:
     """The shape word a SynPad is written with."""
     if syn.primitives:
@@ -194,17 +212,20 @@ def pad_shape(syn: SynPad) -> str:
         return "roundrect"
     if syn.delta != (0, 0):
         return "trapezoid"
-    return "circle" if syn.kind == "thru_hole" else "rect"
+    return "circle" if syn.kind in _HOLES else "rect"
 
 
-def _pad(depth: int, syn: SynPad, angle_atom: str | None) -> str:
+def _pad(depth: int, syn: SynPad, angle_atom: str | None, *, uuid: bool = False) -> str:
     """A pad in format( PAD )'s order: (at), (size), (rect_delta), (drill ... (offset)),
-    (layers), a chamfered pad's corner tokens, a custom pad's (options) and (primitives)
+    (layers), a chamfered pad's corner tokens, a custom pad's (options) and (primitives),
+    and with ``uuid`` its (uuid ...) last, where a pad without a padstack of its own has it
     (pcb_io_kicad_sexpr.cpp:1432-1820 at 9.0.8)."""
     t = "\t" * depth
     angle = f" {angle_atom}" if angle_atom is not None else ""
     shape = pad_shape(syn)
     size = {"custom": "0.5 0.5", "circle": "1.6 1.6"}.get(shape, "0.5 0.8")
+    if syn.kind == "np_thru_hole":
+        size = "0.8 0.8"
     lines = [
         f'{t}(pad "{syn.number}" {syn.kind} {shape}\n',
         f"{t}\t(at {_pt(syn.local)}{angle})\n",
@@ -212,8 +233,8 @@ def _pad(depth: int, syn: SynPad, angle_atom: str | None) -> str:
     ]
     if syn.delta != (0, 0):
         lines.append(f"{t}\t(rect_delta {_pt(syn.delta)})\n")
-    if syn.kind == "thru_hole" or syn.offset != (0, 0):
-        drill = " 0.8" if syn.kind == "thru_hole" else ""
+    if syn.kind in _HOLES or syn.offset != (0, 0):
+        drill = " 0.8" if syn.kind in _HOLES else ""
         offset = ""
         if syn.offset != (0, 0):
             offset = f"\n{t}\t\t(offset {_pt(syn.offset)})\n{t}\t"
@@ -232,6 +253,8 @@ def _pad(depth: int, syn: SynPad, angle_atom: str | None) -> str:
         lines.append(f"{t}\t(primitives\n")
         lines += [_primitive(depth + 2, shape) for shape in syn.primitives]
         lines.append(f"{t}\t)\n")
+    if uuid:
+        lines.append(f'{t}\t(uuid "{_uid()}")\n')
     lines.append(f"{t})\n")
     return "".join(lines)
 
@@ -363,6 +386,14 @@ def library_footprint(fp: SynFootprint) -> F.Footprint:
     return F.read_footprint(L.tree(data, knows_bar=L.knows_bar_of(data))[0], major=10)
 
 
+def _shape_tuple(shape: F.Shape) -> tuple:
+    """A kicad_ref.footprint Shape as the shape tuple geom_gen.shape_text and _primitive
+    write: (kind, points) for a polygon or a curve, (kind, *points) otherwise."""
+    if shape.kind[3:] in ("poly", "curve"):
+        return (shape.kind, shape.points)
+    return (shape.kind, *shape.points)
+
+
 def board_footprint_text(
     fp: SynFootprint,
     ref: str,
@@ -373,6 +404,11 @@ def board_footprint_text(
     value: str = "V",
     library: str = "Ladder",
     version: str | None = None,
+    side: str = "F.Cu",
+    table: BL.LayerTable | None = None,
+    path: str = "",
+    sheetname: str = "",
+    sheetfile: str = "",
 ) -> str:
     """The footprint KiCad holds after placing ``fp`` at ``at_nm`` and turning it to
     ``angle`` (``semantics`` "rotate" or "set", kicad_ref.footprint.place), as KiCad saves
@@ -381,40 +417,96 @@ def board_footprint_text(
     them off the quarter turns is not modelled, footprint_judge D3). Zones and points are
     written in board coordinates as KiCad holds them after the placement, turned with the
     rounding of the KiCad that writes ``version`` (footprint_version), and a zone's
-    layers with the names its library writes."""
+    layers with the names its library writes. Every pad carries a (uuid ...), as KiCad's
+    writer gives one to every pad on a board.
+
+    ``side`` "B.Cu" places it on the back: SetLayerAndFlip( B_Cu ) after SetPosition and
+    before the turn, on the board whose layer table is ``table`` (by default
+    layered_board_text's, without user layers), so every pad, text, graphic, zone and
+    point is written as KiCad's flip leaves it (kicad_ref.footprint.flip): local y
+    negated, layers taken to their opposites (a layer set name such as *.Cu as written),
+    a text's mirror toggled on a side specific layer, a pad's details mirrored.
+    ``path``, ``sheetname`` and ``sheetfile`` write the footprint's link to its symbol,
+    as the netlist update leaves it, where KiCad's writer puts them, before (attr)."""
     version = footprint_version(fp, version)
-    placed = F.place(
-        library_footprint(fp),
-        at_nm,
-        angle,
-        semantics=semantics,
-        major=10 if version == "k10" else 9,
-    )
-    fields = [(s, t) for s, t in zip(fp.texts, placed.texts) if s.head == "property"]
-    others = [(s, t) for s, t in zip(fp.texts, placed.texts) if s.head != "property"]
+    major = 10 if version == "k10" else 9
+    library_fp = library_footprint(fp)
+    if side == "F.Cu":
+        placed = F.place(library_fp, at_nm, angle, semantics=semantics, major=major)
+        opposite: dict[str, str] = {}
+    elif side == "B.Cu":
+        board = table if table is not None else _standard_table()
+        opposite = BL.opposites(board, major=major)
+        placed = F.place(
+            library_fp,
+            at_nm,
+            angle,
+            semantics=semantics,
+            flipped=lambda f: F.board_flip(f, board, major=major),
+            major=major,
+        )
+    else:
+        raise ValueError(f"a footprint sits on F.Cu or B.Cu, not {side!r}")
+
+    def names(written: Sequence[str]) -> tuple[str, ...]:
+        return tuple(opposite.get(name, name) for name in written)
+
+    # library_text writes the fields first and the fp_text items after them, which is the
+    # order kicad_ref.footprint reads the placed footprint's texts in.
+    in_file = [s for s in fp.texts if s.head == "property"]
+    in_file += [s for s in fp.texts if s.head != "property"]
+    fields = [(s, t) for s, t in zip(in_file, placed.texts) if s.head == "property"]
+    others = [(s, t) for s, t in zip(in_file, placed.texts) if s.head != "property"]
     fp_angle = F.fp_angle_token(placed.orientation)
     lines = [
         f'\t(footprint "{library}:{fp.name}"\n',
-        '\t\t(layer "F.Cu")\n',
+        f'\t\t(layer "{side}")\n',
         f'\t\t(uuid "{_uid()}")\n',
         f"\t\t(at {_pt(at_nm)}{'' if fp_angle is None else ' ' + fp_angle})\n",
     ]
     for syn, text in fields:
         shown = ref if syn.name == "Reference" else value if syn.name == "Value" else syn.text
-        lines.append(_text(2, syn, shown, T.angle_token(text.style), text.style))
+        moved = syn._replace(local=text.local, layer=text.layer)
+        lines.append(_text(2, moved, shown, T.angle_token(text.style), text.style))
+    for head, word in (("path", path), ("sheetname", sheetname), ("sheetfile", sheetfile)):
+        if word:
+            lines.append(f'\t\t({head} "{word}")\n')
     lines.append("\t\t(attr smd)\n")
     for syn, text in others:
-        lines.append(_text(2, syn, syn.text, T.angle_token(text.style), text.style))
-    lines += [
-        G.shape_text(shape, layer=_shape_layer(fp, k), depth=2) for k, shape in enumerate(fp.shapes)
-    ]
+        moved = syn._replace(local=text.local, layer=text.layer)
+        lines.append(_text(2, moved, syn.text, T.angle_token(text.style), text.style))
+    if side == "F.Cu":
+        lines += [
+            G.shape_text(shape, layer=_shape_layer(fp, k), depth=2)
+            for k, shape in enumerate(fp.shapes)
+        ]
+    else:
+        lines += [
+            G.shape_text(_shape_tuple(shape), layer=shape.layer or "", depth=2)
+            for shape in placed.shapes
+        ]
     lines += [point_text(2, point.position, point.layer or "") for point in placed.points]
     for syn, pad in zip(fp.pads, placed.pads):
-        lines.append(_pad(2, syn, PAD.angle_token(pad.angle)))
+        moved = syn._replace(
+            local=pad.local,
+            layers=names(syn.layers),
+            delta=pad.delta,
+            offset=pad.offset,
+            chamfer=tuple(c for c in PAD.CHAMFER_ORDER if c in pad.chamfer),
+            primitives=tuple(_shape_tuple(s) for s in pad.primitives),
+        )
+        lines.append(_pad(2, moved, PAD.angle_token(pad.angle), uuid=True))
     for syn, zone in zip(fp.zones, placed.zones):
-        lines.append(zone_text(2, syn.layers, zone.polygons, version))
+        lines.append(zone_text(2, names(syn.layers), zone.polygons, version))
     lines.append("\t\t(embedded_fonts no)\n\t)\n")
     return "".join(lines)
+
+
+@functools.cache
+def _standard_table() -> BL.LayerTable:
+    """The layer table layered_board_text writes without user layers."""
+    data = layered_board_text().encode()
+    return BL.read_layer_table(L.tree(data, knows_bar=L.knows_bar_of(data))[0])
 
 
 # ---------------------------------------------------------------------------
@@ -768,6 +860,368 @@ def with_footprint_child(text: str, child: str, depth: int) -> str:
     if text.count(anchor) != 1:
         raise RuntimeError(f"the footprint holds {text.count(anchor)} {anchor!r}")
     return text.replace(anchor, child.format(t=t) + anchor)
+
+
+# ---------------------------------------------------------------------------
+# constructs the tools do not port
+# ---------------------------------------------------------------------------
+
+
+def _png_1x1() -> str:
+    """A one-pixel PNG, base64: signature, IHDR, IDAT, IEND, each chunk with its CRC."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        body = kind + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
+
+    header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
+    raw = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
+    raw += chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00")) + chunk(b"IEND", b"")
+    return base64.b64encode(raw).decode()
+
+
+#: Footprint children the flip does not port, each as KiCad writes it, with "{t}" for the
+#: indent of the footprint's own children: a text box and a dimension copied from KiCad
+#: 9.0.8's stock footprints (Raytac_MDBT42Q, Smolhaj_Scale_0.1, uuids replaced), and an
+#: image, a table, a barcode and a footprint stackup in the layout of KiCad's writers
+#: (format( PCB_REFERENCE_IMAGE ), format( PCB_TABLE ), pcbnew/pcb_io/kicad_sexpr/
+#: pcb_io_kicad_sexpr.cpp:1035-1064 and 2090-2140 at 9.0.8; format( PCB_BARCODE ) and the
+#: footprint's (stackup), 2199-2262 and 1371-1383 at 10.0.7). The KiCad 10 constructs
+#: (barcode, stackup) sit on KiCad 10 boards and libraries, which only the KiCad 10 legs
+#: load. A child no KiCad knows is refused by every KiCad parser, so its rows name
+#: their files in kicad_placeholder: they are unloadable by design, and the subject is
+#: the tool refusing them with every byte intact.
+FOOTPRINT_CONSTRUCTS = {
+    "fp_text_box": (
+        "k9",
+        """{t}(fp_text_box "No Ground-Pad Area"
+{t}\t(start -0.5 -4.2)
+{t}\t(end 3.9 -1.1)
+{t}\t(margins 0.35 0.35 0.35 0.35)
+{t}\t(layer "Dwgs.User")
+{t}\t(uuid "00000001-0000-4000-8000-00000000b0b0")
+{t}\t(effects
+{t}\t\t(font
+{t}\t\t\t(size 0.4 0.4)
+{t}\t\t\t(thickness 0.1)
+{t}\t\t)
+{t}\t\t(justify top)
+{t}\t)
+{t}\t(border yes)
+{t}\t(stroke
+{t}\t\t(width 0.1)
+{t}\t\t(type solid)
+{t}\t)
+{t})
+""",
+    ),
+    "dimension": (
+        "k9",
+        """{t}(dimension
+{t}\t(type aligned)
+{t}\t(layer "Dwgs.User")
+{t}\t(uuid "00000002-0000-4000-8000-00000000b0b0")
+{t}\t(pts
+{t}\t\t(xy 0 0) (xy -5 0)
+{t}\t)
+{t}\t(height 2)
+{t}\t(format
+{t}\t\t(prefix "")
+{t}\t\t(suffix "")
+{t}\t\t(units 3)
+{t}\t\t(units_format 1)
+{t}\t\t(precision 4)
+{t}\t)
+{t}\t(style
+{t}\t\t(thickness 0.1)
+{t}\t\t(arrow_length 1.27)
+{t}\t\t(text_position_mode 0)
+{t}\t\t(arrow_direction outward)
+{t}\t\t(extension_height 0.58642)
+{t}\t\t(extension_offset 0.5)
+{t}\t\t(keep_text_aligned yes)
+{t}\t)
+{t}\t(gr_text "5.0000 mm"
+{t}\t\t(at -2.5 -3.15 0)
+{t}\t\t(layer "Dwgs.User")
+{t}\t\t(uuid "00000003-0000-4000-8000-00000000b0b0")
+{t}\t\t(effects
+{t}\t\t\t(font
+{t}\t\t\t\t(size 1 1)
+{t}\t\t\t\t(thickness 0.15)
+{t}\t\t\t)
+{t}\t\t)
+{t}\t)
+{t})
+""",
+    ),
+    "image": (
+        "k9",
+        """{t}(image
+{t}\t(at 1 1)
+{t}\t(layer "F.Fab")
+{t}\t(data "%s")
+{t}\t(uuid "00000004-0000-4000-8000-00000000b0b0")
+{t})
+"""
+        % _png_1x1(),
+    ),
+    "table": (
+        "k9",
+        """{t}(table
+{t}\t(column_count 1)
+{t}\t(layer "F.Fab")
+{t}\t(border
+{t}\t\t(external yes)
+{t}\t\t(header yes)
+{t}\t\t(stroke
+{t}\t\t\t(width 0.1)
+{t}\t\t\t(type solid)
+{t}\t\t)
+{t}\t)
+{t}\t(separators
+{t}\t\t(rows yes)
+{t}\t\t(cols yes)
+{t}\t\t(stroke
+{t}\t\t\t(width 0.1)
+{t}\t\t\t(type solid)
+{t}\t\t)
+{t}\t)
+{t}\t(column_widths 5)
+{t}\t(row_heights 2)
+{t}\t(cells
+{t}\t\t(table_cell "A"
+{t}\t\t\t(start 0 0)
+{t}\t\t\t(end 5 2)
+{t}\t\t\t(margins 0.5 0.5 0.5 0.5)
+{t}\t\t\t(span 1 1)
+{t}\t\t\t(layer "F.Fab")
+{t}\t\t\t(uuid "00000005-0000-4000-8000-00000000b0b0")
+{t}\t\t\t(effects
+{t}\t\t\t\t(font
+{t}\t\t\t\t\t(size 1 1)
+{t}\t\t\t\t\t(thickness 0.15)
+{t}\t\t\t\t)
+{t}\t\t\t\t(justify left top)
+{t}\t\t\t)
+{t}\t\t)
+{t}\t)
+{t})
+""",
+    ),
+    "barcode": (
+        "k10",
+        """{t}(barcode
+{t}\t(at 1 1 0)
+{t}\t(layer "F.SilkS")
+{t}\t(size 5 5)
+{t}\t(text "X1")
+{t}\t(text_height 1)
+{t}\t(type qr)
+{t}\t(ecc_level L)
+{t}\t(hide no)
+{t}\t(knockout no)
+{t}\t(uuid "00000006-0000-4000-8000-00000000b0b0")
+{t})
+""",
+    ),
+    "stackup": (
+        "k10",
+        """{t}(stackup
+{t}\t(layer "F.Cu")
+{t}\t(layer "B.Cu")
+{t})
+""",
+    ),
+    "future_item": ("k9", "{t}(future_item\n{t}\t(at 0 0)\n{t})\n"),
+}
+#: Pad tokens the flip does not port: a padstack of its own (which KiCad's flip swaps
+#: layer by layer, PADSTACK::FlipLayers) and KiCad 10's back drills and post machining,
+#: in the layout of format( PAD ) (the padstack block, pcb_io_kicad_sexpr.cpp:1898-1929
+#: at 9.0.8; the drills and post machining, 1745-1785 at 10.0.7), on a through-hole pad
+#: 1.
+PAD_CONSTRUCTS = {
+    "padstack": (
+        "k9",
+        """{t}(padstack
+{t}\t(mode front_inner_back)
+{t}\t(layer "Inner"
+{t}\t\t(shape circle)
+{t}\t\t(size 1.2 1.2)
+{t}\t)
+{t}\t(layer "B.Cu"
+{t}\t\t(shape circle)
+{t}\t\t(size 1.4 1.4)
+{t}\t)
+{t})
+""",
+    ),
+    "backdrill": ("k10", '{t}(backdrill (size 0.3) (layers "B.Cu" "In2.Cu"))\n'),
+    "tertiary_drill": ("k10", '{t}(tertiary_drill (size 0.3) (layers "F.Cu" "In1.Cu"))\n'),
+    "front_post_machining": ("k10", "{t}(front_post_machining counterbore (size 1) (depth 0.3))\n"),
+    "back_post_machining": ("k10", "{t}(back_post_machining countersink (size 1) (angle 90))\n"),
+}
+CONSTRUCT_HOST = SynFootprint(
+    "Host",
+    (
+        SynPad("1", (-2 * MM, 0), 0.0, layers=("*.Cu", "*.Mask"), kind="thru_hole"),
+        SynPad("2", (2 * MM, 0), 0.0),
+    ),
+    footprint_with_pad_at(0.0).texts,
+)
+
+
+def with_pad_token(text: str, token: str, depth: int) -> str:
+    """``text``, a footprint written at ``depth`` TABs, with ``token`` (a template whose
+    "{t}" is a pad child's indent) added before pad 1's close."""
+    t = "\t" * depth
+    opening = text.index(f'{t}(pad "1"')
+    close = text.index(f"\n{t})\n", opening) + 1
+    return text[:close] + token.format(t=t + "\t") + text[close:]
+
+
+def with_construct(text: str, construct: str, depth: int) -> str:
+    """``text``, a footprint written at ``depth`` TABs, with ``construct`` added: a
+    footprint child before (embedded_fonts no), a pad token before pad 1's close."""
+    if construct in FOOTPRINT_CONSTRUCTS:
+        return with_footprint_child(text, FOOTPRINT_CONSTRUCTS[construct][1], depth)
+    return with_pad_token(text, PAD_CONSTRUCTS[construct][1], depth)
+
+
+def construct_version(construct: str) -> str:
+    """The format, k9 or k10, a board or library holding ``construct`` is written in."""
+    return {**FOOTPRINT_CONSTRUCTS, **PAD_CONSTRUCTS}[construct][0]
+
+
+def construct_library(directory: Path, construct: str) -> Path:
+    """A .pretty holding the host footprint with ``construct`` added, stamped at the
+    KiCad version the construct needs; return the .pretty path."""
+    text = with_construct(library_text(CONSTRUCT_HOST), construct, 1)
+    if construct_version(construct) == "k10":
+        text = text.replace("(version 20241229)", "(version 20260206)", 1)
+        text = text.replace('(generator_version "9.0")', '(generator_version "10.0")', 1)
+    pretty = directory / "Constructs.pretty"
+    pretty.mkdir(parents=True, exist_ok=True)
+    (pretty / "Host.kicad_mod").write_text(text, encoding="utf-8", newline="\n")
+    return pretty
+
+
+CONSTRUCTS = [*FOOTPRINT_CONSTRUCTS, *PAD_CONSTRUCTS]
+#: The constructs refused whatever the edit, not only by a flip: KiCad moves them with
+#: the footprint (in board coordinates, or as items the tool does not transform), and a
+#: child no KiCad knows may hold board coordinates of its own.
+MOVED_CONSTRUCTS = ("dimension", "image", "table", "barcode", "future_item")
+
+
+# ---------------------------------------------------------------------------
+# locks
+# ---------------------------------------------------------------------------
+
+#: The ways a footprint's lock is written that KiCad's parser reads (parseMaybeAbsentBool(
+#: true), pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr_parser.cpp:239-266 and 4502-4504
+#: at 9.0.8), each with whether it locks: the bare atom KiCad 6 and 7 wrote after the
+#: library id, an empty list, and the yes, true, no and false words. KiCad 9's writer
+#: writes (locked yes) before (layer) (pcb_io_kicad_sexpr.cpp:1114-1115 at 9.0.8).
+LOCKS = {
+    "bare locked": True,
+    "(locked)": True,
+    "(locked yes)": True,
+    "(locked true)": True,
+    "(locked no)": False,
+    "(locked false)": False,
+}
+
+
+def with_lock(text: str, spelling: str) -> str:
+    """``text``, a footprint board_footprint_text wrote, with the lock ``spelling`` (a key
+    of LOCKS): the bare atom after its library id, any other on its own line before
+    (layer)."""
+    if spelling not in LOCKS:
+        raise ValueError(f"no lock spelling {spelling!r}")
+    first, rest = text.split("\n", 1)
+    if not first.startswith("\t(footprint ") or not rest.startswith("\t\t(layer "):
+        raise RuntimeError("the footprint does not open with its library id and (layer)")
+    if spelling == "bare locked":
+        return f"{first} locked\n{rest}"
+    return f"{first}\n\t\t{spelling}\n{rest}"
+
+
+# ---------------------------------------------------------------------------
+# netlists
+# ---------------------------------------------------------------------------
+
+
+class NetComponent(NamedTuple):
+    """One symbol of a netlist: its reference, value and footprint id, the uuid of the
+    symbol ("" for none), the fields the symbol carries besides its footprint, its
+    footprint filters and the file of its sheet ("" for none)."""
+
+    ref: str
+    value: str
+    footprint: str
+    tstamp: str = ""
+    fields: tuple[tuple[str, str], ...] = ()
+    fp_filters: str = ""
+    sheetfile: str = ""
+
+
+def _xml(text: str) -> str:
+    return (
+        text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    )
+
+
+def netlist_text(
+    components: Sequence[NetComponent],
+    nets: Sequence[tuple[str, Sequence[tuple[str, str]]]] = (),
+    *,
+    tool: str = "Eeschema 9.0.8",
+) -> str:
+    """A netlist in the kicadxml form kicad-cli 9.0.8 exports (measured with ``sch export
+    netlist --format kicadxml``, 2026-10-11), trimmed to what the board update reads: each
+    component with its value, footprint, fields (Footprint first, as kicad-cli lists it),
+    Sheetname and Sheetfile properties, footprint filters, root sheet path and uuid; each
+    net (name, nodes as (ref, pin)) with its nodes. ``tool`` is the <design><tool>, whose
+    major version says whether the netlist can mark a symbol excluded from position files
+    (KiCad 10)."""
+    lines = [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<export version="E">',
+        "  <design>",
+        f"    <tool>{_xml(tool)}</tool>",
+        "  </design>",
+        "  <components>",
+    ]
+    for comp in components:
+        lines += [
+            f'    <comp ref="{_xml(comp.ref)}">',
+            f"      <value>{_xml(comp.value)}</value>",
+            f"      <footprint>{_xml(comp.footprint)}</footprint>",
+            "      <fields>",
+        ]
+        for name, value in (("Footprint", comp.footprint), *comp.fields):
+            if value:
+                lines.append(f'        <field name="{_xml(name)}">{_xml(value)}</field>')
+            else:
+                lines.append(f'        <field name="{_xml(name)}"/>')
+        lines.append("      </fields>")
+        lines.append('      <property name="Sheetname" value=""/>')
+        lines.append(f'      <property name="Sheetfile" value="{_xml(comp.sheetfile)}"/>')
+        if comp.fp_filters:
+            lines.append(f'      <property name="ki_fp_filters" value="{_xml(comp.fp_filters)}"/>')
+        lines.append('      <sheetpath names="/" tstamps="/"/>')
+        lines.append(f"      <tstamps>{_xml(comp.tstamp)}</tstamps>")
+        lines.append("    </comp>")
+    lines += ["  </components>", "  <nets>"]
+    for code, (name, nodes) in enumerate(nets, start=1):
+        lines.append(f'    <net code="{code}" name="{_xml(name)}" class="Default">')
+        lines += [
+            f'      <node ref="{_xml(ref)}" pin="{_xml(pin)}" pintype="passive"/>'
+            for ref, pin in nodes
+        ]
+        lines.append("    </net>")
+    lines += ["  </nets>", "</export>", ""]
+    return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------

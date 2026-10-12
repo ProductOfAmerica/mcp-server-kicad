@@ -10,7 +10,9 @@ written in a .kicad_mod or on a board, the way the board parser does
   FOOTPRINT::SetOrientation (pcbnew/footprint.cpp:2641-2669 [3099-3137]) normalizes;
 - (layer ...): the footprint's side, B.Cu when the file says B.Cu and F.Cu for anything
   else, since a footprint sits on one of the two (4510-4519 [5198-5207]);
-- pads, through kicad_ref.pad: the position, the absolute angle, and what a flip
+- pads, through kicad_ref.pad: the number, which the parser clears for a non-plated hole
+  and for a pad on no copper layer (PAD::CanHaveNumber, 5558-5563 [6584-6589]), the
+  position, the absolute angle, and what a flip
   changes: the layers (the parser's wildcards expanded, kicad_ref.board_layers), the shape
   offset (drill (offset x y)), the trapezoid delta (rect_delta), the chamfered corners and
   a custom pad's primitives, in the pad's own frame. A plated through-hole pad read from
@@ -272,6 +274,14 @@ def _read_pad(group, *, major: int, copper_count: int | None) -> Pad:
         if layers_node is not None
         else frozenset()
     )
+    number = group.items[1].value.decode()
+    no_copper = layers_node is not None and not any(BL.is_copper(name) for name in layers)
+    if kind == "np_thru_hole" or no_copper:
+        # PAD::CanHaveNumber: a non-plated hole and an aperture pad (no copper layer) get
+        # no number, and the parser clears one a file gives them (pcb_io_kicad_sexpr_
+        # parser.cpp:5558-5563 at 9.0.8, 6584-6589 at 10.0.7; pcbnew/pad.cpp:281-292
+        # [311-322]).
+        number = ""
     if kind == "thru_hole" and copper_count is not None:
         layers |= BL.all_cu(copper_count)
     offset: Point = (0, 0)
@@ -293,7 +303,7 @@ def _read_pad(group, *, major: int, copper_count: int | None) -> Pad:
         if name in PRIMITIVE_HEADS:
             primitives.append(Shape(name.decode(), None, _shape_points(item, major=major)))
     return Pad(
-        group.items[1].value.decode(),
+        number,
         _point(at, major=major),
         PAD.loaded_angle(written),
         layers,

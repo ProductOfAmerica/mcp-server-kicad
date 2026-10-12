@@ -47,11 +47,8 @@ kicad-cli.
 
 from __future__ import annotations
 
-import base64
 import shutil
-import struct
 import tempfile
-import zlib
 from pathlib import Path
 
 import edit_gen as E
@@ -960,257 +957,14 @@ def _zone_points(data: bytes) -> list[tuple[str, list[tuple[int, int]]]]:
 # ---------------------------------------------------------------------------
 
 
-def _png_1x1() -> str:
-    """A one-pixel PNG, base64: signature, IHDR, IDAT, IEND, each chunk with its CRC."""
-
-    def chunk(kind: bytes, data: bytes) -> bytes:
-        body = kind + data
-        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body))
-
-    header = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)
-    raw = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header)
-    raw += chunk(b"IDAT", zlib.compress(b"\x00\xff\x00\x00")) + chunk(b"IEND", b"")
-    return base64.b64encode(raw).decode()
-
-
-#: Footprint children the flip does not port, each as KiCad writes it, with "{t}" for the
-#: indent of the footprint's own children: a text box and a dimension copied from KiCad
-#: 9.0.8's stock footprints (Raytac_MDBT42Q, Smolhaj_Scale_0.1, uuids replaced), and an
-#: image, a table, a barcode and a footprint stackup in the layout of KiCad's writers
-#: (format( PCB_REFERENCE_IMAGE ), format( PCB_TABLE ), pcbnew/pcb_io/kicad_sexpr/
-#: pcb_io_kicad_sexpr.cpp:1035-1064 and 2090-2140 at 9.0.8; format( PCB_BARCODE ) and the
-#: footprint's (stackup), 2199-2262 and 1371-1383 at 10.0.7). The KiCad 10 constructs
-#: (barcode, stackup) sit on KiCad 10 boards and libraries, which only the KiCad 10 legs
-#: load. A child no KiCad knows is refused by every KiCad parser, so its rows name
-#: their files in kicad_placeholder: they are unloadable by design, and the subject is
-#: the tool refusing them with every byte intact.
-_FOOTPRINT_CONSTRUCTS = {
-    "fp_text_box": (
-        "k9",
-        """{t}(fp_text_box "No Ground-Pad Area"
-{t}\t(start -0.5 -4.2)
-{t}\t(end 3.9 -1.1)
-{t}\t(margins 0.35 0.35 0.35 0.35)
-{t}\t(layer "Dwgs.User")
-{t}\t(uuid "00000001-0000-4000-8000-00000000b0b0")
-{t}\t(effects
-{t}\t\t(font
-{t}\t\t\t(size 0.4 0.4)
-{t}\t\t\t(thickness 0.1)
-{t}\t\t)
-{t}\t\t(justify top)
-{t}\t)
-{t}\t(border yes)
-{t}\t(stroke
-{t}\t\t(width 0.1)
-{t}\t\t(type solid)
-{t}\t)
-{t})
-""",
-    ),
-    "dimension": (
-        "k9",
-        """{t}(dimension
-{t}\t(type aligned)
-{t}\t(layer "Dwgs.User")
-{t}\t(uuid "00000002-0000-4000-8000-00000000b0b0")
-{t}\t(pts
-{t}\t\t(xy 0 0) (xy -5 0)
-{t}\t)
-{t}\t(height 2)
-{t}\t(format
-{t}\t\t(prefix "")
-{t}\t\t(suffix "")
-{t}\t\t(units 3)
-{t}\t\t(units_format 1)
-{t}\t\t(precision 4)
-{t}\t)
-{t}\t(style
-{t}\t\t(thickness 0.1)
-{t}\t\t(arrow_length 1.27)
-{t}\t\t(text_position_mode 0)
-{t}\t\t(arrow_direction outward)
-{t}\t\t(extension_height 0.58642)
-{t}\t\t(extension_offset 0.5)
-{t}\t\t(keep_text_aligned yes)
-{t}\t)
-{t}\t(gr_text "5.0000 mm"
-{t}\t\t(at -2.5 -3.15 0)
-{t}\t\t(layer "Dwgs.User")
-{t}\t\t(uuid "00000003-0000-4000-8000-00000000b0b0")
-{t}\t\t(effects
-{t}\t\t\t(font
-{t}\t\t\t\t(size 1 1)
-{t}\t\t\t\t(thickness 0.15)
-{t}\t\t\t)
-{t}\t\t)
-{t}\t)
-{t})
-""",
-    ),
-    "image": (
-        "k9",
-        """{t}(image
-{t}\t(at 1 1)
-{t}\t(layer "F.Fab")
-{t}\t(data "%s")
-{t}\t(uuid "00000004-0000-4000-8000-00000000b0b0")
-{t})
-"""
-        % _png_1x1(),
-    ),
-    "table": (
-        "k9",
-        """{t}(table
-{t}\t(column_count 1)
-{t}\t(layer "F.Fab")
-{t}\t(border
-{t}\t\t(external yes)
-{t}\t\t(header yes)
-{t}\t\t(stroke
-{t}\t\t\t(width 0.1)
-{t}\t\t\t(type solid)
-{t}\t\t)
-{t}\t)
-{t}\t(separators
-{t}\t\t(rows yes)
-{t}\t\t(cols yes)
-{t}\t\t(stroke
-{t}\t\t\t(width 0.1)
-{t}\t\t\t(type solid)
-{t}\t\t)
-{t}\t)
-{t}\t(column_widths 5)
-{t}\t(row_heights 2)
-{t}\t(cells
-{t}\t\t(table_cell "A"
-{t}\t\t\t(start 0 0)
-{t}\t\t\t(end 5 2)
-{t}\t\t\t(margins 0.5 0.5 0.5 0.5)
-{t}\t\t\t(span 1 1)
-{t}\t\t\t(layer "F.Fab")
-{t}\t\t\t(uuid "00000005-0000-4000-8000-00000000b0b0")
-{t}\t\t\t(effects
-{t}\t\t\t\t(font
-{t}\t\t\t\t\t(size 1 1)
-{t}\t\t\t\t\t(thickness 0.15)
-{t}\t\t\t\t)
-{t}\t\t\t\t(justify left top)
-{t}\t\t\t)
-{t}\t\t)
-{t}\t)
-{t})
-""",
-    ),
-    "barcode": (
-        "k10",
-        """{t}(barcode
-{t}\t(at 1 1 0)
-{t}\t(layer "F.SilkS")
-{t}\t(size 5 5)
-{t}\t(text "X1")
-{t}\t(text_height 1)
-{t}\t(type qr)
-{t}\t(ecc_level L)
-{t}\t(hide no)
-{t}\t(knockout no)
-{t}\t(uuid "00000006-0000-4000-8000-00000000b0b0")
-{t})
-""",
-    ),
-    "stackup": (
-        "k10",
-        """{t}(stackup
-{t}\t(layer "F.Cu")
-{t}\t(layer "B.Cu")
-{t})
-""",
-    ),
-    "future_item": ("k9", "{t}(future_item\n{t}\t(at 0 0)\n{t})\n"),
-}
-#: Pad tokens the flip does not port: a padstack of its own (which KiCad's flip swaps
-#: layer by layer, PADSTACK::FlipLayers) and KiCad 10's back drills and post machining,
-#: in the layout of format( PAD ) (the padstack block, pcb_io_kicad_sexpr.cpp:1898-1929
-#: at 9.0.8; the drills and post machining, 1745-1785 at 10.0.7), on a through-hole pad
-#: 1.
-_PAD_CONSTRUCTS = {
-    "padstack": (
-        "k9",
-        """{t}(padstack
-{t}\t(mode front_inner_back)
-{t}\t(layer "Inner"
-{t}\t\t(shape circle)
-{t}\t\t(size 1.2 1.2)
-{t}\t)
-{t}\t(layer "B.Cu"
-{t}\t\t(shape circle)
-{t}\t\t(size 1.4 1.4)
-{t}\t)
-{t})
-""",
-    ),
-    "backdrill": ("k10", '{t}(backdrill (size 0.3) (layers "B.Cu" "In2.Cu"))\n'),
-    "tertiary_drill": ("k10", '{t}(tertiary_drill (size 0.3) (layers "F.Cu" "In1.Cu"))\n'),
-    "front_post_machining": ("k10", "{t}(front_post_machining counterbore (size 1) (depth 0.3))\n"),
-    "back_post_machining": ("k10", "{t}(back_post_machining countersink (size 1) (angle 90))\n"),
-}
-_CONSTRUCT_HOST = E.SynFootprint(
-    "Host",
-    (
-        E.SynPad("1", (-2 * MM, 0), 0.0, layers=("*.Cu", "*.Mask"), kind="thru_hole"),
-        E.SynPad("2", (2 * MM, 0), 0.0),
-    ),
-    E.footprint_with_pad_at(0.0).texts,
-)
-
-
-def _with_pad_token(text: str, token: str, depth: int) -> str:
-    """``text``, a footprint written at ``depth`` TABs, with ``token`` (a template whose
-    "{t}" is a pad child's indent) added before pad 1's close."""
-    t = "\t" * depth
-    opening = text.index(f'{t}(pad "1"')
-    close = text.index(f"\n{t})\n", opening) + 1
-    return text[:close] + token.format(t=t + "\t") + text[close:]
-
-
-def _with_construct(text: str, construct: str, depth: int) -> str:
-    """``text``, a footprint written at ``depth`` TABs, with ``construct`` added: a
-    footprint child before (embedded_fonts no), a pad token before pad 1's close."""
-    if construct in _FOOTPRINT_CONSTRUCTS:
-        return E.with_footprint_child(text, _FOOTPRINT_CONSTRUCTS[construct][1], depth)
-    return _with_pad_token(text, _PAD_CONSTRUCTS[construct][1], depth)
-
-
-def _construct_version(construct: str) -> str:
-    return {**_FOOTPRINT_CONSTRUCTS, **_PAD_CONSTRUCTS}[construct][0]
-
-
 def _construct_board(path: Path, construct: str) -> Path:
     """A board (four copper layers) holding the host footprint at 30 as U1 with
     ``construct`` added, at the KiCad version the construct needs."""
-    version = _construct_version(construct)
-    text = E.board_footprint_text(_CONSTRUCT_HOST, "U1", _AT, 30.0)
-    return _board(path, [_with_construct(text, construct, 2)], version, copper=4)
+    version = E.construct_version(construct)
+    text = E.board_footprint_text(E.CONSTRUCT_HOST, "U1", _AT, 30.0)
+    return _board(path, [E.with_construct(text, construct, 2)], version, copper=4)
 
 
-def _construct_library(directory: Path, construct: str) -> Path:
-    """A .pretty holding the host footprint with ``construct`` added, stamped at the
-    KiCad version the construct needs; return the .pretty path."""
-    text = _with_construct(E.library_text(_CONSTRUCT_HOST), construct, 1)
-    if _construct_version(construct) == "k10":
-        text = text.replace("(version 20241229)", "(version 20260206)", 1)
-        text = text.replace('(generator_version "9.0")', '(generator_version "10.0")', 1)
-    pretty = directory / "Constructs.pretty"
-    pretty.mkdir(parents=True, exist_ok=True)
-    (pretty / "Host.kicad_mod").write_text(text, encoding="utf-8", newline="\n")
-    return pretty
-
-
-_CONSTRUCTS = [*_FOOTPRINT_CONSTRUCTS, *_PAD_CONSTRUCTS]
-#: The constructs refused whatever the edit, not only by a flip: KiCad moves them with
-#: the footprint (in board coordinates, or as items the tool does not transform), and a
-#: child no KiCad knows may hold board coordinates of its own.
-_MOVED_CONSTRUCTS = ("dimension", "image", "table", "barcode", "future_item")
 _FLIPS = ("move to the back", "place on the back")
 _MOVES = ("move", "place on the front")
 
@@ -1219,8 +973,8 @@ def _construct_params():
     """(construct, operation): every construct under both flips, and the ones refused
     whatever the edit under a move and a placement on the front as well. The rows of a
     child no KiCad knows name their unloadable files in kicad_placeholder."""
-    for construct in _CONSTRUCTS:
-        for operation in _FLIPS + (_MOVES if construct in _MOVED_CONSTRUCTS else ()):
+    for construct in E.CONSTRUCTS:
+        for operation in _FLIPS + (_MOVES if construct in E.MOVED_CONSTRUCTS else ()):
             marks = []
             if construct == "future_item":
                 names = ["board.kicad_pcb"]
@@ -1241,7 +995,7 @@ def test_unported_constructs_are_refused_with_the_file_intact(tmp_path, construc
     10's back drills or post machining. The tool moved and flipped the rest around it."""
     board = _construct_board(tmp_path / "board.kicad_pcb", construct)
     if operation.startswith("place"):
-        pretty = _construct_library(tmp_path / "lib", construct)
+        pretty = E.construct_library(tmp_path / "lib", construct)
         side = "B.Cu" if operation == "place on the back" else "F.Cu"
 
         def call():
@@ -1316,7 +1070,7 @@ def test_flip_carries_pad_tenting_as_the_boards_kicad_does(tmp_path, label):
     reads (tenting ...) (_read_tenting)."""
     version, token = _TENTING[label]
     major = _major(version)
-    text = _with_pad_token(E.board_footprint_text(_CONSTRUCT_HOST, "U1", _AT, 30.0), token, 2)
+    text = E.with_pad_token(E.board_footprint_text(E.CONSTRUCT_HOST, "U1", _AT, 30.0), token, 2)
     board = _board(tmp_path / "tenting.kicad_pcb", [text], version, copper=4)
     before = _read_tenting(board.read_bytes(), major)
     _performed_flip(board)

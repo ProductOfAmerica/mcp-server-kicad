@@ -8,16 +8,19 @@ and in the tokens SaveBoard writes, and to pcbnew reading a board. kicad_ref.boa
 the layer pairs a flip uses and the layers it treats as side specific, answers to pcbnew's
 BOARD::FlipLayer and BOARD_ITEM::IsSideSpecific on boards whose layer tables differ.
 edit_gen's builders answer to pcbnew loading what they write and saving it back
-unchanged. pcbnew_fp_ops answers to its own contract (a failed call is a RuntimeError),
-and the footprint port's refusal of a non-finite angle to kicad-cli.
+unchanged, and to pcbnew placing the same footprint on either side. pcbnew_fp_ops
+answers to its own contract (a failed call is a RuntimeError), and the footprint port's
+refusal of a non-finite angle to kicad-cli.
 
-Only the parts step 7's rotation and flip slices need are ported and checked here: the
-swap and footprint zones come with the slices that fix them.
+The swap: kicad_ref.exchange answers to pcbnew replaying ExchangeFootprint's steps through
+its own Flip, SetOrientation, FindPadByNumber and IsOnCopperLayer, its lock reading to
+pcbnew loading each lock spelling, and edit_gen's netlist builder to kicad-cli's export.
 """
 
 from __future__ import annotations
 
 import tempfile
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import edit_gen as E
@@ -32,6 +35,7 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import board_item as B
 from kicad_ref import board_layers as BL
+from kicad_ref import exchange as X
 from kicad_ref import footprint as F
 from kicad_ref import parse_units as P
 from kicad_ref import pcb_text as T
@@ -1176,6 +1180,446 @@ def test_zone_port_laws(fp, a, d):
         assert turned.zones == start.zones, f"four quarter turns, KiCad {major}"
     there = F.set_position(start, (start.position[0] + d[0], start.position[1] + d[1]))
     assert F.set_position(there, start.position).zones == start.zones
+
+
+# ---------------------------------------------------------------------------
+# placements as edit_gen writes them
+# ---------------------------------------------------------------------------
+
+_BUILDER_ANGLES = (0.0, 90.0, 180.0, 30.0, -90.0, 37.5)
+
+
+def _builder_placement_problems(
+    cases: list[tuple[E.SynFootprint, float, str]], work: Path
+) -> list[str]:
+    """For each (library footprint, angle, side): edit_gen.board_footprint_text writes it at
+    the angle on that side of a board whose User.1 and User.2 are a front and back pair,
+    and pcbnew places the same library footprint there (FootprintLoad, SetPosition, Flip
+    for the back, then Rotate to the angle) and saves it. Where the two read apart: pads
+    with their layers, offsets, deltas, chamfers and primitives, texts, graphics by
+    geometry and zones exactly, positions within footprint_judge's D3 tolerance off the
+    quarter turns, the mandatory fields the builder does not write aside."""
+    major = _pcbnew_major()
+    board_in = _layered_board(work / "layered.kicad_pcb")
+    table = FJ.layer_table(board_in.read_bytes())
+    built, items = [], []
+    for index, (fp, angle, side) in enumerate(cases):
+        at = (25 * MM * (1 + index % 6), 25 * MM * (1 + index // 6))
+        ref = f"U{index + 1}"
+        library = E.write_library(work / f"lib{index}", fp)
+        built.append(E.board_footprint_text(fp, ref, at, angle, side=side, table=table))
+        turn = [("rotate", angle)] if side == "F.Cu" else [("flip", None), ("rotate_to", angle)]
+        items.append(OPS.place_item(library, fp.name, ref, at, turn))
+    ours = work / "built.kicad_pcb"
+    ours.write_text(E.layered_board_text(built, users=USER_LAYERS), encoding="utf-8", newline="\n")
+    theirs = work / "placed.kicad_pcb"
+    OPS.run([OPS.place_job(board_in, items, theirs)])
+    copper = FJ.copper_count(theirs.read_bytes())
+    problems = []
+    for index, (fp, angle, side) in enumerate(cases):
+        ref = f"U{index + 1}"
+        found = FJ.differences(
+            FJ.read(ours.read_bytes(), ref, major=major),
+            FJ.read(theirs.read_bytes(), ref, major=major),
+            tolerance_nm=_tolerance(angle),
+            shapes=True,
+            details=True,
+            written_fields_only=True,
+            copper_count=copper,
+        )
+        problems += [f"{fp.name} at {angle} on {side}: {p}" for p in found]
+    return problems
+
+
+def test_builder_footprints_are_pcbnews_placement(tmp_path):
+    """The premise of building boards with edit_gen's board_footprint_text: RICH, FLIPPY and
+    edit_gen.ZONED, which carry every pad detail, text kind and zone a flip changes,
+    written at _BUILDER_ANGLES on the front and on the back, read as pcbnew's own
+    placement there (_builder_placement_problems)."""
+    cases = [
+        (fp, angle, side)
+        for fp in (RICH, FLIPPY, E.ZONED)
+        for angle in _BUILDER_ANGLES
+        for side in _SIDES
+    ]
+    problems = _builder_placement_problems(cases, tmp_path)
+    assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:30])
+
+
+@pytest.mark.nightly
+@settings(max_examples=sexpr_gen.budget(25))
+@given(
+    st.lists(
+        st.tuples(
+            E.synthetic_footprints(pad_details=True, primitives=True, zones=True),
+            G.angles(),
+            st.sampled_from(_SIDES),
+        ),
+        min_size=1,
+        max_size=6,
+    )
+)
+def test_nightly_builder_footprints_are_pcbnews_placement(cases):
+    """The same over generated footprints, pad details, custom pads and zones included, at
+    generated angles on either side."""
+    with tempfile.TemporaryDirectory() as work:
+        problems = _builder_placement_problems(cases, Path(work))
+    assert not problems, "\n".join(problems[:30])
+
+
+# ---------------------------------------------------------------------------
+# the swap
+# ---------------------------------------------------------------------------
+
+#: Stock footprints a symbol's footprint changes between: SMD pairs whose pads stand at 0
+#: in their libraries, a through-hole pair, new footprints whose library pads stand at 90
+#: (D_SMC) and 270 (Diodes_DFN1006-3), a non-plated hole without a number to a plated
+#: pad, and a footprint with numberless paste-only pads and two pads of one number
+#: (TO-252-2).
+SWAP_PAIRS = (
+    ("R_0603_1608Metric", "R_0805_2012Metric"),
+    ("SOT-23", "SOT-23-3"),
+    ("PinHeader_1x02_P2.54mm_Vertical", "PinSocket_1x02_P2.54mm_Vertical"),
+    ("D_SOD-123", "D_SMC"),
+    ("SOT-23", "Diodes_DFN1006-3"),
+    ("MountingHole_3.2mm_M3", "MountingHole_3.2mm_M3_Pad"),
+    ("R_0805_2012Metric", "TO-252-2"),
+)
+_SWAP_ANGLES = (0.0, 90.0, 180.0, 150.0)
+
+
+def _copper_text(name: str) -> tuple:
+    return (
+        E.SynText(
+            "property", "Reference", "REF**", (0, -3 * MM), 0.0, True, 0, 0, False, "F.SilkS"
+        ),
+        E.SynText("property", "Value", name, (0, 3 * MM), 0.0, True, 0, 0, False, "F.Fab"),
+        E.SynText("property", "MPN", "X1", (MM, 2 * MM), 0.0, True, 0, 0, False, "F.Fab", True),
+        E.SynText("fp_text", "user", "${REFERENCE}", (0, 0), 0.0, True, 0, 0, False, "F.Fab"),
+        E.SynText("fp_text", "user", "NOTE", (-MM, MM), 0.0, True, 0, 0, False, "Cmts.User"),
+        E.SynText("fp_text", "user", "NOTE", (MM, -MM), 0.0, True, 0, 0, False, "F.SilkS"),
+    )
+
+
+#: Pads whose file gives one number to a copper pad and to a pad KiCad reads without one
+#: (kicad_ref.footprint): pad 1 on copper and on the mask only, pad 2 a plated hole and a
+#: non-plated one without an annular ring, so only the copper pad of each number carries
+#: an old uuid; a new pad 3 with no old counterpart; a hidden user field; texts of one
+#: content on two layers, which getMatchingTextItem tells apart by layer.
+COPPER_OLD = E.SynFootprint(
+    "CopperOld",
+    (
+        E.SynPad("1", (-2 * MM, 0), 0.0, layers=("F.Cu", "F.Mask")),
+        E.SynPad("1", (-2 * MM, 2 * MM), 0.0, layers=("F.Mask",)),
+        E.SynPad("2", (2 * MM, 0), 0.0, layers=("*.Cu", "*.Mask"), kind="np_thru_hole"),
+        E.SynPad("2", (2 * MM, 2 * MM), 0.0, layers=("*.Cu", "*.Mask"), kind="thru_hole"),
+    ),
+    _copper_text("CopperOld"),
+)
+COPPER_NEW = E.SynFootprint(
+    "CopperNew",
+    (
+        E.SynPad("1", (-MM, -MM), 0.0, layers=("F.Mask",)),
+        E.SynPad("1", (-MM, MM), 90.0, layers=("F.Cu", "F.Mask")),
+        E.SynPad("2", (MM, -MM), 0.0, layers=("*.Cu", "*.Mask"), kind="thru_hole"),
+        E.SynPad("2", (MM, MM), 0.0, layers=("*.Cu", "*.Mask"), kind="np_thru_hole"),
+        E.SynPad("3", (0, 2 * MM), 0.0),
+    ),
+    _copper_text("CopperNew"),
+)
+
+
+def _with_group(data: bytes, members: list[str]) -> bytes:
+    """The board ``data`` with a group listing the footprints ``members`` (references) by
+    uuid, in the layout KiCad 9.0.8's writer gives a group (harvested from its
+    multichannel_mixer demo), before the board's closing parenthesis."""
+    uuids = [X.read_ids(FJ.footprint_group(data, ref)).footprint for ref in members]
+    if None in uuids:
+        raise RuntimeError(f"a footprint among {members} has no uuid")
+    listed = " ".join(f'"{u}"' for u in uuids)
+    group = '\t(group ""\n\t\t(uuid "00000000-0000-4000-8000-00000000c0c0")\n'
+    group += f"\t\t(members {listed})\n\t)\n"
+    end = data.rindex(b")")
+    return data[:end] + group.encode() + data[end:]
+
+
+def _groups(data: bytes) -> dict[str, frozenset[str]]:
+    """Each top-level group of a board, by its uuid, with its members' uuids."""
+    out = {}
+    for item in F.children(FJ.root(data), b"group"):
+        members = F.child(item, b"members")
+        uid = X.read_ids(item).footprint
+        out[uid] = frozenset(
+            t.value.decode() for t in (members.items[1:] if members is not None else ())
+        )
+    return out
+
+
+def _exchange_problems(cases, work: Path) -> tuple[int, list]:
+    """For each (old library footprint file, new library footprint file, angle, side):
+    pcbnew places the old footprint at the angle on that side of a board whose User.1 and
+    User.2 are a front and back pair, saves it, and the board gains a group listing every
+    other footprint; then pcbnew replays the exchange of each footprint for the new one
+    (pcbnew_fp_ops.exchange_job). Each footprint pcbnew saves reads as kicad_ref.exchange's
+    of the old footprint as read and the new library file (as KiCad writes it, in the
+    comparison form; pads with every detail, graphics by geometry, positions within the D3
+    tolerance off the quarter turns); its uuids are the ones carried_ids says it carries;
+    every group lists the same uuids as before and each still names a footprint; and
+    pcbnew's IsOnCopperLayer of each new pad is kicad_ref.exchange.is_on_copper's.
+    Returns (footprints checked, problems)."""
+    major = _pcbnew_major()
+    board_in = _layered_board(work / "layered.kicad_pcb")
+    groups: dict[tuple[float, str], list] = {}
+    for index, (old_path, new_path, angle, side) in enumerate(cases):
+        at = (25 * MM * (1 + index % 8), 25 * MM * (1 + index // 8))
+        groups.setdefault((angle, side), []).append((f"U{index + 1}", old_path, new_path, at))
+    placed = []
+    jobs = []
+    for k, ((angle, side), items) in enumerate(groups.items()):
+        start = work / f"swap_start{k}.kicad_pcb"
+        turn = [("rotate", angle)] if side == "F.Cu" else [("flip", None), ("rotate_to", angle)]
+        jobs.append(
+            OPS.place_job(
+                board_in,
+                [OPS.place_item(p.parent, p.stem, ref, at, turn) for ref, p, _, at in items],
+                start,
+            )
+        )
+        placed.append(start)
+    OPS.run(jobs)
+    jobs, outs, grouped = [], [], []
+    for k, ((angle, side), items) in enumerate(groups.items()):
+        start = work / f"swap_grouped{k}.kicad_pcb"
+        data = placed[k].read_bytes()
+        start.write_bytes(_with_group(data, [ref for ref, *_ in items[1:]] or [items[0][0]]))
+        out = work / f"swap_out{k}.kicad_pcb"
+        jobs.append(
+            OPS.exchange_job(
+                start,
+                [OPS.exchange_item(ref, new.parent, new.stem) for ref, _, new, _ in items],
+                out,
+            )
+        )
+        outs.append(out)
+        grouped.append(start)
+    results = OPS.run(jobs)
+    problems, checked = [], 0
+    for k, ((angle, side), items) in enumerate(groups.items()):
+        before, after = grouped[k].read_bytes(), outs[k].read_bytes()
+        table = FJ.layer_table(before)
+        copper = FJ.copper_count(before)
+        if _groups(after) != _groups(before):
+            problems.append(f"{side} at {angle}: groups {_groups(after)}, were {_groups(before)}")
+        footprint_ids = {
+            X.read_ids(fp).footprint for fp in F.children(FJ.root(after), b"footprint")
+        }
+        for members in _groups(after).values():
+            if not members <= footprint_ids:
+                problems.append(f"{side} at {angle}: a group lists {members - footprint_ids}")
+        for ref, old_path, new_path, _ in items:
+            what = f"{old_path.stem} to {new_path.stem} on {side} at {angle}"
+            old_group = FJ.footprint_group(before, ref)
+            old = FJ.read(before, ref, major=major)
+            new_group = FJ.root(new_path.read_bytes())
+            library = F.read_footprint(new_group, major=major, copper_count=copper)
+            port = X.exchange(old, library, table, major=major)
+            saved_group = FJ.footprint_group(after, ref)
+            saved = FJ.read(after, ref, major=major)
+            problems += [
+                f"{what}: {p}"
+                for p in FJ.differences(
+                    saved,
+                    F.written(F.canonical(port)),
+                    tolerance_nm=_tolerance(angle),
+                    shapes=True,
+                    details=True,
+                    copper_count=copper,
+                )
+            ]
+            old_ids = X.read_ids(old_group)
+            problems += [
+                f"{what}: {p}"
+                for p in FJ.uuid_problems(
+                    saved,
+                    X.read_ids(saved_group),
+                    port,
+                    X.carried_ids(old_group, old, new_group, port, copper),
+                    {u for u in (*old_ids.pads, *old_ids.texts) if u},
+                )
+            ]
+            held = results[k][ref]["pad_copper"]
+            want = [X.is_on_copper(g, copper) for g in F.pad_groups(new_group)]
+            if held != want:
+                problems.append(f"{what}: pcbnew's pads on copper {held}, the port's {want}")
+            checked += 1
+    return checked, problems
+
+
+def test_exchange_port_matches_a_pcbnew_replay(tmp_path):
+    """SWAP_PAIRS, COPPER_OLD to COPPER_NEW and RICH to FLIPPY, the old footprint placed by
+    pcbnew at 0, 90, 180 and 150 degrees on the front and on the back: pcbnew replaying
+    ExchangeFootprint's steps (KiCad's own Flip, SetOrientation, FindPadByNumber and
+    IsOnCopperLayer) leaves each footprint as kicad_ref.exchange.exchange puts it, with the
+    uuids carried_ids says it carries, its group intact, and its pads on copper as
+    is_on_copper says."""
+    synthetic = []
+    for k, (old, new) in enumerate(((COPPER_OLD, COPPER_NEW), (RICH, FLIPPY))):
+        synthetic.append(
+            (
+                E.write_library(tmp_path / f"old{k}", old) / f"{old.name}.kicad_mod",
+                E.write_library(tmp_path / f"new{k}", new, library="Swap")
+                / f"{new.name}.kicad_mod",
+            )
+        )
+    pairs = [(E.stock_footprint(a), E.stock_footprint(b)) for a, b in SWAP_PAIRS] + synthetic
+    cases = [
+        (old, new, angle, side) for side in _SIDES for angle in _SWAP_ANGLES for old, new in pairs
+    ]
+    checked, problems = _exchange_problems(cases, tmp_path)
+    assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:30])
+    if checked != len(cases):
+        raise RuntimeError(f"checked {checked} footprints of {len(cases)}")
+
+
+@pytest.mark.nightly
+@settings(max_examples=sexpr_gen.budget(25))
+@given(
+    st.lists(
+        st.tuples(
+            st.integers(0, 10**9),
+            st.integers(0, 10**9),
+            G.angles(),
+            st.sampled_from(_SIDES),
+        ),
+        min_size=1,
+        max_size=6,
+    )
+)
+def test_nightly_exchange_port_matches_a_pcbnew_replay(picks):
+    """The same over sampled stock footprint pairs (none owning a zone) at generated angles
+    on either side."""
+    stock = E.stock_footprints_for_turns()
+    if not stock:
+        pytest.skip("no stock footprint libraries")
+    cases = [
+        (stock[a % len(stock)], stock[b % len(stock)], angle, side) for a, b, angle, side in picks
+    ]
+    with tempfile.TemporaryDirectory() as work:
+        _, problems = _exchange_problems(cases, Path(work))
+    assert not problems, "\n".join(problems[:30])
+
+
+def test_lock_port_matches_pcbnew(tmp_path):
+    """A footprint in each of edit_gen.LOCKS' spellings, and one with none: pcbnew holds
+    it locked exactly when edit_gen.LOCKS says, and so does kicad_ref.exchange.is_locked
+    (parseMaybeAbsentBool( true )); kicad-cli loads the board (the autouse oracle)."""
+    _pcbnew_major()
+    spellings = list(E.LOCKS)
+    items = [
+        E.with_lock(E.board_footprint_text(RICH, f"U{k + 1}", (20 * MM * (k + 1), 30 * MM), 0.0), s)
+        for k, s in enumerate(spellings)
+    ]
+    items.append(E.board_footprint_text(RICH, "U0", (20 * MM, 60 * MM), 0.0))
+    board = tmp_path / "locks.kicad_pcb"
+    board.write_text(E.layered_board_text(items), encoding="utf-8", newline="\n")
+    found = OPS.run([OPS.describe_job(board)])[0]
+    data = board.read_bytes()
+    problems = []
+    for k, spelling in [(-1, None), *enumerate(spellings)]:
+        ref = f"U{k + 1}"
+        want = E.LOCKS.get(spelling, False)
+        port = X.is_locked(FJ.footprint_group(data, ref))
+        if (found[ref]["locked"], port) != (want, want):
+            problems.append(f"{spelling}: pcbnew {found[ref]['locked']}, port {port}, want {want}")
+    assert not problems, problems
+
+
+def _netlist_reading(data: bytes) -> tuple[list, list]:
+    """What the board update reads of a kicadxml netlist, by ElementTree: each component's
+    reference, value, footprint, fields, the properties the update acts on, sheet path and
+    uuids; each net's name and nodes. The netlists read are kicad-cli's and the builder's,
+    both written by the test into its own directory, as conftest reads kicad-cli's."""
+    root = ET.fromstring(data)
+    acted = ("Sheetfile", "ki_fp_filters", "dnp", "exclude_from_bom", "exclude_from_board")
+    comps = []
+    for comp in root.findall("./components/comp"):
+        sheetpath = comp.find("sheetpath")
+        comps.append(
+            (
+                comp.get("ref"),
+                comp.findtext("value"),
+                comp.findtext("footprint"),
+                tuple((f.get("name"), f.text or "") for f in comp.findall("./fields/field")),
+                tuple(
+                    (p.get("name"), p.get("value") or "")
+                    for p in comp.findall("property")
+                    if p.get("name") in acted
+                ),
+                None if sheetpath is None else (sheetpath.get("names"), sheetpath.get("tstamps")),
+                comp.findtext("tstamps"),
+            )
+        )
+    nets = [
+        (net.get("name"), tuple((n.get("ref"), n.get("pin")) for n in net.findall("node")))
+        for net in root.findall("./nets/net")
+    ]
+    return comps, nets
+
+
+@requires_cli
+def test_netlist_builder_matches_a_kicad_cli_export(tmp_path):
+    """The premise of building netlists with edit_gen.netlist_text: the native schematic
+    fixture with R1's footprint assigned, exported by kicad-cli as kicadxml, reads, in every
+    element the board update reads, as the netlist the builder writes for the same symbol
+    (its value, footprint, Datasheet and Description fields, filters, sheet file, uuid and
+    its two unconnected pins' nets)."""
+    source = (G.FIXTURES / "kicad_native.kicad_sch").read_text(encoding="utf-8")
+    plain = '(property "Footprint" "" (at 98.222 100 90)'
+    if source.count(plain) != 1:
+        raise RuntimeError(f"the fixture holds {plain!r} {source.count(plain)} times")
+    fpid = "Resistor_SMD:R_0805_2012Metric"
+    schematic = tmp_path / "native.kicad_sch"
+    schematic.write_text(
+        source.replace(plain, plain.replace('""', f'"{fpid}"')), encoding="utf-8", newline="\n"
+    )
+    exported = tmp_path / "out" / "native.xml"
+    exported.parent.mkdir()
+    result = _run_cli(
+        [
+            "sch",
+            "export",
+            "netlist",
+            "--format",
+            "kicadxml",
+            "--output",
+            str(exported),
+            str(schematic),
+        ],
+        check=False,
+    )
+    if result.returncode != 0 or not exported.is_file():
+        raise RuntimeError(f"kicad-cli exported no netlist (rc={result.returncode})")
+    comps, nets = _netlist_reading(exported.read_bytes())
+    if len(comps) != 1:
+        raise RuntimeError(f"kicad-cli exported {len(comps)} components, not R1 alone")
+    # The symbol's uuid is the fixture's, and the sheet file kicad-cli names relative to
+    # where it runs, so both are taken from its export; the rest is the builder's own.
+    tstamp, sheetfile = comps[0][6], dict(comps[0][4]).get("Sheetfile", "")
+    built = E.netlist_text(
+        [
+            E.NetComponent(
+                "R1",
+                "10K",
+                fpid,
+                tstamp,
+                (("Datasheet", "~"), ("Description", "Resistor")),
+                "R_*",
+                sheetfile,
+            )
+        ],
+        [("unconnected-(R1-Pad1)", [("R1", "1")]), ("unconnected-(R1-Pad2)", [("R1", "2")])],
+    )
+    assert _netlist_reading(built.encode()) == (comps, nets)
 
 
 # ---------------------------------------------------------------------------
