@@ -268,24 +268,20 @@ def test_board_mm_writes_kicads_text(nm):
 @example(-U.INT_MAX)
 @given(st.one_of(st.integers(-U.INT_MAX, U.INT_MAX), G.nm_coordinates()))
 def test_numish_text_negates_kicads_text(nm):
-    """A flip negates a coordinate KiCad wrote: pcb._flip_footprint_cst calls
+    """A flip negates a coordinate KiCad wrote: pcb._fp_flip writes
     _numish_text(-float(text)). Whatever the coordinate (from -INT_MAX, so that -nm is an
     int too, to INT_MAX), the result is the text KiCad writes for -nm."""
     text = U.format_internal_units(nm, PCB)
     assert pcb._numish_text(-float(text)) == U.format_internal_units(-nm, PCB), text
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="bug 63: pcb._numish_text writes '-0' for a value just below zero; fixed by step 7",
-)
 @example(-1e-7)
 @example(-4e-7)
 @given(st.floats(-2147.483647, 2147.483647, allow_nan=False, allow_infinity=False))
 def test_numish_text_never_writes_minus_zero(value):
     """FormatInternalUnits formats an int count of nanometres, so KiCad never writes "-0";
-    neither may _numish_text, for any value on a board."""
+    neither may _numish_text, for any value on a board. Until step 7 it wrote "-0" for a
+    value just below zero (bug 63)."""
     assert pcb._numish_text(value) != "-0", value
 
 

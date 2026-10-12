@@ -66,10 +66,6 @@ def _xfail(reason: str):
     return pytest.mark.xfail(strict=True, raises=AssertionError, reason=reason)
 
 
-_BUG2 = (
-    "bug 2: place_footprint overwrites every pad's angle with the footprint's rotation"
-    " instead of adding the rotation to the pad's own library angle; fixed by step 7"
-)
 _BUG27 = (
     "bug 27: get_footprint_bounds turns the corners of the courtyard's local box, which"
     " over-reports a rotated courtyard that is not an aligned rectangle; fixed by step 12c"
@@ -249,7 +245,7 @@ def _with_a_quadrant_arc(shapes_strategy):
 
 #: Angle atoms that KiCad reads as a quarter turn (None: no angle atom). KiCad itself
 #: writes Normalize180 of the angle and leaves out 0; the others are spellings it reads
-#: the same way, which place_footprint itself writes (270, an explicit 0: bug 53).
+#: the same way, as place_footprint wrote them until step 7 (270, an explicit 0: bug 53).
 _QUARTER_TOKENS = (None, "0", "90", "180", "-180", "270", "-90", "360", "-270", "450")
 
 
@@ -868,7 +864,6 @@ def _pads(own_angles):
     )
 
 
-@_xfail(_BUG2)
 @settings(max_examples=sexpr_gen.budget(4))
 @given(
     _pads(st.lists(G.half_degree_angles(), min_size=1, max_size=4)),
@@ -881,7 +876,8 @@ def test_pad_angles_compose_with_the_footprint_rotation(pads, rotation, version)
     so the arithmetic is exact and no float noise in the text, bug 61, can enter), placed
     by place_footprint at a rotation (a multiple of half a degree within +-720): every
     pad's angle atom is what KiCad writes, Normalize( Normalize( own ) + rotation ),
-    left out at 0. A pad at 270 on a footprint placed at 90 has no angle atom."""
+    left out at 0. A pad at 270 on a footprint placed at 90 has no angle atom. Until
+    step 7 every pad was written at the footprint's rotation (bug 2)."""
     problems = _place_from_generated_library(pads, rotation, version)
     assert not problems, "\n".join(problems)
 
@@ -901,7 +897,6 @@ def test_pad_angles_of_unrotated_pads_take_the_footprint_rotation(pads, rotation
 _AO_DFN = "AO_DFN-8-1EP_5.55x5.2mm_P1.27mm_EP4.12x4.6mm"
 
 
-@_xfail(_BUG2)
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_pad_angles_compose_on_a_stock_footprint(tmp_path, version):
     """KiCad's stock AO_DFN-8-1EP_5.55x5.2mm_P1.27mm_EP4.12x4.6mm, whose 25 pads stand at

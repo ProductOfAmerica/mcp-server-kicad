@@ -38,18 +38,22 @@ for a reason that is no defect. The boundary itself is judged by the partition l
 
 from __future__ import annotations
 
+import json
 import math
 import tempfile
 import uuid
 from pathlib import Path
 
+import edit_gen as E
 import geom_gen as G
 import geom_judge as GJ
 import pcbnew_judge as PJ
 import pytest
 import sexpr_gen
+from conftest import HAS_KICAD_CLI, _cli_can_load_board, _cli_report
 from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
+from kicad_ref import dsn_lexer as L
 from kicad_ref import kicad_io_utils as IO
 
 from mcp_server_kicad import _connectivity as C
@@ -849,14 +853,6 @@ result = [
 """
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 80: keepout layers are matched by name, so a rule area on KiCad's F&B.Cu"
-        " or *.Cu layer set is missed; fixed by step 12c"
-    ),
-)
 @pytest.mark.parametrize("layer_set", ["F&B.Cu", "*.Cu"], ids=["front_and_back", "all_copper"])
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_keepouts_on_kicads_layer_sets_are_read(tmp_path, layer_set, version):
@@ -908,14 +904,6 @@ for fp in board.GetFootprints():
 """
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 15: a footprint's keepout is read as footprint-local where KiCad stores board"
-        " coordinates; fixed by step 7"
-    ),
-)
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_a_footprints_keepout_is_read_in_board_coordinates(tmp_path, version):
     """Footprint K1 at (80, 80) turned 90 degrees owns a keepout whose points, as KiCad
@@ -942,3 +930,201 @@ def test_a_footprints_keepout_is_read_in_board_coordinates(tmp_path, version):
         }
     ], "(80, 80) is inside K1's keepout, which spans 75..85 on the board"
     assert pcb.check_placement("R9", 20, 20, pcb_path=path).keepout_violations == []
+
+
+# ---------------------------------------------------------------------------
+# a footprint's own keepout, and keepouts on KiCad's layer sets, as KiCad reads them
+# ---------------------------------------------------------------------------
+
+_WARNING = "WARNING: position is inside a keep-out zone"
+
+
+def _sided_footprint(ref: str, at, side: str, version: str) -> str:
+    """A footprint at ``at`` on ``side`` with a 1 mm courtyard on that side's courtyard
+    layer, which is what kicad-cli's DRC tests a footprint against a rule area by
+    (collidesWithArea, pcbnew/pcbexpr_functions.cpp:498-541 at 9.0.8)."""
+    crtyd = "B.CrtYd" if side == "B.Cu" else "F.CrtYd"
+    box = ("fp_rect", (-500_000, -500_000), (500_000, 500_000))
+    text = G.footprint_text(ref, at, shapes=[box], version=version, shape_layer=crtyd)
+    if side == "B.Cu":
+        front = '\t\t(layer "F.Cu")\n'
+        if text.count(front) != 1:
+            raise RuntimeError("geom_gen's footprint no longer writes one front layer line")
+        text = text.replace(front, '\t\t(layer "B.Cu")\n', 1)
+    return text
+
+
+def _layered_board(directory, name: str, items, version: str) -> str:
+    """A board with every technical layer in its table (edit_gen.layered_board_text), so
+    the back courtyard the DRC premise reads is one of the board's layers."""
+    path = Path(directory) / name
+    path.write_text(E.layered_board_text(items, version=version), encoding="utf-8", newline="\n")
+    return str(path)
+
+
+def _lexer_head(item) -> bytes | None:
+    if item.kind == L.GROUP and item.items and item.items[0].kind in L.ATOM_KINDS:
+        return item.items[0].value
+    return None
+
+
+def _drc_keepout_offenders(path: str) -> set[str] | None:
+    """The references of the footprints kicad-cli's DRC reports in a rule area that
+    forbids them ("items_not_allowed"), matched by uuid, so the report's language does not
+    matter; None where kicad-cli is missing or older than the board. A board it cannot
+    load is a broken premise (RuntimeError)."""
+    data = Path(path).read_bytes()
+    if not HAS_KICAD_CLI or not _cli_can_load_board(data):
+        return None
+    _, report = _cli_report(
+        ["pcb", "drc", "--format", "json", "--severity-all"], Path(path), "drc.json"
+    )
+    if report is None:
+        raise RuntimeError(f"kicad-cli wrote no DRC report for {path}")
+    board = L.tree(data, knows_bar=L.knows_bar_of(data))[0]
+    by_uuid = {}
+    for fp in (c for c in board.items if _lexer_head(c) == b"footprint"):
+        uid = next(c for c in fp.items if _lexer_head(c) == b"uuid").items[1].value.decode()
+        by_uuid[uid] = next(
+            c.items[2].value.decode()
+            for c in fp.items
+            if _lexer_head(c) == b"property" and c.items[1].value == b"Reference"
+        )
+    found = set()
+    for violation in json.loads(report).get("violations", []):
+        if violation.get("type") == "items_not_allowed":
+            found |= {by_uuid[i["uuid"]] for i in violation["items"] if i.get("uuid") in by_uuid}
+    return found
+
+
+def _flagged(path: str) -> list[str]:
+    """The references validate_board flags with "keepout_zone", in its order."""
+    return [
+        v["reference"]
+        for v in pcb.validate_board(pcb_path=path).violations
+        if "keepout_zone" in v["issues"]
+    ]
+
+
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_a_footprints_own_keepout_does_not_count_against_it(tmp_path, version):
+    """N8. K1 at the origin, unturned (so its keepout's points read the same as board or
+    footprint-local coordinates, and bug 15 plays no part), owns a keepout forbidding
+    footprints over -10..10 on F.Cu, its own origin and courtyard inside it; R1 sits
+    outside. KiCad never applies an area to the footprint that owns it (intersectsArea
+    skips an area whose parent is the item, pcbnew/pcbexpr_functions.cpp:697 at 9.0.8, 825
+    at 10.0.7): validate_board flags nothing; check_placement of K1 at its own origin is
+    ok and of R1 at (5, 5) lists K1's keepout; move_footprint warns when R1 moves to
+    (5, 5), and validate_board then flags R1 alone; moving K1 by 1 mm warns of nothing.
+    Premise, where kicad-cli can load the board: its DRC on the same board with R1 inside
+    reports R1 and not K1 (RuntimeError otherwise)."""
+    square = _square(-10 * MM, -10 * MM, 10 * MM, 10 * MM)
+    box = ("fp_rect", (-MM, -MM), (MM, MM))
+    k1 = G.footprint_text("K1", (0, 0), shapes=[box], zones=[square], version=version)
+    inside = _sided_footprint("R1", _at(5, 5), "F.Cu", version)
+    premise = _layered_board(tmp_path, "premise.kicad_pcb", [k1, inside], version)
+    offenders = _drc_keepout_offenders(premise)
+    if offenders is not None and offenders != {"R1"}:
+        raise RuntimeError(f"kicad-cli's DRC reports {offenders} inside K1's keepout, not R1")
+    outside = _sided_footprint("R1", _at(40, 40), "F.Cu", version)
+    path = _layered_board(tmp_path, "own.kicad_pcb", [k1, outside], version)
+    assert _flagged(path) == [], "K1 is inside its own keepout only"
+    assert pcb.check_placement("K1", 0, 0, pcb_path=path).keepout_violations == []
+    assert pcb.check_placement("R1", 5, 5, pcb_path=path).keepout_violations == [
+        {
+            "source": "footprint:K1",
+            "layers": ["F.Cu"],
+            "restrictions": {key: "not_allowed" for key in _RESTRICTIONS},
+        }
+    ]
+    assert _WARNING in pcb.move_footprint("R1", 5, 5, pcb_path=path)
+    assert _flagged(path) == ["R1"]
+    assert _WARNING not in pcb.move_footprint("K1", 1, 1, pcb_path=path)
+
+
+def test_a_placed_tag_connect_is_not_flagged_by_its_own_keepout(tmp_path):
+    """N8's stock case: KiCad 9.0.8's Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical owns
+    a keepout forbidding footprints round its own origin. Placed by place_footprint at
+    (50, 50), validate_board does not flag it and check_placement of it there is ok, as
+    KiCad's DRC never tests a footprint against its own area. The tool flagged it (the
+    zone copied at the library's origin, read through the footprint's transform, lands on
+    the footprint; measured in the step 7 design, 2026-10-11)."""
+    library = E.stock_footprint("Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical")
+    path = _layered_board(tmp_path, "tag.kicad_pcb", [], "k9")
+    try:
+        pcb.place_footprint(
+            "J1",
+            "TC2030",
+            50,
+            50,
+            library=str(library.parent),
+            footprint=library.stem,
+            pcb_path=path,
+        )
+    finally:
+        pcb._BOARD_CACHE.pop(str(Path(path).resolve()), None)
+    assert _flagged(path) == []
+    assert pcb.check_placement("J1", 50, 50, pcb_path=path).keepout_violations == []
+
+
+#: Every zone pcbnew reads on a board, at board level or a footprint's: whether it is a
+#: rule area, forbids footprints, and is on F.Cu and on B.Cu.
+_ALL_ZONE_LAYERS_SCRIPT = r"""
+import pcbnew
+board = pcbnew.LoadBoard(payload["board"])
+zones = list(board.Zones())
+for fp in board.GetFootprints():
+    zones += list(fp.Zones())
+result = [
+    [bool(z.GetIsRuleArea()), bool(z.GetDoNotAllowFootprints()),
+     bool(z.IsOnLayer(pcbnew.F_Cu)), bool(z.IsOnLayer(pcbnew.B_Cu))]
+    for z in zones
+]
+"""
+
+
+@pytest.mark.parametrize("layer_set", ["F&B.Cu", "*.Cu"], ids=["front_and_back", "all_copper"])
+@pytest.mark.parametrize("owner", ["board", "footprint"])
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_keepout_wildcard_layers_are_read_as_kicad_reads_them(tmp_path, layer_set, owner, version):
+    """N9. A rule area forbidding footprints over 5..25 mm, its layers written as one of
+    KiCad's layer set names, either at board level or owned by K1 (at the origin,
+    unturned, its own origin outside the area: bugs 15 and 88 play no part). KiCad reads
+    the set through the parser's wildcard table ("F&B.Cu" is F.Cu and B.Cu, "*.Cu" every
+    copper layer, pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr_parser.cpp:115-123 at
+    9.0.8, 120-128 at 10.0.7) and tests a footprint against an area holding its own side,
+    F.Cu or B.Cu (intersectsArea's common layers, pcbnew/pcbexpr_functions.cpp:712-715 at
+    9.0.8). So check_placement lists the area for F1 (front) at (10, 10) and B1 (back) at
+    (20, 20) and nothing for F2 at (40, 40); move_footprint warns when F2 moves to
+    (15, 15); validate_board then flags F1, B1 and F2. Premises, where they can load the
+    board: pcbnew reads every zone as a rule area forbidding footprints on F.Cu and B.Cu,
+    and kicad-cli's DRC reports F1 and B1 (RuntimeError otherwise)."""
+    square = _square(5 * MM, 5 * MM, 25 * MM, 25 * MM)
+    if owner == "board":
+        items = [_keepout_text(square, (layer_set,), "not_allowed", version=version)]
+        source = "board"
+    else:
+        zone = E.SynZone((layer_set,), (tuple(square),))
+        k1 = E.footprint_with_pad_at(0.0)._replace(zones=(zone,))
+        items = [E.board_footprint_text(k1, "K1", (0, 0), 0.0, version=version)]
+        source = "footprint:K1"
+    items += [
+        _sided_footprint("F1", _at(10, 10), "F.Cu", version),
+        _sided_footprint("B1", _at(20, 20), "B.Cu", version),
+        _sided_footprint("F2", _at(40, 40), "F.Cu", version),
+    ]
+    path = _layered_board(tmp_path, "layer_sets.kicad_pcb", items, version)
+    if PJ.skip_reason() is None and (version == "k9" or PJ.major() >= 10):
+        found = PJ.run(_ALL_ZONE_LAYERS_SCRIPT, {"board": path})
+        if found != [[True, True, True, True]]:
+            raise RuntimeError(f"pcbnew {PJ.major()} reads the {layer_set} zone as {found}")
+    offenders = _drc_keepout_offenders(path)
+    if offenders is not None and offenders != {"F1", "B1"}:
+        raise RuntimeError(f"kicad-cli's DRC reports {offenders} inside the {layer_set} area")
+    for ref, x, y in (("F1", 10, 10), ("B1", 20, 20)):
+        hit = pcb.check_placement(ref, x, y, pcb_path=path).keepout_violations
+        assert [v["source"] for v in hit] == [source], f"{ref} at ({x}, {y}): {hit}"
+        assert hit[0]["restrictions"]["footprints"] == "not_allowed"
+    assert pcb.check_placement("F2", 40, 40, pcb_path=path).keepout_violations == []
+    assert _WARNING in pcb.move_footprint("F2", 15, 15, pcb_path=path)
+    assert _flagged(path) == ["F1", "B1", "F2"]

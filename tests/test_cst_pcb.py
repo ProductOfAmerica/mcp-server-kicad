@@ -9,14 +9,19 @@ is judged by tests/edit_judge.py on KiCad's own lexer, never on the CST.
 from __future__ import annotations
 
 import os
+import shutil
 from pathlib import Path
 
+import edit_gen as E
 import edit_judge as J
+import footprint_judge as FJ
 import geom_gen as G
 import geom_judge as GJ
 import pytest
 from conftest import requires_cli
 from kicad_ref import dsn_lexer as L
+from kicad_ref import footprint as F
+from kicad_ref import pad as PAD
 from kicad_ref import parse_units as P
 from kicad_ref import trigo
 from kiutils.board import Board
@@ -144,6 +149,15 @@ _K10_BOARD = """(kicad_pcb
 )"""
 
 
+#: A 3D model block at a nonzero offset and rotation, in the layout pcbnew 9.0.8 writes
+#: inside a footprint on a board.
+_MODEL = (
+    '\t\t(model "x.step"\n\t\t\t(offset\n\t\t\t\t(xyz 1 2 3)\n\t\t\t)'
+    "\n\t\t\t(scale\n\t\t\t\t(xyz 1 1 1)\n\t\t\t)"
+    "\n\t\t\t(rotate\n\t\t\t\t(xyz 0 0 45)\n\t\t\t)\n\t\t)\n"
+)
+
+
 def _write_board(tmp_path, content: str) -> str:
     p = tmp_path / "board.kicad_pcb"
     p.write_text(content)
@@ -153,6 +167,8 @@ def _write_board(tmp_path, content: str) -> str:
 #: edit_judge's location of a board's root list: the path of every edit to a
 #: top-level item (a footprint, a segment, a zone).
 ROOT = ((0, "kicad_pcb"),)
+
+MM = 1_000_000
 
 
 def _the(data: bytes, *labels: str, where=lambda location, item: True) -> J.Path:
@@ -475,26 +491,127 @@ class TestFootprintWritersCst:
             just = t.find("effects").find("justify")
             assert just is not None and "mirror" in [a.text for a in just.atoms[1:]]
 
-    def test_an_unmeasured_construct_is_refused_with_the_file_intact(self, tmp_path):
-        """A 3D model block's flip has not been measured, so mirroring
-        everything around it and leaving it alone is refused instead."""
-        p = _write_board(tmp_path, _K10_BOARD)
-        tree = _cst.parse(Path(p).read_bytes())
-        fp = tree.lists[0].find_all("footprint")[0]
-        fp.append_child(_cst.parse(b'(model "x.step")').lists[0], b"\n\t\t")
-        Path(p).write_bytes(_cst.serialize(tree))
-        before = Path(p).read_bytes()
-        with pytest.raises(ToolError) as exc:
-            pcb.move_footprint("R1", 50, 50, layer="B.Cu", pcb_path=p)
-        assert "model" in str(exc.value) and "Nothing was changed" in str(exc.value)
-        assert Path(p).read_bytes() == before
+    @pytest.mark.parametrize("version", ["k9", "k10"])
+    def test_a_footprint_with_a_3d_model_flips_and_keeps_its_model(self, tmp_path, version):
+        """KiCad's flip leaves a 3D model as it is (FOOTPRINT::Flip has no model code,
+        pcbnew/footprint.cpp:2491-2550 at 9.0.8, 2930-2999 at 10.0.7; pcbnew 9.0.8 flips a
+        footprint whose model sits at offset (1 2 3) and rotation (0 0 45) and writes the
+        model's values unchanged, measured in the step 7 design, 2026-10-11, and checked
+        against the installed pcbnew by test_ladder_r3_fp_flip.py). R1 carrying such a model
+        moved to the back: the flip happens, the (model ...) block is byte-identical, and
+        the side, the footprint's angle and every pad's, text's and graphic's position and
+        layer read as KiCad's flip of R1 (kicad_ref.footprint). Pad and text angles are
+        bug 14's (rung 3's D4). The tool refused the flip; its refusal of what it cannot
+        flip lives on in test_ladder_r3_fp_flip.py's refusal tests."""
+        text = E.board_footprint_text(E.footprint_with_pad_at(0.0), "R1", (50 * MM, 40 * MM), 30.0)
+        anchor = "\t\t(embedded_fonts no)\n"
+        if text.count(anchor) != 1:
+            raise RuntimeError("edit_gen's footprint no longer ends in one (embedded_fonts no)")
+        text = text.replace(anchor, _MODEL + anchor)
+        board = tmp_path / "model.kicad_pcb"
+        board.write_text(G.board_text([text], version=version), newline="\n")
+        before = board.read_bytes()
+        try:
+            pcb.move_footprint("R1", 50, 40, layer="B.Cu", pcb_path=str(board))
+        except ToolError as exc:
+            raise AssertionError(f"move_footprint refused the flip: {exc}") from exc
+        after = board.read_bytes()
+        models = F.children(FJ.footprint_group(after, "R1"), b"model")
+        assert [after[m.start : m.end] for m in models] == [_MODEL.strip().encode()]
+        major = 10 if version == "k10" else 9
+        start = FJ.read(before, "R1", major=major)
+        want = F.board_flip(start, FJ.layer_table(before), major=major)
+        problems = FJ.differences(
+            FJ.read(after, "R1", major=major),
+            F.written(want),
+            angles=False,
+            shapes=True,
+            written_fields_only=True,
+            copper_count=FJ.copper_count(after),
+        )
+        assert not problems, "\n".join(problems)
 
     def test_move_k10_rotation_appends_atom(self, tmp_path):
         p = _write_board(tmp_path, _K10_BOARD)
         pcb.move_footprint("R1", 50, 50, rotation=90, pcb_path=p)
         after = Path(p).read_bytes()
         assert b"(at 50 50 90)" in after
-        assert b"(at -0.75 0)" in after  # pad offsets stay untouched, kiutils parity
+
+    def test_move_k10_rotation_turns_the_pads(self, tmp_path):
+        """KiCad turns every pad with its footprint (FOOTPRINT::SetOrientation calls
+        PAD::Rotate, which adds the change to the pad's absolute angle): R1's pads, written
+        at -0.75 and 0.75 with no angle (0), read after a turn to 90 at 90, which KiCad
+        writes (at -0.75 0 90) and (at 0.75 0 90) (kicad_ref.pad; pcbnew writes the same
+        shape for R_0805). The positions stay footprint-relative. The tool used to leave
+        the pads at (at -0.75 0)."""
+        p = _write_board(tmp_path, _K10_BOARD)
+        pcb.move_footprint("R1", 50, 50, rotation=90, pcb_path=p)
+        group = FJ.footprint_group(Path(p).read_bytes(), "R1")
+        pads = [
+            [t.value.decode() for t in FJ.child(g, b"at").items[1:]] for g in F.pad_groups(group)
+        ]
+        turned = PAD.angle_token(PAD.rotate(PAD.loaded_angle(None), 90.0))
+        assert pads == [["-0.75", "0", turned], ["0.75", "0", turned]]
+
+    @pytest.mark.parametrize("version", ["k9", "k10"])
+    @pytest.mark.parametrize(
+        "rotation", [float("inf"), float("-inf"), float("nan")], ids=["inf", "-inf", "nan"]
+    )
+    @pytest.mark.parametrize("tool", ["place_footprint", "move_footprint"])
+    def test_non_finite_rotation_is_refused(self, tmp_path, tool, rotation, version):
+        """KiCad cannot load a footprint whose angle is inf, -inf or nan: the parser takes
+        the angle only as a NUMBER token, and kicad-cli refuses the board
+        (test_ladder_r3_judges.py's premise test). So the tools must refuse such a
+        rotation with a ToolError and leave the board byte-identical. A raw OverflowError
+        or ValueError used to reach the caller instead, the file left intact."""
+        board = tmp_path / "board.kicad_pcb"
+        footprint = G.footprint_text("R1", (50 * MM, 40 * MM), version=version)
+        board.write_text(G.board_text([footprint], version=version), newline="\n")
+        before = board.read_bytes()
+        try:
+            if tool == "place_footprint":
+                pcb.place_footprint("R2", "1k", 60, 40, rotation=rotation, pcb_path=str(board))
+            else:
+                pcb.move_footprint("R1", 60, 40, rotation=rotation, pcb_path=str(board))
+        except ToolError:
+            pass
+        except Exception as exc:
+            raise AssertionError(
+                f"{tool} let {type(exc).__name__}: {exc} through for rotation {rotation}"
+            ) from exc
+        else:
+            raise AssertionError(f"{tool} accepted the rotation {rotation}")
+        assert board.read_bytes() == before
+
+    @pytest.mark.parametrize("version", ["k9", "k10"])
+    def test_rotating_to_the_current_angle_changes_nothing(self, tmp_path, version):
+        """A footprint at -90 whose keep-upright Reference stands at 270 (as
+        SetOrientation, the Python API's path, leaves it), moved to its own position at
+        rotation -90, 270 and -450: each names the angle the footprint already holds
+        (Normalize180 gives -90 for all three), so nothing changes and the board stays
+        byte-identical (the identity; FOOTPRINT::Rotate returns at once for a change of 0,
+        pcbnew/footprint.cpp:2456-2459 at 9.0.8, 2898-2901 at 10.0.7). A KeepUpright pass
+        nobody asked for would turn that Reference. 270 and -450 used to be written as
+        given."""
+        library = E.footprint_with_pad_at(45.0)
+        text = E.board_footprint_text(library, "R1", (100 * MM, 80 * MM), -90.0, semantics="set")
+        start = tmp_path / "start.kicad_pcb"
+        start.write_text(G.board_text([text], version=version), newline="\n")
+        held = FJ.read(start.read_bytes(), "R1")
+        reference = next(t for t in held.texts if t.key == ("property", "Reference"))
+        if held.orientation != -90 or not reference.style.keep_upright:
+            raise RuntimeError(f"the start footprint reads {held.orientation}, {reference}")
+        if not 180 <= reference.style.angle < 360:
+            raise RuntimeError(f"the start Reference reads at {reference.style.angle}")
+        problems = []
+        for rotation in (-90.0, 270.0, -450.0):
+            board = tmp_path / f"turned_{rotation}.kicad_pcb"
+            shutil.copyfile(start, board)
+            pcb.move_footprint("R1", 100, 80, rotation=rotation, pcb_path=str(board))
+            if board.read_bytes() != start.read_bytes():
+                at = FJ.child(FJ.footprint_group(board.read_bytes(), "R1"), b"at")
+                problems.append(f"rotation {rotation}: (at) now {[t.value for t in at.items]}")
+        assert not problems, problems
 
     def test_move_missing_refuses_untouched(self, scratch_pcb):
         p = str(scratch_pcb)

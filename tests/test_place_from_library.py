@@ -176,9 +176,10 @@ class TestPlaceFootprintFromLibrary:
         assert props["Value"] == "4k7"
 
     def test_rotation_reaches_the_pads(self, scratch_pcb):
-        """Measured on KiCad's own board: a pad on an unrotated footprint reads
-        (at 0 0) and the same pad at 90 degrees reads (at 0 0 90). The pad keeps
-        its local position and takes the footprint's angle."""
+        """KiCad writes a pad's angle absolute: the pad's library angle plus the
+        footprint's (FOOTPRINT::SetOrientation turns each pad through PAD::Rotate), so
+        R_0805's pads, at 0 in the library, read (at x y 90) on a footprint placed at 90
+        degrees. The pad keeps its local position."""
         _place(scratch_pcb, rotation=90, library=LIB, footprint=FP)
         fp = _placed(scratch_pcb)
         for pad in fp.find_all("pad"):

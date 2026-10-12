@@ -6,8 +6,10 @@ import sys
 from pathlib import Path
 from unittest.mock import patch
 
+import pcbnew_judge as PJ
 import pytest
 from conftest import requires_cli
+from kicad_ref import board_item as B
 from kiutils.board import Board
 from kiutils.footprint import Footprint
 from kiutils.items.common import Net, Position, Property
@@ -480,14 +482,36 @@ class TestRunFreerouting:
 # ---------------------------------------------------------------------------
 
 
+MM = 1_000_000
+
+
+def _on_board(fp_x, fp_y, fp_angle, local):
+    """Where KiCad stores a footprint zone's point that sits at ``local`` (mm) in the
+    footprint's own frame, in mm: BOARD_ITEM::SetFPRelativePosition's arithmetic
+    (kicad_ref.board_item: RotatePoint by the footprint's angle, then its position)."""
+    x, y = B.fp_relative_to_board(
+        (round(fp_x * MM), round(fp_y * MM)),
+        fp_angle,
+        (round(local[0] * MM), round(local[1] * MM)),
+        major=9,
+    )
+    return x / MM, y / MM
+
+
 def _make_board_with_fp_keepout(
     tmp_path, fp_angle=0, fp_layer="F.Cu", fp_x=100, fp_y=100, holes=()
 ):
-    """Create a minimal board with one footprint containing a keepout zone.
+    """Create a minimal board with one footprint owning a keepout zone.
 
-    The zone's outline is the local square (0, 0)-(10, 10). Each entry in
-    *holes* is a list of local (x, y) points, written as a further polygon of
-    the same zone, which KiCad reads as a hole in the outline.
+    The zone is written where KiCad stores a footprint's zone: in board
+    coordinates, since format( ZONE ) writes it without the footprint
+    (pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.cpp:2628-2637 at 9.0.8,
+    3061-3074 at 10.0.7). Its outline is the square at (0, 0)-(10, 10) in the
+    footprint's own frame, put on the board as KiCad puts a footprint-local
+    point there (_on_board), whatever the footprint's side. Each entry in
+    *holes* is a list of footprint-local (x, y) points, put on the board the
+    same way and written as a further polygon of the zone, which KiCad reads
+    as a hole in the outline.
     """
     board = Board.create_new()
     board.nets = [Net(number=0, name="")]
@@ -513,15 +537,17 @@ def _make_board_with_fp_keepout(
     )
     poly = ZonePolygon()
     poly.coordinates = [
-        Position(X=0, Y=0),
-        Position(X=10, Y=0),
-        Position(X=10, Y=10),
-        Position(X=0, Y=10),
+        Position(X=x, Y=y)
+        for x, y in (
+            _on_board(fp_x, fp_y, fp_angle, local) for local in ((0, 0), (10, 0), (10, 10), (0, 10))
+        )
     ]
     keepout_zone.polygons = [poly]
     for hole in holes:
         cutout = ZonePolygon()
-        cutout.coordinates = [Position(X=x, Y=y) for x, y in hole]
+        cutout.coordinates = [
+            Position(X=x, Y=y) for x, y in (_on_board(fp_x, fp_y, fp_angle, p) for p in hole)
+        ]
         keepout_zone.polygons.append(cutout)
     fp.zones = [keepout_zone]
 
@@ -532,6 +558,19 @@ def _make_board_with_fp_keepout(
     return pcb_path
 
 
+def _polygons(zone) -> list[list[tuple[float, float]]]:
+    """A kiutils zone's polygons as (x, y) lists, in mm."""
+    return [[(c.X, c.Y) for c in polygon.coordinates] for polygon in zone.polygons]
+
+
+def _assert_promoted_as_stored(pcb_path, out_path) -> None:
+    """The promoted board-level zone holds the footprint zone's points as stored, point
+    for point, since both are board coordinates."""
+    source = Board.from_file(pcb_path).footprints[0].zones[0]
+    promoted = Board.from_file(out_path).zones[0]
+    assert _polygons(promoted) == _polygons(source)
+
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -539,10 +578,12 @@ def _make_board_with_fp_keepout(
 
 class TestPromoteFootprintKeepouts:
     def test_happy_path(self, tmp_path):
-        """FP keepout promoted with correct board-space coords.
+        """A footprint's keepout is promoted with its points as stored.
 
-        FP at (100,100), zone vertices at (0,0),(10,0),(10,10),(0,10)
-        should become (100,100),(110,100),(110,110),(100,110).
+        KiCad stores a footprint's zone in board coordinates: the FP at
+        (100,100) with its square at (0,0)-(10,10) in its own frame stores
+        (100,100),(110,100),(110,110),(100,110), and that is what the
+        board-level copy must hold.
         """
         pcb_path = _make_board_with_fp_keepout(tmp_path, fp_x=100, fp_y=100)
         out_path = str(tmp_path / "out.kicad_pcb")
@@ -559,6 +600,7 @@ class TestPromoteFootprintKeepouts:
         ys = [round(c.Y, 3) for c in coords]
         assert xs == [100.0, 110.0, 110.0, 100.0]
         assert ys == [100.0, 100.0, 110.0, 110.0]
+        _assert_promoted_as_stored(pcb_path, out_path)
 
     def test_no_keepouts_returns_zero(self, tmp_path):
         """Board with no FP keepouts returns 0, no output file created."""
@@ -583,14 +625,16 @@ class TestPromoteFootprintKeepouts:
         assert not Path(out_path).exists()
 
     def test_rotated_footprint(self, tmp_path):
-        """FP at 90 degrees; verify coords are correctly rotated.
+        """FP at 90 degrees: the zone KiCad stores is already turned, and is
+        promoted as stored.
 
-        KiCad's RotatePoint, which is what pcbnew applies to footprint-local
-        geometry, is ``bx = fp_x + lx*cos(a) + ly*sin(a)`` and
+        KiCad's RotatePoint, which put the zone where the file holds it, is
+        ``bx = fp_x + lx*cos(a) + ly*sin(a)`` and
         ``by = fp_y - lx*sin(a) + ly*cos(a)``. The signs are the transpose of
         the textbook matrix because the stored angle is counter-clockwise as
-        seen on screen while file Y points down. So local (10, 0) at +90 lands
-        at (100, 90), not (100, 110).
+        seen on screen while file Y points down. So the square's corner at
+        (10, 0) in the footprint's frame is stored, and promoted, at (100, 90),
+        not (100, 110).
         """
         pcb_path = _make_board_with_fp_keepout(tmp_path, fp_angle=90, fp_x=100, fp_y=100)
         out_path = str(tmp_path / "out.kicad_pcb")
@@ -609,6 +653,7 @@ class TestPromoteFootprintKeepouts:
         assert ys[1] == pytest.approx(90.0, abs=0.01)
         assert xs[2] == pytest.approx(110.0, abs=0.01)
         assert ys[2] == pytest.approx(90.0, abs=0.01)
+        _assert_promoted_as_stored(pcb_path, out_path)
 
     def test_multiple_polygons(self, tmp_path):
         """A zone's later polygons are holes in its first, so it stays one zone.
@@ -616,7 +661,7 @@ class TestPromoteFootprintKeepouts:
         KiCad's zone parser makes the first polygon the outline and every later
         one a hole in it. Promoted one polygon per zone, the hole came out as a
         keepout of its own, covering the very area the cutout exists to free.
-        Off the origin, so an untransformed hole would show.
+        Off the origin, so a hole moved by the footprint's position would show.
         """
         pcb_path = _make_board_with_fp_keepout(
             tmp_path, fp_x=100, fp_y=50, holes=[[(2, 2), (4, 2), (4, 4), (2, 4)]]
@@ -641,16 +686,15 @@ class TestPromoteFootprintKeepouts:
             (104, 54),
             (102, 54),
         ]
+        _assert_promoted_as_stored(pcb_path, out_path)
 
     def test_back_side_footprint_keepout(self, tmp_path):
-        """FP on B.Cu; local coordinates are used as stored, with no mirroring.
+        """FP on B.Cu: its zone is promoted as stored, with no mirroring.
 
-        KiCad flips a footprint by rewriting its children's local coordinates,
-        so what the file holds for a B.Cu footprint is already in the flipped
-        frame. Mirroring it again here moved every back-side keepout by twice
-        its offset. Confirmed against `kicad-cli pcb export drill`: a B.Cu
-        footprint at (170, 150) rotation 0 with a pad at local (-5, 1) drills
-        at X165.0 Y-151.0, which is the unmirrored position.
+        KiCad's flip mirrors a footprint's zone in board coordinates when it
+        flips the footprint, so what the file holds for a B.Cu footprint is
+        already where the zone lies. Mirroring it again here moved every
+        back-side keepout by twice its offset.
         """
         pcb_path = _make_board_with_fp_keepout(
             tmp_path, fp_angle=0, fp_layer="B.Cu", fp_x=100, fp_y=100
@@ -669,9 +713,12 @@ class TestPromoteFootprintKeepouts:
         assert ys[0] == pytest.approx(100.0, abs=0.01)
         assert xs[1] == pytest.approx(110.0, abs=0.01)
         assert ys[1] == pytest.approx(100.0, abs=0.01)
+        _assert_promoted_as_stored(pcb_path, out_path)
 
-    def test_fp_position_none_skipped(self, tmp_path):
-        """FP with position=None is skipped, returns 0."""
+    def test_fp_without_position_is_promoted(self, tmp_path):
+        """An FP written without (at) sits at the origin, unturned, and its
+        zone's points are board coordinates whatever the footprint's
+        position, so it is promoted like any other, its points as stored."""
         board = Board.create_new()
         board.nets = [Net(number=0, name="")]
 
@@ -706,15 +753,15 @@ class TestPromoteFootprintKeepouts:
 
         count = _promote_footprint_keepouts(pcb_path, out_path)
 
-        assert count == 0
-        assert not Path(out_path).exists()
+        assert count == 1
+        assert Path(out_path).exists()
+        _assert_promoted_as_stored(pcb_path, out_path)
 
     def test_source_zone_not_mutated(self, tmp_path):
         """The zone copy is deep, the CST twin of the old deep_copy_isolation.
 
-        Transforming the promoted polygon must leave the footprint's own
-        zone on its local coordinates, and the source file must not be
-        written at all.
+        Promoting the zone must leave the footprint's own zone on the points
+        it holds, and the source file must not be written at all.
         """
         pcb_path = _make_board_with_fp_keepout(tmp_path, fp_x=100, fp_y=100)
         out_path = str(tmp_path / "out.kicad_pcb")
@@ -726,10 +773,10 @@ class TestPromoteFootprintKeepouts:
         out_root = _cst.parse(Path(out_path).read_bytes()).lists[0]
         fp_zone = out_root.find("footprint").find("zone")
         assert [_xy(p) for p in fp_zone.find("polygon").find("pts").find_all("xy")] == [
-            (0.0, 0.0),
-            (10.0, 0.0),
-            (10.0, 10.0),
-            (0.0, 10.0),
+            (100.0, 100.0),
+            (110.0, 100.0),
+            (110.0, 110.0),
+            (100.0, 110.0),
         ]
         # The restrictions travel with the copy rather than being aliased away.
         assert _keepout_dict(out_root.find("zone").find("keepout")) == _keepout_dict(
@@ -790,6 +837,25 @@ class TestPromoteFootprintKeepouts:
         result = run_drc(pcb_path=out_path, output_dir=str(tmp_path))
         assert result.violation_count >= 0
 
+    def test_promoted_keepouts_keep_their_board_coordinates(self, tmp_path):
+        """N10. A KiCad-form board, a footprint at (100, 50) turned 30 degrees whose
+        keepout, with a hole, is stored in board coordinates: pcbnew reads the
+        promoted board-level zone with exactly the outline and hole it reads for the
+        footprint's own zone. The tool turned and moved the stored points again."""
+        reason = PJ.skip_reason()
+        if reason:
+            pytest.skip(reason)
+        pcb_path = _make_board_with_fp_keepout(
+            tmp_path, fp_angle=30, fp_x=100, fp_y=50, holes=[[(2, 2), (4, 2), (4, 4), (2, 4)]]
+        )
+        out_path = str(tmp_path / "out.kicad_pcb")
+        assert _promote_footprint_keepouts(pcb_path, out_path) == 1
+        source = PJ.run(_ZONE_OUTLINES, {"board": pcb_path})
+        promoted = PJ.run(_ZONE_OUTLINES, {"board": out_path})
+        if len(source["footprints"]) != 1 or source["board"]:
+            raise RuntimeError(f"pcbnew reads the source board's zones as {source}")
+        assert promoted["board"] == source["footprints"]
+
     def test_net_tokens_k9_numeric(self, tmp_path):
         """A KiCad 9 format board gets the numeric (net 0) plus empty net_name."""
         pcb_path = _make_board_with_fp_keepout(tmp_path)
@@ -815,6 +881,30 @@ class TestPromoteFootprintKeepouts:
         assert zone.find("net") is None
         assert zone.find("net_name") is None
         assert zone.find("keepout") is not None
+
+
+#: Each zone pcbnew reads, at board level and in footprints: every outline and hole of
+#: it as its points in nanometres.
+_ZONE_OUTLINES = r"""
+import pcbnew
+
+
+def chains(zone):
+    poly = zone.Outline()
+    out = []
+    for i in range(poly.OutlineCount()):
+        rings = [poly.COutline(i)] + [poly.CHole(i, h) for h in range(poly.HoleCount(i))]
+        for ring in rings:
+            out.append([[ring.CPoint(k).x, ring.CPoint(k).y] for k in range(ring.PointCount())])
+    return out
+
+
+board = pcbnew.LoadBoard(payload["board"])
+result = {
+    "board": [chains(z) for z in board.Zones()],
+    "footprints": [chains(z) for fp in board.GetFootprints() for z in fp.Zones()],
+}
+"""
 
 
 class TestJarJavaRequirement:

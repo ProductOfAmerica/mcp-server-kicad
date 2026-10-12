@@ -34,20 +34,27 @@ Judges, none of them the code under test:
   after loading the board: GetPosition() in millimetres through "%f", y negated
   (pcbnew/exporters/place_file_exporter.cpp:184-207 at 9.0.8, 193-216 at 10.0.7).
 
-Resolution: every position must read as KiCad's nanometre exactly, at every angle. On the
-awkward-angle board below all 60 printed pad positions equal pcbnew's, the tool's
-unrounded value at worst 0.485 nm from pcbnew's (measured 2026-10-11, pcbnew 9.0.8). The
-exception is bug 87, at the exact half-nanometre ties _half_nm_tie names: RotatePoint
-rounds a product a hair to one side of the half, and the tool's floating-point
-millimetres can land on the other, 1 nm away. The passing tests leave the ties out, and
-two strict xfails hold them. A near tie, an exact value within the tool's rounding error
-of a half, can miss the same way: pcbnew 9.0.8 holds a pad at local (38.613965, 0) mm on
-a footprint at (-999, 0.000003) mm and 45 degrees at x = -971.695803 mm, where
-get_footprint_pads prints -971.695804 (measured 2026-10-11). No exact predicate marks
-the near ties, so the passing tests keep them; no generated case has reached one (the ci
-profile, and nightly runs of each generated test of a rotated position, 2026-10-11).
-Pure tests take both majors' KiROUND, which differ on a few doubles
-(kicad_ref.eda_units); tests anchored on pcbnew or kicad-cli take the major they run.
+Resolution: every position must read as KiCad's nanometre exactly, at every angle,
+half-nanometre ties included. Until step 7 the tool computed in floating-point
+millimetres (bug 87). At the exact ties _half_nm_tie names, RotatePoint rounds a product
+a hair to one side of the half and the float sum could land on the other, 1 nm away; a
+near tie, an exact value within the float error of a half, could miss the same way
+(pcbnew 9.0.8 holds a pad at local (38.613965, 0) mm on a footprint at
+(-999, 0.000003) mm and 45 degrees at x = -971.695803 mm, where get_footprint_pads
+printed -971.695804; measured 2026-10-11). The tests below hold the ties, generated and
+four against pcbnew, and that near tie.
+
+Inside int, KiCad 9 and KiCad 10 turn a point alike except where a turned coordinate is
+exactly +-0.49999999999999994 nm, which KiCad 9's KiROUND takes away from zero and KiCad
+10's to 0 (kicad_ref.eda_units), as for a point 1 nm off the centre along an axis at 30
+or 150 degrees; there the two majors hold the point 1 nm apart. A board is read by the
+KiCad whose format it carries (KiCad 9 cannot load a KiCad 10 board), so the tool rounds
+as that KiCad does, and the tests expect exactly that KiCad's value: pure tests of the
+transform take each major in turn, tests on a generated board the major of its header
+(_HEADER_MAJOR). Tests anchored on pcbnew or kicad-cli take the major they run. pcbnew 10
+opening a KiCad 9 board, as on CI's KiCad 10 legs, rounds as KiCad 10 where the tool
+follows the board's format, so where the majors part and pcbnew holds one of their two
+positions (_kicads_positions), either is accepted there.
 """
 
 from __future__ import annotations
@@ -64,7 +71,7 @@ import pcbnew_judge as PJ
 import pytest
 import sexpr_gen
 from conftest import _kicad_cli_major, requires_cli
-from hypothesis import assume, example, given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import board_item as B
 from kicad_ref import dsn_lexer as L
@@ -82,12 +89,6 @@ MAJORS = (9, 10)
 _BUG57 = (
     "bug 57: board tools write coordinates beyond KiCad's load clamp (INT_MAX - 10 nm, about"
     " 2147.48 mm) and KiCad silently moves the item; fixed by step 12c"
-)
-_BUG87 = (
-    "bug 87: _shared._transform_local_to_board computes in float millimetres, so at an"
-    " exact half-nanometre tie (a multiple of 30 degrees off the quarter turns, an odd offset"
-    " on one axis and zero on the other) it can land 1 nm from KiCad's RotatePoint; fixed by"
-    " step 7"
 )
 
 # ---------------------------------------------------------------------------
@@ -179,7 +180,8 @@ def _as_read(nm: int) -> float:
 
 def _half_nm_tie(angle: float, local: tuple[int, int]) -> bool:
     """Whether RotatePoint turns ``local`` (nm) by ``angle`` (degrees) onto an exact
-    half-nanometre tie on one axis, decided in exact arithmetic: bug 87's cases.
+    half-nanometre tie on one axis, decided in exact arithmetic: the cases bug 87 got
+    wrong.
 
     Off the quarter turns RotatePoint rounds y sin + x cos and y cos - x sin with KiROUND
     (libs/kimath/src/trigo.cpp:229-264 at 9.0.8). At a multiple of 30 degrees one of sin
@@ -203,15 +205,39 @@ def _half_nm_tie(angle: float, local: tuple[int, int]) -> bool:
     return (x == 0) != (y == 0) and (x + y) % 2 == 1
 
 
-def _ties_on(data: bytes) -> bool:
-    """Whether a pad on the board ``data`` sits at a half-nanometre tie, its footprint's
-    orientation and its own local position read as KiCad reads them. The written angle
-    is FormatAngle's ten digits, so an angle a hair off 30 degrees is read as 30."""
-    for fp in _children(_root(data), b"footprint"):
-        _, orientation = _placement(fp, major=10)
-        if any(_half_nm_tie(orientation, local) for local in _pad_locals(fp, major=10).values()):
-            return True
-    return False
+def _kicads_positions(at, orientation: float, local) -> set[tuple[int, int]]:
+    """Where KiCad 9 and KiCad 10 hold a footprint child at ``local`` (nm) of a footprint
+    at ``at`` (nm) and ``orientation`` (degrees): fp_relative_to_board under each major.
+    One position, or two 1 nm apart where their KiROUND parts (the module docstring),
+    which the pcbnew anchors accept where pcbnew holds one of them."""
+    return {B.fp_relative_to_board(at, orientation, local, major=major) for major in MAJORS}
+
+
+#: The KiCad whose format each generated header carries: geom_gen writes KiCad 9.0.8's
+#: 20241229 for "k9" and a KiCad 10 version, 20260206, for "k10".
+_HEADER_MAJOR = {"k9": 9, "k10": 10}
+
+
+def _transform_problems(fp, angle: float, local) -> list[str]:
+    """For each major, KiROUND of _transform_local_to_board's result in nm, given that
+    major and the footprint position and local point (nm) as the text KiCad writes for
+    them, against the footprint position plus that major's rotate_point of the point."""
+    problems = []
+    for major in MAJORS:
+        bx, by = _transform_local_to_board(
+            _as_read(fp[0]),
+            _as_read(fp[1]),
+            angle,
+            _as_read(local[0]),
+            _as_read(local[1]),
+            major=major,
+        )
+        rx, ry = trigo.rotate_point(local[0], local[1], angle, major=major)
+        want = (fp[0] + rx, fp[1] + ry)
+        got = (U.kiround(bx * MM, major=major), U.kiround(by * MM, major=major))
+        if got != want:
+            problems.append(f"KiCad {major}: ({bx}, {by}) mm reads {got} nm, RotatePoint {want}")
+    return problems
 
 
 #: Footprint positions within +-1000 mm and pad offsets within +-50 mm: inside KiCad's
@@ -235,50 +261,41 @@ _TIE_OFFSETS = st.one_of(_ODD_NM.map(lambda n: (n, 0)), _ODD_NM.map(lambda n: (0
 @example(fp=(-7, 3), angle=-90.0, local=(1_234_567, -7_654_321))
 @example(fp=(0, 0), angle=45.0, local=(MM, 0))
 @example(fp=(0, 0), angle=3600.0, local=(12_500_000, -333_333))
+@example(fp=(-999 * MM, 3), angle=45.0, local=(38_613_965, 0))
 @given(
     fp=_FP_AT,
     angle=G.angles(),
     local=st.tuples(G.nm_coordinates(100 * MM), G.nm_coordinates(100 * MM)),
 )
 def test_local_to_board_is_rotatepoint(fp, angle, local):
-    """_transform_local_to_board, given a footprint position and a local point as the text
-    KiCad writes for them, lands on RotatePoint's nanometre: KiROUND of its result in nm
-    is the footprint position plus rotate_point of the local point, under both majors.
-    Exact half-nanometre ties are left out (bug 87, the next test). The textbook
-    rotation, whose signs are the transpose of RotatePoint's, mirrors every rotated
-    offset and is far off."""
-    assume(not _half_nm_tie(angle, local))
-    bx, by = _transform_local_to_board(
-        _as_read(fp[0]), _as_read(fp[1]), angle, _as_read(local[0]), _as_read(local[1])
-    )
-    for major in MAJORS:
-        rx, ry = trigo.rotate_point(local[0], local[1], angle, major=major)
-        want = (fp[0] + rx, fp[1] + ry)
-        got = (U.kiround(bx * MM, major=major), U.kiround(by * MM, major=major))
-        assert got == want, (major, (bx, by), got, want)
+    """_transform_local_to_board, given a major and a footprint position and a local point
+    as the text KiCad writes for them, lands on that KiCad's RotatePoint nanometre: KiROUND
+    of its result in nm is the footprint position plus rotate_point of the local point
+    under that major, for each major. The near tie of the module docstring is an example;
+    the exact ties, which these strategies seldom draw, are the next test's. The textbook
+    rotation, whose signs are the transpose of RotatePoint's, mirrors every rotated offset
+    and is far off."""
+    problems = _transform_problems(fp, angle, local)
+    assert not problems, problems
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG87)
 @settings(max_examples=sexpr_gen.budget())
 @example(fp=(0, 0), angle=30.0, local=(-5, 0))
 @example(fp=(100 * MM, 50_123_457), angle=30.0, local=(-11, 0))
+@example(fp=(0, 0), angle=30.0, local=(0, 1))
 @given(fp=_FP_AT, angle=_TIE_ANGLES, local=_TIE_OFFSETS)
 def test_local_to_board_rounds_half_nanometre_ties_as_kicad_does(fp, angle, local):
-    """The test above at bug 87's ties: KiROUND of _transform_local_to_board's result in
-    nm is the footprint position plus rotate_point of the local point, under both majors.
-    The tool lands on the far side of the half for about half of the ties (47.7% of
-    200,000 drawn as these strategies draw them, measured 2026-10-11): at (0, 0) and 30
-    degrees, local (-5, 0) nm comes out at y = 3 nm where RotatePoint gives 2."""
+    """The test above at bug 87's ties: for each major, KiROUND of
+    _transform_local_to_board's result in nm is the footprint position plus that major's
+    rotate_point of the local point. Before step 7 the tool landed on the far side of the
+    half for about half of the ties (47.7% of 200,000 drawn as these strategies draw them,
+    measured 2026-10-11): at (0, 0) and 30 degrees, local (-5, 0) nm came out at y = 3 nm
+    where RotatePoint gives 2. Local (0, 1) nm at 30 degrees is where the majors part:
+    KiCad 9 holds it at x = 1 nm, KiCad 10 at 0, and the transform gives each its own."""
     if not _half_nm_tie(angle, local):
         raise RuntimeError(f"the strategies drew angle {angle} and local {local}: no tie")
-    bx, by = _transform_local_to_board(
-        _as_read(fp[0]), _as_read(fp[1]), angle, _as_read(local[0]), _as_read(local[1])
-    )
-    for major in MAJORS:
-        rx, ry = trigo.rotate_point(local[0], local[1], angle, major=major)
-        want = (fp[0] + rx, fp[1] + ry)
-        got = (U.kiround(bx * MM, major=major), U.kiround(by * MM, major=major))
-        assert got == want, (major, (bx, by), got, want)
+    problems = _transform_problems(fp, angle, local)
+    assert not problems, problems
 
 
 # ---------------------------------------------------------------------------
@@ -302,10 +319,10 @@ def _printed_board_positions(text: str) -> dict[str, tuple[str, str]]:
 
 
 def _printed_problems(
-    printed: tuple[str, str], want: tuple[int, int], major: int, what: str
+    printed: tuple[str, str], want: set[tuple[int, int]], major: int, what: str
 ) -> list[str]:
-    """Why the printed (x, y) does not read, as KiCad ``major`` reads text, as ``want``;
-    empty when it does."""
+    """Why the printed (x, y) does not read, as KiCad ``major`` reads text, as one of the
+    positions in ``want``; empty when it does."""
     try:
         got = (
             P.parse_board_units(printed[0], major=major),
@@ -313,27 +330,26 @@ def _printed_problems(
         )
     except P.ParseRefusal as exc:
         return [f"{what}: KiCad refuses the printed {printed} ({exc})"]
-    if got != want:
-        return [f"{what}: printed {printed} reads {got} nm, KiCad has {want} nm"]
+    if got not in want:
+        return [f"{what}: printed {printed} reads {got} nm, KiCad has {sorted(want)} nm"]
     return []
 
 
-def _pad_problems(text: str, data: bytes, ref: str) -> list[str]:
+def _pad_problems(text: str, data: bytes, ref: str, major: int) -> list[str]:
     """Each pad get_footprint_pads printed for ``ref``, against fp_relative_to_board of the
-    footprint and pad as KiCad reads them from ``data``, under both majors."""
+    footprint and pad as KiCad ``major``, the KiCad whose format the board carries, reads
+    them from ``data``."""
     (fp,) = _footprints(_root(data), ref)
     printed = _printed_board_positions(text)
+    at, orientation = _placement(fp, major=major)
+    pads = _pad_locals(fp, major=major)
+    if set(printed) != set(pads):
+        return [f"printed pads {sorted(printed)}, the footprint has {sorted(pads)}"]
     problems = []
-    for major in MAJORS:
-        at, orientation = _placement(fp, major=major)
-        pads = _pad_locals(fp, major=major)
-        if set(printed) != set(pads):
-            problems.append(f"printed pads {sorted(printed)}, the footprint has {sorted(pads)}")
-            continue
-        for number, local in pads.items():
-            want = B.fp_relative_to_board(at, orientation, local, major=major)
-            what = f"KiCad {major}, {ref} at {orientation} degrees, pad {number} local {local}"
-            problems += _printed_problems(printed[number], want, major, what)
+    for number, local in pads.items():
+        want = B.fp_relative_to_board(at, orientation, local, major=major)
+        what = f"KiCad {major}, {ref} at {orientation} degrees, pad {number} local {local}"
+        problems += _printed_problems(printed[number], {want}, major, what)
     return problems
 
 
@@ -358,12 +374,20 @@ def test_get_footprint_pads_reports_kicads_pad_positions(version, at, angle, pad
     board (x, y) get_footprint_pads prints reads, as KiCad reads number text, as
     fp_relative_to_board of the footprint's position, the orientation KiCad stores
     (Normalize180 of the angle atom) and the pad's local position, all read back from the
-    file, to the nanometre. A pad's own angle moves nothing. Boards with a pad at an
-    exact half-nanometre tie, as KiCad reads the file, are left out (bug 87)."""
+    file, to the nanometre, by the KiCad whose format the header is. A pad's own angle
+    moves nothing."""
+    printed, data = _pads_printed(version, at, angle, pads)
+    problems = _pad_problems(printed, data, "U1", _HEADER_MAJOR[version])
+    assert not problems, "\n".join(problems)
+
+
+def _pads_printed(version: str, at, angle: float, pads) -> tuple[str, bytes]:
+    """(what get_footprint_pads prints for U1, the board) on a fresh board with the
+    ``version`` header holding U1 at ``at`` (nm) and ``angle``, and ``pads``, each
+    (local offset in nm, its own angle), numbered from 1."""
     numbered = [(str(k + 1), offset, own) for k, (offset, own) in enumerate(pads)]
     footprint = G.footprint_text("U1", at, angle, numbered, version=version)
     text = G.board_text([footprint], version=version)
-    assume(not _ties_on(text.encode()))
     with tempfile.TemporaryDirectory() as work:
         path = Path(work) / "pads.kicad_pcb"
         path.write_text(text, encoding="utf-8", newline="\n")
@@ -371,9 +395,26 @@ def test_get_footprint_pads_reports_kicads_pad_positions(version, at, angle, pad
             printed = pcb.get_footprint_pads("U1", pcb_path=str(path))
         finally:
             _forget(path)
-        data = path.read_bytes()
-    problems = _pad_problems(printed, data, "U1")
-    assert not problems, "\n".join(problems)
+        return printed, path.read_bytes()
+
+
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_get_footprint_pads_rounds_a_tie_as_the_boards_kicad_does(version):
+    """A pad 1 nm off the centre of a footprint at 30 degrees, local (0, 1) nm:
+    RotatePoint turns its x to exactly 1 * sin 30 = 0.49999999999999994 nm, which KiCad
+    9's KiROUND takes to 1 and KiCad 10's to 0 (kicad_ref.eda_units). Only the KiCad whose
+    format a board carries reads it, so get_footprint_pads prints the pad where that KiCad
+    holds it: KiCad 9's value on a KiCad 9 board, KiCad 10's on a KiCad 10 board."""
+    at, angle, local = (100 * MM, 50 * MM), 30.0, (0, 1)
+    major = _HEADER_MAJOR[version]
+    want = B.fp_relative_to_board(at, angle, local, major=major)
+    other = B.fp_relative_to_board(at, angle, local, major={9: 10, 10: 9}[major])
+    if want == other:
+        raise RuntimeError(f"KiCad 9 and KiCad 10 agree on {local} at {angle}: no tie here")
+    printed, _ = _pads_printed(version, at, angle, [(local, 0.0)])
+    what = f"KiCad {major}, a pad at local {local} on a footprint at {angle} degrees"
+    problems = _printed_problems(_printed_board_positions(printed)["1"], {want}, major, what)
+    assert not problems, problems
 
 
 _PAD_POSITIONS = r"""
@@ -399,7 +440,10 @@ def _pcbnew_major() -> int:
 def _pcbnew_problems(board: Path, found: dict, refs, major: int) -> tuple[int, list[str]]:
     """(pads checked, problems): each pad position get_footprint_pads prints for the
     footprints ``refs`` on ``board`` against pcbnew's pad.GetPosition() in ``found``, to
-    the nanometre."""
+    the nanometre. Where the majors part and pcbnew holds one of their two positions
+    (_kicads_positions), either is accepted, since the pcbnew may be another major than
+    the board's format (pcbnew 10 opening a KiCad 9 board on CI's KiCad 10 legs);
+    anywhere else only pcbnew's."""
     root = _root(board.read_bytes())
     problems = []
     checked = 0
@@ -408,15 +452,21 @@ def _pcbnew_problems(board: Path, found: dict, refs, major: int) -> tuple[int, l
             pads = found[ref]
             printed = _printed_board_positions(pcb.get_footprint_pads(ref, pcb_path=str(board)))
             (fp,) = _footprints(root, ref)
-            _, orientation = _placement(fp, major=major)
-            if set(printed) != set(pads):
-                problems.append(f"{ref}: printed pads {sorted(printed)}, pcbnew {sorted(pads)}")
+            at, orientation = _placement(fp, major=major)
+            local = _pad_locals(fp, major=major)
+            if set(printed) != set(pads) or set(local) != set(pads):
+                problems.append(
+                    f"{ref}: printed pads {sorted(printed)}, pcbnew {sorted(pads)},"
+                    f" the file {sorted(local)}"
+                )
                 continue
             for number, position in pads.items():
                 checked += 1
+                held = (position[0], position[1])
+                kicad = _kicads_positions(at, orientation, local[number])
                 what = f"{ref} at {orientation} degrees, pad {number}"
                 problems += _printed_problems(
-                    printed[number], (position[0], position[1]), major, what
+                    printed[number], kicad if held in kicad else {held}, major, what
                 )
     finally:
         _forget(board)
@@ -442,22 +492,24 @@ _AWKWARD_OFFSETS = (
     (12_500_000, 0),
     (-333_333, -666_667),
 )
-#: Bug 87's ties on the same board, (reference, position in nm, angle, pad offset in nm),
-#: each pad held by pcbnew 9.0.8 1 nm from where get_footprint_pads prints it (measured
-#: 2026-10-11): T1's at y = 50.123462 mm, printed 50.123463.
+#: Bug 87's ties on the same board, (reference, position in nm, angle, pad offset in nm):
+#: before step 7 get_footprint_pads printed each pad 1 nm from where pcbnew 9.0.8 holds
+#: it (measured 2026-10-11), T1's at y = 50.123463 mm where pcbnew holds 50.123462.
 _TIE_FOOTPRINTS = (
     ("T1", (100 * MM, 50_123_457), 30.0, (-11, 0)),
     ("T2", (123_456_789, -98_765_432), 150.0, (3, 0)),
     ("T3", (10 * MM, 20 * MM), 60.0, (0, 1)),
     ("T4", (10 * MM, 30 * MM), -30.0, (1, 0)),
 )
+#: The near tie of the module docstring on the same board, in the same form.
+_NEAR_TIE_FOOTPRINT = ("N1", (-999 * MM, 3), 45.0, (38_613_965, 0))
 
 
 @pytest.fixture(scope="module")
 def pcbnew_pads(tmp_path_factory):
     """(board, pcbnew's major, pcbnew's pad positions) for one board holding the twelve
-    awkward-angle footprints, U1 to U12, and _TIE_FOOTPRINTS: one pcbnew run per worker
-    for the two tests below."""
+    awkward-angle footprints, U1 to U12, _TIE_FOOTPRINTS and _NEAR_TIE_FOOTPRINT: one
+    pcbnew run per worker for the three tests below."""
     major = _pcbnew_major()
     items = [
         G.footprint_text(
@@ -470,7 +522,7 @@ def pcbnew_pads(tmp_path_factory):
     ]
     items += [
         G.footprint_text(ref, at, angle, [("1", local, 0.0)])
-        for ref, at, angle, local in _TIE_FOOTPRINTS
+        for ref, at, angle, local in (*_TIE_FOOTPRINTS, _NEAR_TIE_FOOTPRINT)
     ]
     board = tmp_path_factory.mktemp("pads") / "pads.kicad_pcb"
     board.write_text(G.board_text(items), encoding="utf-8", newline="\n")
@@ -480,11 +532,8 @@ def pcbnew_pads(tmp_path_factory):
 def test_pad_positions_match_pcbnew(pcbnew_pads):
     """On the awkward-angle board (twelve footprints, five pads each), every pad position
     get_footprint_pads prints reads as pcbnew's pad.GetPosition() for the board, to the
-    nanometre (all 60 were exact when measured). None of the twelve has a pad at an exact
-    half-nanometre tie; the board's tie footprints are the next test's (bug 87)."""
+    nanometre. The board's tie footprints are the next two tests'."""
     board, major, found = pcbnew_pads
-    if any(_half_nm_tie(a, offset) for a in _AWKWARD_ANGLES for offset in _AWKWARD_OFFSETS):
-        raise RuntimeError("an awkward-angle pad sits at a half-nanometre tie")
     refs = [f"U{i + 1}" for i in range(len(_AWKWARD_ANGLES))]
     checked, problems = _pcbnew_problems(board, found, refs, major)
     assert not problems, f"pcbnew {major}:\n" + "\n".join(problems)
@@ -492,7 +541,6 @@ def test_pad_positions_match_pcbnew(pcbnew_pads):
         raise RuntimeError(f"pcbnew {major} read {checked} pads where the board holds 60")
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG87)
 def test_pad_positions_at_half_nanometre_ties_match_pcbnew(pcbnew_pads):
     """Bug 87's ties, T1 to T4, on the same board and from the same pcbnew run: each pad
     position get_footprint_pads prints reads as pcbnew's pad.GetPosition(), to the
@@ -507,6 +555,16 @@ def test_pad_positions_at_half_nanometre_ties_match_pcbnew(pcbnew_pads):
     assert not problems, f"pcbnew {major}:\n" + "\n".join(problems)
 
 
+def test_pad_position_at_a_near_tie_matches_pcbnew(pcbnew_pads):
+    """The near tie, N1, on the same board and from the same pcbnew run: the pad position
+    get_footprint_pads prints reads as pcbnew's pad.GetPosition(), to the nanometre."""
+    board, major, found = pcbnew_pads
+    checked, problems = _pcbnew_problems(board, found, [_NEAR_TIE_FOOTPRINT[0]], major)
+    if checked != 1:
+        raise RuntimeError(f"pcbnew {major} read {checked} pads on N1, not 1")
+    assert not problems, f"pcbnew {major}:\n" + "\n".join(problems)
+
+
 @pytest.mark.nightly
 @settings(max_examples=sexpr_gen.budget(25))
 @given(
@@ -518,15 +576,13 @@ def test_pad_positions_at_half_nanometre_ties_match_pcbnew(pcbnew_pads):
 )
 def test_nightly_pad_positions_match_pcbnew(footprints):
     """The same over generated footprints, angles and pad offsets, one pcbnew run per
-    board. Boards with a pad at an exact half-nanometre tie, as KiCad reads the file, are
-    left out (bug 87)."""
+    board."""
     major = _pcbnew_major()
     items = [
         G.footprint_text(f"U{i + 1}", at, angle, [(str(k + 1), p, 0.0) for k, p in enumerate(pads)])
         for i, (at, angle, pads) in enumerate(footprints)
     ]
     text = G.board_text(items)
-    assume(not _ties_on(text.encode()))
     with tempfile.TemporaryDirectory() as work:
         board = Path(work) / "pads.kicad_pcb"
         board.write_text(text, encoding="utf-8", newline="\n")
