@@ -21,11 +21,12 @@ SetPosition, the flip, then the turn to the angle asked for.
 
 Judges, none of them the code under test:
 
-- kicad_ref.footprint (flip, place, the writer's spellings) with kicad_ref.board_layers,
-  reading every file with the lexer port; comparisons follow footprint_judge's rules D1 to
-  D3 (KiCad's reading; the comparison form; positions exact on quarter turns, within two
-  nanometres where pcbnew turned them; graphics by geometry) and leave out the mandatory
-  fields a file does not write (footprint_judge's written_fields_only);
+- kicad_ref.footprint (flip, place, turn_to, the writer's spellings) with
+  kicad_ref.board_layers, reading every file with the lexer port; comparisons follow
+  footprint_judge's rules D1 to D3 (KiCad's reading; texts as KiCad holds them; positions
+  exact on quarter turns, within two nanometres where pcbnew turned them; graphics by
+  geometry) and leave out the mandatory fields a file does not write (footprint_judge's
+  written_fields_only);
 - pcbnew flipping the same footprint (pcbnew_fp_ops), per footprint, and reading the
   tool's board;
 - math: an involution, a composition, KiCad's group law;
@@ -170,9 +171,9 @@ def _kicads_flip(data: bytes, start: F.Footprint, version: str) -> F.Footprint:
 
 
 def _kicads_reading(fp: F.Footprint) -> F.Footprint:
-    """What KiCad reads back from the tokens it writes for ``fp``, in the comparison form
-    (test_ladder_r3_fp_place's helper of the same name)."""
-    return F.written(F.canonical(fp))
+    """What KiCad reads back from the tokens it writes for ``fp`` (test_ladder_r3_fp_place's
+    helper of the same name)."""
+    return F.written(fp)
 
 
 def _flipped(fp, theta0, version, *, users=()) -> tuple[bytes, bytes]:
@@ -250,8 +251,8 @@ def test_flip_leaves_unsided_text_mirrors_alone(fp, theta0, version):
 )
 def test_flip_turns_pad_and_text_angles_as_kicad_does(fp, theta0, version):
     """A footprint KiCad holds at any angle, flipped: every pad's absolute angle and every
-    text's angle, keep-upright flag and justification read as KiCad's flip of it, in the
-    comparison form. A pad at 45 on a footprint at 0 lands at 135; the tool left it at 45."""
+    text's angle, keep-upright flag and justification read as KiCad's flip of it. A pad at
+    45 on a footprint at 0 lands at 135; the tool left it at 45."""
     before, after = _flipped(fp, theta0, version)
     problems = _flip_problems(before, after, version, shapes=True)
     assert not problems, "\n".join(problems)
@@ -387,7 +388,11 @@ def test_flip_twice_is_byte_identical(justified, fp, theta0, version):
 @given(fp=E.synthetic_footprints(pad_details=True), theta0=_HALF, version=_VERSIONS)
 def test_flip_twice_reads_as_the_start(fp, theta0, version):
     """From any angle that is a multiple of half a degree, 0 included: after two flips KiCad
-    reads the footprint as it read it before them, pads, texts and graphics included."""
+    reads the footprint as it read it before them, pads, texts and graphics included, the
+    texts in the upright form (footprint_judge's D2): KiCad's own two flips turn upright a
+    keep-upright text that a footprint placed at 0 holds at 180 or more, so the law holds
+    only up to KeepUpright (pcbnew 9.0.8 takes such a Reference at 200 justified left to 20
+    justified right, and so does the tool; measured 2026-10-11)."""
     with tempfile.TemporaryDirectory() as work:
         board = _start_board(Path(work), fp, theta0, version)
         before = board.read_bytes()
@@ -401,6 +406,7 @@ def test_flip_twice_reads_as_the_start(fp, theta0, version):
         shapes=True,
         details=True,
         copper_count=FJ.copper_count(after),
+        upright=True,
     )
     assert not problems, "\n".join(problems)
 
@@ -686,8 +692,8 @@ def test_flip_gives_a_layerless_text_its_flipped_default(tmp_path, version):
 def test_place_on_the_back_matches_kicads_placement(fp, version):
     """place_footprint with layer B.Cu and rotation 0: KiCad's reading of the placed
     footprint is KiCad's own placement, FootprintLoad, SetPosition, Flip, then the turn
-    to 0 (kicad_ref.footprint.place with the board's flip), in the comparison form: every
-    pad, text and graphic on the back, mirrored, at the angles the flip gives (rung 3's
+    to 0 (kicad_ref.footprint.place with the board's flip and turn_to): every pad, text
+    and graphic on the back, mirrored, at the angles the flip and the turn give (rung 3's
     D4: at 0, so bug 2 plays no part). The tool rewrote only the footprint's layer."""
     with tempfile.TemporaryDirectory() as work:
         pretty = E.write_library(work, fp)
@@ -701,7 +707,7 @@ def test_place_on_the_back_matches_kicads_placement(fp, version):
         E.library_footprint(fp),
         got.position,
         0.0,
-        semantics="rotate",
+        semantics="turn",
         flipped=lambda f: F.board_flip(f, table, major=major),
     )
     problems = FJ.differences(
@@ -857,9 +863,10 @@ def test_flip_carries_footprint_zones(fp, theta0, version):
 def test_place_on_the_back_carries_footprint_zones(fp, angle, version):
     """A library footprint owning zones placed by place_footprint on B.Cu at any angle:
     the board gains exactly that footprint (edit_judge.assert_inserted), and KiCad reads
-    it as its own FootprintLoad, SetPosition, Flip and turn to the angle (the turn by the
-    change from the angle the flip left, as SetOrientation computes it), its zones in
-    board coordinates mirrored and turned with it. The tool refused it."""
+    it as its own FootprintLoad, SetPosition, Flip and turn to the angle (turn_to: the
+    change from the angle the flip left, as SetOrientation computes it, then
+    KeepUpright), its zones in board coordinates mirrored and turned with it. The tool
+    refused it."""
     with tempfile.TemporaryDirectory() as work:
         pretty = E.write_library(work, fp)
         board = _board(Path(work) / "back.kicad_pcb", version=version)
@@ -877,7 +884,7 @@ def test_place_on_the_back_carries_footprint_zones(fp, angle, version):
         E.library_footprint(fp),
         got.position,
         angle,
-        semantics="set",
+        semantics="turn",
         flipped=lambda f: F.board_flip(f, table, major=major),
         major=major,
     )
@@ -1391,10 +1398,10 @@ def _pcbnew_flip_problems(runs: _FlipRuns, indices, **compare) -> list[str]:
 def test_flip_matches_pcbnew(runs):
     """One item: the curated set and a footprint with custom pads, as pcbnew placed them at
     0, 90, 180, 270, 30 and 45 degrees (3D models removed), flipped by move_footprint and
-    by pcbnew's FOOTPRINT::Flip: each footprint the tool wrote reads as pcbnew's in the
-    comparison form (side, angle, every pad's angle, position, layers, offset, delta,
-    chamfers and primitives, every text's style, layer and position, every graphic's
-    geometry; positions within two nanometres off the quarter turns)."""
+    by pcbnew's FOOTPRINT::Flip: each footprint the tool wrote reads as pcbnew's (side,
+    angle, every pad's angle, position, layers, offset, delta, chamfers and primitives,
+    every text's style, layer and position as KiCad holds them, every graphic's geometry;
+    positions within two nanometres off the quarter turns)."""
     problems = _pcbnew_flip_problems(
         runs, range(len(runs.names)), shapes=True, details=True, written_fields_only=True
     )
@@ -1435,8 +1442,8 @@ def test_flip_and_rotate_match_pcbnew_token_for_token(runs, part):
 def test_place_on_the_back_matches_pcbnew(runs):
     """One item: the curated set, 3D models kept, placed on the back at 0 by place_footprint
     and by pcbnew (FootprintLoad, SetPosition, Flip, then the turn to 0): each footprint
-    the tool wrote reads as pcbnew's in the comparison form, the mandatory fields its
-    library does not write aside (rung 3's D4: at 0)."""
+    the tool wrote reads as pcbnew's, the mandatory fields its library does not write
+    aside (rung 3's D4: at 0)."""
     problems = []
     copper = FJ.copper_count(runs.tool_back)
     for i, path in enumerate(runs.originals):

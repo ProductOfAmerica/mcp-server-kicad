@@ -120,10 +120,26 @@ The operations (pcbnew/footprint.cpp, identical in substance at both tags):
 - placing a library footprint (FootprintLoad, then SetPosition, then Rotate or
   SetOrientation): the library footprint reads with orientation 0 at the origin.
 
-``canonical`` is the comparison form of the test ladder's rule D2: a keep-upright text in
-the form KeepUpright leaves it (angle below 180, the justification negated if it was
-turned), any other text at its angle Normalize()d. It accepts both of KiCad's paths, Rotate
-and SetOrientation, as one.
+``turn_to`` is the turn a tool's rotation asks for, the footprint turned to the angle the
+rotation names: nothing at all when Normalize180 of it is the orientation the footprint
+holds, else SetOrientation to it and KeepUpright, which is FOOTPRINT::Rotate by the change
+wherever the orientation plus the change is that angle in doubles. The board editor's
+footprint properties dialog does the same up to a whole turn in the change (it runs Rotate
+by the typed angle Normalize()d less the one held, and none when the two are equal,
+pcbnew/dialogs/dialog_footprint_properties.cpp:636-639 at 9.0.8), but for a footprint held
+at an angle below 0 and typed again, which it turns by 360.
+
+``canonical`` is the upright form: a keep-upright text in the form KeepUpright leaves it
+(angle below 180, the justification negated if it was turned), any other text at its angle
+Normalize()d. Neither KiCad's parser runs KeepUpright on load (parsePCB_TEXT_effects only
+sets the flag, pcb_io_kicad_sexpr_parser.cpp:3447, 3476 and 3532 at 9.0.8, 3964, 3993 and
+4049 at 10.0.7), and PCB_TEXT::GetDrawRotation folds a keep-upright text's angle into
+(-90, 90] without touching its justification (pcbnew/pcb_text.cpp:181-200 at 9.0.8, 219-238
+at 10.0.7), so a text and the one KeepUpright makes of it are two states KiCad holds, and a
+justified one draws on the other side of its anchor. The upright form holds the two as one:
+it states the laws KiCad's operations keep only up to KeepUpright (Rotate against
+SetOrientation, four quarter turns or two flips from a text not yet upright), never what a
+tool must write.
 
 This module imports nothing from mcp_server_kicad.
 """
@@ -608,6 +624,15 @@ def rotate(fp: Footprint, degrees: float, *, major: int = 10) -> Footprint:
     return keep_upright(set_orientation(fp, fp.orientation + degrees, major=major))
 
 
+def turn_to(fp: Footprint, degrees: float, *, major: int = 10) -> Footprint:
+    """``fp`` turned to the angle ``degrees`` names, as a tool's rotation asks (module
+    docstring): unchanged when Normalize180( degrees ) is its orientation, else
+    SetOrientation( degrees ) and KeepUpright."""
+    if normalize180(degrees) == fp.orientation:
+        return fp
+    return keep_upright(set_orientation(fp, degrees, major=major))
+
+
 def is_cardinal(degrees: float) -> bool:
     """EDA_ANGLE::IsCardinal (libs/kimath/src/geometry/eda_angle.cpp:40-49 at 9.0.8, the
     same at 10.0.7): a multiple of 90 degrees, tested by stepping into [0, 90)."""
@@ -712,12 +737,12 @@ def place(
     major: int = 10,
 ) -> Footprint:
     """A library footprint (orientation 0) placed at ``position`` and turned to ``degrees``
-    by Rotate (``semantics="rotate"``, the editor's rotate command and properties dialog)
-    or by SetOrientation (``"set"``, the Python API). With ``flipped`` (a flip of the
-    board, such as board_flip bound to its table) the footprint is flipped after
-    SetPosition and before the turn, which then turns it from the orientation the flip
-    left (SetLayerAndFlip( B_Cu ), then the turn to ``degrees``). Zones and points turn
-    as KiCad ``major`` rounds."""
+    by Rotate by the change (``semantics="rotate"``, the editor's rotate command), by
+    SetOrientation (``"set"``, the Python API) or by turn_to (``"turn"``, the turn a
+    tool's rotation asks for). With ``flipped`` (a flip of the board, such as board_flip
+    bound to its table) the footprint is flipped after SetPosition and before the turn,
+    which then turns it from the orientation the flip left (SetLayerAndFlip( B_Cu ), then
+    the turn to ``degrees``). Zones and points turn as KiCad ``major`` rounds."""
     if library.orientation != 0:
         raise ValueError(f"a library footprint reads at orientation 0, not {library.orientation}")
     placed = set_position(library, position)
@@ -727,11 +752,13 @@ def place(
         return rotate(placed, degrees - placed.orientation, major=major)
     if semantics == "set":
         return set_orientation(placed, degrees, major=major)
+    if semantics == "turn":
+        return turn_to(placed, degrees, major=major)
     raise ValueError(f"no such semantics {semantics!r}")
 
 
 # ---------------------------------------------------------------------------
-# writing, and the comparison form
+# writing, and the upright form
 # ---------------------------------------------------------------------------
 
 
@@ -764,7 +791,10 @@ def written(fp: Footprint) -> Footprint:
 
 
 def canonical(fp: Footprint) -> Footprint:
-    """The comparison form (rule D2, module docstring)."""
+    """The upright form (module docstring): every keep-upright text as KeepUpright leaves
+    it, every other text at its angle Normalize()d. It holds two states KiCad keeps apart
+    as one, so it states only laws that hold up to KeepUpright, never what a tool must
+    write."""
     texts = []
     for t in fp.texts:
         if t.style.keep_upright:

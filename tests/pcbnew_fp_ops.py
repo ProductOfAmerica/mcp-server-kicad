@@ -25,12 +25,15 @@ result per job. A job is a dict built by the helpers below:
   uuid, path and sheet), KiCad 10's KeepUpright on each matched text included when
   pcbnew is 10 or later (pcb_edit_frame.cpp:2504 at 10.0.7); then SetValue of the
   item's value, as the updater's updateFootprintParameters does; SaveBoard( board_out ).
-  Its uuid matching is KiCad 9.0.8's on every major (KiCad 10 matches by similarity).
+  Its uuid matching, and so the texts it takes as matched, is KiCad 9.0.8's on every major
+  (KiCad 10 matches by similarity, kicad_ref.exchange).
 
-A turn is ("rotate", d): FOOTPRINT::Rotate( position, d ); ("rotate_to", a): Rotate by
-a minus the orientation the footprint holds, which is what the editor's footprint
-properties dialog does for a new angle (dialogs/dialog_footprint_properties.cpp:636-639 at
-9.0.8, without its Normalize of the typed value); ("set", a): FOOTPRINT::SetOrientation(
+A turn is ("rotate", d): FOOTPRINT::Rotate( position, d ); ("rotate_to", a): the turn a
+tool's rotation asks for (kicad_ref.footprint.turn_to), nothing when
+EDA_ANGLE::Normalize180 of a is the orientation the footprint holds, else Rotate by a
+minus that orientation, which is what the editor's footprint properties dialog does for a
+new angle (dialogs/dialog_footprint_properties.cpp:636-639 at 9.0.8, without its
+Normalize of the typed value); ("set", a): FOOTPRINT::SetOrientation(
 a ), the Python API's path; ("flip", None): FOOTPRINT::Flip( position,
 FLIP_DIRECTION::LEFT_RIGHT ), what SetLayerAndFlip runs to change the side; a list of
 turns, applied in order; or None. Each job's result describes every footprint it
@@ -233,7 +236,9 @@ def turn(fp, how):
     if kind == "rotate":
         fp.Rotate(fp.GetPosition(), angle(value))
     elif kind == "rotate_to":
-        fp.Rotate(fp.GetPosition(), angle(float(value) - fp.GetOrientation().AsDegrees()))
+        held = fp.GetOrientation().AsDegrees()
+        if angle(value).Normalize180().AsDegrees() != held:
+            fp.Rotate(fp.GetPosition(), angle(float(value) - held))
     elif kind == "set":
         fp.SetOrientation(angle(value))
     elif kind == "flip":

@@ -10,19 +10,22 @@ KiCad's rule (kicad_ref.exchange, which test_ladder_r3_judges.py checks against 
 replaying ExchangeFootprint): a locked footprint is never swapped, the updater reports it
 and still updates its value, fields and pads; any other footprint is replaced by the
 library footprint placed at its position, flipped onto its side and set to its
-orientation, so it keeps position, angle and side, its pads and texts turned and flipped
-with it; the new footprint carries the old footprint's uuid, its Reference's and Value's,
-each other field's by name, each fp_text's by getMatchingTextItem and each pad's by
-number, so a group that listed the old footprint lists the new one. Stale removal keeps a
-locked footprint. A footprint is locked when KiCad's parser reads it so: a bare
-``locked``, (locked), (locked yes) or (locked true), and not (locked no) or (locked
-false).
+orientation by SetOrientation, so it keeps position, angle and side, its pads and texts
+turned and flipped with it; KiCad 9 turns no text upright after that, KiCad 10 turns
+upright each text it pairs with an old one; the new footprint carries the old footprint's
+uuid, its Reference's and Value's, each other field's by name, each fp_text's by
+getMatchingTextItem and each pad's by number (KiCad 9.0.8's rules; KiCad 10.0.7 pairs by
+similarity, of which kicad_ref.exchange holds what it makes certain), so a group that
+listed the old footprint lists the new one. Stale removal keeps a locked footprint. A
+footprint is locked when KiCad's parser reads it so: a bare ``locked``, (locked),
+(locked yes) or (locked true), and not (locked no) or (locked false).
 
 Judges, none of them the code under test:
 
 - kicad_ref.exchange (exchange, carried_ids, is_locked) over kicad_ref.footprint's
   reading of every file through the lexer port; comparisons follow footprint_judge's
-  rules D1 to D3 and leave out the mandatory fields a file does not write;
+  rules D1 to D3, texts as KiCad holds them, and leave out the mandatory fields a file
+  does not write;
 - the domain rule that a swap to the same geometry under another name keeps every pad
   where it was;
 - pcbnew replaying the exchange (pcbnew_fp_ops.exchange_job), per footprint;
@@ -33,10 +36,11 @@ Judges, none of them the code under test:
 Rung 3's D4 kept each test to one cause while its bug was open: bug 7's tests compare
 footprint geometry and pad positions, never pad angles, with library pad angles 0; bug
 2's swap tests stand on the front, or on the back at plus or minus 90, where bug 7's
-angle agreed; bug 16's text test swaps on the front and compares texts only; bug 15's
-zone test is a front swap comparing zones only. Generated tests build their boards in temporary
-directories (D17); the hand-picked ones write into tmp_path, where the autouse oracle
-loads every board and footprint with kicad-cli.
+angle agreed; bug 16's text tests swap on the front and compare texts only, its pcbnew
+text rows compare texts only, and its KiCad 10 pad test compares uuids only; bug 15's
+zone test is a front swap comparing zones only. Generated tests build their boards in
+temporary directories (D17); the hand-picked ones write into tmp_path, where the autouse
+oracle loads every board and footprint with kicad-cli.
 """
 
 from __future__ import annotations
@@ -58,6 +62,7 @@ from hypothesis import strategies as st
 from kicad_ref import board_item as B
 from kicad_ref import exchange as X
 from kicad_ref import footprint as F
+from kicad_ref import pcb_text as T
 
 from mcp_server_kicad import pcb
 
@@ -117,13 +122,30 @@ def _pads_at_zero(fp: E.SynFootprint) -> E.SynFootprint:
 
 def _kicads_swap(before: bytes, ref: str, library: Path, version: str) -> F.Footprint:
     """KiCad's exchange of footprint ``ref`` of the board ``before`` for the library file
-    ``library`` (kicad_ref.exchange), read back as KiCad writes it, in the comparison
-    form."""
+    ``library`` (kicad_ref.exchange), read back as KiCad writes it."""
     major = _major(version)
     copper = FJ.copper_count(before)
     old = FJ.read(before, ref, major=major)
     new = F.read_footprint(FJ.root(library.read_bytes()), major=major, copper_count=copper)
-    return F.written(F.canonical(X.exchange(old, new, FJ.layer_table(before), major=major)))
+    return F.written(X.exchange(old, new, FJ.layer_table(before), major=major))
+
+
+def _xfail(bug: int, what: str):
+    return pytest.mark.xfail(
+        strict=True, raises=AssertionError, reason=f"bug {bug}: {what}; fixed by step 7"
+    )
+
+
+_BUG_16_UPRIGHT = _xfail(
+    16,
+    "the swap turns the new footprint with Rotate, whose KeepUpright KiCad 9's exchange"
+    " never runs and KiCad 10's runs on the texts it pairs with old ones only",
+)
+_BUG_16_PAD_UUIDS = _xfail(
+    16,
+    "on a KiCad 10 board the swap gives every new pad of a number the first old pad's"
+    " uuid, so pads of one number share it",
+)
 
 
 def _swapped(
@@ -314,43 +336,90 @@ def test_swap_composes_library_pad_angles(side, theta, old, new, turn):
     assert not problems, "\n".join(problems)
 
 
-def _text_problems(old: E.SynFootprint, new: E.SynFootprint, theta: float) -> list[str]:
-    """A front swap of ``old`` at ``theta`` for ``new``: where the new footprint's fields
-    and fp_text items differ from KiCad's exchange's (angle, keep-upright, justification,
-    layer and position, in the comparison form, which holds KiCad 9's SetOrientation and
-    KiCad 10's KeepUpright as one, D2), the mandatory fields its file leaves out aside."""
+def _pairs_as_kicad9(old: E.SynFootprint, new: E.SynFootprint) -> bool:
+    """Whether KiCad 10.0.7 pairs the fp_texts of ``old`` and ``new`` as getMatchingTextItem
+    does, which kicad_ref.exchange ports for the texts KiCad 10's exchange turns upright
+    (its module docstring). Generated footprints hold each fp_text text and each user field
+    name once, and their fp_text texts lie far apart, so it does unless each footprint
+    holds an fp_text text the other lacks, two texts KiCad 10 can pair by similarity."""
+    mine = {t.text for t in old.texts if t.head == "fp_text"}
+    theirs = {t.text for t in new.texts if t.head == "fp_text"}
+    return not (mine - theirs and theirs - mine)
+
+
+def _text_problems(
+    old: E.SynFootprint, new: E.SynFootprint, theta: float, version: str
+) -> list[str]:
+    """A front swap of ``old`` at ``theta`` for ``new`` on a board of ``version``: where the
+    new footprint's fields and fp_text items differ from KiCad's exchange's (angle,
+    keep-upright, justification, layer and position, as KiCad holds them, D2), the
+    mandatory fields its file leaves out aside. On KiCad 10 only for footprints whose
+    fp_texts it pairs as the port does (_pairs_as_kicad9)."""
+    if version == "k10":
+        assume(_pairs_as_kicad9(old, new))
     with tempfile.TemporaryDirectory() as work:
-        before, after, library, _ = _swapped(old, new, theta, "F.Cu", "k9", Path(work))
-        want = _kicads_swap(before, "U1", library, "k9")
-    got = FJ.read(after, "U1", major=9)
+        before, after, library, _ = _swapped(old, new, theta, "F.Cu", version, Path(work))
+        want = _kicads_swap(before, "U1", library, version)
+    got = FJ.read(after, "U1", major=_major(version))
     return FJ.differences(got._replace(pads=()), want._replace(pads=()), written_fields_only=True)
 
 
+#: footprint_with_pad_at(0) with a keep-upright fp_text KEEP justified left, which no old
+#: footprint_with_pad_at(0) holds, so KiCad 10's exchange pairs it with no old text.
+_WITH_KEEP = E.footprint_with_pad_at(0.0)._replace(
+    name="Keep",
+    texts=(
+        *E.footprint_with_pad_at(0.0).texts,
+        E.SynText(
+            "fp_text", "user", "KEEP", (MM, MM), 0.0, True, T.LEFT, T.CENTER, False, "F.SilkS"
+        ),
+    ),
+)
+
+
+@_BUG_16_UPRIGHT
+@pytest.mark.parametrize("version", ["k9", "k10"])
 @settings(max_examples=sexpr_gen.budget(4))
 @example(old=E.footprint_with_pad_at(0.0), new=E.footprint_with_pad_at(0.0), theta=90.0)
+@example(old=E.footprint_with_pad_at(0.0), new=_WITH_KEEP, theta=180.0)
 @given(
     old=E.synthetic_footprints(),
     new=E.synthetic_footprints(),
     theta=G.angles().filter(lambda a: a % 360 != 0),
 )
-def test_swap_turns_texts_as_kicad_does(old, new, theta):
-    """A front footprint at an angle that is not a whole turn swapped for another: every
-    field and fp_text of the new footprint reads as KiCad's exchange leaves it, turned
-    with the footprint (_text_problems). The tool left every text at its library angle."""
-    problems = _text_problems(old, new, theta)
+def test_swap_turns_texts_as_kicad_does(version, old, new, theta):
+    """A front footprint at an angle that is not a whole turn swapped for another, on a
+    board of either major: every field and fp_text of the new footprint reads as KiCad's
+    exchange leaves it (_text_problems), turned with the footprint by SetOrientation and,
+    on KiCad 10, turned upright where the exchange pairs it with an old text. The tool
+    left every text at its library angle, and then turned every one upright: swapped in
+    at 180 (the second example), the keep-upright Reference and KEEP, both justified left,
+    stand at 180 for KiCad 9; KiCad 10 turns the Reference upright and leaves KEEP, which
+    it pairs with no old text, at 180."""
+    problems = _text_problems(old, new, theta, version)
     assert not problems, "\n".join(problems)
 
 
+#: footprint_with_pad_at(0) with its texts written at 200: a keep-upright Reference
+#: justified left, which KeepUpright turns to 20 justified right, and an unlocked Value.
+_TEXTS_AT_200 = E.footprint_with_pad_at(0.0, rotation_text=200.0)
+
+
+@pytest.mark.parametrize("version", ["k9", pytest.param("k10", marks=_BUG_16_UPRIGHT)])
 @settings(max_examples=sexpr_gen.budget(4))
+@example(old=E.footprint_with_pad_at(0.0), new=_TEXTS_AT_200, theta=0.0)
 @given(
     old=E.synthetic_footprints(),
     new=E.synthetic_footprints(),
     theta=st.sampled_from((0.0, 360.0, -360.0, 720.0)),
 )
-def test_swap_at_a_whole_turn_keeps_library_texts(old, new, theta):
-    """The passing sibling (D5): at a whole turn KiCad's exchange leaves every text as the
-    library has it, and so does the swap."""
-    problems = _text_problems(old, new, theta)
+def test_swap_at_a_whole_turn_turns_texts_as_kicad_does(version, old, new, theta):
+    """At a whole turn KiCad 9's exchange leaves every text as the library has it, and so
+    does the swap (the passing sibling, D5). KiCad 10's turns upright every text it pairs
+    with an old one even there, since processTextItem runs KeepUpright whether or not the
+    footprint turned (pcb_edit_frame.cpp:2504 at 10.0.7): the example's Reference, written
+    at 200, stands at 20 justified right. The tool turned nothing."""
+    problems = _text_problems(old, new, theta, version)
     assert not problems, "\n".join(problems)
 
 
@@ -421,8 +490,10 @@ def _group_members(data: bytes) -> list[frozenset[str]]:
 
 def _uuid_problems(before: bytes, after: bytes, library: Path, version: str) -> list[str]:
     """Where U1's uuids after a swap differ from the ones KiCad's exchange carries over
-    (kicad_ref.exchange.carried_ids, footprint_judge.uuid_problems), and where the board's
-    group no longer lists what it did or lists a uuid no footprint holds."""
+    (kicad_ref.exchange.carried_ids for the board's major, footprint_judge.uuid_problems),
+    on KiCad 10 where U1 writes one uuid twice, which its one-to-one pairing never does,
+    and where the board's group no longer lists what it did or lists a uuid no footprint
+    holds."""
     major = _major(version)
     copper = FJ.copper_count(before)
     old_group = FJ.footprint_group(before, "U1")
@@ -435,13 +506,21 @@ def _uuid_problems(before: bytes, after: bytes, library: Path, version: str) -> 
         major=major,
     )
     old_ids = X.read_ids(old_group)
+    written = X.read_ids(FJ.footprint_group(after, "U1"))
     problems = FJ.uuid_problems(
         FJ.read(after, "U1", major=major),
-        X.read_ids(FJ.footprint_group(after, "U1")),
+        written,
         port,
-        X.carried_ids(old_group, old, new_group, port, copper),
+        X.carried_ids(old_group, old, new_group, port, copper, major=major),
         {u for u in (old_ids.footprint, *old_ids.pads, *old_ids.texts) if u},
     )
+    if major >= 10:
+        uuids = [u for u in (written.footprint, *written.pads, *written.texts) if u]
+        problems += [
+            f"uuid {u} written {uuids.count(u)} times"
+            for u in sorted(set(uuids))
+            if uuids.count(u) > 1
+        ]
     if _group_members(after) != _group_members(before):
         problems.append(
             f"the group lists {_group_members(after)}, it listed {_group_members(before)}"
@@ -476,6 +555,38 @@ def test_swap_keeps_uuids_and_group_membership(old, new, theta):
         problems = _uuid_problems(
             before, board.read_bytes(), pretty / f"{new.name}.kicad_mod", "k9"
         )
+    assert not problems, "\n".join(problems)
+
+
+def _tabbed(name: str, y: int) -> E.SynFootprint:
+    """A footprint with two pads of one number, as SOT-223's tab is a second pad 2: pads
+    1, 2 and 3 in a row at ``y`` and pad 2 again opposite them."""
+    pads = (
+        E.SynPad("1", (-2_300_000, y), 0.0),
+        E.SynPad("2", (0, y), 0.0),
+        E.SynPad("3", (2_300_000, y), 0.0),
+        E.SynPad("2", (0, -y), 0.0),
+    )
+    return E.SynFootprint(name, pads, E.footprint_with_pad_at(0.0).texts)
+
+
+@_BUG_16_PAD_UUIDS
+def test_kicad10_swap_writes_no_uuid_twice(tmp_path):
+    """On a KiCad 10 board, a footprint with two pads 2 swapped for another such footprint:
+    no uuid is written twice in the new footprint, since KiCad 10.0.7 pairs old and new
+    pads one to one and gives each pad it leaves unpaired a fresh uuid
+    (matchItemsBySimilarity, pcb_edit_frame.cpp:2527-2594 at 10.0.7, and ResetUuid, 2675);
+    and the footprint, its Reference and Value and pads 1 and 3, whose numbers each
+    footprint holds once, carry the old ones' uuids (kicad_ref.exchange.carried_ids with
+    major 10). The tool gave both new pads 2 the first old pad 2's uuid, KiCad 9.0.8's
+    rule, which KiCad 10 does not have."""
+    old, new = _tabbed("Tabbed", 3_150_000), _tabbed("TabbedWide", 3_250_000)
+    u1 = E.board_footprint_text(old, "U1", _AT, 30.0, version="k10")
+    board = _board(tmp_path / "tabbed.kicad_pcb", [u1], "k10")
+    pretty = E.write_library(tmp_path, new, library=_SWAP)
+    before = board.read_bytes()
+    _update(board, _swap_netlist("U1", new), [pretty])
+    problems = _uuid_problems(before, board.read_bytes(), pretty / f"{new.name}.kicad_mod", "k10")
     assert not problems, "\n".join(problems)
 
 
@@ -880,27 +991,38 @@ def _swap_runs(pairs, cases, work: Path) -> list[tuple[str, str, float, str, byt
 
 @pytest.fixture(scope="module")
 def runs(tmp_path_factory):
+    """_swap_runs over PCBNEW_PAIRS and one generated pair, footprint_with_pad_at(0) to
+    _WITH_KEEP, whose KEEP text KiCad 10's exchange pairs with no old text and so leaves
+    as SetOrientation turns it: the stock pairs' texts all pair, so on KiCad 10 they alone
+    cannot tell the exchange's KeepUpright from Rotate's."""
     reason = PJ.skip_reason()
     if reason:
         pytest.skip(reason)
-    cases = [
-        (k, angle, side)
-        for side in _SIDES
-        for angle in _PCBNEW_ANGLES
-        for k in range(len(PCBNEW_PAIRS))
-    ]
+    work = tmp_path_factory.mktemp("swap")
     pairs = [(E.stock_footprint(a), E.stock_footprint(b)) for a, b in PCBNEW_PAIRS]
-    return _swap_runs(pairs, cases, tmp_path_factory.mktemp("swap"))
+    old = E.footprint_with_pad_at(0.0)
+    pairs.append(
+        (
+            E.write_library(work / "old", old) / f"{old.name}.kicad_mod",
+            E.write_library(work / "new", _WITH_KEEP, library=_SWAP)
+            / f"{_WITH_KEEP.name}.kicad_mod",
+        )
+    )
+    cases = [
+        (k, angle, side) for side in _SIDES for angle in _PCBNEW_ANGLES for k in range(len(pairs))
+    ]
+    return _swap_runs(pairs, cases, work)
 
 
 def _pcbnew_problems(runs, side: str, part: str) -> list[str]:
     """Where the tool's swapped footprints differ from pcbnew's replay, per ``part``: the
     footprint's geometry and every pad's angle and position ("pads"), the geometry and
-    pad positions only ("geometry"), or the texts ("texts", at angles that are not 0)."""
+    pad positions only ("geometry"), or the texts as KiCad holds them ("texts", D2), the
+    mandatory fields the tool's file leaves out aside."""
     problems = []
     major = PJ.major()
     for ref, what, angle, run_side, mine, theirs in runs:
-        if run_side != side or (part == "texts" and angle == 0):
+        if run_side != side:
             continue
         got, want = FJ.read(mine, ref, major=major), FJ.read(theirs, ref, major=major)
         if part == "texts":
@@ -927,17 +1049,19 @@ def _pcbnew_problems(runs, side: str, part: str) -> list[str]:
     [
         pytest.param("F.Cu", "pads", id="front pads"),
         pytest.param("B.Cu", "geometry", id="back geometry"),
-        pytest.param("F.Cu", "texts", id="front texts"),
+        pytest.param("F.Cu", "texts", id="front texts", marks=_BUG_16_UPRIGHT),
+        pytest.param("B.Cu", "texts", id="back texts", marks=_BUG_16_UPRIGHT),
     ],
 )
 def test_swap_matches_pcbnew_exchange(runs, side, part):
-    """One item per part: PCBNEW_PAIRS, the old footprint as pcbnew placed it at 0, 90,
-    180 and 150 degrees, swapped by the update and by pcbnew's replay of
-    ExchangeFootprint: on the front every pad's angle and position and the footprint's
-    position, angle and side read as pcbnew's ("front pads"); on the back the footprint's
-    geometry and every pad's position ("back geometry"); on the front at 90, 180 and 150
-    every text in the comparison form ("front texts"). Positions within two nanometres
-    off the quarter turns."""
+    """One item per part: PCBNEW_PAIRS and the generated pair of the runs fixture, the old
+    footprint as pcbnew placed it at 0, 90, 180 and 150 degrees, swapped by the update and
+    by pcbnew's replay of ExchangeFootprint: on the front every pad's angle and position
+    and the footprint's position, angle and side read as pcbnew's ("front pads"); on the
+    back the footprint's geometry and every pad's position ("back geometry"); on each side
+    every text, its angle and justification as KiCad holds them ("front texts", "back
+    texts"; on the back the flip's own turn ends in KeepUpright, the SetOrientation after
+    it, on KiCad 9, in none). Positions within two nanometres off the quarter turns."""
     problems = _pcbnew_problems(runs, side, part)
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])
 

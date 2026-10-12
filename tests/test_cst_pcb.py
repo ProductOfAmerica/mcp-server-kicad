@@ -523,7 +523,7 @@ class TestFootprintWritersCst:
         want = F.board_flip(start, FJ.layer_table(before), major=major)
         problems = FJ.differences(
             FJ.read(after, "R1", major=major),
-            F.written(F.canonical(want)),
+            F.written(want),
             angles=False,
             shapes=True,
             written_fields_only=True,

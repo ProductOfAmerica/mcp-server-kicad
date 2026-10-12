@@ -7,8 +7,15 @@ ladder's rules for edits:
 - D1, KiCad's reading: two footprints are compared as KiCad reads their tokens (angles
   through Normalize180, Normalize and the text loader's arithmetic), so a spelling KiCad
   reads the same way is no difference; spelling is judged on its own (``tokens``).
-- D2, the comparison form (kicad_ref.footprint.canonical): a keep-upright text as
-  KeepUpright leaves it, any other text at its angle normalized.
+- D2, texts as KiCad holds them: a text's angle, keep-upright flag, justification and
+  mirror are compared as read and nothing more, since neither KiCad's parser runs
+  KeepUpright on load (kicad_ref.footprint's module docstring): a keep-upright text at 200
+  and the one KeepUpright makes of it, at 20 with its justification negated, are two
+  states KiCad holds. ``upright=True`` compares in the upright form instead
+  (kicad_ref.footprint.canonical), which holds the two as one: only for a law of KiCad's
+  own operations that holds just up to KeepUpright (two flips, or two turns against one,
+  from a footprint whose keep-upright texts are not upright yet), never against pcbnew or
+  a port.
 - D3, positions: footprint-relative positions are exact on quarter turns; elsewhere KiCad
   re-derives the ones it writes from board positions it rounded through RotatePoint, which
   can move each coordinate by up to two nanometres over a load, a turn and a save
@@ -28,7 +35,10 @@ ladder's rules for edits:
 A mandatory field a file leaves out (kicad_ref.footprint's ``default``) has no tokens a
 tool editing that file could change, so ``differences( written_fields_only=True )`` leaves
 out every field the first footprint holds as a default: KiCad's own flip takes such a
-field to the back, where KiCad reading the edited file still finds it on the front.
+field to the back, where KiCad reading the edited file still finds it on the front, and
+KiCad's own turn runs KeepUpright on it, where KiCad reading the edited file holds it at
+the footprint's angle. A comparison of a tool's footprint with KiCad's own (pcbnew's,
+which writes every field, or a port's) leaves them out so.
 
 A footprint's zones and KiCad 10 points hold board coordinates, which KiCad writes
 straight from the integers it holds (kicad_ref.footprint), so they compare exactly: a
@@ -81,10 +91,10 @@ ARC_TOLERANCE_NM = 150
 #: Within this many degrees, a mandatory field one file leaves out has the angle the
 #: other file writes for it. KiCad reads the one left out at Normalize( 0 + A ), A being
 #: the footprint's angle atom, whose FormatAngle keeps ten significant digits: within
-#: 5e-8 degrees of the angle KiCad held for any angle below 1000 (a footprint placed at
-#: 180.17578125 is written -179.8242188, so such a field reads 0.1757812 after
-#: KeepUpright where KiCad writing it gives 0.17578125). A defect moves an angle by a
-#: whole step, not by a digit's rounding.
+#: 5e-8 degrees of the angle KiCad held for any angle below 1000 (a footprint set to
+#: 180.17578125 is written -179.8242188, so such a field reads 180.1757812 where KiCad
+#: holding it gives 180.17578125). A defect moves an angle by a whole step, not by a
+#: digit's rounding.
 DEFAULT_FIELD_ANGLE_TOLERANCE = 1e-7
 
 
@@ -196,21 +206,12 @@ def pair(
 def _same_style(a: F.Text, b: F.Text) -> bool:
     """Two texts' styles are KiCad's same reading: equal, or, where either text is a
     mandatory field its file leaves out, equal but for the angle, which may differ by
-    the footprint angle atom's rounding (DEFAULT_FIELD_ANGLE_TOLERANCE).
-
-    That rounding can also cross the comparison form's fold at 180, so for a centred
-    keep-upright text, which KeepUpright turns half a turn and changes in nothing else,
-    the angle is compared on either side of the fold. Placed at -1.2306671787116972e-08,
-    a footprint is written -1.230667179e-08, so KiCad reads a field the file leaves out
-    at 359.99999998769334, folded to 179.9999999876934; KiCad itself holds that field at
-    179.9999999876934 after KeepUpright, writes it "180" and reads it back folded to 0."""
+    the footprint angle atom's rounding (DEFAULT_FIELD_ANGLE_TOLERANCE)."""
     if a.style == b.style:
         return True
     if not (a.default or b.default) or a.style[1:] != b.style[1:]:
         return False
     gap = _angle_gap(a.style.angle, b.style.angle)
-    if a.style.keep_upright and a.style.h == T.CENTER and a.style.v == T.CENTER:
-        gap = min(gap, _angle_gap(a.style.angle + 180.0, b.style.angle))
     return gap <= DEFAULT_FIELD_ANGLE_TOLERANCE
 
 
@@ -389,8 +390,10 @@ def differences(
     angles: bool = True,
     mirrors: bool = True,
     copper_count: int | None = None,
+    upright: bool = False,
 ) -> list[str]:
-    """Where ``got`` differs from ``want`` in the comparison form: the footprint's
+    """Where ``got`` differs from ``want`` as KiCad reads them (D1, D2), or in the upright
+    form with ``upright`` (D2: for a law up to KeepUpright only): the footprint's
     orientation and layer (and position, unless ``position`` is False), every pad's
     absolute angle and footprint-relative position, every text's style (angle,
     keep-upright, justification, mirror), layer and position, with ``shapes`` every
@@ -407,7 +410,8 @@ def differences(
     within ``tolerance_nm``, but the zones and KiCad 10 points exactly, relative to the
     footprints' positions when ``position`` is False (module docstring). Empty when they
     agree."""
-    got, want = F.canonical(got), F.canonical(want)
+    if upright:
+        got, want = F.canonical(got), F.canonical(want)
     if written_fields_only:
         unwritten = {t.key for t in got.texts if t.default}
         got = got._replace(texts=tuple(t for t in got.texts if t.key not in unwritten))

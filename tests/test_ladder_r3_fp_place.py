@@ -11,15 +11,18 @@ angle + r ), and then KeepUpright turns a keep-upright text at 180 or more half 
 negates its justification; footprint-relative positions and graphics stay as the library
 writes them; the footprint's angle is Normalize180( r ), written by FormatAngle and left
 out at 0. Turning a placed footprint to r turns every pad and text by r minus the angle it
-holds (SetOrientation, or Rotate by that change).
+holds, Rotate by that change with its KeepUpright; a rotation names the angle the
+footprint ends at, so one it holds already (Normalize180) turns nothing, a placement at
+360 included (kicad_ref.footprint.turn_to).
 
 Judges, none of them the code under test:
 
-- kicad_ref.footprint (place, set_orientation, rotate, the writer's spellings), reading
-  every file with the lexer port; comparisons follow footprint_judge's rules D1 to D3:
-  KiCad's reading of the tokens, the comparison form that accepts both of KiCad's paths
-  (Rotate and SetOrientation), positions exact except within two nanometres where pcbnew
-  turned and re-derived them off the quarter turns;
+- kicad_ref.footprint (place, turn_to, set_orientation, rotate, the writer's spellings),
+  reading every file with the lexer port; comparisons follow footprint_judge's rules D1
+  to D3: KiCad's reading of the tokens, texts as KiCad holds them, positions exact except
+  within two nanometres where pcbnew turned and re-derived them off the quarter turns,
+  and, against KiCad's own placement, the mandatory fields the tool's file does not
+  write left out;
 - pcbnew placing and turning the same library footprint (pcbnew_fp_ops), per footprint;
 - pcbnew reading the tool's board (a pad's footprint-relative angle);
 - math: one orientation reached two ways, a composition, an identity;
@@ -108,11 +111,8 @@ def _tolerance(*angles: float) -> int:
 
 
 def _kicads_reading(fp: F.Footprint) -> F.Footprint:
-    """What KiCad reads back from the tokens it writes for ``fp`` in the comparison form
-    (rule D2): KeepUpright applied before the writing, as FOOTPRINT::Rotate applies it,
-    since FormatAngle's ten digits taken before and after it part by float noise (359.90234375
-    written then turned reads 179.90234379999993, turned then written 179.9023438)."""
-    return F.written(F.canonical(fp))
+    """What KiCad reads back from the tokens it writes for ``fp``."""
+    return F.written(fp)
 
 
 def _place(
@@ -175,14 +175,13 @@ def test_place_matches_kicads_placement(fp, angle, version):
     """A generated library footprint (pads at their own library angles, keep-upright and
     unlocked texts with any justification, graphics, no zone) placed by place_footprint
     at any angle: KiCad's reading of the placed footprint is KiCad's own placement,
-    kicad_ref.footprint.place with Rotate, in the comparison form. A pad at 180 placed at
-    90 must read at 270, where the tool used to write 90."""
+    kicad_ref.footprint.place turned to the angle (turn_to), the mandatory fields the
+    library does not write aside. A pad at 180 placed at 90 must read at 270, where the
+    tool used to write 90."""
     data = _placed(fp, angle, version)
     got = FJ.read(data, "U1")
-    want = _kicads_reading(
-        F.place(E.library_footprint(fp), got.position, angle, semantics="rotate")
-    )
-    problems = FJ.differences(got, want)
+    want = _kicads_reading(F.place(E.library_footprint(fp), got.position, angle, semantics="turn"))
+    problems = FJ.differences(got, want, written_fields_only=True)
     assert not problems, "\n".join(problems)
 
 
@@ -220,7 +219,7 @@ def test_place_keeps_local_geometry(fp, angle, version):
 @given(fp=E.synthetic_footprints(), angle=G.angles(), version=_VERSIONS)
 def test_place_at_r_equals_place_at_0_then_rotate_to_r(fp, angle, version):
     """Placing at r and placing at 0 then moving to rotation r reach one orientation from
-    one library state, so KiCad reads the two footprints alike (comparison form)."""
+    one library state by one turn, so KiCad reads the two footprints alike."""
     with tempfile.TemporaryDirectory() as work:
         pretty = E.write_library(work, fp)
         direct = _board(Path(work) / "direct.kicad_pcb", version=version)
@@ -254,15 +253,16 @@ def _start_board(work: Path, fp: E.SynFootprint, theta0: float, version: str) ->
 @given(fp=E.synthetic_footprints(), theta0=G.angles(), angle=G.angles(), version=_VERSIONS)
 def test_move_rotation_matches_kicads_rotation(fp, theta0, angle, version):
     """A footprint as KiCad holds it at theta0 (pads at theta0 plus their library angles,
-    texts turned), moved by move_footprint to rotation r: KiCad reads it as its own
-    SetOrientation( r ) of the footprint it read, in the comparison form (so Rotate's
-    KeepUpright is accepted too)."""
+    texts turned), moved by move_footprint to rotation r: KiCad reads it as its own turn
+    of the footprint it read to r (kicad_ref.footprint.turn_to: Rotate by the change, its
+    KeepUpright included), the mandatory fields the file does not write aside."""
     with tempfile.TemporaryDirectory() as work:
         board = _start_board(Path(work), fp, theta0, version)
         start = FJ.read(board.read_bytes(), "U1")
         _move(board, "U1", _AT, rotation=angle)
         got = FJ.read(board.read_bytes(), "U1")
-    problems = FJ.differences(got, _kicads_reading(F.set_orientation(start, angle)))
+    want = _kicads_reading(F.turn_to(start, angle))
+    problems = FJ.differences(got, want, written_fields_only=True)
     assert not problems, "\n".join(problems)
 
 
@@ -347,9 +347,13 @@ _HALF = G.half_degree_angles()
 @given(fp=E.synthetic_footprints(), theta0=_HALF, a=_HALF, b=_HALF, version=_VERSIONS)
 def test_rotations_compose(fp, theta0, a, b, version):
     """From a footprint as KiCad holds it at theta0 (angles that are multiples of half a
-    degree, so the arithmetic is exact): rotation a and then b reads, in the comparison
-    form, as rotation b straight away; and a rotation to the angle the footprint already
-    holds changes nothing KiCad reads."""
+    degree, so the arithmetic is exact): rotation a and then b reads as rotation b
+    straight away in the upright form (footprint_judge's D2), a law KiCad's own turns keep
+    only up to KeepUpright: a keep-upright text a footprint placed at 0 holds at 180 or
+    more stays there when b is the angle it holds, and two turns leave it upright (pcbnew
+    9.0.8, turning such a footprint to 90 and back to 0, holds a Reference written at 200
+    justified left at 20 justified right; measured 2026-10-11); and a rotation to the
+    angle the footprint already holds changes nothing KiCad reads."""
     with tempfile.TemporaryDirectory() as work:
         two = _start_board(Path(work), fp, theta0, version)
         start = FJ.read(two.read_bytes(), "U1")
@@ -361,7 +365,9 @@ def test_rotations_compose(fp, theta0, a, b, version):
         _move(two, "U1", _AT, rotation=b)
         _move(one, "U1", _AT, rotation=b)
         _move(same, "U1", _AT, rotation=start.orientation)
-        problems = FJ.differences(FJ.read(two.read_bytes(), "U1"), FJ.read(one.read_bytes(), "U1"))
+        problems = FJ.differences(
+            FJ.read(two.read_bytes(), "U1"), FJ.read(one.read_bytes(), "U1"), upright=True
+        )
         problems += [
             f"turned to the angle it held: {p}"
             for p in FJ.differences(FJ.read(same.read_bytes(), "U1"), start)
@@ -443,7 +449,7 @@ def test_footprint_angle_is_spelled_as_kicad_writes(tool, angle, version):
 def test_marker_place_turns_its_texts(tmp_path, angle):
     """place_footprint without a library places a marker carrying Reference and Value.
     Placed at an angle its texts turn as KiCad's Rotate turns them, from the marker as
-    placed at 0 (kicad_ref.footprint.place), in the comparison form: at 90 both read at 90,
+    placed at 0 (kicad_ref.footprint.place turned to the angle): at 90 both read at 90,
     at 270 at 90 again after KeepUpright. The tool used to leave them at 0."""
     board = _board(tmp_path / "marker.kicad_pcb")
     try:
@@ -454,8 +460,8 @@ def test_marker_place_turns_its_texts(tmp_path, angle):
     data = board.read_bytes()
     library = FJ.read(data, "U1")._replace(position=(0, 0))
     got = FJ.read(data, "U2")
-    want = _kicads_reading(F.place(library, got.position, angle, semantics="rotate"))
-    problems = FJ.differences(got, want)
+    want = _kicads_reading(F.place(library, got.position, angle, semantics="turn"))
+    problems = FJ.differences(got, want, written_fields_only=True)
     assert not problems, "\n".join(problems)
 
 
@@ -558,9 +564,10 @@ def test_move_carries_footprint_zones(fp, theta0, to, angle, version):
     """A footprint owning zones as KiCad holds it at theta0, its zones in board
     coordinates, moved by move_footprint anywhere and turned to any rotation or not:
     KiCad reads the footprint, every zone point included, as its own SetPosition and
-    SetOrientation of the footprint it read, each zone moved by the delta (ZONE::Move)
+    turn (turn_to) of the footprint it read, each zone moved by the delta (ZONE::Move)
     and then turned about the new position by the change (ZONE::Rotate, the integer
-    RotatePoint). The tool left the zones where they were."""
+    RotatePoint), the mandatory fields the file does not write aside. The tool left the
+    zones where they were."""
     major = _major(version)
     with tempfile.TemporaryDirectory() as work:
         board = _zone_board(Path(work), fp, theta0, version)
@@ -569,8 +576,8 @@ def test_move_carries_footprint_zones(fp, theta0, to, angle, version):
         got = FJ.read(board.read_bytes(), "U1", major=major)
     want = F.set_position(start, to)
     if angle is not None:
-        want = F.set_orientation(want, angle, major=major)
-    problems = FJ.differences(got, _kicads_reading(want))
+        want = F.turn_to(want, angle, major=major)
+    problems = FJ.differences(got, _kicads_reading(want), written_fields_only=True)
     assert not problems, "\n".join(problems)
 
 
@@ -676,7 +683,7 @@ def _point_edit(tmp_path: Path, operation: str) -> tuple[F.Footprint, bytes]:
             )
         )
         want = F.place(
-            library, _AT, angle, semantics="rotate", flipped=flip if back else None, major=10
+            library, _AT, angle, semantics="turn", flipped=flip if back else None, major=10
         )
         return want, board.read_bytes()
     board = _zone_board(tmp_path, E.POINTED, 30.0, "k10")
@@ -684,7 +691,7 @@ def _point_edit(tmp_path: Path, operation: str) -> tuple[F.Footprint, bytes]:
     if operation == "move and turn":
         to = (60 * MM, 70 * MM)
         _performed(lambda: _move(board, "U1", to, rotation=120.0))
-        return F.set_orientation(F.set_position(start, to), 120.0, major=10), board.read_bytes()
+        return F.turn_to(F.set_position(start, to), 120.0, major=10), board.read_bytes()
     _performed(lambda: _move(board, "U1", _AT, layer="B.Cu"))
     return flip(start), board.read_bytes()
 
@@ -747,7 +754,9 @@ class _Runs:
             out = work / f"kicad_{angle}.kicad_pcb"
             kicad_out[angle] = out
             items = [
-                OPS.place_item(path.parent, path.stem, f"C{index}", _slot(index), ("rotate", angle))
+                OPS.place_item(
+                    path.parent, path.stem, f"C{index}", _slot(index), ("rotate_to", angle)
+                )
                 for index, path in enumerate(self.paths)
             ]
             jobs.append(OPS.place_job(empty, items, out))
@@ -779,7 +788,9 @@ class _Runs:
             zone_tool[angle] = board
             zone_kicad[angle] = work / f"kicad_zone_{angle}.kicad_pcb"
             items = [
-                OPS.place_item(path.parent, path.stem, f"Z{index}", _slot(index), ("rotate", angle))
+                OPS.place_item(
+                    path.parent, path.stem, f"Z{index}", _slot(index), ("rotate_to", angle)
+                )
                 for index, path in enumerate(self.zone_paths)
             ]
             jobs.append(OPS.place_job(empty, items, zone_kicad[angle]))
@@ -814,25 +825,31 @@ def _placement_problems(runs: _Runs, angles) -> list[str]:
             ref = f"C{index}"
             got = FJ.read(runs.tool[angle], ref, major=runs.major)
             want = FJ.read(runs.kicad[angle], ref, major=runs.major)
-            found = FJ.differences(got, want, tolerance_nm=_tolerance(angle))
+            found = FJ.differences(
+                got, want, tolerance_nm=_tolerance(angle), written_fields_only=True
+            )
             problems += [f"{path.stem} at {angle}: {p}" for p in found]
     return problems
 
 
 def test_place_matches_pcbnew(runs):
     """One item for the curated set at 90, 180, 270, 30, -90, 45 and 37.5 degrees: each
-    footprint place_footprint wrote reads, in the comparison form, as the one pcbnew
-    writes after FootprintLoad, SetPosition and Rotate (orientation, side, every pad's
-    angle and position, every text's style, layer and position; positions within two
-    nanometres off the quarter turns)."""
+    footprint place_footprint wrote reads as the one pcbnew writes after FootprintLoad,
+    SetPosition and the turn to the angle (pcbnew_fp_ops' rotate_to: Rotate by the
+    change): orientation, side, every pad's angle and position, every text's style, layer
+    and position as KiCad holds them, positions within two nanometres off the quarter
+    turns, the mandatory fields a library leaves out aside (pcbnew writes them, the tool
+    does not)."""
     problems = _placement_problems(runs, _PLACE_ANGLES)
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])
 
 
 def test_place_at_zero_matches_pcbnew(runs):
-    """The same set at 0 and at 360 degrees, which leave every child where the library
-    has it: the tool's footprints read as pcbnew's (the passing sibling of the test
-    above)."""
+    """The same set at 0 and at 360 degrees, which name the angle a library footprint
+    holds, so neither the tool nor pcbnew's turn to it turns anything and every child
+    stays where the library has it (Texas_DSBGA-5's text, written at -90, stands at 270,
+    which a Rotate( 360 ) would have turned upright): the tool's footprints read as
+    pcbnew's (the passing sibling of the test above)."""
     problems = _placement_problems(runs, _ZERO_ANGLES)
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])
 
@@ -862,7 +879,9 @@ def test_nightly_place_matches_pcbnew(picks):
         for index, (path, angle) in enumerate(chosen):
             _place(tool, f"C{index}", _slot(index), angle, path.parent, path.stem)
             items.append(
-                OPS.place_item(path.parent, path.stem, f"C{index}", _slot(index), ("rotate", angle))
+                OPS.place_item(
+                    path.parent, path.stem, f"C{index}", _slot(index), ("rotate_to", angle)
+                )
             )
         OPS.run([OPS.place_job(empty, items, out)])
         for index, (path, angle) in enumerate(chosen):
@@ -870,7 +889,9 @@ def test_nightly_place_matches_pcbnew(picks):
             want = FJ.read(out.read_bytes(), f"C{index}", major=PJ.major())
             problems += [
                 f"{path.stem} at {angle}: {p}"
-                for p in FJ.differences(got, want, tolerance_nm=_tolerance(angle))
+                for p in FJ.differences(
+                    got, want, tolerance_nm=_tolerance(angle), written_fields_only=True
+                )
             ]
     assert not problems, "\n".join(problems[:40])
 
@@ -946,9 +967,9 @@ def test_place_writes_library_angles_as_pcbnew_saves_them(runs):
 def test_place_and_move_match_pcbnew_rotate_token_for_token(runs, operation, part):
     """N14, the rows that turn without flipping: the curated set (BarrelJack among it, a
     keep-upright Reference justified left) placed at 90, 180, 270, 45 and 37.5 degrees,
-    and moved there from a placement at 30, by the tool and by pcbnew's FOOTPRINT::Rotate:
-    every pad's angle atom (part "pads"), or every text's angle atom, unlocked word and
-    justify words (part "texts"), equals pcbnew's exactly, not in the comparison form;
+    and moved there from a placement at 30, by the tool and by pcbnew's FOOTPRINT::Rotate
+    by the change: every pad's angle atom (part "pads"), or every text's angle atom,
+    unlocked word and justify words (part "texts"), equals pcbnew's exactly, as spelled;
     positions as KiCad reads them, within two nanometres off the quarter turns. This is
     what decides Rotate over SetOrientation: they differ only for keep-upright texts that
     land at 180 or more. The footprint's own angle atom is bug 53's, judged above."""
@@ -970,10 +991,11 @@ def test_place_and_move_match_pcbnew_rotate_token_for_token(runs, operation, par
 
 def test_footprint_zone_placement_matches_pcbnew(runs):
     """One item: Tag-Connect_TC2030-IDC-FP_2x03_P1.27mm_Vertical and ESP-01 placed by
-    place_footprint and by pcbnew (FootprintLoad, SetPosition, Rotate) at 0, 90 and 30
-    degrees: each footprint the tool wrote reads as pcbnew's, every zone point exactly
-    (pcbnew holds and writes them as board integers) and the zones' layers on the board's
-    copper. The tool left the zones at the library's coordinates, round the origin."""
+    place_footprint and by pcbnew (FootprintLoad, SetPosition, the turn to the angle) at
+    0, 90 and 30 degrees: each footprint the tool wrote reads as pcbnew's, every zone
+    point exactly (pcbnew holds and writes them as board integers) and the zones' layers
+    on the board's copper, the mandatory fields a library leaves out aside. The tool left
+    the zones at the library's coordinates, round the origin."""
     problems = []
     for angle in _ZONE_ANGLES:
         for index, path in enumerate(runs.zone_paths):
@@ -987,6 +1009,7 @@ def test_footprint_zone_placement_matches_pcbnew(runs):
                 want,
                 tolerance_nm=_tolerance(angle),
                 copper_count=FJ.copper_count(runs.zone_tool[angle]),
+                written_fields_only=True,
             )
             problems += [f"{path.stem} at {angle}: {p}" for p in found]
     assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:40])

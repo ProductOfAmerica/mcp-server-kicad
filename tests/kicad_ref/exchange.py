@@ -21,10 +21,16 @@ PCB_EDIT_FRAME::ExchangeFootprint with every reset flag at its default, true
   the old footprint's position, side and orientation, its pads and texts turned and
   flipped with it (kicad_ref.footprint's set_position, flip and set_orientation);
 - every text's layer, visibility, effects and position are reset to the library's
-  (processTextItem, 2257-2295 [2474-2525]); KiCad 10.0.7's also runs KeepUpright on each
-  text it matches (2504), which moves a keep-upright text between two forms the test
-  ladder's comparison form (rule D2, kicad_ref.footprint.canonical) holds equal, so
-  ``exchange`` gives KiCad 9.0.8's texts and judges both majors in that form;
+  (processTextItem, 2257-2295 [2474-2525]). KiCad 9.0.8 turns no text upright there, so
+  after SetOrientation a keep-upright text can stand at 180 or more (the flip before it
+  ends in a KeepUpright of its own); KiCad 10.0.7's processTextItem runs KeepUpright on
+  the text it is handed (2504), whether or not the footprint turned: the Reference, the
+  Value, each field paired with an old one (the Datasheet and the Description always,
+  which both footprints hold and PCB_FIELD::Similarity pairs by id,
+  pcbnew/pcb_field.cpp:325-347 at 10.0.7) and each fp_text paired with an old one.
+  ``exchange`` for major 10 turns upright the texts ``matched_texts`` names, which pairs
+  user fields by name and fp_texts by getMatchingTextItem, KiCad 9.0.8's rules, where
+  KiCad 10.0.7 pairs both by similarity (below);
 - KiCad 9.0.8 carries uuids by name and number (``carried_ids``): the footprint's own
   (2569), the Reference's and the Value's (processTextItem copies its source's uuid,
   2294), every other field's to the library field of the same name (FOOTPRINT::
@@ -41,8 +47,21 @@ PCB_EDIT_FRAME::ExchangeFootprint with every reset flag at its default, true
   copper and the copper test passes for each candidate. Group membership follows the
   footprint (2358-2362), so a group that listed the old footprint's uuid lists the new
   one. KiCad 10.0.7 matches pads, drawings, zones, points, groups and fields by
-  similarity instead (matchItemsBySimilarity, 2527-2594), which this port does not model:
-  in the common case, unique pad numbers and field names, it agrees with KiCad 9's rules.
+  similarity instead (matchItemsBySimilarity, 2527-2594): each old item to at most one
+  new one, the pairs taken greedily by score, and a fresh uuid (ResetUuid, 2675, 2708,
+  2845) for every new item left unpaired. That matching is not ported. What it makes
+  certain is (``carried_ids`` with ``major`` 10): the footprint's, the Reference's and
+  the Value's uuids carry (2634-2636), the Datasheet's and the Description's too, and a
+  pad whose number appears once in each footprint takes the old pad's uuid, since a pair
+  of one number scores PAD::Similarity plus 2 (2552), over 2, and any other pair at most
+  1 (pcbnew/pad.cpp:3187-3208); no uuid goes to two items. User fields and fp_texts pair
+  by scores of their own (PCB_FIELD::Similarity: 1 for one name; EDA_TEXT::Similarity,
+  common/eda_text.cpp:1262-1275: the Levenshtein similarity of the two texts, times 0.9
+  for other attributes and 0.9 for another place), so where each side holds one field of
+  a name and the fp_texts' texts are far apart, KiCad 10 pairs them as KiCad 9's rules
+  do; an fp_text whose text the other side lacks can still pair with one of another text
+  ("KEEP" with "${REFERENCE}", Levenshtein similarity 1/6), which neither ``exchange``
+  nor ``carried_ids`` models.
 
 PAD::IsOnCopperLayer (pcbnew/pad.cpp:1129-1180 at 9.0.8): a pad on any copper layer,
 except a non-plated hole whose circle or oval is no larger than its drill and not offset,
@@ -63,6 +82,7 @@ from typing import NamedTuple
 from kicad_ref import board_layers as BL
 from kicad_ref import dsn_lexer as L
 from kicad_ref import footprint as F
+from kicad_ref import pcb_text as T
 from kicad_ref.parse_units import parse_board_units
 
 
@@ -91,7 +111,8 @@ def exchange(
 ) -> F.Footprint:
     """The footprint ExchangeFootprint makes of ``library`` (read at orientation 0 at the
     origin, its through-hole pads holding the board's copper) in place of ``old``, on the
-    board whose layer table is ``table``, as KiCad ``major`` rounds (module docstring)."""
+    board whose layer table is ``table``, as KiCad ``major`` turns and rounds it (module
+    docstring): KiCad 10's KeepUpright on matched_texts included."""
     if library.orientation != 0:
         raise ValueError(f"a library footprint reads at orientation 0, not {library.orientation}")
     placed = F.set_position(library, old.position)
@@ -99,7 +120,31 @@ def exchange(
         placed = F.board_flip(placed, table, major=major)
     if placed.orientation != old.orientation:
         placed = F.set_orientation(placed, old.orientation, major=major)
+    if major >= 10:
+        upright = matched_texts(old, placed)
+        placed = placed._replace(
+            texts=tuple(
+                t._replace(style=T.keep_upright(t.style)) if k in upright else t
+                for k, t in enumerate(placed.texts)
+            )
+        )
     return placed
+
+
+def matched_texts(old: F.Footprint, new: F.Footprint) -> frozenset[int]:
+    """The indices of ``new.texts`` the exchange hands an old text (processTextItem), by
+    KiCad 9.0.8's pairing (module docstring): every field an old one of the same name
+    pairs with, the Reference, the Value, the Datasheet and the Description among them,
+    which every footprint holds; every fp_text getMatchingTextItem picks for an old one."""
+    names = {t.key for t in old.texts if t.key[0] == "property"}
+    found = {k for k, t in enumerate(new.texts) if t.key[0] == "property" and t.key in names}
+    candidates = [(k, t) for k, t in enumerate(new.texts) if t.key[0] == "fp_text"]
+    for old_text in old.texts:
+        if old_text.key[0] == "fp_text":
+            k = _matching_text(old_text, candidates)
+            if k is not None:
+                found.add(k)
+    return frozenset(found)
 
 
 class Ids(NamedTuple):
@@ -193,15 +238,29 @@ def _matching_text(old: F.Text, candidates: list[tuple[int, F.Text]]) -> int | N
 
 #: A new item that keeps its own uuid, whatever the library gave it: no old item's.
 OWN = ""
+#: The fields every footprint holds, whose uuids KiCad 10.0.7 always carries.
+_MANDATORY = frozenset(("property", name) for name, _ in F.MANDATORY_FIELDS)
 
 
-def carried_ids(old_group, old: F.Footprint, new_group, new: F.Footprint, copper_count: int) -> Ids:
+def carried_ids(
+    old_group,
+    old: F.Footprint,
+    new_group,
+    new: F.Footprint,
+    copper_count: int,
+    *,
+    major: int = 9,
+) -> Ids:
     """The uuid each item of the exchanged footprint ``new`` (exchange's result; its
     library Group ``new_group``) carries from ``old`` (read from ``old_group``) by KiCad
     9.0.8's rules (module docstring): its pads aligned as read_ids aligns them, its texts
     as ``new.texts`` holds them (a mandatory field the library leaves out last); for each,
     the old item's uuid; OWN where it carries none; None where it carries the uuid of an
-    old item the old file writes none for, which KiCad made up when it read the board."""
+    old item the old file writes none for, which KiCad made up when it read the board.
+    With ``major`` 10 or more, what KiCad 10.0.7's matching makes certain (module
+    docstring), None for every other item, which that matching may pair or not."""
+    if major >= 10:
+        return _carried_ids_10(old_group, old, new)
     old_ids = read_ids(old_group)
     pads: list[str | None] = []
     old_pads = [
@@ -235,3 +294,25 @@ def carried_ids(old_group, old: F.Footprint, new_group, new: F.Footprint, copper
         if k is not None:
             texts[k] = uuid
     return Ids(old_ids.footprint, tuple(pads), tuple(texts))
+
+
+def _carried_ids_10(old_group, old: F.Footprint, new: F.Footprint) -> Ids:
+    """carried_ids for KiCad 10.0.7: the footprint's uuid; the old pad's for a pad whose
+    number each footprint holds once; the old field's for the Reference, the Value, the
+    Datasheet and the Description; None for every other item."""
+    old_ids = read_ids(old_group)
+    old_numbers = [p.number for p in old.pads]
+    new_numbers = [p.number for p in new.pads]
+    pads: list[str | None] = []
+    for pad in new.pads:
+        n = pad.number
+        once = bool(n) and old_numbers.count(n) == new_numbers.count(n) == 1
+        pads.append(old_ids.pads[old_numbers.index(n)] if once else None)
+    unwritten = (None,) * (len(old.texts) - len(old_ids.texts))
+    fields = {
+        text.key: uuid
+        for text, uuid in zip(old.texts, (*old_ids.texts, *unwritten))
+        if text.key in _MANDATORY
+    }
+    texts = tuple(fields.get(text.key) for text in new.texts)
+    return Ids(old_ids.footprint, tuple(pads), texts)

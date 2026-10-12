@@ -413,10 +413,13 @@ def test_builder_footprints_load_in_pcbnew_unchanged(tmp_path):
 @example(fp=RICH, a=90.0, b=270.0)
 def test_footprint_port_laws(fp, a, b):
     """On library footprints at angles that are multiples of half a degree (so the
-    arithmetic is exact): four quarter turns through Rotate are the identity; SetOrientation
-    to a then to b is SetOrientation to b; KeepUpright is idempotent; Rotate by 0 changes
-    nothing; and Rotate and SetOrientation to one angle agree in the comparison form (D2),
-    the reason a test may judge either of KiCad's two paths by one port."""
+    arithmetic is exact): four quarter turns through Rotate are the identity in the
+    upright form (kicad_ref.footprint.canonical), since they turn upright a keep-upright
+    text the library writes at 180 or more; SetOrientation to a then to b is
+    SetOrientation to b; KeepUpright is idempotent; Rotate by 0 changes nothing; and
+    Rotate and SetOrientation to one angle agree in the upright form only, so a judge
+    tells KiCad's two paths apart by comparing texts as KiCad holds them
+    (footprint_judge's D2)."""
     library = E.library_footprint(fp)
     at = (10 * MM, 20 * MM)
     start = F.set_position(library, at)
@@ -954,9 +957,11 @@ def test_port_reads_layerless_texts_as_pcbnew_does(tmp_path):
 def test_flip_port_laws(fp, a, d, label):
     """On library footprints at angles that are multiples of half a degree (so the
     arithmetic is exact), on boards with any of LAYER_TABLES' user layers: two flips are
-    the identity in the comparison form, on both majors; and a flip then a turn to the
-    angle the flip left plus d equals a turn to the start angle minus d then a flip, in
-    the comparison form (KiCad's group law: a flip conjugates a turn into its inverse)."""
+    the identity in the upright form (kicad_ref.footprint.canonical), on both majors; and
+    a flip then a turn to the angle the flip left plus d equals a turn to the start angle
+    minus d then a flip, in the upright form (KiCad's group law: a flip conjugates a turn
+    into its inverse). Both hold only up to KeepUpright: from a footprint placed at 0, a
+    keep-upright text the library writes at 180 or more ends upright."""
     library = E.library_footprint(fp)
     table = BL.LayerTable(tuple(BL.Row(n, t, u or "") for n, t, u in LAYER_TABLES[label]))
     start = F.rotate(F.set_position(library, (10 * MM, 20 * MM)), a)
@@ -1361,9 +1366,10 @@ def _exchange_problems(cases, work: Path) -> tuple[int, list]:
     User.2 are a front and back pair, saves it, and the board gains a group listing every
     other footprint; then pcbnew replays the exchange of each footprint for the new one
     (pcbnew_fp_ops.exchange_job). Each footprint pcbnew saves reads as kicad_ref.exchange's
-    of the old footprint as read and the new library file (as KiCad writes it, in the
-    comparison form; pads with every detail, graphics by geometry, positions within the D3
-    tolerance off the quarter turns); its uuids are the ones carried_ids says it carries;
+    of the old footprint as read and the new library file for pcbnew's major (as KiCad
+    writes it; texts as KiCad holds them, pads with every detail, graphics by geometry,
+    positions within the D3 tolerance off the quarter turns); its uuids are the ones
+    carried_ids says it carries by KiCad 9.0.8's rules, which the replay follows;
     every group lists the same uuids as before and each still names a footprint; and
     pcbnew's IsOnCopperLayer of each new pad is kicad_ref.exchange.is_on_copper's.
     Returns (footprints checked, problems)."""
@@ -1429,7 +1435,7 @@ def _exchange_problems(cases, work: Path) -> tuple[int, list]:
                 f"{what}: {p}"
                 for p in FJ.differences(
                     saved,
-                    F.written(F.canonical(port)),
+                    F.written(port),
                     tolerance_nm=_tolerance(angle),
                     shapes=True,
                     details=True,
