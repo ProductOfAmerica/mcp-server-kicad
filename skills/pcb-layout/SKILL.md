@@ -63,7 +63,7 @@ These are the kicad MCP tools you should be using during PCB layout:
 **Netlist import:**
 - `update_pcb_from_schematic` — pull the schematic's netlist onto the board:
   loads the assigned footprints, binds every pad to its net, creates the
-  .kicad_pcb if missing (requires pcbnew). Re-run after schematic edits;
+  .kicad_pcb if missing (requires kicad-cli for the netlist). Re-run after schematic edits;
   `delete_stale=True` removes parts dropped from the schematic.
 
 **Placing and moving footprints:**
@@ -83,7 +83,7 @@ These are the kicad MCP tools you should be using during PCB layout:
 - `set_trace_width` — change width of existing traces by net, layer, or region
 - `add_thermal_vias` — add a via array under a footprint pad (QFN thermal pads)
 - `remove_traces` — delete traces by net, layer, or region
-- `set_net_class` — create/update net classes with design rules (requires pcbnew)
+- `set_net_class` — create/update net classes with design rules (edits the .kicad_pro)
 - `remove_dangling_tracks` — clean up unconnected trace stubs
 
 **Drawing and annotation:**
