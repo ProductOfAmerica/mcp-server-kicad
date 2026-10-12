@@ -776,20 +776,10 @@ def test_inner_copper_swap_on_the_back_is_refused(tmp_path, version):
 # constructs the update does not add (N4, the add rows)
 # ---------------------------------------------------------------------------
 
-_BUG_15_ADD = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 15: the update adds a footprint carrying a construct KiCad moves with it and the"
-        " tool does not, moving the footprint off that construct, instead of skipping the"
-        " symbol and saying so; fixed by step 7"
-    ),
-)
-
 
 def _add_construct_params():
     for construct in E.MOVED_CONSTRUCTS:
-        marks = [_BUG_15_ADD]
+        marks = []
         if construct == "future_item":
             marks.append(pytest.mark.kicad_placeholder("Constructs.pretty/Host.kicad_mod"))
         yield pytest.param(construct, id=construct, marks=marks)

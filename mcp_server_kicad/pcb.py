@@ -3212,10 +3212,11 @@ def update_pcb_from_schematic(
     locked footprint is not swapped
     (skipped: footprint_locked), nor is one whose new footprint carries what
     this tool cannot move or flip (skipped: footprint_unsupported); either
-    still takes the symbol's value, fields and nets. Stale board footprints
-    are reported, and removed only with delete_stale (a locked one, in any
-    spelling KiCad reads, never is). Zones are NOT refilled: run
-    fill_zones afterward. Net names arrive exactly as KiCad's F8
+    still takes the symbol's value, fields and nets. A new footprint carrying
+    what this tool cannot move is not added (skipped: footprint_unsupported).
+    Stale board footprints are reported, and removed only with delete_stale
+    (a locked one, in any spelling KiCad reads, never is). Zones are NOT
+    refilled: run fill_zones afterward. Net names arrive exactly as KiCad's F8
     produces them (local labels sheet-prefixed, e.g. "/SIG"); read them
     with list_pcb_nets.
 
@@ -4260,6 +4261,13 @@ def _apply_netlist_cst(
 
         node, reason = _load_netlist_footprint(fpid, resolver)
         if node is None:
+            summary["skipped"].append({"ref": ref, "reason": reason})
+            continue
+        # The move below leaves behind what the helper does not carry, so a footprint
+        # holding it is not added. It stays on its library's side: nothing flips it.
+        unsupported = _fp_unsupported(node, layers, False)
+        if unsupported:
+            reason = f"footprint_unsupported:{fpid} carries {unsupported}"
             summary["skipped"].append({"ref": ref, "reason": reason})
             continue
         _set_fp_property(node, "Reference", ref)
