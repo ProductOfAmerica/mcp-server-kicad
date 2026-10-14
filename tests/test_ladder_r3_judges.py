@@ -10,7 +10,11 @@ BOARD::FlipLayer and BOARD_ITEM::IsSideSpecific on boards whose layer tables dif
 edit_gen's builders answer to pcbnew loading what they write and saving it back
 unchanged, and to pcbnew placing the same footprint on either side. pcbnew_fp_ops
 answers to its own contract (a failed call is a RuntimeError), and the footprint port's
-refusal of a non-finite angle to kicad-cli.
+refusal of a non-finite angle to kicad-cli. Its reading of a Reference and a Value
+written as legacy fp_text, the form before format 20230620, answers to pcbnew's
+FootprintLoad of the library files edit_gen.legacy_library_text and the install's demos
+write in that form, and to pcbnew reading boards holding such footprints, a field written
+in both forms included.
 
 The swap: kicad_ref.exchange answers to pcbnew replaying ExchangeFootprint's steps through
 its own Flip, SetOrientation, FindPadByNumber and IsOnCopperLayer, its lock reading to
@@ -26,6 +30,7 @@ from pathlib import Path
 import edit_gen as E
 import footprint_judge as FJ
 import geom_gen as G
+import kicad_corpus as K
 import pcbnew_fp_ops as OPS
 import pcbnew_judge as PJ
 import pytest
@@ -1634,6 +1639,171 @@ def test_netlist_builder_matches_a_kicad_cli_export(tmp_path):
         [("unconnected-(R1-Pad1)", [("R1", "1")]), ("unconnected-(R1-Pad2)", [("R1", "2")])],
     )
     assert _netlist_reading(built.encode()) == (comps, nets)
+
+
+# ---------------------------------------------------------------------------
+# legacy fields: a Reference and a Value written as fp_text
+# ---------------------------------------------------------------------------
+
+#: edit_gen.LEGACY with a hidden Value, as some of KiCad 9.0.8's KiCad 7 demo footprints
+#: write theirs, whose text holds %V and %R, which parsePCB_TEXT replaces.
+LEGACY_HIDDEN = E.LEGACY._replace(
+    name="LegacyHidden",
+    texts=(
+        E.LEGACY.texts[0],
+        E.LEGACY.texts[1]._replace(text="R%Vx%R", hidden=True),
+        E.LEGACY.texts[2],
+    ),
+)
+#: The same footprint in KiCad 9's form, whose Value (property ...) holds %V and %R,
+#: which the parser takes as written.
+PERCENT_PROPERTY = E.footprint_with_pad_at(0.0)._replace(
+    name="PercentProperty",
+    texts=(E.LEGACY.texts[0], E.LEGACY.texts[1]._replace(text="R%Vx%R")),
+)
+#: The Reference and the Value KiCad reads from each footprint edit_gen writes above.
+_LEGACY_READS = {
+    E.LEGACY.name: ("REF**", "Legacy"),
+    LEGACY_HIDDEN.name: ("REF**", "R${VALUE}x${REFERENCE}"),
+    E.LEGACY_LOCKED.name: ("REF**", "Legacy"),
+    PERCENT_PROPERTY.name: ("REF**", "R%Vx%R"),
+}
+
+
+def _legacy_demo_footprints() -> list[Path]:
+    """The footprints in KiCad 7's or 6's form, a (footprint ...) whose Reference is a
+    legacy fp_text, that the install's demos ship, less those owning a zone or holding a
+    hidden fp_text (edit_gen.stock_footprints_for_turns says why); [] without demos."""
+    found = []
+    for _, path in K.shipped(subdirs=("demos",), suffixes=(".kicad_mod",), names=()):
+        data = path.read_bytes()
+        if not data.startswith(b"(footprint") or b"(fp_text reference" not in data:
+            continue
+        if not E.has_zone(path) and not E.has_hidden_fp_text(path):
+            found.append(path)
+    return found
+
+
+def test_legacy_library_footprints_read_as_pcbnew_loads_them(tmp_path):
+    """Library footprints in KiCad 7's form as edit_gen.legacy_library_text writes them
+    (LEGACY; LEGACY_HIDDEN, whose hidden Value holds %V and %R; LEGACY_LOCKED, each text's
+    content after a bare locked), PERCENT_PROPERTY in KiCad 9's form, and those in KiCad
+    7's and 6's form the install's demos ship (18 in KiCad 9.0.8's, counted 2026-10-14),
+    loaded by pcbnew's FootprintLoad and nothing else: the Reference's and the Value's
+    texts pcbnew holds are kicad_ref.footprint.reference_and_value's, and for edit_gen's
+    the texts the writer was given, %V and %R replaced as parsePCB_TEXT replaces them in a
+    legacy fp_text and kept in a (property ...); every pad and text pcbnew holds is
+    read_footprint's, each legacy fp_text read as its field, bit for bit."""
+    major = _pcbnew_major()
+    paths = [
+        E.write_legacy_library(tmp_path / fp.name, fp) / f"{fp.name}.kicad_mod"
+        for fp in (E.LEGACY, LEGACY_HIDDEN, E.LEGACY_LOCKED)
+    ]
+    modern = E.write_library(tmp_path / PERCENT_PROPERTY.name, PERCENT_PROPERTY)
+    paths.append(modern / f"{PERCENT_PROPERTY.name}.kicad_mod")
+    paths += _legacy_demo_footprints()
+    if len({p.stem for p in paths}) != len(paths):
+        raise RuntimeError(f"two footprints share a name among {[p.stem for p in paths]}")
+    found = OPS.run([OPS.load_job([(p.parent, p.stem) for p in paths])])[0]
+    problems = []
+    for path in paths:
+        group = FJ.root(path.read_bytes())
+        held = found[path.stem]
+        port = F.reference_and_value(group)
+        if (held["reference"], held["value"]) != port:
+            problems.append(
+                f"{path.stem}: pcbnew {held['reference']!r}, {held['value']!r}, port {port}"
+            )
+        if path.stem in _LEGACY_READS and port != _LEGACY_READS[path.stem]:
+            problems.append(
+                f"{path.stem}: the port reads {port}, written {_LEGACY_READS[path.stem]}"
+            )
+        problems += _held_problems(F.read_footprint(group, major=major), held, major, path.stem)
+    assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:30])
+
+
+#: A field a later list makes again, "{t}" the indent of a footprint's children and
+#: "@R@" and "@V@" the texts: legacy fp_text after the (property ...) of their fields, and
+#: (property ...) lists after the legacy fp_text of theirs, each writing its own (at),
+#: (layer) and (effects), the text's head in place of "@HEAD@"; KiCad reads the later one.
+_LATE_TEXT = (
+    '{t}(@HEAD@\n{t}\t(at 1 1 0)\n{t}\t(layer "F.Fab")\n{t}\t(effects\n{t}\t\t(font\n'
+    "{t}\t\t\t(size 1 1)\n{t}\t\t\t(thickness 0.15)\n{t}\t\t)\n"
+    "{t}\t\t(justify left)\n{t}\t)\n{t})\n"
+)
+_LATE = {
+    "fp_text": _LATE_TEXT.replace("@HEAD@", 'fp_text reference "@R@"')
+    + _LATE_TEXT.replace("@HEAD@", 'fp_text value "@V@"').replace("(at 1 1 0)", "(at -1 1 45)"),
+    "property": _LATE_TEXT.replace("@HEAD@", 'property "Reference" "@R@"')
+    + _LATE_TEXT.replace("@HEAD@", 'property "Value" "@V@"').replace("(at 1 1 0)", "(at -1 1 45)"),
+}
+
+
+def _legacy_board_footprints(version: str) -> list[str]:
+    """Footprints whose Reference and Value are legacy fp_text (edit_gen.board_footprint_text
+    with legacy_fields), LEGACY and RICH (whose MPN stays a (property ...)) at four angles
+    on the front and two on the back, L1 to L12; and two whose fields are written twice,
+    RICH with a legacy fp_text after each (property ...) (L13) and LEGACY with a
+    (property ...) after each legacy fp_text (L14)."""
+    cases = [(fp, a, "F.Cu") for fp in (E.LEGACY, RICH) for a in (0.0, 30.0, 90.0, 180.0)]
+    cases += [(fp, a, "B.Cu") for fp in (E.LEGACY, RICH) for a in (90.0, 30.0)]
+    out = []
+    for k, (fp, angle, side) in enumerate(cases):
+        at = (25 * MM * (1 + k % 6), 25 * MM * (1 + k // 6))
+        ref = f"L{k + 1}"
+        out.append(
+            E.board_footprint_text(
+                fp, ref, at, angle, side=side, version=version, legacy_fields=True
+            )
+        )
+    twice = ((RICH, False, "fp_text"), (E.LEGACY, True, "property"))
+    for k, (fp, legacy, late) in enumerate(twice):
+        ref = f"L{len(cases) + 1 + k}"
+        text = E.board_footprint_text(
+            fp, "X", (25 * MM * (1 + k), 100 * MM), 30.0, version=version, legacy_fields=legacy
+        )
+        child = _LATE[late].replace("@R@", ref).replace("@V@", f"V{ref}")
+        out.append(E.with_footprint_child(text, child, 2))
+    return out
+
+
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_port_reads_legacy_board_fields_as_pcbnew_does(tmp_path, version):
+    """Board footprints whose Reference and Value are legacy fp_text, at several angles on
+    either side, and two whose fields are written twice, a legacy fp_text after the
+    (property ...) and the other way round, on a board of each major pcbnew loads (KiCad 10
+    boards on pcbnew 10 only): the Reference's and the Value's texts pcbnew holds are
+    kicad_ref.footprint.reference_and_value's, the later list's where a field is written
+    twice, and every pad and text pcbnew holds is read_footprint's, bit for bit."""
+    major = _pcbnew_major()
+    if version == "k10" and major < 10:
+        pytest.skip(f"pcbnew {major} cannot load a KiCad 10 board")
+    board = tmp_path / f"legacy_{version}.kicad_pcb"
+    board.write_text(
+        E.layered_board_text(_legacy_board_footprints(version), version=version),
+        encoding="utf-8",
+        newline="\n",
+    )
+    found = OPS.run([OPS.describe_job(board)])[0]
+    data = board.read_bytes()
+    copper, at = FJ.copper_count(data), F.format_version(FJ.root(data))
+    problems = []
+    groups = F.children(FJ.root(data), b"footprint")
+    if len(found) != len(groups):
+        problems.append(f"pcbnew holds {sorted(found)}, {len(groups)} footprints written")
+    for group in groups:
+        port = F.reference_and_value(group)
+        held = found.get(port[0])
+        if held is None:
+            problems.append(f"pcbnew holds no footprint {port[0]!r}, it holds {sorted(found)}")
+            continue
+        if (held["reference"], held["value"]) != port:
+            problems.append(
+                f"{port[0]}: pcbnew {held['reference']!r}, {held['value']!r}, port {port}"
+            )
+        fp = F.read_footprint(group, major=major, copper_count=copper, version=at)
+        problems += _held_problems(fp, held, major, port[0])
+    assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:30])
 
 
 # ---------------------------------------------------------------------------

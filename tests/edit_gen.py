@@ -8,20 +8,25 @@ graphics (geom_gen shape tuples), the rule areas it owns and KiCad 10's points. 
 
 - ``library_text`` writes it as a .kicad_mod in KiCad 9's library form (KiCad 10's when
   it holds a point) and ``write_library`` puts that in a .pretty directory;
+  ``legacy_library_text`` and ``write_legacy_library`` do the same in KiCad 7's form
+  (format 20221018, before 20230620 "PCB Fields"), whose Reference and Value are
+  (fp_text reference ...) and (fp_text value ...);
 - ``board_footprint_text`` writes the footprint KiCad holds once it has placed that
   library footprint at a position and an angle (kicad_ref.footprint.place, Rotate or
   SetOrientation), on the front or flipped onto the back, in the board form KiCad saves:
   the footprint's angle Normalize180 and left out at 0, pad and text angles absolute,
   every position footprint-relative but a zone's and a point's, which are board
-  coordinates; ``with_lock`` gives it one of the lock spellings KiCad reads (LOCKS).
+  coordinates; ``with_lock`` gives it one of the lock spellings KiCad reads (LOCKS), and
+  ``legacy_fields`` writes its Reference and Value as legacy fp_text.
 
 Every number is spelled as KiCad spells it (FormatInternalUnits and FormatAngle through
 geom_gen and kicad_ref), never through kiutils or the code under test; whether KiCad reads
 these footprints as written is checked against pcbnew in test_ladder_r3_judges.py.
 
-``synthetic_footprints()`` draws them. ``stock_footprint(name)`` finds a footprint KiCad
-ships by name across the stock .pretty directories; ``stock_footprints()`` lists them all,
-and ``model_free_copy`` copies one without its 3D models.
+``synthetic_footprints()`` draws them, ``legacy_footprints()`` those KiCad 7's form holds.
+``stock_footprint(name)`` finds a footprint KiCad ships by name across the stock .pretty
+directories; ``stock_footprints()`` lists them all, and ``model_free_copy`` copies one
+without its 3D models.
 
 ``layered_board_text`` writes a board whose layer table has every technical layer, two,
 four or six copper layers and the user layers asked for, typed and named as given, in the
@@ -83,7 +88,8 @@ class SynPad(NamedTuple):
 
 class SynText(NamedTuple):
     """A field (``head`` "property", ``name`` its name) or an fp_text (``head``
-    "fp_text", ``name`` its type, "user"), with the angle its library file writes."""
+    "fp_text", ``name`` its type, "user"), with the angle its library file writes;
+    ``locked`` only KiCad 7's form writes (legacy_library_text)."""
 
     head: str
     name: str
@@ -96,6 +102,7 @@ class SynText(NamedTuple):
     mirror: bool
     layer: str
     hidden: bool = False
+    locked: bool = False
 
 
 class SynZone(NamedTuple):
@@ -382,6 +389,128 @@ def write_library(
     return pretty
 
 
+#: The format KiCad 7.0 writes, the last before 20230620 "PCB Fields"
+#: (pcbnew/pcb_io/kicad_sexpr/pcb_io_kicad_sexpr.h:143 and 147 at 9.0.8, 149 and 153 at
+#: 10.0.7), from which on a footprint's Reference and Value are (property ...) fields.
+LEGACY_VERSION = "20221018"
+_LEGACY_TYPES = {"Reference": "reference", "Value": "value"}
+
+
+def _legacy_text(syn: SynText) -> str:
+    """A text in KiCad 7's form: (fp_text TYPE [locked] "text" (at x y [angle] [unlocked])
+    (layer "name") [hide], its (effects ...) on one line, then (tstamp ...); a Reference or
+    a Value field is the fp_text of type reference or value, any other field is refused
+    (ValueError). The angle is left out at 0, as KiCad 7's writer left it out, and a locked
+    text's bare locked follows its type, where the parser takes it
+    (pcb_io_kicad_sexpr_parser.cpp:3400-3405 at 9.0.8, 3917-3922 at 10.0.7)."""
+    if syn.head == "property":
+        if syn.name not in _LEGACY_TYPES:
+            raise ValueError(f"KiCad 7's format has no field {syn.name!r} to write")
+        kind = _LEGACY_TYPES[syn.name]
+    else:
+        kind = syn.name
+    angle = "" if syn.angle == 0 else f" {format_angle(syn.angle)}"
+    unlocked = "" if syn.keep_upright else " unlocked"
+    words = T.justify_words(_library_style(syn))
+    justify = f" (justify {' '.join(words)})" if words else ""
+    locked = " locked" if syn.locked else ""
+    return (
+        f'  (fp_text {kind}{locked} "{syn.text}" (at {_pt(syn.local)}{angle}{unlocked})'
+        f' (layer "{syn.layer}"){" hide" if syn.hidden else ""}\n'
+        f"      (effects (font (size 1 1) (thickness 0.15)){justify})\n"
+        f"    (tstamp {_uid()})\n  )\n"
+    )
+
+
+def _legacy_shape(shape: tuple, layer: str) -> str:
+    """A graphic in KiCad 7's form: its points on the opening line (a polygon's (pts ...)
+    one point a line, then a blank line), then (stroke ...), (fill none) for a rectangle,
+    circle or polygon, (layer ...) and (tstamp ...) on one line."""
+    kind = shape[0]
+    heads = {
+        "fp_line": ("start", "end"),
+        "fp_rect": ("start", "end"),
+        "fp_circle": ("center", "end"),
+        "fp_arc": ("start", "mid", "end"),
+        "fp_poly": (),
+    }
+    if kind not in heads:
+        raise ValueError(f"no KiCad 7 form for the shape {kind!r} here")
+    fill = " (fill none)" if kind[3:] in ("rect", "circle", "poly") else ""
+    tail = f'(stroke (width 0.05) (type solid)){fill} (layer "{layer}") (tstamp {_uid()}))\n'
+    if kind == "fp_poly":
+        points = "".join(f"      (xy {_pt(p)})\n" for p in shape[1])
+        return f"  (fp_poly\n    (pts\n{points}    )\n\n    {tail}"
+    points = " ".join(f"({name} {_pt(p)})" for name, p in zip(heads[kind], shape[1:]))
+    return f"  ({kind} {points}\n    {tail}"
+
+
+def _legacy_pad(syn: SynPad) -> str:
+    """A pad in KiCad 7's one-line form: (pad "number" kind shape (at x y [angle]) (size w
+    h) [(drill d)] (layers ...) (tstamp ...)). A trapezoid delta, a shape offset,
+    chamfered corners and primitives are refused (ValueError): not modelled."""
+    if syn.delta != (0, 0) or syn.offset != (0, 0) or syn.chamfer or syn.primitives:
+        raise ValueError(f"pad {syn.number!r}: only a plain pad is written in KiCad 7's form")
+    shape = pad_shape(syn)
+    size = {"np_thru_hole": "0.8 0.8", "thru_hole": "1.6 1.6"}.get(syn.kind, "0.5 0.8")
+    drill = " (drill 0.8)" if syn.kind in _HOLES else ""
+    angle = "" if syn.angle == 0 else f" {format_angle(syn.angle)}"
+    names = " ".join(f'"{name}"' for name in syn.layers)
+    return (
+        f'  (pad "{syn.number}" {syn.kind} {shape} (at {_pt(syn.local)}{angle})'
+        f" (size {size}){drill} (layers {names}) (tstamp {_uid()}))\n"
+    )
+
+
+def legacy_library_text(fp: SynFootprint) -> str:
+    """``fp`` as a .kicad_mod in KiCad 7's form (format LEGACY_VERSION), laid out as KiCad
+    7.0's writer laid it out (the KiCad 7 footprints KiCad 9.0.8's tiny_tapeout demo ships,
+    CUI_UJC-HP-3-SMT-TR and SolderJumper-2_Bridged_Throughole1 among them, read
+    2026-10-14): the opening line with (version) and (generator), (layer), (attr smd),
+    the Reference and the Value as (fp_text reference ...) and (fp_text value ...), the
+    only form that format has for them, the fp_text items, the graphics and the pads (a
+    pad's layers in the order it gives them), each with its (tstamp ...). A field other
+    than Reference and Value, a zone, a point and a pad detail are refused (ValueError):
+    that format has no text for the field, and the rest is not modelled. KiCad's reading
+    of these footprints is checked against pcbnew in test_ladder_r3_judges.py."""
+    if fp.zones or fp.points:
+        raise ValueError("a zone or a point is not written in KiCad 7's form here")
+
+    def field(syn: SynText, name: str) -> bool:
+        return syn.head == "property" and syn.name == name
+
+    fields = [syn for name in _LEGACY_TYPES for syn in fp.texts if field(syn, name)]
+    others = [syn for syn in fp.texts if not any(field(syn, name) for name in _LEGACY_TYPES)]
+    body = [
+        f'(footprint "{fp.name}" (version {LEGACY_VERSION}) (generator pcbnew)\n',
+        '  (layer "F.Cu")\n',
+        "  (attr smd)\n",
+    ]
+    body += [_legacy_text(syn) for syn in (*fields, *others)]
+    body += [_legacy_shape(shape, _shape_layer(fp, k)) for k, shape in enumerate(fp.shapes)]
+    body += [_legacy_pad(syn) for syn in fp.pads]
+    body.append(")\n")
+    return "".join(body)
+
+
+def write_legacy_library(directory, fp: SynFootprint, *, library: str = "Legacy") -> Path:
+    """Write <directory>/<library>.pretty/<fp.name>.kicad_mod in KiCad 7's form
+    (legacy_library_text); return the .pretty path."""
+    pretty = Path(directory) / f"{library}.pretty"
+    pretty.mkdir(parents=True, exist_ok=True)
+    (pretty / f"{fp.name}.kicad_mod").write_text(
+        legacy_library_text(fp), encoding="utf-8", newline="\n"
+    )
+    return pretty
+
+
+def as_legacy(fp: SynFootprint) -> SynFootprint:
+    """``fp`` with the texts KiCad 7's form can hold, its Reference and Value fields and
+    its fp_text items, renamed "Legacy" (legacy_library_text)."""
+    keep = tuple(s for s in fp.texts if s.head != "property" or s.name in _LEGACY_TYPES)
+    return fp._replace(name="Legacy", texts=keep)
+
+
 def library_footprint(fp: SynFootprint) -> F.Footprint:
     """``fp`` as KiCad reads its library file."""
     data = library_text(fp).encode()
@@ -411,6 +540,7 @@ def board_footprint_text(
     path: str = "",
     sheetname: str = "",
     sheetfile: str = "",
+    legacy_fields: bool = False,
 ) -> str:
     """The footprint KiCad holds after placing ``fp`` at ``at_nm`` and turning it to
     ``angle`` (``semantics`` "rotate" or "set", kicad_ref.footprint.place), as KiCad saves
@@ -429,7 +559,13 @@ def board_footprint_text(
     negated, layers taken to their opposites (a layer set name such as *.Cu as written),
     a text's mirror toggled on a side specific layer, a pad's details mirrored.
     ``path``, ``sheetname`` and ``sheetfile`` write the footprint's link to its symbol,
-    as the netlist update leaves it, where KiCad's writer puts them, before (attr)."""
+    as the netlist update leaves it, where KiCad's writer puts them, before (attr).
+
+    With ``legacy_fields`` the Reference and the Value are written as a legacy
+    (fp_text reference ...) and (fp_text value ...) after (attr ...), where KiCad 7's
+    writer put them, each laid out as KiCad 9 lays out a text: a footprint KiCad reads
+    with the same two fields (kicad_ref.footprint, checked against pcbnew in
+    test_ladder_r3_judges.py), at any format version."""
     version = footprint_version(fp, version)
     major = 10 if version == "k10" else 9
     library_fp = library_footprint(fp)
@@ -466,14 +602,20 @@ def board_footprint_text(
         f'\t\t(uuid "{_uid()}")\n',
         f"\t\t(at {_pt(at_nm)}{'' if fp_angle is None else ' ' + fp_angle})\n",
     ]
+    legacy = []
     for syn, text in fields:
         shown = ref if syn.name == "Reference" else value if syn.name == "Value" else syn.text
         moved = syn._replace(local=text.local, layer=text.layer)
+        if legacy_fields and syn.name in _LEGACY_TYPES:
+            moved = moved._replace(head="fp_text", name=_LEGACY_TYPES[syn.name])
+            legacy.append(_text(2, moved, shown, T.angle_token(text.style), text.style))
+            continue
         lines.append(_text(2, moved, shown, T.angle_token(text.style), text.style))
     for head, word in (("path", path), ("sheetname", sheetname), ("sheetfile", sheetfile)):
         if word:
             lines.append(f'\t\t({head} "{word}")\n')
     lines.append("\t\t(attr smd)\n")
+    lines += legacy
     for syn, text in others:
         moved = syn._replace(local=text.local, layer=text.layer)
         lines.append(_text(2, moved, syn.text, T.angle_token(text.style), text.style))
@@ -777,6 +919,45 @@ ZONED = SynFootprint(
         SynZone(("F&B.Cu",), (_mm_points((-4, 3), (-3.5, 3), (-3.5, 3.5), (-4, 3.5)),)),
     ),
 )
+
+#: A library footprint for KiCad 7's form (legacy_library_text): a keep-upright Reference
+#: justified left, an unlocked Value at 90 justified right and bottom whose text is the
+#: footprint's name, as KiCad's libraries write it, a ${REFERENCE} text on F.Fab, two pads,
+#: pad 2 at 90, and a courtyard rectangle.
+LEGACY = SynFootprint(
+    "Legacy",
+    (SynPad("1", (-MM, 0), 0.0), SynPad("2", (MM, 0), 90.0)),
+    (
+        SynText(
+            "property", "Reference", "REF**", (0, -2 * MM), 0.0, True, T.LEFT, 0, False, "F.SilkS"
+        ),
+        SynText(
+            "property",
+            "Value",
+            "Legacy",
+            (0, 2 * MM),
+            90.0,
+            False,
+            T.RIGHT,
+            T.BOTTOM,
+            False,
+            "F.Fab",
+        ),
+        SynText("fp_text", "user", "${REFERENCE}", (0, 0), 0.0, True, 0, 0, False, "F.Fab"),
+    ),
+    (("fp_rect", (-2 * MM, -MM), (2 * MM, MM)),),
+    ("F.CrtYd",),
+)
+#: LEGACY with every text locked, so its content follows a bare locked.
+LEGACY_LOCKED = LEGACY._replace(
+    name="LegacyLocked", texts=tuple(syn._replace(locked=True) for syn in LEGACY.texts)
+)
+
+
+def legacy_footprints(**kwargs):
+    """synthetic_footprints( **kwargs ) cut to what KiCad 7's form holds (as_legacy)."""
+    return synthetic_footprints(**kwargs).map(as_legacy)
+
 
 #: A KiCad 10 footprint owning two points, on F.Fab and on F.SilkS, one off the micrometre
 #: grid, besides its pads and texts.

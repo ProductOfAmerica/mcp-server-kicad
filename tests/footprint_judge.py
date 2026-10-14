@@ -103,16 +103,11 @@ def root(data: bytes):
     return L.tree(data, knows_bar=L.knows_bar_of(data))[0]
 
 
-def reference_of(group) -> str | None:
-    """A footprint's Reference, from its (property "Reference" ...) or a legacy
-    (fp_text reference ...)."""
-    for item in group.items:
-        name = F.head(item)
-        if name == b"property" and len(item.items) > 2 and item.items[1].value == b"Reference":
-            return item.items[2].value.decode()
-        if name == b"fp_text" and len(item.items) > 2 and item.items[1].value == b"reference":
-            return item.items[2].value.decode()
-    return None
+def reference_of(group) -> str:
+    """A footprint's Reference as KiCad reads it, from its (property "Reference" ...) or a
+    legacy (fp_text reference ...), the later one where it writes both, "" where it writes
+    neither (kicad_ref.footprint.reference_and_value)."""
+    return F.reference_and_value(group)[0]
 
 
 def child(group, name: bytes):
@@ -148,9 +143,13 @@ def layer_table(data: bytes) -> BL.LayerTable:
 
 
 def read(data: bytes, reference: str, *, major: int = 10) -> F.Footprint:
-    """Footprint ``reference`` of the board ``data`` as KiCad ``major`` reads it."""
+    """Footprint ``reference`` of the board ``data`` as KiCad ``major`` reads it, at the
+    board's format version."""
     return F.read_footprint(
-        footprint_group(data, reference), major=major, copper_count=copper_count(data)
+        footprint_group(data, reference),
+        major=major,
+        copper_count=copper_count(data),
+        version=F.format_version(root(data)),
     )
 
 
