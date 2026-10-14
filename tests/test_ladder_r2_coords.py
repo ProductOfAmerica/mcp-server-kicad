@@ -601,8 +601,8 @@ def _board_with_r1(version: str) -> str:
     """A board ("k9" or "k10" header) holding footprint R1 at _R1_AT with one pad on net
     N1, so add_trace and add_via can name a net that exists on either header: net 1 is a
     row of a KiCad 9 board's net table and, on a KiCad 10 board, which has no table, the
-    first name a pad carries (pcb._net_table). Net 0 stays out of it: a KiCad 10 board
-    refuses net 0, which is bug 21's subject, not this file's."""
+    first name a pad carries (pcb._net_table). Net 0 stays out of it: no net on a KiCad 10
+    board is bug 21's subject (test_ladder_r3_nets.py), not this file's."""
     layers = '\t\t\t(layers "F.Cu" "F.Mask" "F.Paste")\n'
     net = '\t\t\t(net 1 "N1")\n' if version == "k9" else '\t\t\t(net "N1")\n'
     footprint = G.footprint_text("R1", _R1_AT, 0.0, [("1", (-MM, 0), 0.0)], version=version)

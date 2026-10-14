@@ -657,8 +657,8 @@ def test_move_footprint_writes_kicads_number_text(x, y, rotation, version):
 def test_add_trace_writes_kicads_number_text(start, end):
     """The start and end add_trace writes are fixed points of parseBoardUnits then
     FormatInternalUnits (the segment writer, pcb_io_kicad_sexpr.cpp:2413-2416 at 9.0.8,
-    2837-2840 at 10.0.7). On a KiCad 9 board: a KiCad 10 board has no net 0 for the trace
-    to take, and add_trace refuses it there (bug 21). Today it writes "1e-05",
+    2837-2840 at 10.0.7). On a KiCad 9 board, chosen while add_trace refused its default
+    net 0 on a KiCad 10 board (bug 21, test_ladder_r3_nets.py). Today it writes "1e-05",
     "2.5e-07" and "10.299999999999999"."""
     with tempfile.TemporaryDirectory() as work:
         path = Path(work) / "trace.kicad_pcb"
