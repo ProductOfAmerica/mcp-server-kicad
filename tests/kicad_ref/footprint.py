@@ -41,7 +41,9 @@ written in a .kicad_mod or on a board, the way the board parser does
   M.2 edge connectors, write Reference and Value twice at different places (counted
   2026-10-11). A later (property ...) that leaves out its (at), (layer) or (effects)
   keeps some of the earlier one's, and this port refuses it (ValueError).
-  ``reference_and_value`` reads the two fields' texts, which a Text does not hold.
+  ``reference_and_value`` reads the two fields' texts, which a Text does not hold; an
+  fp_text's content follows its type, or the bare ``locked`` after it that KiCad 6 and 7
+  wrote (content_token).
   A text written without (layer) keeps the layer it was made with: F.SilkS for
   Reference and F.Fab for Value, Datasheet and Description, whatever the footprint's side
   (addMandatoryFields, below; measured: pcbnew 9.0.8 reads such a Reference on a B.Cu
@@ -431,13 +433,26 @@ def reference_and_value(group) -> tuple[str, str]:
         name = field_name(item)
         if name not in texts:
             continue
-        if len(item.items) < 3 or item.items[2].kind not in L.ATOM_KINDS:
+        token = content_token(item)
+        if token is None or token.kind not in L.ATOM_KINDS:
             raise ParseRefusal(f"the {name.decode()} at byte {item.start} has no text")
-        text = item.items[2].value.decode()
+        text = token.value.decode()
         if head(item) == b"fp_text":
             text = text.replace("%V", "${VALUE}").replace("%R", "${REFERENCE}")
         texts[name] = text
     return texts[b"Reference"], texts[b"Value"]
+
+
+def content_token(item):
+    """The token holding a text list's content, or None: its third item, or its fourth
+    after the bare ``locked`` KiCad 6 and 7 wrote after an fp_text's type, which the
+    parser skips (parsePCB_TEXT, 3400-3405 [3917-3922]); a quoted "locked" is content."""
+    k = 2
+    if head(item) == b"fp_text" and len(item.items) > 3:
+        third = item.items[2]
+        if third.kind == L.SYMBOL and third.value == b"locked":
+            k = 3
+    return item.items[k] if len(item.items) > k else None
 
 
 def _text_key(group, version: int) -> tuple[str, str] | None:
@@ -448,7 +463,10 @@ def _text_key(group, version: int) -> tuple[str, str] | None:
         if version < FIELDS_VERSION and group.items[1].value in _LEGACY_NOT_TEXTS:
             return None
         return ("property", group.items[1].value.decode())
-    kind, text = group.items[1].value, group.items[2].value.decode()
+    token = content_token(group)
+    if token is None or token.kind not in L.ATOM_KINDS:
+        raise ParseRefusal(f"the fp_text at byte {group.start} has no text")
+    kind, text = group.items[1].value, token.value.decode()
     if kind == b"reference":
         return ("property", "Reference")
     if kind == b"value":

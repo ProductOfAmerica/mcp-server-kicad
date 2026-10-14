@@ -1655,10 +1655,18 @@ LEGACY_HIDDEN = E.LEGACY._replace(
         E.LEGACY.texts[2],
     ),
 )
+#: The same footprint in KiCad 9's form, whose Value (property ...) holds %V and %R,
+#: which the parser takes as written.
+PERCENT_PROPERTY = E.footprint_with_pad_at(0.0)._replace(
+    name="PercentProperty",
+    texts=(E.LEGACY.texts[0], E.LEGACY.texts[1]._replace(text="R%Vx%R")),
+)
 #: The Reference and the Value KiCad reads from each footprint edit_gen writes above.
 _LEGACY_READS = {
     E.LEGACY.name: ("REF**", "Legacy"),
     LEGACY_HIDDEN.name: ("REF**", "R${VALUE}x${REFERENCE}"),
+    E.LEGACY_LOCKED.name: ("REF**", "Legacy"),
+    PERCENT_PROPERTY.name: ("REF**", "R%Vx%R"),
 }
 
 
@@ -1678,18 +1686,21 @@ def _legacy_demo_footprints() -> list[Path]:
 
 def test_legacy_library_footprints_read_as_pcbnew_loads_them(tmp_path):
     """Library footprints in KiCad 7's form as edit_gen.legacy_library_text writes them
-    (LEGACY, and LEGACY_HIDDEN, whose hidden Value holds %V and %R) and those in KiCad 7's
-    and 6's form the install's demos ship (18 in KiCad 9.0.8's, counted 2026-10-14),
+    (LEGACY; LEGACY_HIDDEN, whose hidden Value holds %V and %R; LEGACY_LOCKED, each text's
+    content after a bare locked), PERCENT_PROPERTY in KiCad 9's form, and those in KiCad
+    7's and 6's form the install's demos ship (18 in KiCad 9.0.8's, counted 2026-10-14),
     loaded by pcbnew's FootprintLoad and nothing else: the Reference's and the Value's
     texts pcbnew holds are kicad_ref.footprint.reference_and_value's, and for edit_gen's
-    the texts the writer was given, %V and %R replaced as parsePCB_TEXT replaces them;
-    every pad and text pcbnew holds is read_footprint's, each legacy fp_text read as its
-    field, bit for bit."""
+    the texts the writer was given, %V and %R replaced as parsePCB_TEXT replaces them in a
+    legacy fp_text and kept in a (property ...); every pad and text pcbnew holds is
+    read_footprint's, each legacy fp_text read as its field, bit for bit."""
     major = _pcbnew_major()
     paths = [
         E.write_legacy_library(tmp_path / fp.name, fp) / f"{fp.name}.kicad_mod"
-        for fp in (E.LEGACY, LEGACY_HIDDEN)
+        for fp in (E.LEGACY, LEGACY_HIDDEN, E.LEGACY_LOCKED)
     ]
+    modern = E.write_library(tmp_path / PERCENT_PROPERTY.name, PERCENT_PROPERTY)
+    paths.append(modern / f"{PERCENT_PROPERTY.name}.kicad_mod")
     paths += _legacy_demo_footprints()
     if len({p.stem for p in paths}) != len(paths):
         raise RuntimeError(f"two footprints share a name among {[p.stem for p in paths]}")

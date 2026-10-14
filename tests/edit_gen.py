@@ -88,7 +88,8 @@ class SynPad(NamedTuple):
 
 class SynText(NamedTuple):
     """A field (``head`` "property", ``name`` its name) or an fp_text (``head``
-    "fp_text", ``name`` its type, "user"), with the angle its library file writes."""
+    "fp_text", ``name`` its type, "user"), with the angle its library file writes;
+    ``locked`` only KiCad 7's form writes (legacy_library_text)."""
 
     head: str
     name: str
@@ -101,6 +102,7 @@ class SynText(NamedTuple):
     mirror: bool
     layer: str
     hidden: bool = False
+    locked: bool = False
 
 
 class SynZone(NamedTuple):
@@ -395,10 +397,12 @@ _LEGACY_TYPES = {"Reference": "reference", "Value": "value"}
 
 
 def _legacy_text(syn: SynText) -> str:
-    """A text in KiCad 7's form: (fp_text TYPE "text" (at x y [angle] [unlocked]) (layer
-    "name") [hide], its (effects ...) on one line, then (tstamp ...); a Reference or a
-    Value field is the fp_text of type reference or value, any other field is refused
-    (ValueError). The angle is left out at 0, as KiCad 7's writer left it out."""
+    """A text in KiCad 7's form: (fp_text TYPE [locked] "text" (at x y [angle] [unlocked])
+    (layer "name") [hide], its (effects ...) on one line, then (tstamp ...); a Reference or
+    a Value field is the fp_text of type reference or value, any other field is refused
+    (ValueError). The angle is left out at 0, as KiCad 7's writer left it out, and a locked
+    text's bare locked follows its type, where the parser takes it
+    (pcb_io_kicad_sexpr_parser.cpp:3400-3405 at 9.0.8, 3917-3922 at 10.0.7)."""
     if syn.head == "property":
         if syn.name not in _LEGACY_TYPES:
             raise ValueError(f"KiCad 7's format has no field {syn.name!r} to write")
@@ -409,8 +413,9 @@ def _legacy_text(syn: SynText) -> str:
     unlocked = "" if syn.keep_upright else " unlocked"
     words = T.justify_words(_library_style(syn))
     justify = f" (justify {' '.join(words)})" if words else ""
+    locked = " locked" if syn.locked else ""
     return (
-        f'  (fp_text {kind} "{syn.text}" (at {_pt(syn.local)}{angle}{unlocked})'
+        f'  (fp_text {kind}{locked} "{syn.text}" (at {_pt(syn.local)}{angle}{unlocked})'
         f' (layer "{syn.layer}"){" hide" if syn.hidden else ""}\n'
         f"      (effects (font (size 1 1) (thickness 0.15)){justify})\n"
         f"    (tstamp {_uid()})\n  )\n"
@@ -942,6 +947,10 @@ LEGACY = SynFootprint(
     ),
     (("fp_rect", (-2 * MM, -MM), (2 * MM, MM)),),
     ("F.CrtYd",),
+)
+#: LEGACY with every text locked, so its content follows a bare locked.
+LEGACY_LOCKED = LEGACY._replace(
+    name="LegacyLocked", texts=tuple(syn._replace(locked=True) for syn in LEGACY.texts)
 )
 
 

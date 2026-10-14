@@ -192,8 +192,19 @@ def _fp_prop_cst(fp, key: str) -> str:
             return prop.atoms[2].text
     for t in fp.find_all("fp_text"):
         if t.atoms[1].text == key.lower():
-            return t.atoms[2].text
+            atom = _text_atom(t)
+            return atom.text if atom is not None else "?"
     return "?"
+
+
+def _text_atom(text):
+    """The atom holding a footprint text's content, or None: its third, or its fourth after
+    the bare ``locked`` KiCad 6 and 7 wrote after an fp_text's type, which the parser
+    skips (pcb_io_kicad_sexpr_parser.cpp:3400-3405 at 9.0.8, 3917-3922 at 10.0.7); a
+    quoted "locked" is content."""
+    atoms = text.atoms
+    k = 3 if text.head == "fp_text" and len(atoms) > 3 and atoms[2].raw == b"locked" else 2
+    return atoms[k] if len(atoms) > k else None
 
 
 def _fp_layer(fp) -> str:
@@ -2130,9 +2141,12 @@ def place_footprint(
 
     Name a library and a footprint to place the real thing: its pads, silkscreen,
     courtyard and 3D model are copied from the library file exactly as KiCad
-    would place them. Without them you get a marker carrying only the reference
-    and value, which has NO PADS and so cannot be routed or checked; that is the
-    older behaviour and it is kept for callers that only want a placeholder.
+    would place them, a footprint in KiCad 7's form taking the reference and value
+    in its own (fp_text reference|value ...), where one holding %V or %R, which KiCad
+    reads there as a variable, is refused. Without them you get a marker carrying
+    only the reference and value, which has NO PADS and so cannot be routed or
+    checked; that is the older behaviour and it is kept for callers that only want a
+    placeholder.
 
     Use list_lib_footprints to see what a library holds.
 
@@ -2211,10 +2225,13 @@ def place_footprint(
         raise ToolError(
             f"{reference} would carry {reason}. Nothing was written; place it in KiCad instead."
         )
+    for field, text in (("Reference", reference), ("Value", value)):
+        refusal = _legacy_field_refusal(node, field, text)
+        if refusal:
+            raise ToolError(refusal)
     _BOARD_CACHE.pop(key, None)
-    for prop in node.find_all("property"):
-        if prop.atoms[1].text in ("Reference", "Value"):
-            prop.atoms[2].set_text(reference if prop.atoms[1].text == "Reference" else value)
+    _set_fp_property(node, "Reference", reference)
+    _set_fp_property(node, "Value", value)
     _fp_translate(node, _num(x), _num(y), layers.major)
     if flipping:
         _fp_flip(node, layers)
@@ -3197,7 +3214,10 @@ def update_pcb_from_schematic(
     it does not exist; new footprints land in a grid cluster at orientation
     0, written as KiCad writes a footprint it has just loaded (no angle on the
     footprint, library pad and text angles normalized as KiCad holds them). Existing
-    footprints are matched by reference and keep their position. A changed
+    footprints are matched by reference and keep their position; a footprint in KiCad
+    7's form, on the board or from its library, takes the symbol's reference and value
+    in its (fp_text reference|value ...), and the update is refused when one holds %V or
+    %R, which KiCad reads there as a variable. A changed
     footprint assignment swaps the footprint as KiCad's exchange does
     (pcbnew/pcb_edit_frame.cpp:2346-2587 at 9.0.8): it keeps its position,
     angle and side, its texts turned with it as the exchange turns them
@@ -3804,15 +3824,39 @@ def _fp_by_reference(root) -> dict:
     return {_fp_prop_cst(fp, "Reference"): fp for fp in root.find_all("footprint")}
 
 
+def _legacy_field_refusal(fp, key: str, value: str) -> str | None:
+    """Why ``value`` cannot be written into the field ``key`` of ``fp``, or None: a legacy
+    (fp_text reference|value ...) cannot hold a %V or a %R, which KiCad's parser reads
+    there as ${VALUE} and ${REFERENCE} (pcb_io_kicad_sexpr_parser.cpp:3411-3412 at 9.0.8,
+    3928-3929 at 10.0.7) where it takes a (property ...) as written."""
+    if "%V" not in value and "%R" not in value:
+        return None
+    if not any(text.head == "fp_text" and _field_name(text) == key for text in fp.lists):
+        return None
+    return (
+        f"the {key} {value!r} holds %V or %R, which KiCad reads as ${{VALUE}} or"
+        f" ${{REFERENCE}} in {fp.atoms[1].text}'s legacy (fp_text {key.lower()} ...)."
+        " Nothing was written."
+    )
+
+
 def _set_fp_property(fp, key: str, value: str) -> bool:
-    """Set a footprint property, reporting whether it actually changed."""
-    for prop in fp.find_all("property"):
-        if prop.atoms[1].text == key:
-            if prop.atoms[2].text == value:
-                return False
-            prop.atoms[2].set_text(value)
-            return True
-    return False
+    """Set a footprint field, reporting whether it actually changed: the text atom
+    (_text_atom) of every list KiCad reads as the field (_field_name), since it reads the
+    last of them, a legacy (fp_text reference|value ...) included and kept in that form,
+    which KiCad reads as the Reference or the Value at every format version
+    (pcb_io_kicad_sexpr_parser.cpp:4821-4850 at 9.0.8, 5607-5640 at 10.0.7). A value such
+    a text cannot hold is refused (ToolError, _legacy_field_refusal) before any write."""
+    refusal = _legacy_field_refusal(fp, key, value)
+    if refusal:
+        raise ToolError(refusal)
+    changed = False
+    for text in fp.lists:
+        atom = _text_atom(text) if _field_name(text) == key else None
+        if atom is not None and atom.text != value:
+            atom.set_text(value)
+            changed = True
+    return changed
 
 
 def _set_fp_path(fp, path: str) -> None:
