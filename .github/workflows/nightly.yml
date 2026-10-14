@@ -45,7 +45,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v10.2.0
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       - run: uv sync --frozen --all-extras --dev
 
       # Fatal: a leg that resolved another major would test the wrong KiCad.

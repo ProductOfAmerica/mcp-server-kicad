@@ -602,3 +602,6 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   reads the lock as KiCad's parser does. Gates:
   the ladder's tests for bugs 2, 7, 13, 14, 15, 16, 17, 52, 53, 63, 80 and 88, KiCad 10 on
   the CI legs.
+- 2026-10-14: CPython 3.11 is the floor, so the Windows job runs 3.11 (from `.python-version`), where
+  `mkdir(0o700)` is honoured (measured on 3.11.14, 3.12.12 and 3.14.3): the owner-only DACL a 2026-10-05
+  entry calls untested is now exercised there.
