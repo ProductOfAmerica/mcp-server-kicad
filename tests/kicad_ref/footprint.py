@@ -23,22 +23,33 @@ written in a .kicad_mod or on a board, the way the board parser does
 - texts (the fields, written as (property ...), and the fp_text items), through
   kicad_ref.pcb_text. A (property ...) named ki_fp_filters is the
   footprint's filters and one named Footprint is dropped since KiCad 9, so neither is a
-  text KiCad holds (4611-4636 [5306-5321]); a legacy (fp_text reference|value ...) is the
-  Reference or Value field. A field name written twice is one field: KiCad reads the later
-  (property ...) into the field the earlier one made (4637-4641 [5324-5328]), which resets
-  its keep-upright and its angle and takes the position, layer and justification the later
-  one writes (parsePCB_TEXT_effects, 3438-3576 [3955-4093]; parseEDA_TEXT, 505-515
-  [736-750]), so the later one is read and the earlier one is not. Fifteen of KiCad
-  9.0.8's stock footprints, its M.2 edge connectors, write Reference and Value twice at
-  different places (counted 2026-10-11). A later one that leaves out its (at), (layer)
-  or (effects) keeps some of the earlier one's, and this port refuses it (ValueError).
+  text KiCad holds (4611-4636 [5306-5321]). In a file before format 20230620 ("PCB
+  Fields", pcb_io_kicad_sexpr.h:147 [153]; FIELDS_VERSION), the format the footprint is
+  read at being its board's or, in a library, its own (format_version), neither is a
+  (property ...) named ki_keywords, ki_locked, ki_description, Sheetfile or Sheetname
+  (either spelling), which KiCad skips or takes as the Description's text or the
+  footprint's sheet (4574-4607 [5266-5299]). A legacy (fp_text reference|value ...), the
+  only form such a file has for those two, is the Reference or Value field at any
+  format version: parsePCB_TEXT makes a field of it (3376-3382 [3893-3899]) and the
+  footprint's T_fp_text case copies that whole into its Reference or Value (4821-4850
+  [5607-5640]). A field written twice, in either form, is one field: KiCad reads a later
+  (property ...) into the field the earlier one made (4637-4641 [5324-5328]), which
+  resets its keep-upright and its angle and takes the position, layer and justification
+  the later one writes (parsePCB_TEXT_effects, 3438-3576 [3955-4093]; parseEDA_TEXT,
+  505-515 [736-750]), and a later legacy fp_text replaces the field whole, so the later
+  one is read and the earlier one is not. Fifteen of KiCad 9.0.8's stock footprints, its
+  M.2 edge connectors, write Reference and Value twice at different places (counted
+  2026-10-11). A later (property ...) that leaves out its (at), (layer) or (effects)
+  keeps some of the earlier one's, and this port refuses it (ValueError).
+  ``reference_and_value`` reads the two fields' texts, which a Text does not hold.
   A text written without (layer) keeps the layer it was made with: F.SilkS for
   Reference and F.Fab for Value, Datasheet and Description, whatever the footprint's side
   (addMandatoryFields, below; measured: pcbnew 9.0.8 reads such a Reference on a B.Cu
   footprint on F.SilkS, unmirrored, 2026-10-11); F.Fab or B.Fab by the footprint's side
   for any other field (4644-4651 [5330-5338]), which on a board then takes
   StyleFromSettings' mirror for a back layer until an (effects) resets it; F.SilkS or
-  B.SilkS by the side for an fp_text (the PCB_TEXT constructor, pcbnew/pcb_text.cpp:56-76
+  B.SilkS by the side for an fp_text, a legacy Reference or Value included, which
+  parsePCB_TEXT makes afresh (the PCB_TEXT constructor, pcbnew/pcb_text.cpp:56-76
   [61-79]);
 - graphics (fp_line, fp_rect, fp_circle, fp_arc, fp_poly, fp_curve): their points in the
   footprint's own frame, as written;
@@ -175,6 +186,20 @@ PRIMITIVE_HEADS = (
 _POINT_HEADS = (b"start", b"mid", b"end", b"center")
 #: Properties that are no text KiCad holds (see the module docstring).
 _NOT_TEXTS = (b"ki_fp_filters", b"Footprint")
+#: The format from which on a footprint's (property ...) lists are fields as written, and
+#: the properties that are no text in a file before it (module docstring).
+FIELDS_VERSION = 20230620
+_LEGACY_NOT_TEXTS = (
+    b"ki_keywords",
+    b"ki_locked",
+    b"ki_description",
+    b"Sheetfile",
+    b"Sheet file",
+    b"Sheetname",
+    b"Sheet name",
+)
+#: The legacy fp_text types that are fields, with the field each is (module docstring).
+LEGACY_FIELDS = {b"reference": b"Reference", b"value": b"Value"}
 _H = {b"left": T.LEFT, b"right": T.RIGHT}
 _V = {b"top": T.TOP, b"bottom": T.BOTTOM}
 
@@ -336,28 +361,52 @@ def pad_groups(group) -> list:
     return children(group, b"pad")
 
 
-def text_groups(group) -> list:
-    """The lists of a footprint that read as texts, in the order read_footprint reads them.
-    A (property ...) whose name a later one repeats is not among them: KiCad reads the
-    later one into the same field (module docstring)."""
+def field_name(item) -> bytes | None:
+    """The field a footprint's child list makes or updates: a (property ...)'s own name,
+    Reference or Value for a legacy (fp_text reference|value ...) (LEGACY_FIELDS), None for
+    any other child."""
+    name = head(item)
+    if name == b"property" and len(item.items) > 1:
+        return item.items[1].value
+    if name == b"fp_text" and len(item.items) > 1:
+        return LEGACY_FIELDS.get(item.items[1].value)
+    return None
+
+
+def format_version(group, version: int | None = None) -> int:
+    """The format KiCad reads the (footprint ...) Group ``group`` at (module docstring):
+    ``version`` when one is given, a board's footprint being read at its board's; else the
+    group's own (version ...), a library file's; else FIELDS_VERSION."""
+    if version is not None:
+        return version
+    node = child(group, b"version")
+    if node is not None and len(node.items) > 1 and node.items[1].kind == L.NUMBER:
+        return int(node.items[1].value)
+    return FIELDS_VERSION
+
+
+def text_groups(group, *, version: int | None = None) -> list:
+    """The lists of a footprint that read as texts, in the order read_footprint reads them
+    at ``version`` (format_version). A list making a field that a later one makes or
+    updates again, in either form, is not among them: KiCad reads the later one into the
+    same field (module docstring)."""
+    at = format_version(group, version)
     found = [
         item
         for item in group.items
-        if head(item) in (b"property", b"fp_text") and _text_key(item) is not None
+        if head(item) in (b"property", b"fp_text") and _text_key(item, at) is not None
     ]
-    last = {item.items[1].value: item for item in found if head(item) == b"property"}
-    return [
-        item for item in found if head(item) != b"property" or last[item.items[1].value] is item
-    ]
+    last = {field_name(item): item for item in found if field_name(item) is not None}
+    return [item for item in found if field_name(item) is None or last[field_name(item)] is item]
 
 
-def _check_repeated_fields(group) -> None:
-    """Refuse (ValueError) a repeated field name whose last (property ...) leaves out its
-    (at), (layer) or (effects): KiCad then keeps what the earlier one set for it, which
-    this port does not model."""
-    names = [item.items[1].value for item in group.items if head(item) == b"property"]
-    for item in text_groups(group):
-        if head(item) != b"property" or names.count(item.items[1].value) < 2:
+def _check_repeated_fields(group, version: int) -> None:
+    """Refuse (ValueError) a field written twice, in either form, whose last list is a
+    (property ...) leaving out its (at), (layer) or (effects): KiCad then keeps what the
+    earlier one set for it, which this port does not model."""
+    names = [field_name(item) for item in group.items]
+    for item in text_groups(group, version=version):
+        if head(item) != b"property" or names.count(field_name(item)) < 2:
             continue
         missing = [n.decode() for n in (b"at", b"layer", b"effects") if child(item, n) is None]
         if missing:
@@ -367,10 +416,36 @@ def _check_repeated_fields(group) -> None:
             )
 
 
-def _text_key(group) -> tuple[str, str] | None:
+def reference_and_value(group) -> tuple[str, str]:
+    """The texts of the Reference and Value fields KiCad holds once it has read the
+    (footprint ...) Group ``group`` (module docstring): every list making or updating one,
+    a (property "Reference"|"Value" ...) or a legacy (fp_text reference|value ...), read
+    in turn, a later one's text replacing an earlier one's; a legacy fp_text's text with
+    every %V replaced by ${VALUE} and then every %R by ${REFERENCE}, as parsePCB_TEXT
+    replaces them (3411-3412 [3928-3929]); "" for a field written neither way, the text
+    addMandatoryFields leaves it. The format version changes neither: the rules a file
+    before 20230620 has for its properties name other properties (4574-4607
+    [5266-5299]). Raises ParseRefusal for a list with no text atom, which KiCad refuses."""
+    texts = {b"Reference": "", b"Value": ""}
+    for item in group.items:
+        name = field_name(item)
+        if name not in texts:
+            continue
+        if len(item.items) < 3 or item.items[2].kind not in L.ATOM_KINDS:
+            raise ParseRefusal(f"the {name.decode()} at byte {item.start} has no text")
+        text = item.items[2].value.decode()
+        if head(item) == b"fp_text":
+            text = text.replace("%V", "${VALUE}").replace("%R", "${REFERENCE}")
+        texts[name] = text
+    return texts[b"Reference"], texts[b"Value"]
+
+
+def _text_key(group, version: int) -> tuple[str, str] | None:
     name = head(group)
     if name == b"property":
         if group.items[1].value in _NOT_TEXTS:
+            return None
+        if version < FIELDS_VERSION and group.items[1].value in _LEGACY_NOT_TEXTS:
             return None
         return ("property", group.items[1].value.decode())
     kind, text = group.items[1].value, group.items[2].value.decode()
@@ -391,8 +466,8 @@ def _default_layer(group, key: tuple[str, str], *, back: bool) -> str:
     return "B.SilkS" if back else "F.SilkS"
 
 
-def _read_text(group, orientation: float, *, major: int, back: bool, on_board: bool):
-    key = _text_key(group)
+def _read_text(group, orientation: float, *, major: int, back: bool, on_board: bool, version: int):
+    key = _text_key(group, version)
     if key is None:
         return None
     local = None
@@ -482,10 +557,14 @@ MANDATORY_FIELDS = (
 _MANDATORY_KEYS = frozenset(("property", name) for name, _ in MANDATORY_FIELDS)
 
 
-def read_footprint(group, *, major: int, copper_count: int | None = None) -> Footprint:
+def read_footprint(
+    group, *, major: int, copper_count: int | None = None, version: int | None = None
+) -> Footprint:
     """The footprint KiCad ``major`` reads from a (footprint ...) Group (module docstring).
     ``copper_count`` is the copper layer count of the board the footprint is read from,
-    None for a library file. Raises ParseRefusal for a token KiCad refuses."""
+    None for a library file; ``version`` that board's format (format_version). Raises
+    ParseRefusal for a token KiCad refuses."""
+    version = format_version(group, version)
     at = child(group, b"at")
     position: Point = (0, 0)
     orientation = 0.0
@@ -502,11 +581,16 @@ def read_footprint(group, *, major: int, copper_count: int | None = None) -> Foo
     back = layer_node is not None and layer_node.items[1].value == b"B.Cu"
     layer = "B.Cu" if back else "F.Cu"
     pads = tuple(_read_pad(g, major=major, copper_count=copper_count) for g in pad_groups(group))
-    _check_repeated_fields(group)
+    _check_repeated_fields(group, version)
     texts = []
-    for item in text_groups(group):
+    for item in text_groups(group, version=version):
         text = _read_text(
-            item, orientation, major=major, back=back, on_board=copper_count is not None
+            item,
+            orientation,
+            major=major,
+            back=back,
+            on_board=copper_count is not None,
+            version=version,
         )
         if text is not None:
             texts.append(text)

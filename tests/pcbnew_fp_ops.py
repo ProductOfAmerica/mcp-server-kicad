@@ -9,6 +9,7 @@ result per job. A job is a dict built by the helpers below:
 - ``move_job``: LoadBoard( board_in ), then per item FindFootprintByReference,
   SetPosition, and the item's turn; SaveBoard( board_out ) when one is named.
 - ``describe_job``: LoadBoard( board_in ), nothing else.
+- ``load_job``: per item FootprintLoad( library, name ), nothing else.
 - ``layers_job``: LoadBoard( board_in ), then per canonical layer name its opposite
   (BOARD::FlipLayer) and whether a PCB_TEXT on it is side specific
   (BOARD_ITEM::IsSideSpecific), and the board's copper layer count.
@@ -37,8 +38,9 @@ Normalize of the typed value); ("set", a): FOOTPRINT::SetOrientation(
 a ), the Python API's path; ("flip", None): FOOTPRINT::Flip( position,
 FLIP_DIRECTION::LEFT_RIGHT ), what SetLayerAndFlip runs to change the side; a list of
 turns, applied in order; or None. Each job's result describes every footprint it
-touched (all of them for describe_job), keyed by reference, as pcbnew holds it in
-memory: position, orientation and layer, per pad its number, board position, absolute
+touched (all of them for describe_job), keyed by reference (by name for load_job), as
+pcbnew holds it in memory: the Reference's and the Value's text (GetReference,
+GetValue), position, orientation and layer, per pad its number, board position, absolute
 and footprint-relative orientation, and under "pad_layers" the canonical names of its
 layers, and per text (the fields, then the fp_text items) its key, board position,
 angle, keep-upright flag, justification, mirror flag and canonical layer name. Under
@@ -104,6 +106,8 @@ def describe(fp):
             texts.append(text_record(item, "text"))
     pos = fp.GetPosition()
     return {
+        "reference": fp.GetReference(),
+        "value": fp.GetValue(),
         "position": [pos.x, pos.y],
         "orientation": fp.GetOrientation().AsDegrees(),
         "layer": layer_name(fp.GetLayer()),
@@ -289,6 +293,12 @@ for job in payload["jobs"]:
         board = load(job["board_in"])
         for fp in board.GetFootprints():
             out[fp.GetReference()] = describe(fp)
+    elif job["op"] == "load":
+        for item in job["items"]:
+            fp = pcbnew.FootprintLoad(item["library"], item["name"])
+            if fp is None:
+                raise RuntimeError(f"FootprintLoad found no {item['name']} in {item['library']}")
+            out[item["name"]] = describe(fp)
     elif job["op"] == "exchange":
         board = load(job["board_in"])
         for item in job["items"]:
@@ -374,6 +384,16 @@ def move_job(board_in, items: list[dict], board_out=None) -> dict:
 
 def describe_job(board_in) -> dict:
     return {"op": "describe", "board_in": str(board_in)}
+
+
+def load_job(footprints) -> dict:
+    """A job loading each (library, name) of ``footprints``, ``library`` a .pretty
+    directory, by FootprintLoad and nothing else: each footprint as KiCad reads its library
+    file, keyed by name."""
+    return {
+        "op": "load",
+        "items": [{"library": str(library), "name": name} for library, name in footprints],
+    }
 
 
 def exchange_item(ref: str, library, name: str, value: str = "V") -> dict:
