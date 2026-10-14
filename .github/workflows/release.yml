@@ -33,8 +33,8 @@ jobs:
       # Refuse, before anything is built, bumped or pushed, unless CI and every
       # KiCad suite passed on the commit being released. This job's own pytest
       # run below has no KiCad installed, so every test that needs kicad-cli or
-      # pcbnew skips here, and it runs Python 3.10 only: ci.yml is the only
-      # place 3.11 to 3.14 are tested, and the three KiCad workflows the only
+      # pcbnew skips here, and it runs Python 3.11 only: ci.yml is the only
+      # place 3.12 to 3.14 are tested, and the three KiCad workflows the only
       # place the write paths are checked against KiCad 9 and KiCad 10.
       #
       # The latest push or workflow_dispatch run per workflow decides, so a
@@ -151,7 +151,7 @@ jobs:
 
       - uses: astral-sh/setup-uv@v10.2.0
         with:
-          python-version: "3.10"
+          python-version: "3.11"
           # No cache in the job that publishes. setup-uv's "auto" turns caching
           # off for release events but not for workflow_dispatch, which is how
           # this runs, and a restored cache is input this job did not build.

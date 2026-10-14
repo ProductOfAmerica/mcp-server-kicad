@@ -3,7 +3,8 @@
 PyPI shows the trove classifiers as the Python versions the package supports.
 The claim is only true if each one is a leg of ci.yml's test job, and every leg
 is a version users can rely on, so the two lists must be equal. Before this
-test the classifiers named 3.10 alone while the matrix ran 3.10 through 3.14.
+test (2026-10-10) the classifiers named 3.10 alone while the matrix ran 3.10
+through 3.14.
 
 pyproject.toml is read as TOML. ci.yml is read as text (PyYAML is not a
 dependency), so the test confines itself to the test job and refuses the
@@ -13,13 +14,8 @@ matrix features it does not model rather than misreading them.
 from __future__ import annotations
 
 import re
-import sys
+import tomllib
 from pathlib import Path
-
-if sys.version_info >= (3, 11):
-    import tomllib
-else:  # pytest itself needs tomli on 3.10, so the dev environment always has it
-    import tomli as tomllib
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 CLASSIFIER = "Programming Language :: Python :: "
@@ -49,7 +45,7 @@ def _ci_matrix_versions() -> list[str]:
     assert versions, "ci.yml's python-version list is empty"
     # A leg tests the version it is named for only if setup-uv gets the matrix
     # value and the guard step compares the interpreter with it: on 2026-10-01
-    # every leg of this matrix ran 3.10.
+    # every leg ran 3.10, whatever it was named for.
     assert re.search(r"^\s+python-version: \$\{\{ matrix\.python-version \}\}$", job, re.MULTILINE)
     assert re.search(r"^\s+EXPECTED: \$\{\{ matrix\.python-version \}\}$", job, re.MULTILINE)
     return versions

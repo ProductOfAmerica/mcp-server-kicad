@@ -8,8 +8,8 @@ Parameter shapes are ``TypedDict``, not ``BaseModel``, so that a list of them
 publishes real ``properties`` and ``required`` in ``inputSchema`` while the
 values still arrive in the tool body as plain dicts.  That keeps every caller,
 and every existing test, passing dict literals.  They must come from
-``typing_extensions``: on Python 3.10 and 3.11, which this package supports,
-pydantic rejects ``typing.TypedDict`` outright.
+``typing_extensions``: on Python 3.11, which this package supports, pydantic
+rejects ``typing.TypedDict`` outright.
 """
 
 from __future__ import annotations

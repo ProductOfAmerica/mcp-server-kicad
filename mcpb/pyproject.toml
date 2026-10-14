@@ -9,5 +9,5 @@
 name = "kicad-mcpb-bundle"
 version = "0.0.0"
 description = "MCPB launcher for mcp-server-kicad"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = ["mcp-server-kicad==0.0.0"]
