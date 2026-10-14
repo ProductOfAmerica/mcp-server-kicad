@@ -52,11 +52,6 @@ MM = 1_000_000
 #: edit_judge's location of a board's root list.
 ROOT: J.Path = ((0, "kicad_pcb"),)
 
-_BUG_21 = (
-    "bug 21: net 0 is refused on a KiCad 10 board, so the update aborts when a net leaves the"
-    " schematic and add_trace, add_via and add_thermal_vias cannot write no net; fixed by step 7b"
-)
-
 #: How KiCad 10 writes the net of a segment, arc or via on no net: Quotew of net 0's name,
 #: which is empty (the module docstring).
 _NO_NET = richio.quotes("")
@@ -246,7 +241,6 @@ def _net_tokens(item: J.Item) -> list[list[bytes]]:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_21)
 @pytest.mark.parametrize("kind", ["segment", "arc", "via"])
 def test_k10_orphan_pass_writes_kicad_10_no_net(tmp_path, kind):
     """A KiCad 10 board holding U1 (pads on /GND and /VCC), a segment on /GND and a segment,
@@ -269,7 +263,6 @@ def test_k10_orphan_pass_writes_kicad_10_no_net(tmp_path, kind):
     assert summary["orphaned_tracks"] == 1, summary
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_21)
 @pytest.mark.parametrize("net_name", [False, True], ids=["net", "net and net_name"])
 def test_k10_orphaned_zone_loses_its_net(tmp_path, net_name):
     """The same board with a copper zone on /SIG in place of the track, written with a legacy
@@ -301,7 +294,6 @@ def test_k10_orphaned_zone_loses_its_net(tmp_path, net_name):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_21)
 @pytest.mark.parametrize("tool", ["add_trace", "add_via"])
 def test_k10_net_zero_is_written_as_kicad_10_writes_it(tmp_path, tool):
     """add_trace and add_via with net 0 on a KiCad 10 board whose U1 has pads on /GND and
@@ -316,7 +308,6 @@ def test_k10_net_zero_is_written_as_kicad_10_writes_it(tmp_path, tool):
     assert _net_tokens(item) == [[_NO_NET]]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_21)
 def test_thermal_vias_on_a_netless_k10_pad_are_on_no_net(tmp_path):
     """add_thermal_vias two by two under U1's pad 1, which is on no net (written with no net
     token, as KiCad 10 writes a pad on net 0), on a KiCad 10 board whose pad 2 is on /VCC: the

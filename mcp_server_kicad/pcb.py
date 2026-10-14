@@ -329,23 +329,35 @@ def _splice_pcb_node(root, node) -> None:
 
 def _set_item_net(node, root, net: int) -> None:
     """Fill the (net ...) child per ADR-2 guardrail 5: numeric for KiCad 9
-    format boards, name-based (quoted) for newer, never the wrong dialect."""
+    format boards, name-based (quoted) for newer, never the wrong dialect.
+
+    Net 0, no net, has no name to look up on a KiCad 10 format board, so it is
+    written as KiCad 10 writes it: (net "") on a segment, arc or via, whose net
+    KiCad 10 always writes by name, net 0's being empty, and no net token on any
+    other item, which it gives one only above net 0; a zone's legacy
+    (net_name ...) goes too, because KiCad 10 puts the zone on a non-empty one's
+    net, creating it if need be (pcb_io_kicad_sexpr.cpp:2860-2861, 2872-2876 and
+    1117-1118, netinfo_list.cpp:44-45, pcb_io_kicad_sexpr_parser.cpp:8673-8697,
+    all at 10.0.7)."""
     net_node = node.find("net")
     if _board_version(root) <= _NUMERIC_NET_VERSION_MAX:
         net_node.atoms[1].set_text(str(net))
         return
-    for num, name in _net_table(root):
-        if num == net:
-            named = _cst.parse(b'(net "x")').lists[0]
-            named.atoms[1].set_text(name)
-            named.sep = net_node.sep
-            node.children[node.children.index(net_node)] = named
-            return
-    raise ToolError(
-        f"Net {net} not found in this KiCad 10 format board. Numeric net "
-        "references are silently rebound by load order there, so the tool "
-        "refuses rather than emit one (ADR-2 guardrail 5)."
-    )
+    if net == 0 and node.head not in ("segment", "arc", "via"):
+        for stale in node.find_all("net") + node.find_all("net_name"):
+            node.remove_child(stale)
+        return
+    name = "" if net == 0 else next((n for num, n in _net_table(root) if num == net), None)
+    if name is None:
+        raise ToolError(
+            f"Net {net} not found in this KiCad 10 format board. Numeric net "
+            "references are silently rebound by load order there, so the tool "
+            "refuses rather than emit one (ADR-2 guardrail 5)."
+        )
+    named = _cst.parse(b'(net "x")').lists[0]
+    named.atoms[1].set_text(name)
+    named.sep = net_node.sep
+    node.children[node.children.index(net_node)] = named
 
 
 def _find_fp_cst(root, reference):
@@ -2847,7 +2859,8 @@ def add_trace(
         y2: End Y
         width: Trace width in mm
         layer: Copper layer (e.g. "F.Cu", "B.Cu")
-        net: Net number
+        net: Net number. 0 means no net, which a KiCad 10 board writes as (net "")
+            (pcb_io_kicad_sexpr.cpp:2860-2861 at 10.0.7).
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
@@ -2885,7 +2898,8 @@ def add_via(
         y: Y position
         size: Via pad size in mm
         drill: Drill diameter in mm
-        net: Net number
+        net: Net number. 0 means no net, which a KiCad 10 board writes as (net "")
+            (pcb_io_kicad_sexpr.cpp:2860-2861 at 10.0.7).
         layers: Via layers (default: ["F.Cu", "B.Cu"])
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
@@ -3455,8 +3469,8 @@ def add_thermal_vias(
         major=_board_major(root),
     )
 
-    # Determine net. A netless pad on a KiCad 10 format board resolves to
-    # net 0, which _set_item_net refuses (guardrail 5, same as add_via).
+    # Determine net. A netless pad resolves to net 0, no net, which _set_item_net
+    # writes in the board's own spelling: (net 0) on KiCad 9, (net "") on KiCad 10.
     name_to_num = {name: num for num, name in _net_table(root)}
     if net_name:
         via_net = _resolve_net_cst(root, net_name)

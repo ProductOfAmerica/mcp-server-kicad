@@ -605,3 +605,9 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
 - 2026-10-14: CPython 3.11 is the floor, so the Windows job runs 3.11 (from `.python-version`), where
   `mkdir(0o700)` is honoured (measured on 3.11.14, 3.12.12 and 3.14.3): the owner-only DACL a 2026-10-05
   entry calls untested is now exercised there.
+- 2026-10-14: net 0 on a KiCad 10 board is written as KiCad 10 writes no net, refining guardrail 5 and
+  slice 13's refusal: `_set_item_net` gives a segment, arc or via `(net "")` and removes a zone's
+  `(net ...)` and any legacy `(net_name ...)` (pcb_io_kicad_sexpr.cpp:2860-2861 and 2872-2876,
+  pcb_io_kicad_sexpr_parser.cpp:8673-8697 at 10.0.7). It refused net 0 there, so the board update
+  aborted when a net left the schematic and add_trace, add_via and add_thermal_vias refused no net
+  (bug 21). Gates: `tests/test_ladder_r3_nets.py`, KiCad 10 on the CI legs.
