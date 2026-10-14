@@ -1438,3 +1438,28 @@ class TestZoneFillSplice:
         )
         assert n == 0
         assert _cst.serialize(tree) == before
+
+
+class TestK10NetlessOrphan:
+    """update_pcb_from_schematic sends items on a vanished net to net 0. On a KiCad 10
+    board there is no net 0 to name, so _set_item_net raised "Net 0 not found" and the
+    whole update aborted. KiCad 10 itself writes a netless item as (net "") (measured:
+    pcbnew 10.0.5 SaveBoard of a PCB_VIA and a PCB_TRACK with SetNetCode(0))."""
+
+    def test_net_zero_writes_empty_name(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        root = _cst.parse(Path(p).read_bytes()).lists[0]
+        seg = next(c for c in root.lists if c.head == "segment")
+        pcb._set_item_net(seg, root, 0)
+        assert seg.find("net").atoms[1].text == ""
+        assert b'(net "")' in _cst.serialize(root)
+
+    def test_net_zero_is_netless_on_read(self, tmp_path):
+        p = _write_board(tmp_path, _K10_BOARD)
+        tree = _cst.parse(Path(p).read_bytes())
+        root = tree.lists[0]
+        seg = next(c for c in root.lists if c.head == "segment")
+        pcb._set_item_net(seg, root, 0)
+        Path(p).write_bytes(_cst.serialize(tree))
+        # The pads keep /SIG alive; the segment itself must now read as netless.
+        assert [(t.type, t.net) for t in pcb.list_pcb_traces(p)] == [("segment", 0)]

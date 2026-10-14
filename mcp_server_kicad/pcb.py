@@ -334,6 +334,13 @@ def _set_item_net(node, root, net: int) -> None:
     if _board_version(root) <= _NUMERIC_NET_VERSION_MAX:
         net_node.atoms[1].set_text(str(net))
         return
+    if net == 0:
+        # Netless. KiCad 10 has no net 0 to name; it writes (net "") for an item
+        # with no net (measured: pcbnew 10.0.5 SaveBoard, via and track at net 0).
+        named = _cst.parse(b'(net "")').lists[0]
+        named.sep = net_node.sep
+        node.children[node.children.index(net_node)] = named
+        return
     for num, name in _net_table(root):
         if num == net:
             named = _cst.parse(b'(net "x")').lists[0]
