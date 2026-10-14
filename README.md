@@ -17,7 +17,7 @@ change on disk.
 [![Python](https://img.shields.io/pypi/pyversions/mcp-server-kicad?style=flat-square&logo=python&logoColor=white)](https://pypi.org/project/mcp-server-kicad/)
 [![KiCad](https://img.shields.io/badge/KiCad-9%20%7C%2010-314CB0?style=flat-square&logo=kicad&logoColor=white)](https://www.kicad.org/)
 [![Tests](https://img.shields.io/github/actions/workflow/status/ProductOfAmerica/mcp-server-kicad/ci.yml?branch=main&style=flat-square&logo=githubactions&logoColor=white&label=tests)](https://github.com/ProductOfAmerica/mcp-server-kicad/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
+[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue?style=flat-square)](LICENSE)
 
 [Quick start](#quick-start) •
 [What you get](#what-you-get) •
@@ -205,7 +205,7 @@ Highest priority wins:
 
 ## Requirements
 
-- **Python 3.10+**
+- **Python 3.11+**
 - **KiCad 9.x or 10.x**, for the tools that hand work to KiCad. ERC, DRC, every
   export, jobsets, `get_version`, the library upgrades and
   `update_pcb_from_schematic` run `kicad-cli`; `fill_zones` and `autoroute_pcb`
@@ -215,7 +215,7 @@ Highest priority wins:
   directly and needs no KiCad install.
 
 CI runs the full suite on Linux against KiCad 9 and KiCad 10, and on macOS and
-Windows against KiCad 10, plus a KiCad-free matrix across Python 3.10 through 3.14.
+Windows against KiCad 10, plus a KiCad-free matrix across Python 3.11 through 3.14.
 
 ### Finding your KiCad install
 
@@ -525,4 +525,4 @@ decisions behind the byte-preserving write path.
 
 ## License
 
-[MIT](LICENSE)
+[GPL-3.0-or-later](LICENSE). Releases up to and including 0.20.1 were MIT-licensed; see [NOTICE](NOTICE).

@@ -3,16 +3,15 @@ name = "mcp-server-kicad"
 version = "0.20.1"
 description = "Byte-preserving MCP servers for KiCad: schematic capture, PCB layout, ERC, DRC, and manufacturing exports"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors = [{ name = "ProductOfAmerica" }]
 keywords = ["mcp", "kicad", "eda", "schematic", "pcb", "llm"]
-license = { text = "MIT" }
+license = { text = "GPL-3.0-or-later" }
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
-    "License :: OSI Approved :: MIT License",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -25,9 +24,9 @@ dependencies = [
     # feature-probed release. 1.x is upstream security-fix-only as of 2026-07-28.
     "mcp>=2.0.0,<3.0.0",
     # models.py imports TypedDict and NotRequired from here, not from typing:
-    # pydantic refuses typing.TypedDict on Python 3.10 and 3.11, both of which
-    # this package supports. Already present transitively via pydantic; declared
-    # because we import it directly. NotRequired has been available since 4.0.
+    # pydantic refuses typing.TypedDict on Python 3.11, which this package
+    # supports. Already present transitively via pydantic; declared because we
+    # import it directly. NotRequired has been available since 4.0.
     "typing-extensions>=4.6",
 ]
 
@@ -49,8 +48,7 @@ mcp-server-kicad-project = "mcp_server_kicad.project:main"
 # written files back as an independent oracle. No runtime path parses
 # through it, so it is not a runtime dependency.
 # hypothesis generates the test ladder's cases (tests/sexpr_gen.py). Its floor is
-# the release measured running on CPython 3.10 to 3.14; upstream's next minor
-# drops 3.10, and the universal lock then resolves it per Python version.
+# the release measured running on CPython 3.11 to 3.14.
 dev = [
     "pytest>=9.0",
     "pytest-xdist>=3.6",
@@ -83,7 +81,7 @@ markers = [
 ]
 
 [tool.ruff]
-target-version = "py310"
+target-version = "py311"
 line-length = 100
 extend-exclude = ["tools/routing_harness"]  # ported measurement scripts, kept textually close to their scratch originals
 
@@ -92,7 +90,7 @@ select = ["E", "F", "I", "W"]
 
 [tool.pyright]
 exclude = ["tools/routing_harness"]  # same reason; pyright keeps its default excludes on top
-pythonVersion = "3.10"
+pythonVersion = "3.11"
 typeCheckingMode = "basic"
 reportOptionalMemberAccess = "warning"
 reportAttributeAccessIssue = "warning"

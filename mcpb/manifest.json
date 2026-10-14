@@ -17,7 +17,7 @@
     "type": "git",
     "url": "https://github.com/ProductOfAmerica/mcp-server-kicad"
   },
-  "license": "MIT",
+  "license": "GPL-3.0-or-later",
   "keywords": [
     "kicad",
     "eda",
@@ -81,7 +81,7 @@
       "linux"
     ],
     "runtimes": {
-      "python": ">=3.10"
+      "python": ">=3.11"
     }
   }
 }

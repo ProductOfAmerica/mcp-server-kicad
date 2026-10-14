@@ -14,8 +14,8 @@ jobs:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@v10.2.0
         with:
-          python-version: "3.10"
-          # Same cache key as test (3.10). Only that job saves it, because two
+          python-version: "3.11"
+          # Same cache key as test (3.11). Only that job saves it, because two
           # jobs saving one key race and the loser fails with a warning.
           save-cache: false
       - run: uv sync --frozen --all-extras --dev
@@ -26,12 +26,12 @@ jobs:
     runs-on: ubuntu-26.04
     strategy:
       matrix:
-        python-version: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python-version: ["3.11", "3.12", "3.13", "3.14"]
     steps:
       - uses: actions/checkout@v7
       # python-version exports UV_PYTHON, which outranks .python-version. It is
       # also what keeps the legs on separate cache keys. actions/setup-python
-      # did neither: uv kept resolving the 3.10 in .python-version, so every
+      # did neither: uv kept resolving .python-version (then 3.10), so every
       # leg ran 3.10 (run 36915736772, 2026-10-01: the 3.11, 3.12 and 3.13
       # legs all reported Python 3.10.21).
       - uses: astral-sh/setup-uv@v10.2.0

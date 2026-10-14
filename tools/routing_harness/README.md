@@ -77,7 +77,7 @@ ported, so the labels are provenance, not paths.
 
 ## Requirements
 
-- Python 3.10 or newer with the repository's dev extras: `uv sync --frozen --all-extras --dev`. The
+- Python 3.11 or newer with the repository's dev extras: `uv sync --frozen --all-extras --dev`. The
   judge imports `tests/conftest.py`, which needs pytest and kiutils.
 - `kicad-cli` with KiCad's demo projects and symbol libraries. kicad-cli resolves as the package
   resolves it (`KICAD_CLI_PATH`, then PATH, then the usual install locations); the demos and symbol
