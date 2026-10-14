@@ -205,7 +205,7 @@ Highest priority wins:
 
 ## Requirements
 
-- **Python 3.10+**
+- **Python 3.11+**
 - **KiCad 9.x or 10.x**, for the tools that hand work to KiCad. ERC, DRC, every
   export, jobsets, `get_version`, the library upgrades and
   `update_pcb_from_schematic` run `kicad-cli`; `fill_zones` and `autoroute_pcb`
@@ -215,7 +215,7 @@ Highest priority wins:
   directly and needs no KiCad install.
 
 CI runs the full suite on Linux against KiCad 9 and KiCad 10, and on macOS and
-Windows against KiCad 10, plus a KiCad-free matrix across Python 3.10 through 3.14.
+Windows against KiCad 10, plus a KiCad-free matrix across Python 3.11 through 3.14.
 
 ### Finding your KiCad install
 

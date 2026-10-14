@@ -1091,7 +1091,10 @@ class TestBackupForExternalWrite:
         assert _read_acl(dest) == acl
         assert self._mode(dest) == 0o640
 
-    @pytest.mark.skipif(os.name == "nt", reason="Python 3.10 on Windows ignores mkdir's mode")
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="Windows reports the staging root as 0o777 whatever mode mkdir was given",
+    )
     def test_the_staging_copy_is_owner_only_while_it_fills(self, tmp_path, monkeypatch):
         """copytree made the staging directory at the umask's 0755 and each file
         at 0644, and applied the library's own modes only after the bytes were
