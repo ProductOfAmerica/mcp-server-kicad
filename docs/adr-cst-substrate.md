@@ -621,9 +621,11 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   SCH_LINE::BreakAt does (sch_line.cpp:574-583 at 9.0.8). So these additive tools now modify an
   existing node: the split wire keeps its start, uuid and every other byte and only its end atoms
   move, and its other half is the node's own copy with a fresh uuid, which is what KiCad's Duplicate
-  makes, so no new template was needed. add_wires also leaves out a stretch an existing wire of the
-  same stroke covers and trims a stretch across both pins of a two-pin part (CleanUp's merge and
-  TrimWire), on its own wires only. remove_junction merges as DeleteJunction does
+  makes, so no new template was needed. add_wires also runs CleanUp's merge and then TrimWire, as
+  finishSegments does, on its own wires only: a stretch an existing wire of the same stroke covers is
+  left out, and where the merged run holds both pins of a two-pin part the stretch between them goes,
+  refusing the call where KiCad would cut a wire already on the sheet that runs through a pin; a wire
+  of no length is dropped, as simplifyWireList drops one. remove_junction merges as DeleteJunction does
   (bus-wire-junction.cpp:115-185 at 9.0.8): the merged line is the first line's node, its moved end
   in the absorbed line's own spelling, so add_junctions then remove_junction gives back the file byte
   for byte. In a KiCad 10 file a split half joins no group and a merge takes both lines out of
@@ -631,9 +633,13 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   sch_line.cpp:83-103, and a commit puts a new item only in the group being edited and takes a
   removed one out, sch_commit.cpp:265-268 and 323-324). The byte judge for these edits is
   `tests/sch_judge.py`'s `assert_split_edit` and `assert_merge_edit`: only a line's end atoms change
-  and every other edit inserts or removes a whole item, checked by uuid. Measured 2026-10-14 on
-  kicad-cli 9.0.8: the port finds all 2892 junctions in the 93 demo sheets at KiCad 9's format
-  explicit and needs one at none of their 22,695 wire, bus and pin ends. Gates: the ladder's
+  and every other edit inserts or removes a whole item, checked by uuid. Measured 2026-10-14 by
+  running the port over KiCad 9.0.8's own demo files (no kicad-cli involved): it finds all 2892
+  junctions in the 93 demo sheets at KiCad 9's formats (20230121 to 20250114) explicit and needs one
+  at none of their 22,695 wire, bus and pin ends. KiCad 10.0.7's demos (104 sheets at those formats,
+  scanned on a downloaded copy) agree once the pins of a symbol whose instance entries disagree on
+  its unit are left out: a stale entry at a file's own root path draws another unit there than the
+  project does (bug 95, step 12b). Gates: the ladder's
   `tests/test_ladder_r3_wires.py` and `test_ladder_r3_junctions.py`: the structural judge on every leg,
   the kicad-cli 9 netlist anchors locally and on the Linux 9.0 leg (kicad-cli 10 joins a wire through
   a junction, so it cannot see the cut), and the KiCad 10 group twin on the 10.0 leg, macOS and

@@ -2021,13 +2021,15 @@ def exit_angle(x: int, y: int, tx: int, ty: int) -> int:
 
 @dataclass(frozen=True)
 class JunctionPoint:
-    """KiCad's verdict on one point. ``explicit`` is IsExplicitJunction, or with crossings
-    broken IsExplicitJunctionAllowed; ``dot`` says a junction sits exactly there;
-    ``bus_entry`` that a bus entry ends there (sch_screen.cpp:479-504 at 9.0.8)."""
+    """KiCad's verdict on one point. ``junction`` is IsJunction, three directions on a layer;
+    ``explicit`` is IsExplicitJunction, or with crossings broken IsExplicitJunctionAllowed;
+    ``dot`` says a junction sits exactly there; ``bus_entry`` that a bus entry ends there
+    (sch_screen.cpp:471-504 at 9.0.8)."""
 
     explicit: bool
     dot: bool
     bus_entry: bool
+    junction: bool = False
 
     @property
     def needed(self) -> bool:
@@ -2035,7 +2037,7 @@ class JunctionPoint:
         return self.explicit and not self.dot
 
 
-def junction_info(m: Model, p: Point, *, break_crossings: bool) -> JunctionPoint:
+def junction_info(m: Model, p: Point, *, break_crossings: bool, extra=()) -> JunctionPoint:
     """KiCad 9's JUNCTION_HELPERS::AnalyzePoint (junction_helpers.cpp:26-142 at 9.0.8) over
     the model: per layer (wires, buses) the distinct directions leaving the point. A wire or
     bus ending there adds its direction; one passing through adds both of its directions,
@@ -2055,13 +2057,18 @@ def junction_info(m: Model, p: Point, *, break_crossings: bool) -> JunctionPoint
     and collinear wires meeting at the point are merged before counting. Both only decide
     whether an unusual point is joined; the split form written either way reads alike in
     every reader.
+
+    ``extra`` holds lines (wire or bus Items) counted besides the model's own, for a state
+    the model does not hold yet.
     """
     m.ensure()
     x, y = p
     angles: dict[str, set[int]] = {"wire": set(), "bus": set()}
     broken = {"wire": False, "bus": False}
     middles: dict[str, list[Item]] = {"wire": [], "bus": []}
-    for ln in m._near(x, y, ("wire", "bus")):
+    near = m._near(x, y, ("wire", "bus"))
+    near += [ln for ln in extra if _within(x, y, ln.x, ln.y, ln.x2, ln.y2, 0)]
+    for ln in near:
         if (ln.x, ln.y) == (ln.x2, ln.y2):
             continue
         if p == (ln.x, ln.y) or p == (ln.x2, ln.y2):
@@ -2098,7 +2105,7 @@ def junction_info(m: Model, p: Point, *, break_crossings: bool) -> JunctionPoint
                 angles[layer].add(exit_angle(x, y, ln.x2, ln.y2))
     is_junction = len(angles["wire"]) >= 3 or len(angles["bus"]) >= 3
     to_wires = len(angles["wire"]) > 2 and len(angles["bus"]) == 1
-    return JunctionPoint(is_junction and (not bus_entry or to_wires), dot, bus_entry)
+    return JunctionPoint(is_junction and (not bus_entry or to_wires), dot, bus_entry, is_junction)
 
 
 # ---------------------------------------------------------------------------------------------

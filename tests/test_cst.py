@@ -1391,7 +1391,9 @@ class TestKicad10E2E:
         """A T onto the fixture wire (50,100)-(80,100) of a file kicad-cli 10 minted: a
         junction at (65,100) and none inside a wire. After the stem is removed, none lies
         inside a wire still and the bar's pieces run from (50,100) to (80,100) end to end,
-        one connected run (KiCad's remove leaves the split bar and its junction)."""
+        one connected run. remove_wire leaves the split bar and its junction; KiCad's delete
+        would also delete the junction, no longer explicit, and merge the halves
+        (sch_edit_tool.cpp:1703-1711 at 9.0.8)."""
         self._mint(kicad_native_sch)
         p = str(kicad_native_sch)
         schematic.add_wires([{"x1": 65, "y1": 80, "x2": 65, "y2": 100}], schematic_path=p)

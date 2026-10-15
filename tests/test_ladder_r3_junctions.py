@@ -261,6 +261,30 @@ def test_remove_junction_turns_a_split_crossing_back_into_a_crossing(tmp_path):
         }
 
 
+def test_remove_junction_keeps_a_wire_merged_into_one_of_no_length(tmp_path):
+    """KiCad's T at P with a wire of no length at P first in the file. DeleteJunction pairs
+    every line ending at P, and one of no length is parallel to each; MergeOverlap returns
+    the first line with the merged ends (sch_line.cpp:559-570 at 9.0.8), so the stem's extent
+    survives, carried by the first line: the stem is still drawn from P to R3:1, the bar's
+    halves become one wire, and kicad-cli reads R1:2 with R2:1 and R3:1 alone."""
+    p = layout(tmp_path, "zero_first")
+    wire(p, *P, *P)
+    wire(p, *C, *P)
+    wire(p, *A, *P)
+    wire(p, *P, *B)
+    junction(p, *P)
+    before = read(p)
+    schematic.remove_junction(*P, schematic_path=p)
+    after = read(p)
+    merges = S.assert_merge_edit(before, after, heads=["wire", "wire", "junction"])
+    assert sorted({m.new.start, m.new.end} == {S.iu_point(P), S.iu_point(C)} for m in merges) == [
+        False,
+        True,
+    ]
+    if HAS_KICAD_CLI:
+        assert joins(p, {R1_2, R2_1, R3_1}) == {frozenset({R1_2, R2_1}), frozenset({R3_1})}
+
+
 G = (111.76, 91.44)  # R8:1, R8 at (111.76, 95.25): up and right of P at 45 degrees
 
 

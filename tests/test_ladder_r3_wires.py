@@ -35,6 +35,7 @@ from conftest import _kicad_cli_major, requires_cli
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import sch_line
+from mcp.server.mcpserver.exceptions import ToolError
 from netlist_oracle import nets
 from routing_fixtures import fresh, junction, place, splice, wire
 
@@ -117,9 +118,16 @@ def t_shapes(draw):
     wire as (start, end) and either way round.
 
     The stem leaves the bar at more than one degree (it runs at most 57 times as far along
-    the bar as away from it, atan(1/57) = 1.005 degrees): KiCad counts directions in whole
-    degrees, so a stem within half a degree of the bar is the bar's own direction to it and
-    meets no junction rule (test_a_stem_within_half_a_degree_of_the_bar_joins_nothing)."""
+    the bar as away from it, atan(1/57) = 1.005 degrees), so it never counts as one of the
+    bar's own directions. KiCad counts a direction as KiROUND of its angle in degrees
+    (SCH_LINE::GetAngleFrom, sch_line.cpp:414-424 at 9.0.8), where EDA_ANGLE gives the
+    leftward axis exactly -180 and a direction off the axes atan2's value, strictly between
+    -180 and 180 (eda_angle.h:72-110 at 9.0.8). A stem whose angle rounds to the bar's own
+    meets no junction rule. Beside any of the bar's directions but the leftward one, that is
+    any stem less than half a degree off it, on either side; beside the leftward one only a
+    stem on the side of negative y, because one 0.499998 degrees off on the other side is at
+    179.500002 degrees, which rounds to 180, not -180, a third direction
+    (test_a_shallow_stem_is_judged_in_whole_degrees)."""
     lo = draw(st.integers(400_000, 1_400_000))
     length = draw(st.integers(20_000, 400_000))
     fixed = draw(st.integers(400_000, 1_400_000))
@@ -206,24 +214,31 @@ def test_t_split_matches_breakat(shape, stroke):
 
 
 @pytest.mark.parametrize(
-    "foot, joined",
+    "foot, end, joined",
     [
-        pytest.param((51.5589, 39.9), False, id="0.49999_degrees"),
-        pytest.param((51.4589, 39.9), True, id="0.5044_degrees"),
+        pytest.param((51.5589, 39.9), (40.1, 40), False, id="rightward_0.499998_degrees"),
+        pytest.param((51.4589, 39.9), (40.1, 40), True, id="rightward_0.5044_degrees"),
+        pytest.param((30.4411, 39.9), (41.9, 40), False, id="leftward_negative_y_side"),
+        pytest.param((30.4411, 40.1), (41.9, 40), True, id="leftward_positive_y_side"),
     ],
 )
-def test_a_stem_within_half_a_degree_of_the_bar_joins_nothing(tmp_path, foot, joined):
+def test_a_shallow_stem_is_judged_in_whole_degrees(tmp_path, foot, end, joined):
     """KiCad counts the directions meeting at a point in whole degrees: SCH_LINE::GetAngleFrom
-    is KiROUND of the direction's angle (sch_line.cpp:414-424 at 9.0.8). A stem ending at
-    (40.1, 40) on the bar (40, 40)-(42, 40) from (51.5589, 39.9) leaves at -0.49999 degrees,
-    which rounds to 0, the bar's own direction there, so only two directions meet and
-    AnalyzePoint calls for no junction (junction_helpers.cpp:26-142 at 9.0.8): KiCad's wire
-    tool writes none and splits nothing. From (51.4589, 39.9) it leaves at -0.5044 degrees,
-    which rounds to -1, a third direction: a junction, and the bar split there."""
+    is KiROUND of the direction's angle (sch_line.cpp:414-424 at 9.0.8), where EDA_ANGLE
+    gives the leftward axis exactly -180 and a direction off the axes atan2's value
+    (eda_angle.h:72-110 at 9.0.8). A stem ending at (40.1, 40) on the bar (40, 40)-(42, 40)
+    from (51.5589, 39.9) leaves at -0.499998 degrees, which rounds to 0, the bar's own
+    direction there, so only two directions meet and AnalyzePoint calls for no junction
+    (junction_helpers.cpp:26-142 at 9.0.8): KiCad's wire tool writes none and splits nothing.
+    From (51.4589, 39.9) it leaves at -0.5044 degrees, which rounds to -1, a third direction:
+    a junction, and the bar split there. Toward the bar's leftward direction the two sides
+    differ: a stem ending at (41.9, 40) from (30.4411, 39.9) leaves at -179.500002 degrees,
+    which rounds to -180, the bar's own, while from (30.4411, 40.1) it leaves at 179.500002
+    degrees, which rounds to 180, a third direction."""
     p = fresh(tmp_path, "shallow")
-    schematic.add_wires([w((40, 40), (42, 40)), w(foot, (40.1, 40))], schematic_path=p)
+    schematic.add_wires([w((40, 40), (42, 40)), w(foot, end)], schematic_path=p)
     data = read(p)
-    tee = S.iu_point((40.1, 40))
+    tee = S.iu_point(end)
     bars = [ln for ln in S.lines(data) if ln.start[1] == ln.end[1] == S.iu(40)]
     if joined:
         assert S.junctions(data) == [tee]
@@ -534,6 +549,132 @@ def test_a_wire_from_one_pin_to_the_other_is_not_trimmed(tmp_path):
     schematic.add_wires([w(P1, P2)], schematic_path=p)
     J.assert_inserted(before, read(p), heads=["wire"])
     assert joins(p, {R9_1, R9_2}) == one_net(R9_1, R9_2)
+
+
+MID = (100, 101.6)  # between R9's pins
+
+
+def _draw_twice(p):
+    schematic.add_wires([w(A, B)], schematic_path=p)
+    once = read(p)
+    schematic.add_wires([w(A, B)], schematic_path=p)
+    assert read(p) == once, "drawing the same wire again changed the file"
+
+
+def _extend_to_the_far_pin(p):
+    schematic.add_wires([w(A, P1)], schematic_path=p)
+    schematic.add_wires([w(A, P2)], schematic_path=p)
+
+
+def _over_a_stub_between_the_pins(p):
+    wire(p, 100.33, 101.6, 102.87, 101.6)
+    schematic.add_wires([w(A, B)], schematic_path=p)
+
+
+def _in_two_calls(p):
+    schematic.add_wires([w(A, MID)], schematic_path=p)
+    schematic.add_wires([w(MID, B)], schematic_path=p)
+
+
+def _in_one_call(p):
+    schematic.add_wires([w(A, MID), w(MID, B)], schematic_path=p)
+
+
+@requires_cli
+@pytest.mark.parametrize(
+    "draw, expected",
+    [
+        pytest.param(_draw_twice, {frozenset({R1_2, R9_1}), frozenset({R2_1, R9_2})}, id="twice"),
+        pytest.param(
+            _extend_to_the_far_pin,
+            {frozenset({R1_2, R9_1}), frozenset({R2_1}), frozenset({R9_2})},
+            id="extended_across_to_the_far_pin",
+        ),
+        pytest.param(
+            _over_a_stub_between_the_pins,
+            {frozenset({R1_2, R9_1}), frozenset({R2_1, R9_2})},
+            id="over_a_stub_between_the_pins",
+        ),
+        pytest.param(
+            _in_two_calls,
+            {frozenset({R1_2, R9_1}), frozenset({R2_1, R9_2})},
+            id="in_two_pieces_two_calls",
+        ),
+        pytest.param(
+            _in_one_call,
+            {frozenset({R1_2, R9_1}), frozenset({R2_1, R9_2})},
+            id="in_two_pieces_one_call",
+        ),
+    ],
+)
+def test_a_two_pin_part_is_trimmed_across_the_merged_wire(tmp_path, draw, expected):
+    """finishSegments runs CleanUp before TrimWire (sch_line_wire_bus_tool.cpp:1242-1261 at
+    9.0.8): the new wire is first merged with the collinear wires of its stroke that it
+    overlaps, or meets end to end where no junction is (schematic.cpp:1212-1303), and the
+    merged wire is what loses the stretch between a two-pin part's pins. So R9 is never
+    shorted: not by the same wire drawn twice (the second call changes nothing), not by a
+    wire carried on from one that ends at R9:1, not over a stub lying between the pins, and
+    not by a wire drawn across in two touching pieces. kicad-cli reads KiCad's nets."""
+    p = layout(tmp_path, "trim_merged", parts=("R1", "R2"))
+    place(p, "R", "R9", 101.6, 101.6, rot=90)
+    draw(p)
+    assert joins(p, {R1_2, R2_1, R9_1, R9_2}) == expected
+
+
+def test_a_wire_whose_merge_would_cut_an_existing_wire_is_refused(tmp_path):
+    """The wire (100, 101.6)-B runs through R9:2 without joining it (no junction, as an
+    earlier version wrote such wires). A new wire from A to (102, 101.6) overlaps it, so
+    KiCad's CleanUp merges the two into A-B, which holds both of R9's pins, and TrimWire then
+    cuts the old wire between them. add_wires edits a wire already on the sheet only by
+    splitting it, so it cannot do that: the call is refused and the file is untouched."""
+    p = layout(tmp_path, "trim_refused", parts=("R1", "R2"))
+    place(p, "R", "R9", 101.6, 101.6, rot=90)
+    wire(p, *MID, *B)
+    before = read(p)
+    try:
+        schematic.add_wires([w(A, (102, 101.6))], schematic_path=p)
+    except ToolError as exc:
+        assert read(p) == before, "refused, but the file changed"
+        assert "R9" in str(exc), str(exc)
+        return
+    raise AssertionError("accepted: the call raised no ToolError")
+
+
+def test_add_wires_writes_no_wire_of_no_length(tmp_path):
+    """KiCad's wire tool drops a wire of no length before adding anything
+    (simplifyWireList, sch_line_wire_bus_tool.cpp:1134-1165 at 9.0.8): the file stays
+    byte-identical and the result says so."""
+    p = layout(tmp_path, "zero")
+    before = read(p)
+    result = schematic.add_wires([w(P, P)], schematic_path=p)
+    assert read(p) == before
+    assert "no length" in result and "no change" in result.lower(), result
+
+
+@pytest.mark.parametrize(
+    "cli", [False, pytest.param(True, marks=requires_cli)], ids=["structure", "kicad"]
+)
+def test_connect_pins_splits_its_wire_at_a_junction_it_runs_through(tmp_path, cli):
+    """KiCad's T at P (wires from R3:1, from R8:1 and from (101.6, 96.52) ending there, and a
+    junction), then connect_pins(R1:2, R2:1), whose straight wire runs through P. KiCad 9's
+    cleanup splits a wire at every junction on it (SCHEMATIC::BreakSegmentsOnJunctions,
+    schematic.cpp:1090-1113 at 9.0.8), so the new wire is split there: no junction lies inside
+    a wire, and kicad-cli 9 reads the four pins on one net, as KiCad's editor and KiCad 10 read
+    the junction (kicad-cli 9 used to cut the wire there, leaving R2:1 apart)."""
+    p = layout(tmp_path, "cp_through", parts=("R1", "R2", "R3"))
+    place(p, "R", "R8", 111.76, 95.25)  # R8:1 at (111.76, 91.44)
+    wire(p, *C, *P)
+    wire(p, *P, 111.76, 91.44)
+    wire(p, *P, 101.6, 96.52)
+    junction(p, *P)
+    schematic.connect_pins("R1", "2", "R2", "1", schematic_path=p)
+    if not cli:
+        assert S.junctions_on_interiors(read(p)) == []
+    elif cli9():
+        pins = {R1_2, R2_1, R3_1, ("R8", "1")}
+        assert joins(p, pins) == one_net(*pins)
+    else:
+        pytest.skip("kicad-cli 10 joins a wire through a junction, so it cannot see the cut")
 
 
 BF = (116.84, 101.6)  # a wire end with nothing at it

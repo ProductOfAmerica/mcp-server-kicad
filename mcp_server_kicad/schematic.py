@@ -913,11 +913,15 @@ def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
     9.0.8): a junction goes wherever three or more wire directions, pins or sheet pins meet,
     at a new wire's end or at a point already on the sheet that a new wire runs through (a
     pin, a wire end), and every wire through a junction is split there, so a T, or a wire
-    drawn through a pin, joins in every reader. A stretch an existing wire of the same stroke
-    already covers is left out; a stretch running across both pins of a two-pin part is
-    trimmed between them. Existing wires are only ever split. The result counts the wire
-    nodes written and names each junction, split, left-out and trimmed stretch; when nothing
-    changes it says so and writes nothing.
+    drawn through a pin, joins in every reader. As KiCad merges the new wire with the
+    collinear wires of its stroke that it overlaps or meets end to end (where no junction
+    is), a stretch such a wire already covers is left out, and a merged run holding both
+    pins of a two-pin part loses the stretch between them, so drawing across a part never
+    shorts it. A wire of no length is left out, as KiCad's tool drops one. Existing wires
+    are only ever split: where KiCad's trim would cut a wire already on the sheet, the call
+    is refused and nothing is written. The result counts the wire nodes written and names
+    each junction, split, left-out and trimmed stretch; when nothing changes it says so and
+    writes nothing.
 
     Args:
         wires: List of wire defs [{x1, y1, x2, y2}, ...]
@@ -931,6 +935,10 @@ def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
     m = _model(root)
     m.ensure()
     requested = [(_req_point(w["x1"], w["y1"]), _req_point(w["x2"], w["y2"])) for w in wires]
+    # KiCad's tool drops a wire of no length before anything else (simplifyWireList,
+    # sch_line_wire_bus_tool.cpp:1134-1165 at 9.0.8).
+    dropped = [a for a, b in requested if a == b]
+    requested = [(a, b) for a, b in requested if a != b]
     # finishSegments collects each new wire's ends and every connection point already on the
     # sheet that lies on it, before CleanUp and TrimWire change anything (1182-1202 at 9.0.8).
     candidates = []
@@ -940,22 +948,24 @@ def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
             q for q in m._pts if _connectivity._within(q[0], q[1], a[0], a[1], b[0], b[1], 0)
         ]
     plain = _plain_wires(root)
+    raw = [_connectivity.Item("wire", *a, *b) for a, b in requested]
+    parts = _two_pin_parts(m)
     pieces: list[tuple[_connectivity.Point, _connectivity.Point]] = []
-    covered = []
+    covered, trimmed = [], []
     for a, b in requested:
-        if a == b:  # written as asked: a line of no length joins nothing
-            pieces.append((a, b))
-            continue
-        new, cov = _new_pieces(a, b, plain + pieces)
-        pieces += new
-        covered += cov
-    pieces, trimmed = _trim(pieces, _two_pin_parts(m))
+        kept, pieces, cut = _merge_and_trim(m, a, b, plain, pieces, parts, raw)
+        trimmed += cut
+        for s, e in kept:
+            new, cov = _new_pieces(s, e, plain + pieces)
+            pieces += new
+            covered += cov
     for a, b in pieces:
         _splice_line(root, a, b)
         m.add(_connectivity.Item("wire", *a, *b))
     joined = _join_points(root, m, candidates)
     pt = _connectivity.pt
     lines = [f"Added {len(pieces)} wires"]
+    lines += [f"Left out the wire of no length at {pt(a)}." for a in dropped]
     lines += [f"Left out {pt(a)}-{pt(b)}: a wire there already covers it." for a, b in covered]
     lines += [f"Trimmed {pt(a)}-{pt(b)} between the pins of {ref}." for ref, a, b in trimmed]
     lines += _join_report(joined)
@@ -1294,25 +1304,98 @@ def _two_pin_parts(m) -> list[tuple[str, Point, Point]]:
     return out
 
 
-def _trim(pieces, parts):
-    """TrimWire (bus-wire-junction.cpp:50-112 at 9.0.8) on the call's own pieces only: the
-    first piece holding both pins of a part, and not running exactly from one to the other,
-    loses the stretch between them; a remainder of no length goes. KiCad trims any wire on
-    the sheet; a wire already there is left as the user drew it. Returns (pieces, trimmed)."""
-    pieces = list(pieces)
-    trimmed = []
-    within = _connectivity._within
-    for ref, p1, p2 in parts:
-        for i, (a, b) in enumerate(pieces):
-            if {a, b} == {p1, p2}:
+def _merge_and_trim(m, a: Point, b: Point, plain, pieces, parts, raw):
+    """CleanUp's merge, then TrimWire, for one requested wire a-b, in finishSegments' order
+    (sch_line_wire_bus_tool.cpp:1242-1261 at 9.0.8). The merged run is a-b with every
+    collinear wire of its stroke, already on the sheet or one of the call's earlier pieces,
+    that it overlaps, or meets end to end where no junction is, transitively (CleanUp's
+    MergeOverlap, schematic.cpp:1212-1303 and sch_line.cpp:453-571 at 9.0.8). For each part
+    of two pins both on the run, unless the run is exactly the wire from one pin to the other
+    (bus-wire-junction.cpp:83-88), the stretch between the pins goes from a-b and from the
+    call's earlier pieces (TrimWire, 50-112). KiCad cuts it out of a wire already on the
+    sheet too; such a wire is left as drawn, which changes no join unless it runs through a
+    pin, and then the call is refused. Returns (a-b's stretches left, the call's pieces, the
+    stretches trimmed as (reference, pin, pin))."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+
+    def on(q: Point) -> bool:
+        return dx * (q[1] - a[1]) == dy * (q[0] - a[0])
+
+    def at(q: Point) -> int:
+        return _along(a, b, q)
+
+    lines = []  # (already on the sheet, (start, end), low, high) along a-b's line
+    for old, (c, d) in [(True, s) for s in plain] + [(False, s) for s in pieces]:
+        if c != d and on(c) and on(d):
+            lines.append((old, (c, d), *sorted((at(c), at(d)))))
+    lo, hi = 0, at(b)
+    chain = []
+    grown = True
+    while grown:
+        grown = False
+        for ln in lines:
+            if ln in chain:
                 continue
-            on = [within(q[0], q[1], a[0], a[1], b[0], b[1], 0) for q in (p1, p2)]
-            if all(on):
-                lo, hi = sorted((p1, p2), key=lambda q: _along(a, b, q))
-                pieces[i : i + 1] = [(s, e) for s, e in ((a, lo), (hi, b)) if s != e]
-                trimmed.append((ref, lo, hi))
+            old, (c, d), s, e = ln
+            if not max(lo, s) < min(hi, e):  # no overlap: merged only end to end
+                if e != lo and s != hi:
+                    continue
+                touch = c if at(c) == (e if e == lo else s) else d
+                if _connectivity.junction_info(m, touch, break_crossings=False, extra=raw).junction:
+                    continue
+            chain.append(ln)
+            lo, hi = min(lo, s), max(hi, e)
+            grown = True
+    runs = [(lo, hi)]
+    cuts = []
+    for ref, p1, p2 in parts:
+        if not (on(p1) and on(p2)):
+            continue
+        u, v = sorted((at(p1), at(p2)))
+        for k, (s, e) in enumerate(runs):
+            if s <= u and v <= e and (s, e) != (u, v):
+                runs[k : k + 1] = [r for r in ((s, u), (v, e)) if r[0] < r[1]]
+                cuts.append((u, v, ref, *sorted((p1, p2), key=at)))
                 break
-    return pieces, trimmed
+    if not cuts:
+        return [(a, b)], pieces, []
+    pt = _connectivity.pt
+    for old, (c, d), s, e in chain:
+        for u, v, ref, p1, p2 in cuts:
+            if old and (s < u < e or s < v < e):
+                raise ToolError(
+                    f"add_wires refused; nothing was written. KiCad's wire tool would merge the"
+                    f" wire {pt(a)}-{pt(b)} with the wire {pt(c)}-{pt(d)} already on the sheet"
+                    f" and cut that one between the pins of {ref} at {pt(p1)} and {pt(p2)};"
+                    " add_wires edits a wire already on the sheet only by splitting it. Draw"
+                    f" the new wire to stop at a pin of {ref}, or remove the old wire first."
+                )
+    pos = {at(q): q for q in (a, b)}
+    for u, v, ref, p1, p2 in cuts:
+        pos[u], pos[v] = p1, p2
+
+    def left(s: int, e: int) -> list[tuple[int, int]]:
+        spans = [(s, e)]
+        for u, v, *_ in cuts:
+            spans = [
+                r
+                for x, y in spans
+                for r in (((x, y),) if y <= u or x >= v else ((x, u), (v, y)))
+                if r[0] < r[1]
+            ]
+        return spans
+
+    kept = [(pos[x], pos[y]) for x, y in left(0, at(b))]
+    merged = {ln[1] for ln in chain if not ln[0]}
+    out = []
+    for c, d in pieces:
+        if (c, d) not in merged:
+            out.append((c, d))
+            continue
+        pos[at(c)], pos[at(d)] = c, d
+        spans = left(*sorted((at(c), at(d))))
+        out += [(pos[x], pos[y]) if at(c) < at(d) else (pos[y], pos[x]) for x, y in spans]
+    return kept, out, [(ref, p1, p2) for _, _, ref, p1, p2 in cuts]
 
 
 def _bus_entry_end_at(root, p: Point) -> bool:
@@ -1423,13 +1506,20 @@ def _merge_at(root, p: Point) -> tuple[list[str], set]:
     gone = set()
     for e in ends:
         if e.alive:
+            # The node takes the merged ends: points it already holds stay, counted as a
+            # multiset, so a line of no length that carries a merge gets its far end
+            # (MergeOverlap returns the first line with the merged ends, sch_line.cpp:559-570).
             xys = e.node.find("pts").find_all("xy")
-            cur = [_xy_iu(xys[0]), _xy_iu(xys[1])]
-            missing = [q for q in (e.a, e.b) if q not in cur]
+            want = [e.a, e.b]
+            moved = []
             for k in (0, 1):
-                if cur[k] not in (e.a, e.b):
-                    q = missing.pop(0)
-                    _set_xy(xys[k], q, e.texts[q])
+                q = _xy_iu(xys[k])
+                if q in want:
+                    want.remove(q)
+                else:
+                    moved.append(k)
+            for k, q in zip(moved, want):
+                _set_xy(xys[k], q, e.texts[q])
         else:
             gone.add(_node_uuid(e.node))
             if id(e.node) not in live and id(e.node) not in removed:
@@ -2431,7 +2521,18 @@ def connect_pins(
     new_points = [(x1, y1), (x2, y2)]
     if x1 != x2 and y1 != y2:
         new_points.append((x2, y1))  # L-shape corner
-    joined = _join_points(root, _model(root), [_req_point(px, py) for px, py in new_points])
+    m = _model(root)
+    legs = [(_req_point(s[0], s[1]), _req_point(s[2], s[3])) for s in segments]
+    # A junction already on a leg is a point the leg is split at too: KiCad 9's cleanup splits
+    # every wire through a junction (SCHEMATIC::BreakSegmentsOnJunctions, schematic.cpp:
+    # 1090-1113 at 9.0.8), which kicad-cli 9 turns into a cut when the wire is left whole.
+    dots = [
+        (it.x, it.y)
+        for it in m.items
+        if it.kind == "junction"
+        and any(_connectivity._within(it.x, it.y, a[0], a[1], b[0], b[1], 0) for a, b in legs)
+    ]
+    joined = _join_points(root, m, [_req_point(px, py) for px, py in new_points] + dots)
 
     # Auto-add net label for hierarchical ERC compatibility
     # Walk wires from both pin endpoints to find all connected points,
