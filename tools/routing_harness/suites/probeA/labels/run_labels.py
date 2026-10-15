@@ -30,6 +30,7 @@ hpaths.bootstrap(__file__)  # puts suites/probeA on sys.path, for rlib
 
 import rlib  # noqa: E402
 from rlib import H, Job, cp, wptn  # noqa: E402
+import compat54  # noqa: E402  (frozen 54160c1 add_wires and connect_pins: fixture setup)
 
 CAT = "labels"
 PL = "probe-labels"
@@ -526,9 +527,9 @@ def b_v02(kind):
     elif kind in ("c", "c_rev", "d"):
         v_part(p, "R2", 635000, 584200)   # R2:2 (63.5,62.23)
         chk(p, "R2", "2", (63.5, 62.23))
-        if kind == "d":  # setup with the repo's own add_wires, as the original did
-            H.schematic.add_wires(wires=[dict(x1=63.5, y1=72.39, x2=63.5, y2=62.23)],
-                                  schematic_path=p)
+        if kind == "d":  # setup with the repo's add_wires (compat54's frozen copy), as the original did
+            compat54.add_wires(wires=[dict(x1=63.5, y1=72.39, x2=63.5, y2=62.23)],
+                               schematic_path=p)
         elif kind == "c":
             v_w(p, *VP, 635000, 622300)
         else:
