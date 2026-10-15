@@ -347,12 +347,6 @@ class TestWiresPreservation:
         sch = reparse(kicad_native_sch)
         assert (65, 100) in [(j.position.X, j.position.Y) for j in sch.junctions]
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="bug 5: add_wires writes the T's junction on the unsplit bar, which kicad-cli 9"
-        " cuts; fixed by step 8",
-    )
     def test_auto_junction_on_t_connection_splits_the_bar(self, kicad_native_sch):
         """KiCad's form of the T: the fixture wire (50,100)-(80,100) keeps its uuid and start
         and ends at (65,100), a new wire with the same stroke runs (65,100)-(80,100), and the
@@ -1393,11 +1387,6 @@ class TestKicad10E2E:
         assert node.atoms[1].text == "K10_M2"
         assert node.find("shape").atoms[1].text == "output"
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="bug 5: add_wires writes the T's junction on the unsplit bar; fixed by step 8",
-    )
     def test_wires_on_real_kicad10(self, kicad_native_sch):
         """A T onto the fixture wire (50,100)-(80,100) of a file kicad-cli 10 minted: a
         junction at (65,100) and none inside a wire. After the stem is removed, none lies

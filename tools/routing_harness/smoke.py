@@ -25,7 +25,8 @@ every blocking step passed. The steps:
   7  PI-15 and PI-17      pi_jobs.py on five jobs, designs X and Hb2: duplicate references and an
                           unresolved library symbol refuse, bytes unchanged
   8  crossing ban         analysis/crossban/crossban_probe.py: the hazard exists without the ban and
-                          is gone with it, in the cli reading; the gui field reads n/a
+                          is gone with it, in the cli reading (Q1 to Q4 merge /A and /N; add_wires
+                          along W adds nothing); the gui field reads n/a
   10 demo slice           run_sweeps.py wptn --limit=10 for design X: no error, no wrong write
   9  gate                 core/gate.py over the records of steps 7 and 10 (both must have run in
                           this run): gui reading not taken, wrong_gui null, wrong_cli 0
@@ -274,18 +275,25 @@ def step8(scratch_root=None):
     on = {i: v for (s, i), v in got.items() if s.endswith("CROSS_BAN=True")}
     if len(got) < 30:
         problems.append(f"{len(got)} result lines parsed, expected 30 (S1 to S7, T1 to T4, Q0 to Q9 ban off and on)")
-    for i in ("Q1", "Q2", "Q3", "Q4", "Q5"):
+    # The hazard the ban exists for: a label (Q1 to Q3) or a junction (Q4) at a crossing joins
+    # /A and /N. Since the package splits wires at junctions (step 8) nothing is cut any more,
+    # and add_wires along W (Q5) adds nothing, W covering it, so its reading is clean.
+    for i in ("Q1", "Q2", "Q3", "Q4"):
         v = off.get(i)
         if not v or v["status"] != "OK" or not (v["cli"] or "").startswith("WRONG"):
             problems.append(f"ban off {i}: cli reading not WRONG ({v and v['cli']})")
             continue
         if "bad_merges" not in v["cli"] or "'/A'" not in v["cli"] or "'/N'" not in v["cli"]:
             problems.append(f"ban off {i}: /A and /N not merged ({v['cli']})")
-        if i in ("Q4", "Q5") and "splits=[('/N'" not in v["cli"]:
-            problems.append(f"ban off {i}: /N not split ({v['cli']})")
+        if "splits=" in v["cli"]:
+            problems.append(f"ban off {i}: a net split ({v['cli']})")
+    for i, status in (("Q5", "OK"), ("Q4c", "REFUSED"), ("Q5c", "OK")):
+        v = off.get(i)
+        if not v or v["status"] != status or (status == "OK" and v["cli"] != "clean"):
+            problems.append(f"ban off {i}: {v and (v['status'], v['cli'])}, expected {status} clean")
     for i in ("Q1", "Q2", "Q3", "Q4", "Q5"):
         ctrl, v = off.get(i + "c"), on.get(i)
-        if not ctrl or not v or ctrl["cli"] != v["cli"]:
+        if not ctrl or not v or (ctrl["status"], ctrl["cli"]) != (v["status"], v["cli"]):
             problems.append(f"ban on {i}: cli {v and v['cli']} differs from its control {ctrl and ctrl['cli']}")
     for tag, group in (("off", off), ("on", on)):
         if group.get("Q9", {}).get("status") != "REFUSED":
@@ -299,12 +307,16 @@ def step8(scratch_root=None):
         ref_file = Path(scratch_root) / "coarse" / "h_build" / "crossban_probe.out"
         if ref_file.is_file():
             ref = crossban_parse(ref_file.read_text(encoding="utf-8", errors="replace"))
+            # The scratch run took the repo's add_junctions and add_wires at 54160c1, which
+            # wrote junctions on unsplit wires; since step 8 these lines differ by design.
+            changed = {"Q4", "Q4c", "Q5", "Q5c"}
             diff = [f"{i}: status {got[k]['status']} cli {got[k]['cli']} vs scratch status "
                     f"{ref[k]['status']} cli {ref[k]['cli']}"
-                    for k in ref for i in [k[1]] if k not in got or got[k]["status"] != ref[k]["status"]
-                    or got[k]["cli"] != ref[k]["cli"]]
+                    for k in ref for i in [k[1]] if i not in changed
+                    and (k not in got or got[k]["status"] != ref[k]["status"]
+                         or got[k]["cli"] != ref[k]["cli"])]
             problems += [f"differs from the scratch output: {d}" for d in diff[:5]]
-            note += f"; compared with {len(ref)} scratch lines"
+            note += f"; compared with {len(ref)} scratch lines ({', '.join(sorted(changed))} expected to differ)"
         else:
             note += "; scratch crossban_probe.out not found, not compared"
     else:

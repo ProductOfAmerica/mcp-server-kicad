@@ -38,17 +38,8 @@ from kicad_ref import sch_line
 from netlist_oracle import nets
 from routing_fixtures import fresh, junction, place, splice, wire
 
-from mcp_server_kicad import project, schematic
+from mcp_server_kicad import _connectivity, project, schematic
 from mcp_server_kicad.models import WireSpec
-
-_BUG5 = (
-    "bug 5: a junction is written on a wire that is not split there, which kicad-cli 9 cuts;"
-    " fixed by step 8"
-)
-_BUG30 = (
-    "bug 30: add_wires looks for junction points only at its own wires' ends, on horizontal"
-    " and vertical wires, within 0.01 mm; fixed by step 8"
-)
 
 A = (80.01, 101.6)  # R1:2
 B = (123.19, 101.6)  # R2:1
@@ -123,15 +114,19 @@ def _new_sheet(work: str) -> str:
 def t_shapes(draw):
     """A bar along an axis and a stem ending strictly inside it, at least 0.1 mm from either
     end, square to it or slanted; internal units on the page. Returns (bar, stem, tee), each
-    wire as (start, end) and either way round."""
+    wire as (start, end) and either way round.
+
+    The stem leaves the bar at more than one degree (it runs at most 57 times as far along
+    the bar as away from it, atan(1/57) = 1.005 degrees): KiCad counts directions in whole
+    degrees, so a stem within half a degree of the bar is the bar's own direction to it and
+    meets no junction rule (test_a_stem_within_half_a_degree_of_the_bar_joins_nothing)."""
     lo = draw(st.integers(400_000, 1_400_000))
     length = draw(st.integers(20_000, 400_000))
     fixed = draw(st.integers(400_000, 1_400_000))
     t = draw(st.integers(lo + 1_000, lo + length - 1_000))
-    foot = (
-        t + draw(st.integers(-200_000, 200_000)),
-        fixed + draw(st.sampled_from([-1, 1])) * draw(st.integers(1_000, 300_000)),
-    )
+    rise = draw(st.integers(1_000, 300_000))
+    run = min(200_000, 57 * rise)
+    foot = (t + draw(st.integers(-run, run)), fixed + draw(st.sampled_from([-1, 1])) * rise)
     bar, stem, tee = ((lo, fixed), (lo + length, fixed)), (foot, (t, fixed)), (t, fixed)
     if draw(st.booleans()):  # vertical: swap the axes
         bar = tuple((y, x) for x, y in bar)
@@ -148,7 +143,6 @@ def _wire_mm(segment) -> WireSpec:
     return w(_mm(segment[0]), _mm(segment[1]))
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(
     shape=(
@@ -181,7 +175,6 @@ _STROKES = (
 )
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(
     shape=(
@@ -212,8 +205,38 @@ def test_t_split_matches_breakat(shape, stroke):
     assert (split.old.start, split.old.end, split.point) == (bar[0], bar[1], tee)
 
 
+@pytest.mark.parametrize(
+    "foot, joined",
+    [
+        pytest.param((51.5589, 39.9), False, id="0.49999_degrees"),
+        pytest.param((51.4589, 39.9), True, id="0.5044_degrees"),
+    ],
+)
+def test_a_stem_within_half_a_degree_of_the_bar_joins_nothing(tmp_path, foot, joined):
+    """KiCad counts the directions meeting at a point in whole degrees: SCH_LINE::GetAngleFrom
+    is KiROUND of the direction's angle (sch_line.cpp:414-424 at 9.0.8). A stem ending at
+    (40.1, 40) on the bar (40, 40)-(42, 40) from (51.5589, 39.9) leaves at -0.49999 degrees,
+    which rounds to 0, the bar's own direction there, so only two directions meet and
+    AnalyzePoint calls for no junction (junction_helpers.cpp:26-142 at 9.0.8): KiCad's wire
+    tool writes none and splits nothing. From (51.4589, 39.9) it leaves at -0.5044 degrees,
+    which rounds to -1, a third direction: a junction, and the bar split there."""
+    p = fresh(tmp_path, "shallow")
+    schematic.add_wires([w((40, 40), (42, 40)), w(foot, (40.1, 40))], schematic_path=p)
+    data = read(p)
+    tee = S.iu_point((40.1, 40))
+    bars = [ln for ln in S.lines(data) if ln.start[1] == ln.end[1] == S.iu(40)]
+    if joined:
+        assert S.junctions(data) == [tee]
+        assert sorted((ln.start, ln.end) for ln in bars) == [
+            (S.iu_point((40, 40)), tee),
+            (tee, S.iu_point((42, 40))),
+        ]
+    else:
+        assert S.junctions(data) == []
+        assert [(ln.start, ln.end) for ln in bars] == [(S.iu_point((40, 40)), S.iu_point((42, 40)))]
+
+
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 def test_a_t_reads_like_kicads_own_t(tmp_path):
     """add_wires drawing the bar A-B and the stem C-P in one call: kicad-cli reads R1:2,
     R2:1 and R3:1 on one net, as it reads the same T in the form KiCad's editor saves (the
@@ -235,7 +258,6 @@ def test_a_t_reads_like_kicads_own_t(tmp_path):
 
 
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG30)
 def test_a_t_drawn_bar_last_reads_like_kicads_own_t(tmp_path):
     """The stem C-P first, then the bar A-B through its end, in two calls: P is a
     connection point already on the sheet that lies on the new bar, so KiCad's wire tool
@@ -304,7 +326,6 @@ def _cover(data: bytes):
     return merged, sorted(S.junctions(data))
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG30)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(
     case=(
@@ -333,7 +354,6 @@ def test_add_wires_is_order_independent(case):
 
 
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG30)
 def test_a_wire_drawn_through_a_pin_connects_it(tmp_path):
     """The wire A-B drawn through R6:1, which sits at P: a pin on a new wire is a connection
     point there (finishSegments collects it, and pin plus the wire's two directions are three),
@@ -349,6 +369,13 @@ def test_a_wire_drawn_through_a_pin_connects_it(tmp_path):
 # ---------------------------------------------------------------------------------------------
 
 _PAGE = st.integers(200_000, 1_800_000)
+
+
+def _inside(p, a, b) -> bool:
+    """_connectivity.inside on the millimetre values of three points, each read back into
+    internal units by the parser's rule (sch_judge.iu, kicad_ref's KiROUND)."""
+    (px, py), (ax, ay), (bx, by) = (S.iu_point(_mm(q)) for q in (p, a, b))
+    return _connectivity.inside(px, py, ax, ay, bx, by)
 
 
 @st.composite
@@ -371,25 +398,19 @@ def _wire_and_point(draw):
     return a, b, p
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="bug 30: the on-wire test sees only horizontal and vertical wires and takes points"
-    " within 0.01 mm; fixed by step 8",
-)
 @settings(max_examples=sexpr_gen.budget())
 @example(case=((1_000_000, 1_000_000), (1_300_000, 1_300_000), (1_100_000, 1_100_000)))
 @example(case=((1_000_000, 1_000_000), (1_300_000, 1_000_000), (1_100_000, 1_000_050)))
 @given(case=_wire_and_point())
 def test_point_on_wire_interior_is_exact(case):
-    """_point_on_wire_interior holds exactly where a junction splits the wire: on it as
-    IsPointOnSegment says, ends excluded (kicad_ref.sch_line.strictly_inside), at any angle.
-    The examples: a diagonal wire's midpoint (KiCad splits there) and a point 0.005 mm off
-    a horizontal wire (KiCad's split and connection graph are exact, so nothing joins it)."""
+    """_connectivity.inside, the one on-wire test the junction code uses, holds exactly where
+    a junction splits the wire: on it as IsPointOnSegment says, ends excluded
+    (kicad_ref.sch_line.strictly_inside), at any angle, for millimetre points read by the
+    parser's rule. The examples: a diagonal wire's midpoint (KiCad splits there) and a point
+    0.005 mm off a horizontal wire (KiCad's split and connection graph are exact, so nothing
+    joins it)."""
     a, b, p = case
-    assert schematic._point_on_wire_interior(*_mm(p), *_mm(a), *_mm(b)) == sch_line.strictly_inside(
-        a, b, p
-    )
+    assert _inside(p, a, b) == sch_line.strictly_inside(a, b, p)
 
 
 @st.composite
@@ -419,11 +440,10 @@ def _axis_wire_and_clear_point(draw):
 @given(case=_axis_wire_and_clear_point())
 def test_point_on_wire_interior_axis_aligned(case):
     """On horizontal and vertical wires, for points on the wire's line or clear of it and of
-    its ends, _point_on_wire_interior already agrees with IsPointOnSegment, ends excluded."""
+    its ends, the domain the earlier axis-only test with its 0.01 mm tolerance got right,
+    _connectivity.inside agrees with IsPointOnSegment, ends excluded."""
     a, b, p = case
-    assert schematic._point_on_wire_interior(*_mm(p), *_mm(a), *_mm(b)) == sch_line.strictly_inside(
-        a, b, p
-    )
+    assert _inside(p, a, b) == sch_line.strictly_inside(a, b, p)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -431,7 +451,6 @@ def test_point_on_wire_interior_axis_aligned(case):
 # ---------------------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 def test_connect_pins_splits_the_wire_its_corner_lands_on(tmp_path):
     """connect_pins(R2:1, R1:2) draws (101.6, 123.19) to (101.6, 80.01); connect_pins(R3:1,
     R2:1) then turns its L at (101.6, 97.79), on that wire's interior. Three directions meet
@@ -455,7 +474,6 @@ def test_connect_pins_splits_the_wire_its_corner_lands_on(tmp_path):
         assert joins(p, {R1_2, R2_1, ("R3", "1")}) == one_net(R1_2, R2_1, ("R3", "1"))
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 def test_connect_pins_joins_a_pin_lying_on_a_wire(tmp_path):
     """R6:1 sits at P on the interior of the wire A-B; connect_pins(R6:1, R4:2) starts there.
     The pin, the new wire and A-B's two directions meet at P, so KiCad's form is a junction
@@ -480,12 +498,6 @@ P1, P2 = (97.79, 101.6), (105.41, 101.6)  # R9:1 and R9:2, R9 at P turned 90 deg
 
 
 @requires_cli
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="bug 30: add_wires leaves the pins a new wire runs through unjoined, a two-pin"
-    " part's included; fixed by step 8",
-)
 @pytest.mark.parametrize(
     "start, expected",
     [
@@ -529,7 +541,6 @@ F = (134.62, 101.6)  # R7:1, R7 at (138.43, 101.6) turned 90 degrees
 
 
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 def test_a_wire_overlapping_one_on_the_sheet_joins_it(tmp_path):
     """add_wires(P to F) over the wire A-BF already there, collinear, overlapping it on P-BF
     with no shared end. KiCad's CleanUp merges the overlap, so the new wire adds BF-F and
@@ -544,7 +555,6 @@ def test_a_wire_overlapping_one_on_the_sheet_joins_it(tmp_path):
 
 
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG30)
 def test_a_wire_laid_over_a_pin_on_a_wire_joins_the_pin(tmp_path):
     """The wire A-B runs through R6:1 at P without joining it; add_wires lays a wire over part
     of A-B, across P. R6:1 is a connection point on the new wire, and the pin with A-B's
@@ -561,7 +571,6 @@ def test_a_wire_laid_over_a_pin_on_a_wire_joins_the_pin(tmp_path):
     assert S.junctions_on_interiors(read(p)) == []
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 @pytest.mark.parametrize(
     "stroke",
     [
@@ -588,7 +597,6 @@ def test_a_wire_laid_on_a_differently_drawn_wire_is_written_as_asked(tmp_path, s
     ]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG30)
 def test_the_same_wire_drawn_twice_changes_nothing_the_second_time(tmp_path):
     """Drawing a wire already on the sheet adds nothing: CleanUp removes a line identical to
     another (schematic.cpp:1272-1278 at 9.0.8), so the file stays byte-identical and the
@@ -601,7 +609,6 @@ def test_the_same_wire_drawn_twice_changes_nothing_the_second_time(tmp_path):
     assert "no change" in result.lower(), result
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG30)
 @pytest.mark.parametrize("off", [0.005, 0.0099], ids=["5um", "9.9um"])
 def test_a_stem_ending_just_off_a_wire_gets_no_junction(tmp_path, off):
     """A stem ending a few micrometres off the bar ends on no wire: KiCad's split and its

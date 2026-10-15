@@ -145,35 +145,6 @@ def _get_page_size(sch) -> tuple[float, float]:
     return w, h
 
 
-def _point_on_wire_interior(
-    px: float,
-    py: float,
-    ax: float,
-    ay: float,
-    bx: float,
-    by: float,
-    tol: float = 0.01,
-) -> bool:
-    """Check if point (px, py) lies on the interior of wire segment (a->b).
-
-    Only handles axis-aligned (horizontal/vertical) wires. Returns False
-    for diagonal wires and for points at segment endpoints.
-    """
-    # Horizontal wire
-    if abs(ay - by) < tol:
-        if abs(py - ay) < tol:
-            lo, hi = min(ax, bx), max(ax, bx)
-            if lo + tol < px < hi - tol:
-                return True
-    # Vertical wire
-    if abs(ax - bx) < tol:
-        if abs(px - ax) < tol:
-            lo, hi = min(ay, by), max(ay, by)
-            if lo + tol < py < hi - tol:
-                return True
-    return False
-
-
 # ---------------------------------------------------------------------------
 # Schematic read tools (13)
 # ---------------------------------------------------------------------------
@@ -882,7 +853,15 @@ def remove_junction(
     y: float,
     schematic_path: str = SCH_PATH,
 ) -> str:
-    """Remove a junction at the given coordinates.
+    """Remove a junction at the given coordinates, as KiCad's delete removes one.
+
+    The junction within 0.1 mm goes, with any other at exactly its point. Then, as KiCad's
+    DeleteJunction does (bus-wire-junction.cpp:115-185 at 9.0.8), of the wires and buses
+    ending there each parallel pair is made one, or one of two identical lines goes, so
+    whatever met only at the junction is disconnected: a T loses its stem, a crossing becomes
+    two wires that do not join. Wires that merely meet there at an angle stay joined. Where a
+    bus entry ends at the point nothing is merged, since kicad-cli 9 cuts a wire at a bus entry
+    end inside it. The result names each merge.
 
     Args:
         x: X position
@@ -891,20 +870,54 @@ def remove_junction(
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     tol = 0.1
-    for node in root.find_all("junction"):
-        nx, ny = _node_xy(node)
-        if abs(nx - x) < tol and abs(ny - y) < tol:
-            root.remove_child(node)
-            _atomic_write(schematic_path, _cst.serialize(tree))
-            return f"Removed junction at ({x}, {y})"
-    raise ToolError(
-        f"Junction at ({x}, {y}) not found. Use list_schematic_junctions to see positions."
+    found = next(
+        (
+            n
+            for n in root.find_all("junction")
+            if abs(_node_xy(n)[0] - x) < tol and abs(_node_xy(n)[1] - y) < tol
+        ),
+        None,
     )
+    if found is None:
+        raise ToolError(
+            f"Junction at ({x}, {y}) not found. Use list_schematic_junctions to see positions."
+        )
+    p = _xy_iu(found.find("at"))
+    dots = [n for n in root.find_all("junction") if _xy_iu(n.find("at")) == p]
+    gone = {_node_uuid(n) for n in dots}
+    for n in dots:
+        root.remove_child(n)
+    lines = [f"Removed junction at ({x}, {y})"]
+    if len(dots) > 1:
+        lines.append(f"Also removed {len(dots) - 1} more junction(s) at {_connectivity.pt(p)}.")
+    if _bus_entry_end_at(root, p):
+        lines.append(
+            f"Merged no wires: a bus entry ends at {_connectivity.pt(p)}, and kicad-cli 9 cuts a"
+            " wire at a bus entry end inside it."
+        )
+    else:
+        merges, dropped = _merge_at(root, p)
+        gone |= dropped
+        lines += merges
+    _leave_groups(root, gone)
+    _atomic_write(schematic_path, _cst.serialize(tree))
+    return "\n".join(lines)
 
 
 @mcp.tool(annotations=_ADDITIVE)
 def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
-    """Add multiple wires at once. Each wire dict has keys: x1, y1, x2, y2.
+    """Add multiple wires at once, as KiCad's wire tool adds them. Each wire dict has keys:
+    x1, y1, x2, y2.
+
+    Following SCH_LINE_WIRE_BUS_TOOL::finishSegments (sch_line_wire_bus_tool.cpp:1168-1276 at
+    9.0.8): a junction goes wherever three or more wire directions, pins or sheet pins meet,
+    at a new wire's end or at a point already on the sheet that a new wire runs through (a
+    pin, a wire end), and every wire through a junction is split there, so a T, or a wire
+    drawn through a pin, joins in every reader. A stretch an existing wire of the same stroke
+    already covers is left out; a stretch running across both pins of a two-pin part is
+    trimmed between them. Existing wires are only ever split. The result counts the wire
+    nodes written and names each junction, split, left-out and trimmed stretch; when nothing
+    changes it says so and writes nothing.
 
     Args:
         wires: List of wire defs [{x1, y1, x2, y2}, ...]
@@ -914,14 +927,44 @@ def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
     for w in wires:
         for xk, yk in [("x1", "y1"), ("x2", "y2")]:
             _bounds_check(w[xk], w[yk], page_w, page_h, page_name)
-    all_points = []
-    for w in wires:
-        all_points += _splice_wire(root, w["x1"], w["y1"], w["x2"], w["y2"])
-    # Auto-add junctions where new wire endpoints hit wire interiors (the scan
-    # includes the wires just spliced, matching the kiutils-era behavior)
-    _auto_junctions_cst(root, all_points)
-    _atomic_write(schematic_path, _cst.serialize(tree))
-    return f"Added {len(wires)} wires"
+    before = _cst.serialize(tree)
+    m = _model(root)
+    m.ensure()
+    requested = [(_req_point(w["x1"], w["y1"]), _req_point(w["x2"], w["y2"])) for w in wires]
+    # finishSegments collects each new wire's ends and every connection point already on the
+    # sheet that lies on it, before CleanUp and TrimWire change anything (1182-1202 at 9.0.8).
+    candidates = []
+    for a, b in requested:
+        candidates += [a, b]
+        candidates += [
+            q for q in m._pts if _connectivity._within(q[0], q[1], a[0], a[1], b[0], b[1], 0)
+        ]
+    plain = _plain_wires(root)
+    pieces: list[tuple[_connectivity.Point, _connectivity.Point]] = []
+    covered = []
+    for a, b in requested:
+        if a == b:  # written as asked: a line of no length joins nothing
+            pieces.append((a, b))
+            continue
+        new, cov = _new_pieces(a, b, plain + pieces)
+        pieces += new
+        covered += cov
+    pieces, trimmed = _trim(pieces, _two_pin_parts(m))
+    for a, b in pieces:
+        _splice_line(root, a, b)
+        m.add(_connectivity.Item("wire", *a, *b))
+    joined = _join_points(root, m, candidates)
+    pt = _connectivity.pt
+    lines = [f"Added {len(pieces)} wires"]
+    lines += [f"Left out {pt(a)}-{pt(b)}: a wire there already covers it." for a, b in covered]
+    lines += [f"Trimmed {pt(a)}-{pt(b)} between the pins of {ref}." for ref, a, b in trimmed]
+    lines += _join_report(joined)
+    after = _cst.serialize(tree)
+    if after == before:
+        lines.append("No change was made to the file.")
+    else:
+        _atomic_write(schematic_path, after)
+    return "\n".join(lines)
 
 
 # Native-shape label template (tabs, quoted uuid, no justify) for the CST write
@@ -1058,24 +1101,358 @@ def _splice_wire(root, x1: float, y1: float, x2: float, y2: float) -> list[tuple
     return points
 
 
-def _auto_junctions_cst(root, new_points: list[tuple[float, float]], tol: float = 0.01) -> None:
-    """CST twin of _auto_junctions for the guard-free wire path."""
-    junctions = [_node_xy(j) for j in root.find_all("junction")]
-    for px, py in new_points:
-        if any(abs(jx - px) < tol and abs(jy - py) < tol for jx, jy in junctions):
+# ---------------------------------------------------------------------------
+# Junctions as KiCad's editor writes them: the junction rule is
+# _connectivity.junction_info, the split is SCH_LINE::BreakAt
+# ---------------------------------------------------------------------------
+
+Point = _connectivity.Point
+
+
+def _req_point(x: float, y: float) -> Point:
+    """A requested point in internal units, as KiCad reads the text _splice_wire writes."""
+    return _connectivity.iu(_num(round(x, 4))), _connectivity.iu(_num(round(y, 4)))
+
+
+def _xy_iu(node) -> Point:
+    """An (xy x y) or (at x y ...) list's position in internal units, as KiCad parses it."""
+    return _connectivity.iu(node.atoms[1].text), _connectivity.iu(node.atoms[2].text)
+
+
+def _line_xys(node):
+    """A wire or bus node's two (xy ...) lists, or None for any other count, which KiCad's
+    parser does not load (parseLine reads exactly two)."""
+    pts = node.find("pts")
+    xys = pts.find_all("xy") if pts is not None else []
+    return xys if len(xys) == 2 else None
+
+
+def _set_xy(xy, p: Point, texts: tuple[str, str] | None = None) -> None:
+    """Point an (xy ...) list at p, rewriting only the atoms whose value changes, with
+    ``texts`` when given (a point's own spelling, carried from the line that had it)."""
+    for k, (atom, v) in enumerate(zip(xy.atoms[1:3], p)):
+        if _connectivity.iu(atom.text) != v:
+            atom.set_text(texts[k] if texts else _connectivity.mm(v))
+
+
+def _splice_line(root, a: Point, b: Point) -> None:
+    """Splice one wire node from a to b, from KiCad's own wire template."""
+    node = _WIRE_TPL.copy()
+    for xy, p in zip(node.find("pts").find_all("xy"), (a, b)):
+        xy.atoms[1].set_text(_connectivity.mm(p[0]))
+        xy.atoms[2].set_text(_connectivity.mm(p[1]))
+    node.find("uuid").atoms[1].set_text(_gen_uuid())
+    _splice_sch_node(root, "wire", node)
+
+
+def _model(root) -> _connectivity.Model:
+    """The sheet's connectivity model; a sheet KiCad cannot load (a symbol at an angle it does
+    not store) is refused before anything is written."""
+    try:
+        return _connectivity.Model(root)
+    except _connectivity.Refusal as e:
+        raise ToolError(f"{_connectivity.tags(e.codes)} {e.text} Nothing was written.") from None
+
+
+def _split_lines_at(root, p: Point) -> list[tuple[str, Point, Point]]:
+    """SCH_LINE::BreakAt (sch_line.cpp:574-583 at 9.0.8) on every wire and bus with p strictly
+    inside: a copy of the node, the user's own bytes and stroke, with a fresh uuid, runs from p
+    to the old end, spliced right after it; the node itself ends at p and keeps its start, uuid
+    and every other byte. The copy joins no group, as in KiCad 10.0.7, whose SCH_LINE copy
+    constructor leaves the group unset (sch_line.cpp:83-103), so Duplicate finds none to add it
+    to (sch_item.cpp:149-177). Returns each split line's kind and old ends."""
+    done = []
+    for node in [n for n in root.lists if n.head in ("wire", "bus")]:
+        xys = _line_xys(node)
+        if xys is None:
             continue
-        for wire in root.find_all("wire"):
-            pts = _wire_xys(wire)
-            if len(pts) < 2:
+        a, b = _xy_iu(xys[0]), _xy_iu(xys[1])
+        if not _connectivity.inside(p[0], p[1], a[0], a[1], b[0], b[1]):
+            continue
+        copy = node.copy()
+        _set_xy(copy.find("pts").find_all("xy")[0], p)
+        uuid = copy.find("uuid")
+        if uuid is not None and len(uuid.atoms) > 1:
+            uuid.atoms[1].set_text(_gen_uuid())
+        _set_xy(xys[1], p)
+        root.insert_after(node, copy)
+        done.append((node.head, a, b))
+    return done
+
+
+def _join_points(root, m, points, *, allow: bool = False):
+    """KiCad's junction step at the points a call touches, the only writer of junctions.
+
+    Every point is judged on the call's finished geometry before anything is split, which is
+    KiCad's sequential result, since a split at one point changes no other point's verdict. A
+    junction is written where the rule wants one and none is there: IsExplicitJunctionNeeded,
+    or with ``allow`` (add_junctions) IsExplicitJunctionAllowed (sch_screen.cpp:479-504 at
+    9.0.8). Every wire and bus through the point is then split wherever this call wrote a
+    junction, one already sits, or a bus entry ends: the points kicad-cli 9 would cut a wire
+    at (SCHEMATIC::BreakSegmentsOnJunctions, schematic.cpp:1090-1113 at 9.0.8). Returns
+    (point, junction written, lines split) per distinct point."""
+    plan = []
+    for p in dict.fromkeys(points):
+        info = _connectivity.junction_info(m, p, break_crossings=allow)
+        plan.append((p, info.explicit and not info.dot, info))
+    done = []
+    for p, write, info in plan:
+        if write:
+            node = _JUNCTION_TPL.copy()
+            at = node.find("at")
+            at.atoms[1].set_text(_connectivity.mm(p[0]))
+            at.atoms[2].set_text(_connectivity.mm(p[1]))
+            node.find("uuid").atoms[1].set_text(_gen_uuid())
+            _splice_sch_node(root, "junction", node)
+        split = _split_lines_at(root, p) if write or info.dot or info.bus_entry else []
+        done.append((p, write, split))
+    return done
+
+
+def _join_report(joined) -> list[str]:
+    pt = _connectivity.pt
+    out = []
+    for p, wrote, split in joined:
+        if wrote:
+            out.append(f"Junction at {pt(p)}.")
+        out += [f"Split the {kind} {pt(a)}-{pt(b)} at {pt(p)}." for kind, a, b in split]
+    return out
+
+
+def _plain_stroke(node) -> bool:
+    """Whether a line is drawn as the call's own wires are, (width 0) (type default): equal
+    width and colour, and a default or solid style (SCH_LINE::IsStrokeEquivalent,
+    sch_line.h:195-209 at 9.0.8). An absent colour is COLOR4D::UNSPECIFIED, 0 0 0 0."""
+    stroke = node.find("stroke")
+    if stroke is None:
+        return True
+    try:
+        width = stroke.find("width")
+        if width is not None and _connectivity.iu(width.atoms[1].text) != 0:
+            return False
+        color = stroke.find("color")
+        if color is not None and any(float(a.text) != 0 for a in color.atoms[1:]):
+            return False
+    except (IndexError, ValueError):
+        return False
+    style = stroke.find("type")
+    return style is None or len(style.atoms) < 2 or style.atoms[1].text in ("default", "solid")
+
+
+def _plain_wires(root) -> list[tuple[Point, Point]]:
+    out = []
+    for node in root.find_all("wire"):
+        xys = _line_xys(node)
+        if xys is not None and _plain_stroke(node):
+            out.append((_xy_iu(xys[0]), _xy_iu(xys[1])))
+    return out
+
+
+def _along(a: Point, b: Point, q: Point) -> int:
+    return (q[0] - a[0]) * (b[0] - a[0]) + (q[1] - a[1]) * (b[1] - a[1])
+
+
+def _new_pieces(a: Point, b: Point, others):
+    """CleanUp's merge for one requested wire a-b (schematic.cpp:1212-1303 at 9.0.8), touching
+    no wire already there: a-b is cut at every end of a collinear wire of the same stroke lying
+    strictly inside it, and each piece such a wire covers is left out (coverage is constant
+    between two cuts, so a piece's midpoint decides, in doubled coordinates). Returns (pieces
+    to write, pieces left out)."""
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    same = [
+        (c, d)
+        for c, d in others
+        if c != d and all(dx * (q[1] - a[1]) == dy * (q[0] - a[0]) for q in (c, d))
+    ]
+    cuts = {
+        q
+        for c, d in same
+        for q in (c, d)
+        if _connectivity.inside(q[0], q[1], a[0], a[1], b[0], b[1])
+    }
+    stops = [a, *sorted(cuts, key=lambda q: _along(a, b, q)), b]
+    new, covered = [], []
+    for p, q in zip(stops, stops[1:]):
+        mx, my = p[0] + q[0], p[1] + q[1]
+        within = _connectivity._within
+        hit = any(within(mx, my, 2 * c[0], 2 * c[1], 2 * d[0], 2 * d[1], 0) for c, d in same)
+        (covered if hit else new).append((p, q))
+    return new, covered
+
+
+def _two_pin_parts(m) -> list[tuple[str, Point, Point]]:
+    """(reference, pin, pin) for each placed part drawing exactly two pins at two points: the
+    parts finishSegments runs TrimWire for (sch_line_wire_bus_tool.cpp:1244-1261 at 9.0.8)."""
+    pins: dict[int, list] = {}
+    for it in m.items:
+        if it.kind == "pin" and it.sym is not None:
+            pins.setdefault(id(it.sym), []).append(it)
+    out = []
+    for its in pins.values():
+        if len(its) == 2 and (its[0].x, its[0].y) != (its[1].x, its[1].y):
+            out.append((its[0].ref or "?", (its[0].x, its[0].y), (its[1].x, its[1].y)))
+    return out
+
+
+def _trim(pieces, parts):
+    """TrimWire (bus-wire-junction.cpp:50-112 at 9.0.8) on the call's own pieces only: the
+    first piece holding both pins of a part, and not running exactly from one to the other,
+    loses the stretch between them; a remainder of no length goes. KiCad trims any wire on
+    the sheet; a wire already there is left as the user drew it. Returns (pieces, trimmed)."""
+    pieces = list(pieces)
+    trimmed = []
+    within = _connectivity._within
+    for ref, p1, p2 in parts:
+        for i, (a, b) in enumerate(pieces):
+            if {a, b} == {p1, p2}:
                 continue
-            (ax, ay), (bx, by) = pts[0], pts[1]
-            if _point_on_wire_interior(px, py, ax, ay, bx, by, tol):
-                node = _JUNCTION_TPL.copy()
-                _fill_at(node, px, py)
-                node.find("uuid").atoms[1].set_text(_gen_uuid())
-                _splice_sch_node(root, "junction", node)
-                junctions.append((px, py))
+            on = [within(q[0], q[1], a[0], a[1], b[0], b[1], 0) for q in (p1, p2)]
+            if all(on):
+                lo, hi = sorted((p1, p2), key=lambda q: _along(a, b, q))
+                pieces[i : i + 1] = [(s, e) for s, e in ((a, lo), (hi, b)) if s != e]
+                trimmed.append((ref, lo, hi))
                 break
+    return pieces, trimmed
+
+
+def _bus_entry_end_at(root, p: Point) -> bool:
+    for node in root.find_all("bus_entry"):
+        at, size = node.find("at"), node.find("size")
+        if at is None:
+            continue
+        x, y = _xy_iu(at)
+        dx, dy = _xy_iu(size) if size is not None else (0, 0)
+        if p in ((x, y), (x + dx, y + dy)):
+            return True
+    return False
+
+
+class _End:
+    """One line of DeleteJunction's list: its node, layer, ends, the spelling of each end, and
+    whether it is still alive."""
+
+    __slots__ = ("node", "kind", "a", "b", "texts", "alive")
+
+    def __init__(self, node, kind, a, b, texts):
+        self.node, self.kind, self.a, self.b, self.texts = node, kind, a, b, texts
+        self.alive = True
+
+
+def _merge_overlap(first: _End, second: _End):
+    """second.MergeOverlap( first ) with aCheckJunctions false (sch_line.cpp:453-571 at 9.0.8):
+    the union of two collinear lines that touch or overlap, ends ordered x first, or None."""
+    left = sorted((first.a, first.b))
+    right = sorted((second.a, second.b))
+    if right[0] < left[0]:
+        left, right = right, left
+    other = list(right)
+    if right[1] < left[1]:
+        right = list(left)
+    if left[1] < other[0]:
+        return None
+    if left == other:
+        return tuple(left)
+    (lx, ly), (ex, ey) = left
+    (ox, oy), (fx, fy) = other
+    if ly == ey and oy == fy:
+        collinear = ly == oy
+    elif lx == ex and ox == fx:
+        collinear = lx == ox
+    else:
+        dx, dy = ex - lx, ey - ly
+        collinear = (oy - ly) * dx == (ox - lx) * dy and (fy - ly) * dx == (fx - lx) * dy
+    return (left[0], right[1]) if collinear else None
+
+
+def _merge_at(root, p: Point) -> tuple[list[str], set]:
+    """DeleteJunction's pair loop (bus-wire-junction.cpp:115-185 at 9.0.8, 117-187 at 10.0.7)
+    over the wires and buses ending at p, in file order, each merge appended to the list as
+    KiCad appends it: a pair that is not parallel is skipped; of two identical lines one goes
+    (KiCad's pick follows its spatial index; the later in the list goes here); two collinear
+    lines on one layer that touch or overlap become one, carried by the first's node, whose
+    moved end takes the absorbed line's own spelling. Returns the report lines and the uuids
+    of the lines KiCad removes, a merged pair's both: its merged line is a new item in no
+    group (sch_commit.cpp:265-268 and 323-324 at 10.0.7)."""
+    ends = []
+    for node in root.lists:
+        if node.head not in ("wire", "bus"):
+            continue
+        xys = _line_xys(node)
+        if xys is None:
+            continue
+        a, b = _xy_iu(xys[0]), _xy_iu(xys[1])
+        if p in (a, b):
+            texts = {
+                q: (xy.atoms[1].text, xy.atoms[2].text) for q, xy in ((a, xys[0]), (b, xys[1]))
+            }
+            ends.append(_End(node, node.head, a, b, texts))
+    pt = _connectivity.pt
+    report = []
+    i = 0
+    while i < len(ends):
+        first = ends[i]
+        j = i + 1
+        while j < len(ends):
+            second = ends[j]
+            j += 1
+            if not (first.alive and second.alive):
+                continue
+            u = (first.b[0] - first.a[0], first.b[1] - first.a[1])
+            v = (second.b[0] - second.a[0], second.b[1] - second.a[1])
+            if u[0] * v[1] - u[1] * v[0]:
+                continue
+            if {first.a, first.b} == {second.a, second.b}:
+                second.alive = False
+                report.append(
+                    f"Removed a {second.kind} identical to another, {pt(second.a)}-{pt(second.b)}."
+                )
+                continue
+            merged = _merge_overlap(first, second) if first.kind == second.kind else None
+            if merged is None:
+                continue
+            first.alive = second.alive = False
+            texts = {**second.texts, **first.texts}
+            ends.append(_End(first.node, first.kind, merged[0], merged[1], texts))
+            report.append(
+                f"Merged the {first.kind}s {pt(first.a)}-{pt(first.b)} and {pt(second.a)}-"
+                f"{pt(second.b)} into {pt(merged[0])}-{pt(merged[1])}."
+            )
+        i += 1
+    live = {id(e.node) for e in ends if e.alive}
+    removed = set()
+    gone = set()
+    for e in ends:
+        if e.alive:
+            xys = e.node.find("pts").find_all("xy")
+            cur = [_xy_iu(xys[0]), _xy_iu(xys[1])]
+            missing = [q for q in (e.a, e.b) if q not in cur]
+            for k in (0, 1):
+                if cur[k] not in (e.a, e.b):
+                    q = missing.pop(0)
+                    _set_xy(xys[k], q, e.texts[q])
+        else:
+            gone.add(_node_uuid(e.node))
+            if id(e.node) not in live and id(e.node) not in removed:
+                removed.add(id(e.node))
+                root.remove_child(e.node)
+    return report, gone
+
+
+def _leave_groups(root, uuids) -> None:
+    """Take removed items out of KiCad 10 groups' members, and drop a group left with none:
+    KiCad's commit takes a removed item out of its group (sch_commit.cpp:323-324 at 10.0.7)
+    and saveGroup writes no empty group (sch_io_kicad_sexpr.cpp:1635-1637 at 10.0.7)."""
+    uuids = {u for u in uuids if u}
+    if not uuids:
+        return
+    for group in root.find_all("group"):
+        members = group.find("members")
+        if members is None:
+            continue
+        for atom in [a for a in members.atoms[1:] if a.text in uuids]:
+            members.remove_child(atom)
+        if len(members.atoms) == 1:
+            root.remove_child(group)
 
 
 def _find_syms_cst(root, reference: str):
@@ -1305,7 +1682,18 @@ def add_label(
 
 @mcp.tool(annotations=_ADDITIVE)
 def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> str:
-    """Add multiple junctions. Each point dict has keys: x, y.
+    """Add multiple junctions, as KiCad's junction tool places them. Each point dict has
+    keys: x, y.
+
+    A junction joins only where three or more wire directions, pins or sheet pins meet: a
+    crossing, a T, a wire end at a pin with another wire. Anywhere else (empty space, a
+    straight wire's interior, an L corner, a wire ending at a pin) KiCad's editor refuses it,
+    "Junction location contains no joinable wires and/or pins." (sch_drawing_tools.cpp:
+    1465-1497 at 9.0.8), and its cleanup deletes one placed there, so the whole call is
+    refused, naming each such point, and nothing is written. Every wire through a junction
+    is split there, which kicad-cli 9 needs to read the join; where a junction is already
+    exactly at a point no second one is added, but a wire still running through it is split.
+    The result names each junction written, each one already there and each split.
 
     Args:
         points: List of junction positions [{x, y}, ...]
@@ -1314,13 +1702,37 @@ def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> st
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     for p in points:
         _bounds_check(p["x"], p["y"], page_w, page_h, page_name)
-    for p in points:
-        node = _JUNCTION_TPL.copy()
-        _fill_at(node, round(p["x"], 4), round(p["y"], 4))
-        node.find("uuid").atoms[1].set_text(_gen_uuid())
-        _splice_sch_node(root, "junction", node)
-    _atomic_write(schematic_path, _cst.serialize(tree))
-    return f"Added {len(points)} junctions"
+    before = _cst.serialize(tree)
+    m = _model(root)
+    wanted = {}
+    for spec in points:
+        wanted.setdefault(_req_point(spec["x"], spec["y"]), spec)
+    refused = []
+    for q, spec in wanted.items():
+        info = _connectivity.junction_info(m, q, break_crossings=True)
+        if not info.dot and not info.explicit:
+            refused.append(spec)
+    if refused:
+        named = ", ".join(f"({spec['x']}, {spec['y']})" for spec in refused)
+        raise ToolError(
+            "add_junctions refused; nothing was written. KiCad's editor places a junction only"
+            " where three or more wires, pins or sheet pins meet, and removes one placed"
+            " anywhere else (empty space, a straight wire's interior, an L corner, a wire"
+            f" ending at a pin): {named}."
+        )
+    joined = _join_points(root, m, list(wanted), allow=True)
+    pt = _connectivity.pt
+    lines = [f"Added {sum(wrote for _, wrote, _ in joined)} junctions"]
+    for p, wrote, split in joined:
+        if not wrote:
+            lines.append(f"A junction is already at {pt(p)}.")
+        lines += [f"Split the {kind} {pt(a)}-{pt(b)} at {pt(p)}." for kind, a, b in split]
+    after = _cst.serialize(tree)
+    if after == before:
+        lines.append("No change was made to the file.")
+    else:
+        _atomic_write(schematic_path, after)
+    return "\n".join(lines)
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -1991,7 +2403,10 @@ def connect_pins(
 ) -> str:
     """Connect two component pins with Manhattan (L-shaped) wire routing.
 
-    Combines get_pin_positions + coordinate math + add_wires into one call.
+    Combines get_pin_positions + coordinate math + add_wires into one call. At its own
+    points (both pins and the L's corner) a junction goes where three or more directions
+    meet, and any wire through it is split there, as KiCad's wire tool does
+    (sch_line_wire_bus_tool.cpp:1263-1267 at 9.0.8); the result then names each.
 
     Args:
         ref1: First component reference (e.g. "U1")
@@ -2016,7 +2431,7 @@ def connect_pins(
     new_points = [(x1, y1), (x2, y2)]
     if x1 != x2 and y1 != y2:
         new_points.append((x2, y1))  # L-shape corner
-    _auto_junctions_cst(root, new_points)
+    joined = _join_points(root, _model(root), [_req_point(px, py) for px, py in new_points])
 
     # Auto-add net label for hierarchical ERC compatibility
     # Walk wires from both pin endpoints to find all connected points,
@@ -2068,7 +2483,8 @@ def connect_pins(
     _atomic_write(schematic_path, _cst.serialize(tree))
 
     n = len(segments)
-    return f"Connected {ref1}:{pin1} -> {ref2}:{pin2} via {n} wire segment{'s' if n > 1 else ''}"
+    lines = [f"Connected {ref1}:{pin1} -> {ref2}:{pin2} via {n} wire segment{'s' if n > 1 else ''}"]
+    return "\n".join(lines + _join_report(joined))
 
 
 @mcp.tool(annotations=_ADDITIVE)

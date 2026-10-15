@@ -588,7 +588,7 @@ class TestAddWires:
 
         # scratch_sch has a wire from (50,50) to (80,50)
         # Add a new wire whose ENDPOINT lands on the interior of the existing wire.
-        # _auto_junctions checks if new wire endpoints land on existing wire interiors.
+        # Three directions meet there, so add_wires puts a junction and splits the wire.
         # Wire from (65,30) to (65,50) — endpoint (65,50) is on the interior of (50,50)-(80,50)
         result = schematic.add_wires(
             wires=[{"x1": 65, "y1": 30, "x2": 65, "y2": 50}],

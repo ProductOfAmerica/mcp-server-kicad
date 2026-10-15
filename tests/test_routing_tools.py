@@ -734,12 +734,6 @@ class TestAutoPlaceDecouplingCap:
 class TestAutoJunctions:
     """Tests for automatic junction insertion at T-intersections."""
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="bug 5: connect_pins writes its corner's junction on the first wire without"
-        " splitting it; fixed by step 8",
-    )
     def test_t_junction_connect_pins(self, tmp_path):
         """Reproduce the D3 bug: two connect_pins calls where the second
         wire's corner lands mid-segment on the first wire.
@@ -822,12 +816,6 @@ class TestAutoJunctions:
         sch_after = reparse(sch_path)
         assert len(sch_after.junctions) == 0
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="bug 5: connect_pins writes its corner's junction on the first wire without"
-        " splitting it; fixed by step 8",
-    )
     def test_no_duplicate_junctions(self, tmp_path):
         """If a junction already exists at a T-point, don't add another.
 

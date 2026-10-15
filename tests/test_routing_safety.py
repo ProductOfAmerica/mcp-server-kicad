@@ -278,12 +278,6 @@ def test_a_later_tool_at_the_crossing_merges_nothing(tmp_path, follow_up):
 
 
 @requires_cli
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="bug 5: add_junctions and add_wires write junctions on net A's wire without"
-    " splitting it, which kicad-cli 9 cuts there; fixed by step 8",
-)
 @pytest.mark.parametrize(
     "follow_up, refuses",
     [

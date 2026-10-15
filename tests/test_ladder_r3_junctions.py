@@ -22,14 +22,17 @@ The layout and its pin ends are test_ladder_r3_wires'; edits are judged by KiCad
 from __future__ import annotations
 
 import ast
+import os
 import shutil
 import tempfile
 from pathlib import Path
 
 import edit_judge as J
+import kicad_corpus as K
 import pytest
 import sch_judge as S
-from conftest import HAS_KICAD_CLI, _kicad_cli_major, requires_cli
+from conftest import HAS_KICAD_CLI, _kicad_cli_major, _nightly_skip_reason, requires_cli
+from kicad_ref import dsn_lexer as L
 from mcp.server.mcpserver.exceptions import ToolError
 from routing_fixtures import junction, place, splice, wire
 from test_ladder_r3_wires import (
@@ -49,26 +52,8 @@ from test_ladder_r3_wires import (
     read,
 )
 
-from mcp_server_kicad import schematic
+from mcp_server_kicad import _connectivity, _cst, schematic
 from mcp_server_kicad._shared import _run_cli
-
-_BUG5 = (
-    "bug 5: add_junctions writes a junction where KiCad's editor writes none, on a wire"
-    " it does not split included; fixed by step 8"
-)
-_BUG94 = (
-    "bug 94: add_junctions writes a junction where KiCad's editor refuses one and its"
-    " CleanUp deletes it (nothing, an L corner, a wire end at a pin); fixed by step 8"
-)
-_BUG93 = (
-    "bug 93: remove_junction removes only the dot, so the wires KiCad's delete merges stay"
-    " joined; fixed by step 8"
-)
-
-
-def _xfail(reason: str) -> pytest.MarkDecorator:
-    return pytest.mark.xfail(strict=True, raises=AssertionError, reason=reason)
-
 
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
 
@@ -124,10 +109,10 @@ def _wire_end_at_a_pin(p) -> None:
 @pytest.mark.parametrize(
     "build, point",
     [
-        pytest.param(_empty, (50.8, 50.8), id="empty_space", marks=_xfail(_BUG94)),
-        pytest.param(_straight, P, id="straight_wire_interior", marks=_xfail(_BUG5)),
-        pytest.param(_corner, P, id="l_corner", marks=_xfail(_BUG94)),
-        pytest.param(_wire_end_at_a_pin, A, id="wire_end_at_a_pin", marks=_xfail(_BUG94)),
+        pytest.param(_empty, (50.8, 50.8), id="empty_space"),
+        pytest.param(_straight, P, id="straight_wire_interior"),
+        pytest.param(_corner, P, id="l_corner"),
+        pytest.param(_wire_end_at_a_pin, A, id="wire_end_at_a_pin"),
     ],
 )
 def test_add_junctions_refuses_where_kicad_refuses(tmp_path, build, point):
@@ -140,7 +125,6 @@ def test_add_junctions_refuses_where_kicad_refuses(tmp_path, build, point):
     assert f"({point[0]}, {point[1]})" in message, message
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG94)
 def test_add_junctions_refuses_the_whole_call_for_one_bad_point(tmp_path):
     """A list holding a T point (three wire ends meet at P) and a point in empty space: the
     whole call is refused, the refused point named, and nothing is written."""
@@ -153,7 +137,6 @@ def test_add_junctions_refuses_the_whole_call_for_one_bad_point(tmp_path):
 
 
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 def test_a_junction_kicad_cli_9_would_cut_a_wire_at_is_refused(tmp_path):
     """A junction inside the straight wire A-B is one kicad-cli 9 cuts the wire at, leaving
     R1:2 and R2:1 apart (checked on a copy as the premise); add_junctions refuses it."""
@@ -175,7 +158,6 @@ def test_a_junction_kicad_cli_9_would_cut_a_wire_at_is_refused(tmp_path):
 # ---------------------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 def test_add_junctions_on_a_crossing_splits_both_wires(tmp_path):
     """A junction on the crossing of A-B and C-D (four directions): both wires are split at
     P as BreakAt splits them, the junction inserted, nothing else changed; no junction lies
@@ -207,7 +189,6 @@ def test_remove_junction_undoes_add_junctions_on_a_crossing(tmp_path):
     assert read(p) == before
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 def test_add_junctions_splits_the_wire_under_a_junction_already_there(tmp_path):
     """The T as earlier versions wrote it: the bar A-B whole, the stem C-P and a junction at
     P inside the bar. add_junctions at P adds no second junction and splits the bar at P,
@@ -233,7 +214,6 @@ def test_add_junctions_splits_the_wire_under_a_junction_already_there(tmp_path):
         assert joins(p, pins) == one_net(*pins)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 def test_add_junctions_where_kicad_has_one_writes_nothing(tmp_path):
     """At the junction of KiCad's own T nothing runs through the point and a junction is
     there already: KiCad's editor does nothing, and the file stays byte-identical."""
@@ -248,7 +228,6 @@ def test_add_junctions_where_kicad_has_one_writes_nothing(tmp_path):
 # ---------------------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG93)
 def test_remove_junction_disconnects_a_t(tmp_path):
     """Deleting the junction of KiCad's own T: the dot goes and the bar's halves, parallel
     and meeting at P, become one wire (the first keeps its uuid and start and takes the far
@@ -264,7 +243,6 @@ def test_remove_junction_disconnects_a_t(tmp_path):
         assert joins(p, {R1_2, R2_1, R3_1}) == {frozenset({R1_2, R2_1}), frozenset({R3_1})}
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG93)
 def test_remove_junction_turns_a_split_crossing_back_into_a_crossing(tmp_path):
     """A crossing as KiCad saves it with a junction (four halves meeting at P): deleting the
     junction merges each wire's halves, and kicad-cli reads the two wires as two nets."""
@@ -303,7 +281,6 @@ def test_remove_junction_keeps_three_wires_of_different_directions_joined(tmp_pa
         assert joins(p, pins) == one_net(*pins)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG93)
 def test_remove_junction_drops_one_of_two_identical_wires(tmp_path):
     """Two identical wires A-P meet a junction at P: DeleteJunction removes one of two
     identical lines, so the dot and one wire go, and the other wire stays as it was. Which
@@ -321,7 +298,6 @@ def test_remove_junction_drops_one_of_two_identical_wires(tmp_path):
     assert kept.uuid in twins
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG93)
 def test_remove_junction_merges_nothing_where_a_bus_entry_ends(tmp_path):
     """The bar's halves meet at P where a bus entry also ends. Merging them would leave the
     entry's end inside one wire, which kicad-cli 9 cuts (it breaks every wire at every
@@ -341,7 +317,6 @@ def test_remove_junction_merges_nothing_where_a_bus_entry_ends(tmp_path):
     assert "bus entry" in result, result
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG93)
 def test_remove_junction_removes_a_second_junction_at_the_point_too(tmp_path):
     """KiCad's T with two junctions at exactly P. KiCad's load-time CleanUp drops a second
     junction at one position (schematic.cpp:1163-1174 at 9.0.8), so its editor shows one and
@@ -411,7 +386,6 @@ def _group(path, name: str, members) -> bytes:
 #: (sch_io_kicad_sexpr.cpp:1635-1637).
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 def test_a_split_leaves_the_wires_group_as_kicad_10_does():
     """On a KiCad 10 file a stem drawn onto a grouped wire splits it as BreakAt does, and the
     group is left as it was: the wire stays its only member and the new half joins none
@@ -431,7 +405,6 @@ def test_a_split_leaves_the_wires_group_as_kicad_10_does():
     assert S.groups(after) == {gid: [bar.uuid]}
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG93)
 def test_a_merge_takes_both_wires_out_of_their_groups_as_kicad_10_does():
     """On a KiCad 10 file, deleting the junction of a T whose halves are grouped: the merge
     takes both halves out of every group (the merged wire, which keeps the first half's uuid,
@@ -457,7 +430,6 @@ def test_a_merge_takes_both_wires_out_of_their_groups_as_kicad_10_does():
 
 
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 def test_a_split_leaves_group_membership_on_real_kicad10(tmp_path):
     """The split case on a file kicad-cli 10 minted, with a group in saveGroup's form around
     the fixture's wire: the bar is split, the group is left as it was, and the autouse oracle
@@ -484,7 +456,6 @@ def test_a_split_leaves_group_membership_on_real_kicad10(tmp_path):
 # ---------------------------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG5)
 def test_every_junction_is_written_through_the_join_helper():
     """schematic._JUNCTION_TPL, the only junction template, is used by schematic._join_points
     alone, the helper that splits every wire through a junction it writes, so no tool can
@@ -510,3 +481,78 @@ def test_every_junction_is_written_through_the_join_helper():
             if owner != "_join_points":
                 offenders.append(f"{module.name}:{node.lineno} in {owner or 'module scope'}")
     assert offenders == [], offenders
+
+
+# ---------------------------------------------------------------------------------------------
+# The junction rule against KiCad's own files
+# ---------------------------------------------------------------------------------------------
+
+#: KiCad 9.0.8's schematic format (SEXPR_SCHEMATIC_FILE_VERSION), the domain of the port of
+#: KiCad 9's AnalyzePoint: KiCad 10 refines the rule (see _connectivity.junction_info).
+_K9_SCH_VERSION_MAX = 20250114
+
+
+def _k9_schematics(cap):
+    out = []
+    for name, path in K.shipped(subdirs=("demos",), suffixes=(".kicad_sch",), names=(), cap=cap):
+        version = L.file_version(path.read_bytes()[:256])
+        if version is not None and version <= _K9_SCH_VERSION_MAX:
+            out.append((name, path))
+    return out
+
+
+def _k9_params(files):
+    return [pytest.param(path, id=name) for name, path in files] or [
+        pytest.param(None, id="no-install", marks=pytest.mark.skip(reason=K.NO_INSTALL))
+    ]
+
+
+def _nightly_k9_schematics():
+    if _nightly_skip_reason(os.environ.get("HYPOTHESIS_PROFILE")) is not None:
+        return [pytest.param(None, id="nightly-only")]
+    return _k9_params(_k9_schematics(None))
+
+
+def _junction_rule_holds_on(path: Path) -> None:
+    """On a sheet KiCad saved, the port places a junction exactly where KiCad did: every
+    junction in the file is one the rule calls explicit, and no wire or bus end and no pin
+    lacks one the rule calls needed."""
+    data = path.read_bytes()
+    try:
+        m = _connectivity.Model(_cst.parse(data).lists[0])
+    except _connectivity.Refusal as exc:
+        raise RuntimeError(f"premise: the model refuses KiCad's own {path.name}: {exc}") from exc
+    dots = {(it.x, it.y) for it in m.items if it.kind == "junction"}
+    if len([it for it in m.items if it.kind == "junction"]) != data.count(b"(junction"):
+        raise RuntimeError(f"premise: the model missed junctions of {path.name}")
+    ends = {
+        xy for it in m.items if it.kind in ("wire", "bus") for xy in ((it.x, it.y), (it.x2, it.y2))
+    }
+    ends |= {(it.x, it.y) for it in m.items if it.kind == "pin"}
+    wrong = [
+        ("not explicit", p)
+        for p in sorted(dots)
+        if not _connectivity.junction_info(m, p, break_crossings=False).explicit
+    ]
+    wrong += [
+        ("needed", p)
+        for p in sorted(ends)
+        if _connectivity.junction_info(m, p, break_crossings=False).needed
+    ]
+    assert wrong == [], wrong[:10]
+
+
+@pytest.mark.parametrize("path", _k9_params(_k9_schematics(K.PER_PUSH_CAP)))
+def test_junction_rule_agrees_with_kicads_own_files(path):
+    """KiCad's demos at KiCad 9's format (files up to kicad_corpus.PER_PUSH_CAP): the port
+    of AnalyzePoint (junction_helpers.cpp:26-142 at 9.0.8) finds every junction KiCad saved
+    explicit, and finds a junction needed at no wire or bus end and no pin end, so it adds
+    junctions exactly where KiCad's own tools did."""
+    _junction_rule_holds_on(path)
+
+
+@pytest.mark.nightly
+@pytest.mark.parametrize("path", _nightly_k9_schematics())
+def test_nightly_junction_rule_agrees_with_kicads_own_files(path):
+    """The same over every demo schematic at KiCad 9's format the install holds."""
+    _junction_rule_holds_on(path)
