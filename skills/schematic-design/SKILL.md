@@ -105,8 +105,8 @@ Follow existing spacing/wiring/naming conventions in the schematic.
 A refused call writes nothing and lists every refused pin with a
 bracketed code, the obstacle and a remedy. Fix the cause and call
 again with the same pins. Never work around a refusal with `add_label`
-or `add_wires`: they check none of this, so they can merge or split
-nets silently.
+or `add_wires`: they check none of this, so they can merge nets
+silently.
 
 | Code | Meaning | Do this |
 |------|---------|---------|
