@@ -61,7 +61,8 @@ These are the kicad MCP tools you should be using during verification:
   Auto-redirects sub-sheets to root to avoid false positives.
 - `get_net_connections` — trace a net to debug connectivity issues
 - `validate_hierarchy` — check for unannotated refs, duplicate refs,
-  orphaned labels/pins, direction mismatches (run from root schematic)
+  orphaned labels/pins, direction mismatches, junctions left inside
+  wires (run from root schematic)
 - `trace_hierarchical_net` — trace a net across sheet boundaries to
   debug cross-sheet connectivity issues
 
@@ -138,6 +139,11 @@ duplicates. To fix:
 
 **If `orphaned_label`, `orphaned_pin`, or `direction_mismatch`:**
 Fix with `add_sheet_pin`/`remove_sheet_pin` or `modify_hierarchical_label`.
+
+**If `junction_inside_wire`:** an earlier version of this package left a
+junction inside a wire, and kicad-cli 9 (ERC, netlist, PCB update) cuts
+the wire there. Make the call each issue names in `repair`, exactly as
+given, then re-run `validate_hierarchy` to confirm.
 
 **Debug cross-sheet nets:** Use `trace_hierarchical_net` to follow a net
 across sheet boundaries when investigating connectivity violations that

@@ -414,7 +414,7 @@ app through Controlled folder access.
 | `is_root_schematic` | Check whether a schematic is the root or a sub-sheet |
 | `list_hierarchy` | List the full sheet hierarchy tree from root |
 | `get_sheet_info` | Get sheet details with pin and label matching status |
-| `validate_hierarchy` | Check for orphaned labels and pins, direction mismatches, duplicate refs |
+| `validate_hierarchy` | Check every sheet for orphaned labels and pins, direction mismatches, duplicate refs, and junctions left inside wires, with the call that repairs each |
 
 **Cross-sheet analysis**
 
