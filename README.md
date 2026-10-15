@@ -46,9 +46,9 @@ change on disk.
   run_drc                      clearance, width, and unconnected checks
 ```
 
-Every tool edits the real file and changes only the bytes you asked it to. An
-edit that cannot be done correctly is refused with the file intact. KiCad itself
-writes a design file in just two places: the library upgrades, and
+Every tool works on the real file, and a write changes only the bytes you asked
+it to. An edit that cannot be done correctly is refused with the file intact.
+KiCad itself writes a design file in just two places: the library upgrades, and
 `autoroute_pcb`'s routed copy, a new board that leaves yours untouched.
 
 ## Quick start
@@ -66,7 +66,7 @@ claude plugin install kicad
 
 Download `kicad-<version>.mcpb` from the [latest release][latest] and install it
 from Settings, then Extensions. Claude Desktop fetches Python and the package
-itself; you only need KiCad installed.
+itself; you need KiCad installed, plus Java for `autoroute_pcb`.
 
 Desktop does not run from your project directory, so fill in the schematic,
 board, and export paths it asks for. Leave the `kicad-cli` field blank unless
@@ -231,8 +231,9 @@ naming `KICAD_CLI_PATH`.
 
 ### KiCad 10 files
 
-Every tool reads and writes KiCad 9 and 10 schematics, boards, symbol libraries
-and footprints, and never changes bytes you did not ask it to change (see
+The server's own reads and writes handle KiCad 9 and 10 schematics, boards,
+symbol libraries and footprints alike, and never change bytes you did not ask to
+change (see
 [docs/adr-cst-substrate.md](docs/adr-cst-substrate.md)). Work handed to KiCad
 itself only succeeds if your install can load the file, and KiCad 9 cannot load
 a KiCad 10 board:
