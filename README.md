@@ -206,106 +206,67 @@ Highest priority wins:
 ## Requirements
 
 - **Python 3.11+**
-- **KiCad 9.x or 10.x**, for the tools that hand work to KiCad. ERC, DRC, every
-  export, jobsets, `get_version`, the library upgrades and
-  `update_pcb_from_schematic` run `kicad-cli`; `fill_zones` and `autoroute_pcb`
-  need KiCad's `pcbnew` Python bindings, and `autoroute_pcb` needs Java too.
-  Placing a part from KiCad's stock symbol or footprint libraries needs those
-  libraries, which come with KiCad. Every other read and write tool parses files
-  directly and needs no KiCad install.
+- **KiCad 9.x or 10.x**, only for the tools that call KiCad:
+  - `kicad-cli`: ERC, DRC, exports, jobsets, `get_version`, the library
+    upgrades and `update_pcb_from_schematic`
+  - `pcbnew` Python bindings: `fill_zones` and `autoroute_pcb` (which also
+    needs Java)
+  - KiCad's stock libraries: placing a stock symbol or footprint
 
-CI runs the full suite on Linux against KiCad 9 and KiCad 10, and on macOS and
-Windows against KiCad 10, plus a KiCad-free matrix across Python 3.11 through 3.14.
+  Every other tool parses files directly and needs no KiCad.
+
+CI covers Linux (KiCad 9 and 10), macOS and Windows (KiCad 10), and Python
+3.11 to 3.14.
 
 ### Finding your KiCad install
 
-`kicad-cli` is looked up on `PATH`, then inside `/Applications/KiCad/KiCad.app`
-on macOS, then in the standard Windows install folders, machine-wide under
-`Program Files` and per-user under `AppData`, newest version first. Neither
-installer adds it to `PATH`. Everything else in the KiCad tree is located
-relative to it, the same way KiCad itself does it, so a stock install on any
-platform needs no configuration: the stock symbol libraries and the bundled
-Python that provides `pcbnew` are both found automatically.
-
-Override any of it if your install is unusual:
+A stock install needs no configuration. `kicad-cli` is found on `PATH`, then in
+`/Applications/KiCad/KiCad.app` on macOS, then under `Program Files` and
+`AppData` on Windows, newest first. The stock libraries and `pcbnew`'s Python
+are found relative to it. For an unusual install:
 
 | Variable | Overrides |
 |----------|-----------|
 | `KICAD_CLI_PATH` | the `kicad-cli` executable, and everything derived from its location |
 | `KICAD_SYMBOL_DIR` | the directory holding the stock `.kicad_sym` libraries |
-| `KICAD_PYTHON` | the interpreter used for `pcbnew` (`fill_zones`, `autoroute_pcb`), as an absolute path or a name found on `PATH` |
+| `KICAD_PYTHON` | the interpreter used for `pcbnew` (`fill_zones`, `autoroute_pcb`), as an absolute path or a name on `PATH` |
 
-CLI-backed tools are always registered. Without `kicad-cli` they fail with a
-message naming `KICAD_CLI_PATH`, rather than vanishing from the tool list.
+Without `kicad-cli`, the tools that need it stay listed and fail with a message
+naming `KICAD_CLI_PATH`.
 
 ### KiCad 10 files
 
-| File | What works today |
-|------|------------------|
-| `.kicad_sch` | Everything, read and write: the whole schematic server and the whole project server |
-| `.kicad_pcb` | Everything, read and write |
-| `.kicad_sym`, `.kicad_mod` | Everything: your own libraries as well as the stock ones |
+Every tool reads and writes KiCad 9 and 10 schematics, boards, symbol libraries
+and footprints, and never changes bytes you did not ask it to change (see
+[docs/adr-cst-substrate.md](docs/adr-cst-substrate.md)). Work handed to KiCad
+itself only succeeds if your install can load the file, and KiCad 9 cannot load
+a KiCad 10 board:
 
-Every tool parses and edits through the byte-preserving substrate, so the
-server's own reads and writes refuse no file on its format version, and none of
-them rewrites bytes you did not ask to change. What a tool hands to KiCad
-itself, through `kicad-cli` or `pcbnew`, only works if your install can load the
-file, and a KiCad 9 install cannot load a KiCad 10 board. Two caveats are worth
-knowing about.
-
-`autoroute_pcb` and `fill_zones` both need a `pcbnew` that can load the board:
-autoroute uses one for the DSN export and the SES import, and `fill_zones` uses
-one to compute the fills. Both check before they start. A KiCad 10 board on a
-KiCad 9 `pcbnew` is refused with a message naming both versions; install KiCad
-10 or point `KICAD_PYTHON` at one. In the other direction `autoroute_pcb` runs
-and warns, because the routed copy comes back in the KiCad 10 format. Your
-original board is untouched by autoroute either way, since it writes a copy.
-
-`upgrade_symbol_lib` and `upgrade_footprint_lib` are the one place KiCad still
-rewrites your file, because changing the format is exactly what you asked for.
-It rewrites a copy: the result is moved into place atomically, so a library
-can never be left half-written, and only files whose content actually changed
-are touched. Each file is atomic; the library as a whole is not a transaction,
-so an interrupted upgrade leaves some footprints migrated and none damaged. A
-backup is still taken at `<name>.bak`, overwritten every run, because that is
-the undo for an upgrade that worked.
-
-`fill_zones` and `update_pcb_from_schematic` also used to be listed here for
-letting `pcbnew` rewrite your board, and no longer do. `fill_zones` still asks
-`pcbnew` to compute the fills, because nothing else can, but `pcbnew` only
-reads: the copper comes back as coordinates and the substrate splices it in.
-`update_pcb_from_schematic` no longer uses `pcbnew` at all. Both leave
-everything they were not asked to change byte-identical, including the format
-stamp. The design behind the substrate is written up in
-[docs/adr-cst-substrate.md](docs/adr-cst-substrate.md).
+- **`fill_zones` and `autoroute_pcb`** refuse a KiCad 10 board on a KiCad 9
+  `pcbnew` before starting; install KiCad 10 or point `KICAD_PYTHON` at one.
+  `autoroute_pcb` on a KiCad 9 board through KiCad 10's `pcbnew` works but
+  warns that the routed copy comes back in KiCad 10 format. It never touches
+  the original board.
+- **`upgrade_symbol_lib` and `upgrade_footprint_lib`** let KiCad rewrite your
+  files, by design. Each file is replaced atomically and only if it changed, so
+  an interrupted upgrade leaves none damaged. A backup goes to `<name>.bak`,
+  overwritten every run.
 
 ### Windows: Controlled Folder Access
 
-Windows Defender's ransomware protection, Controlled Folder Access, guards your
-Documents folder and blocks writes from applications it does not recognise.
-KiCad keeps its own data there, a 3D cache and templates under `Documents\KiCad`,
-so a blocked write kills `kicad-cli` at startup with an access violation (exit
-`3221225477`) before it does any work. Every invocation fails, `--version`
-included.
+Defender's Controlled Folder Access blocks unrecognised apps from writing under
+Documents, where KiCad keeps its data. `kicad-cli` then crashes at startup
+(exit `3221225477`) on every call, `--version` included, and the error looks
+like a missing file: `error 2: The system cannot find the file specified`.
 
-The block surfaces as `error 2: The system cannot find the file specified`,
-which is why this reads like a missing folder rather than a permission problem.
-Measured on a machine with the feature on: the folder is plainly there and a
-write into it still fails with `FileNotFoundError`.
+The server works around this: it retries once with `KICAD_DOCUMENTS_HOME`
+pointed at an unprotected local folder and keeps it for the session. Set
+`KICAD_DOCUMENTS_HOME` yourself to pick the folder (this turns the retry off).
 
-`kicad-cli` is handled for you. On that crash the server retries once with
-KiCad's own `KICAD_DOCUMENTS_HOME` pointed at a local folder outside the
-protected set, then reuses it for the session. Nothing to configure, and a
-machine without the block never sees any of it. Setting `KICAD_DOCUMENTS_HOME`
-yourself picks the folder and disables the retry, on the grounds that a
-directory you chose is yours to fix.
-
-**Your project files are a separate matter.** The same block applies to any
-write, so if your KiCad project lives under Documents, the write tools can fail
-the same confusing way, and the server cannot repair that: it is the location
-you asked it to edit. Either keep projects outside the protected folders, or
-allow the tools through at Windows Security, Virus & threat protection,
-Ransomware protection, Allow an app through Controlled folder access.
+**It cannot fix your project files.** If your project lives under Documents,
+the write tools fail the same way. Move the project, or allow the tools under
+Windows Security > Virus & threat protection > Ransomware protection > Allow an
+app through Controlled folder access.
 
 ## Tool reference
 
