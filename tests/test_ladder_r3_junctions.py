@@ -516,7 +516,15 @@ def _nightly_k9_schematics():
 def _junction_rule_holds_on(path: Path) -> None:
     """On a sheet KiCad saved, the port places a junction exactly where KiCad did: every
     junction in the file is one the rule calls explicit, and no wire or bus end and no pin
-    lacks one the rule calls needed."""
+    lacks one the rule calls needed.
+
+    The second half leaves out the pins of a symbol whose instance entries disagree on its
+    unit (``Sym.amb``). KiCad draws one unit per reading (each sheet instance, or the file
+    loaded alone at its own root path) and the file holds the junctions of the reading it
+    was last edited in, while the model draws every unit at once. KiCad 10's
+    jetson-agx-thor-baseboard usb_debug_pd.kicad_sch is the case: a stale entry at the
+    file's own root path draws unit 1 of a TPS65988 where the project draws unit 2, so two
+    of unit 1's pin ends sit inside wires in a reading the file was not edited in."""
     data = path.read_bytes()
     try:
         m = _connectivity.Model(_cst.parse(data).lists[0])
@@ -529,6 +537,9 @@ def _junction_rule_holds_on(path: Path) -> None:
         xy for it in m.items if it.kind in ("wire", "bus") for xy in ((it.x, it.y), (it.x2, it.y2))
     }
     ends |= {(it.x, it.y) for it in m.items if it.kind == "pin"}
+    unread = {
+        (it.x, it.y) for it in m.items if it.kind == "pin" and it.sym is not None and it.sym.amb
+    }
     wrong = [
         ("not explicit", p)
         for p in sorted(dots)
@@ -536,7 +547,7 @@ def _junction_rule_holds_on(path: Path) -> None:
     ]
     wrong += [
         ("needed", p)
-        for p in sorted(ends)
+        for p in sorted(ends - unread)
         if _connectivity.junction_info(m, p, break_crossings=False).needed
     ]
     assert wrong == [], wrong[:10]
