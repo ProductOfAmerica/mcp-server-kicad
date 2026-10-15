@@ -76,8 +76,9 @@ about how the plan was created. Read the plan, execute the plan.
     ref conflicts.
 11. Validate hierarchy — run `validate_hierarchy` from root to check
     for orphaned labels, direction mismatches, duplicate refs and
-    junctions left inside wires; for each `junction_inside_wire`, make
-    the call its `repair` names.
+    junctions and bus entry ends left inside wires; for each issue
+    with a `repair`, make that call (one with a `note` instead: see
+    the verification skill).
 12. Run ERC
 
 ### Modification Mode (existing schematics)
@@ -273,7 +274,8 @@ the wiring lands in every instance, and the note names each one.
 - `modify_hierarchical_sheet` — change sheet name, file, dimensions
 - `add_sheet_pin` / `remove_sheet_pin` — manage pins on sheet blocks
 - `validate_hierarchy` — check for orphaned labels/pins, direction mismatches
-  and junctions left inside wires, with the call that repairs each
+  and junctions and bus entry ends left inside wires, with the call
+  that repairs each
 - `list_hierarchy` / `get_sheet_info` — inspect hierarchy structure
 - `is_root_schematic` — check if a schematic is root or sub-sheet
 - `move_hierarchical_sheet` — reposition a sheet block on the canvas

@@ -55,7 +55,7 @@ from mcp_server_kicad.models import (
 from mcp_server_kicad.schematic import (
     _HLABEL_TPL,
     _LABEL_TPL,
-    _junctions_inside_wires,
+    _cuts_inside_lines,
     _open_sch_cst,
     _splice_sch_node,
     _splice_wire,
@@ -793,6 +793,18 @@ def annotate_schematic(schematic_path: str = SCH_PATH, project_path: str = "") -
     return f"Annotated {total} components: {', '.join(parts)}"
 
 
+def _read_sheet(path: Path):
+    """(parsed root, "") for a sheet file, or (None, why) when it cannot be read or parsed."""
+    try:
+        doc = _cst.parse(path.read_bytes())
+    except (OSError, SyntaxError) as e:
+        return None, str(e)
+    node = doc.lists[0] if doc.lists else None
+    if node is None or node.head != "kicad_sch":
+        return None, "it is not a KiCad schematic"
+    return node, ""
+
+
 @mcp.tool(annotations=_READ_ONLY)
 def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationResult:
     """Validate a hierarchical schematic for common issues.
@@ -800,19 +812,28 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     Checks every sheet below the root, however deep, each file once. A relative sheet file
     name is found beside the file holding the sheet, as KiCad finds it; a sheet that contains
     itself, which KiCad refuses, is skipped. Per sheet block: orphaned labels and pins,
-    direction mismatches, a missing file. Across all files: duplicate and unannotated
-    reference designators, and junctions inside wires.
+    direction mismatches, a missing file, a file that cannot be parsed ("unreadable_file",
+    whose "note" names the file; its checks are skipped, the rest still run). Per sheet
+    instance, so a reused sheet counts once per use: duplicate and unannotated reference
+    designators, each read as KiCad reads it at that instance (the units of one multi-unit
+    part share theirs); past 4096 instances a "references_unchecked" note says the rest went
+    unchecked. Per file: the points where kicad-cli 9 drops part of a line that KiCad's editor
+    keeps.
 
-    A junction_inside_wire issue is a junction strictly inside a wire or bus, which KiCad
-    never writes and earlier versions of this package did. kicad-cli 9 (ERC, netlist export,
-    PCB update) cuts the wire there: per wire, "kept" is the stretch it keeps and "dropped"
-    the stretch it loses, cutting off whatever joins the wire only along that. "editor" says
-    what KiCad 9's editor makes of it: it splits the wire and keeps the junction where three
-    or more directions meet ("keeps_junction"), else deletes the junction
-    ("deletes_junction"). A file stamped past KiCad 9's format gets neither reading; a sheet
-    KiCad cannot load gets a "note" saying why, and no reading or repair. To fix one, make
-    the call in its "repair" as given: add_junctions at the point, which splits the wire as
-    the editor does, or remove_junction. Nothing is written.
+    Those are a junction strictly inside a wire or bus ("junction_inside_wire") and, in a file
+    kicad-cli 9 loads, a bus entry end strictly inside one ("bus_entry_inside_wire"); KiCad's
+    editor never saves either, and earlier versions of this package wrote both. kicad-cli 9
+    (ERC, netlist export, PCB update) cuts the line there: per line, "kept" is the stretch it
+    keeps and "dropped" the stretch it loses, cutting off whatever joins the line only along
+    that. "editor" says what KiCad 9's editor makes of it: it splits the line, keeping a
+    junction where three or more directions meet ("keeps_junction"), deleting it elsewhere
+    ("deletes_junction"), and at a bus entry end placing none ("splits_wire"). A file stamped
+    past KiCad 9's format gets neither reading. The readings follow KiCad's source; whether
+    kicad-cli 9 loads the sheet at all is not checked. To fix one, make the call in its
+    "repair" as given: add_junctions at the point, which splits the line, or remove_junction.
+    Such an issue carries a "note" in place of a repair in two cases only: its sheet is one the
+    connectivity model refuses (a symbol or pin at an angle KiCad cannot load; no reading
+    either), or it is a bus entry end where KiCad allows no junction. Nothing is written.
 
     Args:
         schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
@@ -820,23 +841,13 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     _, root, *_ = _open_sch_cst(schematic_path)
     top = Path(schematic_path)
     issues: list[dict] = []
-    all_refs: dict[str, list[str]] = {}  # ref -> [sheet labels]
-
-    def _scan(path: Path, node_root, sheet_label: str) -> None:
-        """The checks of one file: its references, then its junctions inside wires."""
-        for sym in node_root.find_all("symbol"):
-            ref = _sym_property_cst(sym, "Reference")
-            if ref is None:
-                continue
-            if "?" in ref:
-                issues.append({"type": "unannotated_ref", "sheet": sheet_label, "reference": ref})
-            else:
-                all_refs.setdefault(ref, []).append(sheet_label)
-        issues.extend(_junctions_inside_wires(node_root, str(path)))
 
     top_real = _connectivity._real(top)
     trees = {top_real: root}  # each file parsed once, by its resolved path
-    _scan(top, root, top.name)
+    unread: dict[Path, str] = {}  # each file that could not be parsed, with why
+    # Per parsed file, its sheets whose files parsed: (sheet uuid, resolved file, label).
+    kids: dict[Path, list[tuple[str, Path, str]]] = {}
+    issues.extend(_cuts_inside_lines(root, str(top)))
     # Depth first, in file order: (file holding the sheet, the sheet, resolved files from the
     # root down to the one holding it).
     todo = [(top, sheet, (top_real,)) for sheet in reversed(root.find_all("sheet"))]
@@ -860,11 +871,26 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
             )
             continue
         real = _connectivity._real(child_path)
+        new = real not in trees and real not in unread
+        if new:
+            child_root, why = _read_sheet(child_path)
+            if child_root is None:
+                unread[real] = why
+            else:
+                trees[real] = child_root
+        if real in unread:
+            issues.append(
+                {
+                    "type": "unreadable_file",
+                    "sheet_name": sheet_name,
+                    "file_name": file_name,
+                    "note": f"{child_path} cannot be parsed, so it was not checked: {unread[real]}",
+                }
+            )
+            continue
+        kids.setdefault(chain[-1], []).append((_node_uuid(sheet), real, file_name))
         if real in chain:  # KiCad refuses a sheet that contains itself (loadHierarchy, 202-222)
             continue
-        new = real not in trees
-        if new:
-            trees[real] = _cst.parse(child_path.read_bytes()).lists[0]
         child_root = trees[real]
         pin_names = {p.atoms[1].text: p.atoms[2].text for p in sheet.find_all("pin")}
         label_names: dict[str, str] = {}
@@ -906,20 +932,56 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
                 )
 
         if new:
-            _scan(child_path, child_root, file_name)
+            issues.extend(_cuts_inside_lines(child_root, str(child_path)))
             below = (*chain, real)
             todo += [(child_path, s, below) for s in reversed(child_root.find_all("sheet"))]
 
-    # Check for duplicate refs across sheets
-    for ref, sheets_list in all_refs.items():
+    # References, per sheet instance: a reused sheet's symbol carries one per instance path,
+    # "/<root uuid>/<sheet uuid>/..." (SymRecord.at, after sch_symbol.cpp GetRef at 9.0.8).
+    all_refs: dict[str, list] = {}  # ref -> [(record, (unit,), sheet label)], one per instance
+    records: dict[Path, tuple] = {}
+    walk: list[tuple[Path, str, str, tuple[Path, ...]]] = [
+        (top_real, f"/{_node_uuid(root)}", top.name, (top_real,))
+    ]
+    seen = 0
+    while walk:
+        real, kpath, label, chain = walk.pop()
+        seen += 1
+        if seen > _connectivity._MAX_INSTANCES:
+            issues.append(
+                {
+                    "type": "references_unchecked",
+                    "note": f"The hierarchy has more than {_connectivity._MAX_INSTANCES} sheet"
+                    " instances; references were checked on the first"
+                    f" {_connectivity._MAX_INSTANCES} only.",
+                }
+            )
+            break
+        if real not in records:
+            records[real] = _connectivity.sheet_facts(trees[real]).records
+        for rec in records[real]:
+            if not rec.entries and rec.prop_ref == "?":
+                continue  # no Reference at all
+            ref, unit = rec.at(kpath)
+            if "?" in ref:
+                issues.append({"type": "unannotated_ref", "sheet": label, "reference": ref})
+            else:
+                all_refs.setdefault(ref, []).append((rec, (unit,), label))
+        for su, child, name in reversed(kids.get(real, ())):
+            if child not in chain:
+                walk.append((child, f"{kpath}/{su}", name, (*chain, child)))
+
+    for ref, placed in all_refs.items():
         if ref.startswith("#"):  # Skip power symbols
             continue
-        if len(sheets_list) > 1:
+        # The units of one multi-unit part share a reference; anything else sharing one is a
+        # duplicate.
+        if len(placed) > 1 and _connectivity._one_part([(r, u) for r, u, _ in placed]):
             issues.append(
                 {
                     "type": "duplicate_ref",
                     "reference": ref,
-                    "sheets": sheets_list,
+                    "sheets": [label for *_, label in placed],
                 }
             )
 
