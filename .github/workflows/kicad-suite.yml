@@ -25,11 +25,14 @@ on:
     branches: [main, master, "ci/**"]
   pull_request:
     branches: [main, master]
-    # A pull request touching only these files runs nothing here: the suite
-    # reads none of them. ci.yml skips the same files except Markdown, which its
-    # ruff step reads. Pushes to main and ci/** are not filtered: release.yml
-    # refuses a commit without its own green push runs. If a ruleset ever
-    # requires this job, a PR touching only these files would wait on it forever.
+    # A pull request touching only these files runs nothing here. The tests
+    # read none of them; uv sync reads README.md, the package readme, but
+    # ci.yml runs the same sync on every Markdown change and so catches a
+    # README that breaks the build. ci.yml skips the same files except
+    # Markdown, which its ruff step reads. Pushes to main and ci/** are not
+    # filtered: release.yml refuses a commit without its own green push runs.
+    # If a ruleset ever requires this job, a PR touching only these files would
+    # wait on it forever.
     paths-ignore:
       - "README.md"
       - "CONTRIBUTING.md"
