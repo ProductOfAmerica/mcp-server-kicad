@@ -1,0 +1,4 @@
+contact_links:
+  - name: Ask a question
+    url: https://github.com/ProductOfAmerica/mcp-server-kicad/discussions/categories/q-a
+    about: Setup and usage questions go to Discussions Q&A; issues are for bugs and feature requests.
