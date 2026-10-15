@@ -99,23 +99,6 @@ def _tee(path, point, *arms) -> None:
 # move_component (step 9): what a move changes, by KiCad's rule
 # ---------------------------------------------------------------------------
 
-BUG_1 = (
-    "bug 1: move_component leaves its fields behind, and does not report its pins' changed"
-    " wire contacts; fixed by step 9"
-)
-BUG_96 = (
-    "bug 96: with two (at) nodes move_component rewrites the first while KiCad keeps the last,"
-    " and reports a false success; fixed by step 9"
-)
-BUG_97 = (
-    "bug 97: a symbol with no (at) raises a raw AttributeError instead of a ToolError;"
-    " fixed by step 9"
-)
-BUG_98 = (
-    "bug 98: at a non-quarter angle move_component reports success on a file kicad-cli"
-    " refuses, and the [unloadable] remedy names an impossible repair; fixed by step 9"
-)
-
 #: The fixture's R1 as written: at (100, 100), angle 0.
 _R1_AT = b"(at 100 100 0) (unit 1)"
 
@@ -227,15 +210,7 @@ _ORDER_CASES = {
     "mirror_last": ((1_016_000, 508_000), (0, "y"), None, 90, "y"),
     "second_at": ((1_524_000, 508_000), (0, ""), (1_651_000, 635_000, 180), 270, ""),
 }
-_ORDER_PARAMS = [
-    "properties_first",
-    pytest.param(
-        "mirror_last", marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
-    ),
-    pytest.param(
-        "second_at", marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_96)
-    ),
-]
+_ORDER_PARAMS = list(_ORDER_CASES)
 
 
 def _order_symbol(order: str) -> E.SynSymbol:
@@ -970,11 +945,6 @@ class TestSymbolFamilyPreservation:
         schematic.move_component("R1", 63.5, 63.5, rotation=90, schematic_path=p)
         assert reparse(kicad_native_sch).schematicSymbols[0].position.angle == 90
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="bug 1: move_component leaves the symbol's fields behind; fixed by step 9",
-    )
     def test_move_component_carries_its_fields(self, kicad_native_sch):
         """A symbol's fields travel with it.
 
@@ -1015,7 +985,6 @@ class TestSymbolFamilyPreservation:
         expected = {name: (x + dx, y + dy, angle) for name, (x, y, angle) in fields(old).items()}
         assert fields(new) == expected, "the symbol moved and its fields stayed where they were"
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
     @pytest.mark.parametrize("move", _MOVES, ids=[m[0] for m in _MOVES])
     @pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
     def test_move_changes_only_position_atoms(self, tmp_path, newline, move):
@@ -1071,7 +1040,6 @@ class TestSymbolFamilyPreservation:
         problems = rigid_problems(before, after, moves)
         assert not problems, "\n".join(problems)
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_96)
     def test_move_rewrites_the_at_kicad_keeps(self, tmp_path):
         """R1 written with two (at) lists, (100, 100) and then (127, 127), which kicad-cli
         9.0.8 loads (measured 2026-10-14): KiCad's parser keeps the last, since each (at)
@@ -1087,7 +1055,6 @@ class TestSymbolFamilyPreservation:
             f"returned {message!r}, and KiCad reads R1 at {new.position}"
         )
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_97)
     def test_move_refuses_a_symbol_without_at(self, tmp_path):
         """R1 written with no (at), which kicad-cli 9.0.8 loads (measured 2026-10-14):
         move_component refuses with a ToolError, the file byte for byte as it was, rather
@@ -1101,7 +1068,6 @@ class TestSymbolFamilyPreservation:
         assert path.read_bytes() == before
 
     @pytest.mark.kicad_placeholder("angle45.kicad_sch")
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_98)
     def test_unloadable_angle_needs_a_rotation(self, tmp_path):
         """R1 at angle 45, which KiCad cannot load (its parser takes 0, 90, 180 and 270
         only, sch_io_kicad_sexpr_parser.cpp:3074-3081 at 9.0.8, 3191-3198 at 10.0.7), the
@@ -1120,7 +1086,6 @@ class TestSymbolFamilyPreservation:
         assert "rotation" in str(raised), f"the refusal names no repair: {raised}"
         assert path.read_bytes() == before
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
     def test_unloadable_angle_is_repaired_by_a_rotation(self, tmp_path):
         """R1 at angle 45, moved to (63.5, 63.5) at rotation 90: KiCad reads R1 there at 90,
         and every field moved by R1's own displacement and was not turned, since an angle
@@ -1139,7 +1104,6 @@ class TestSymbolFamilyPreservation:
         )
         assert "45" in message, f"the result does not say R1 was at angle 45: {message!r}"
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_98)
     def test_unloadable_angle_remedy_names_a_repair_that_works(self, tmp_path):
         """A pin read of R1 at angle 45 refuses [unloadable]. KiCad cannot open the sheet,
         so a remedy pointing at KiCad cannot be followed; the one that works is
@@ -1801,7 +1765,6 @@ class TestKicad10E2E:
         assert root.find("symbol") is None
         assert root.find("paper").atoms[1].text == "A3"
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
     def test_move_component_carries_fields_on_real_kicad10(self, kicad_native_sch):
         """On a schematic kicad-cli 10 minted: a translation of R1 to (63.5, 63.5), then a
         turn to 90 in place there, each change exactly the atoms KiCad's rule moves

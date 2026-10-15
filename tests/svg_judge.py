@@ -5,7 +5,7 @@ SVG_plotter.cpp:833-944 at 9.0.8, 845-955 at 10.0.7): once as an invisible <text
 and once as stroked glyphs under <g class="stroked-text"><desc>TEXT</desc>. This judge
 reads the invisible element, which carries the plotted anchor exactly. The glyphs are no
 measure of a field's position: KiCad draws text upright, so the glyph box does not turn
-with the symbol. Measured on kicad-cli 9.0.8 (2026-10-14) over the 96 fields of
+with the symbol. Measured on kicad-cli 9.0.8 (2026-10-15) over the 88 fields of
 test_field_port_draws_where_kicad_cli_draws's sheet, the glyph box centre sat 0.0555 to
 0.0857 mm from the anchor across the text, on the same side in every one of the 12 states.
 

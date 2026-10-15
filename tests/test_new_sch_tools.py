@@ -14,12 +14,6 @@ from test_ladder_r2_pins import lexed_root, port_pin_ends, report_iu
 
 from mcp_server_kicad import schematic
 
-BUG_1 = (
-    "bug 1: move_component leaves its fields behind, and does not report its pins' changed"
-    " wire contacts; fixed by step 9"
-)
-BUG_12 = "bug 12: the snap moves a symbol when called at its own position; fixed by step 9"
-
 #: A printed point "(x, y)", as KiCad's reports and the routing tools print one.
 _POINT = re.compile(r"\((-?[0-9.]+), (-?[0-9.]+)\)")
 #: KiCad's own names for a net no label names (netlist_oracle's rule).
@@ -169,8 +163,6 @@ _SCENARIOS = {
         set(),
     ),
 }
-#: The scenarios in which a pin's contacts change, so the result must name it.
-_REPORTED = ("S1", "S2", "S3", "S4", "S5")
 
 
 class TestMoveComponent:
@@ -202,18 +194,7 @@ class TestMoveComponent:
             schematic.move_component("R999", 200, 200, schematic_path=str(scratch_sch))
 
     @requires_cli
-    @pytest.mark.parametrize(
-        "case",
-        [
-            pytest.param(
-                name,
-                marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
-                if name.startswith(_REPORTED)
-                else (),
-            )
-            for name in _SCENARIOS
-        ],
-    )
+    @pytest.mark.parametrize("case", list(_SCENARIOS))
     def test_names_the_pins_whose_connections_change(self, tmp_path, case):
         """The pins the result names as R1:<number> are exactly the pins whose net in
         kicad-cli's netlist the move changes (connected or not, the label naming it, the
@@ -236,7 +217,6 @@ class TestMoveComponent:
         assert not problems, "\n".join(problems) + "\n" + message
 
     @requires_cli
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
     def test_names_a_no_connect_flag_left_behind(self, tmp_path):
         """R1 moved off the no-connect flag on its pin 2, which no netlist shows: kicad-cli's
         ERC then reports pin 2 unconnected and the flag dangling, neither of which it did
@@ -256,7 +236,6 @@ class TestMoveComponent:
         problems = report_problems(message, "R1", before, path.read_bytes())
         assert not problems, "\n".join(problems) + "\n" + message
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
     def test_report_is_capped(self, tmp_path):
         """A 100-pin part with a wire on every pin, moved clear of all of them: every pin
         leaves its wire and meets nothing (the premise, read from both files with the
@@ -305,7 +284,6 @@ class TestMoveComponent:
         ]
         assert counts, f"no line counts the {rest} pins not listed:\n{message}"
 
-    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_12)
     @pytest.mark.parametrize("rotation", [None, 0])
     def test_no_change_writes_nothing(self, kicad_native_sch, rotation):
         """R1 of the native fixture called at its own position, (100, 100), off the 1.27 mm
