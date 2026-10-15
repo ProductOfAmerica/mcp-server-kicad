@@ -46,13 +46,10 @@ change on disk.
   run_drc                      clearance, width, and unconnected checks
 ```
 
-Every tool works on the real file. Writes go through a byte-preserving
-substrate, so bytes you did not ask to change reach the disk unchanged, and an
-edit that cannot be done correctly is refused with the file intact. That now
-covers every edit this server makes to a board or schematic. KiCad itself
-writes a design file in only two places: the library upgrades, which say so on
-themselves, and `autoroute_pcb`'s routed copy, a new board that `pcbnew` saves
-while yours stays untouched.
+Every tool edits the real file and changes only the bytes you asked it to. An
+edit that cannot be done correctly is refused with the file intact. KiCad itself
+writes a design file in just two places: the library upgrades, and
+`autoroute_pcb`'s routed copy, a new board that leaves yours untouched.
 
 ## Quick start
 
@@ -69,13 +66,11 @@ claude plugin install kicad
 
 Download `kicad-<version>.mcpb` from the [latest release][latest] and install it
 from Settings, then Extensions. Claude Desktop fetches Python and the package
-itself, so KiCad is the only thing you need installed first.
+itself; you only need KiCad installed.
 
-Fill in the schematic, board, and export paths it asks for. Unlike the Claude
-Code plugin, Desktop does not run from your project directory, so nothing is
-auto-detected. Leave the `kicad-cli` field blank unless KiCad lives somewhere
-unusual; stock installs are found on their own, on every platform. The design
-skills are Claude Code only.
+Desktop does not run from your project directory, so fill in the schematic,
+board, and export paths it asks for. Leave the `kicad-cli` field blank unless
+KiCad is installed somewhere unusual. The design skills are Claude Code only.
 
 [latest]: https://github.com/ProductOfAmerica/mcp-server-kicad/releases/latest
 
