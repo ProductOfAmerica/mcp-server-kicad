@@ -890,7 +890,7 @@ def remove_junction(
     lines = [f"Removed junction at ({x}, {y})"]
     if len(dots) > 1:
         lines.append(f"Also removed {len(dots) - 1} more junction(s) at {_connectivity.pt(p)}.")
-    if _bus_entry_end_at(root, p):
+    if p in _bus_entry_ends(root):
         lines.append(
             f"Merged no wires: a bus entry ends at {_connectivity.pt(p)}, and kicad-cli 9 cuts a"
             " wire at a bus entry end inside it."
@@ -1229,6 +1229,94 @@ def _join_report(joined) -> list[str]:
     return out
 
 
+#: The newest schematic format KiCad 9 reads (SEXPR_SCHEMATIC_FILE_VERSION,
+#: sch_file_versions.h:117 at 9.0.8); kicad-cli 9 loads no file stamped later.
+_K9_SCH_VERSION_MAX = 20250114
+
+
+def _stretch(a: Point, b: Point) -> dict:
+    mm = _connectivity.IU_PER_MM
+    return {"x1": a[0] / mm, "y1": a[1] / mm, "x2": b[0] / mm, "y2": b[1] / mm}
+
+
+def _junctions_inside_wires(root, path: str) -> list[dict]:
+    """validate_hierarchy's junction_inside_wire issues on one parsed sheet: one per point where
+    a junction lies strictly inside a wire or bus, which KiCad's editor never leaves (it splits
+    every line through a junction it places, AddJunction, bus-wire-junction.cpp:188-199 at
+    9.0.8), so an earlier version of this package wrote it. A sheet holding none costs this
+    scan alone; the model is built only for one that holds some.
+
+    On a file kicad-cli 9 loads, each line's kept and dropped stretches: its load-time CleanUp
+    cuts every line at every junction and bus-entry end inside it, and BreakSegment shortens the
+    line to end there and, with no schematic holder, never adds the other half
+    (schematic.cpp:1055-1113 and 1147 at 9.0.8), so the line keeps its first point to the cut
+    nearest it. Then the editor's reading: it splits the same way, keeping both halves, then
+    deletes the junction unless IsExplicitJunction holds there (1149-1158), which once split
+    is what IsExplicitJunctionAllowed says before (junction_info with break_crossings).
+    The repair leaves the file as the editor holds it: add_junctions, which splits there, or
+    remove_junction. A sheet the model refuses, which KiCad cannot load either, gets the reason
+    in place of the readings and the repair."""
+    lines = []
+    for node in root.lists:
+        xys = _line_xys(node) if node.head in ("wire", "bus") else None
+        if xys is not None:
+            lines.append((node.head, _xy_iu(xys[0]), _xy_iu(xys[1])))
+    dots = [_xy_iu(at) for node in root.find_all("junction") if (at := node.find("at")) is not None]
+    rows: dict[int, list] = {}
+    columns: dict[int, list] = {}
+    slants = []
+    for line in lines:
+        _kind, a, b = line
+        if a[1] == b[1]:
+            rows.setdefault(a[1], []).append(line)
+        elif a[0] == b[0]:
+            columns.setdefault(a[0], []).append(line)
+        else:
+            slants.append(line)
+    hits = {}
+    for p in dict.fromkeys(dots):
+        near = rows.get(p[1], []) + columns.get(p[0], []) + slants
+        through = [ln for ln in near if _connectivity.inside(p[0], p[1], *ln[1], *ln[2])]
+        if through:
+            hits[p] = through
+    if not hits:
+        return []
+    try:
+        version = int(_connectivity._child_text(root, "version", "0"))
+    except ValueError:
+        version = 0
+    cuts = set(dots) | _bus_entry_ends(root)
+    try:
+        model, why = _connectivity.Model(root), ""
+    except _connectivity.Refusal as e:
+        model, why = None, e.text
+    readable = model is not None and version <= _K9_SCH_VERSION_MAX
+    issues = []
+    for p, through in hits.items():
+        spot = {"x": p[0] / _connectivity.IU_PER_MM, "y": p[1] / _connectivity.IU_PER_MM}
+        issue = {"type": "junction_inside_wire", "file": path, **spot, "lines": []}
+        for kind, a, b in through:
+            line = {"kind": kind, **_stretch(a, b)}
+            if readable:
+                inner = (q for q in cuts if _connectivity.inside(q[0], q[1], *a, *b))
+                cut = min(inner, key=lambda q: _along(a, b, q))
+                line["kept"], line["dropped"] = _stretch(a, cut), _stretch(cut, b)
+            issue["lines"].append(line)
+        if model is None:
+            issue["note"] = f"This sheet cannot be judged: {why}"
+        else:
+            keeps = _connectivity.junction_info(model, p, break_crossings=True).explicit
+            if readable:
+                issue["editor"] = "keeps_junction" if keeps else "deletes_junction"
+            where = {"points": [dict(spot)]} if keeps else spot
+            issue["repair"] = {
+                "tool": "add_junctions" if keeps else "remove_junction",
+                "arguments": {**where, "schematic_path": path},
+            }
+        issues.append(issue)
+    return issues
+
+
 def _plain_stroke(node) -> bool:
     """Whether a line is drawn as the call's own wires are, (width 0) (type default): equal
     width and colour, and a default or solid style (SCH_LINE::IsStrokeEquivalent,
@@ -1398,16 +1486,18 @@ def _merge_and_trim(m, a: Point, b: Point, plain, pieces, parts, raw):
     return kept, out, [(ref, p1, p2) for _, _, ref, p1, p2 in cuts]
 
 
-def _bus_entry_end_at(root, p: Point) -> bool:
+def _bus_entry_ends(root) -> set[Point]:
+    """Both ends of every bus entry: its position, and that plus its size
+    (SCH_BUS_ENTRY_BASE::GetEnd, sch_bus_entry.cpp:131-134 at 9.0.8)."""
+    ends = set()
     for node in root.find_all("bus_entry"):
         at, size = node.find("at"), node.find("size")
         if at is None:
             continue
         x, y = _xy_iu(at)
         dx, dy = _xy_iu(size) if size is not None else (0, 0)
-        if p in ((x, y), (x + dx, y + dy)):
-            return True
-    return False
+        ends |= {(x, y), (x + dx, y + dy)}
+    return ends
 
 
 class _End:
