@@ -37,7 +37,7 @@ from hypothesis import strategies as st
 from kicad_ref import sch_line
 from mcp.server.mcpserver.exceptions import ToolError
 from netlist_oracle import nets
-from routing_fixtures import fresh, junction, place, splice, wire
+from routing_fixtures import bus_entry, fresh, junction, place, splice, wire
 
 from mcp_server_kicad import _connectivity, project, schematic
 from mcp_server_kicad.models import WireSpec
@@ -675,6 +675,58 @@ def test_connect_pins_splits_its_wire_at_a_junction_it_runs_through(tmp_path, cl
         assert joins(p, pins) == one_net(*pins)
     else:
         pytest.skip("kicad-cli 10 joins a wire through a junction, so it cannot see the cut")
+
+
+#: A bus entry ending at P: by its position, or by its far end, the position plus its size
+#: (SCH_BUS_ENTRY_BASE::GetEnd, sch_bus_entry.cpp:131-134 at 9.0.8). Nothing is at its other end.
+_ENTRIES_AT_P = [
+    pytest.param((101.6, 101.6, 2.54, 2.54), id="its_position"),
+    pytest.param((99.06, 99.06, 2.54, 2.54), id="its_far_end"),
+]
+
+
+def _lines_through(data: bytes, point) -> list:
+    """The wires and buses of ``data`` with ``point`` strictly inside, as KiCad reads them."""
+    q = S.iu_point(point)
+    return [
+        (ln.start, ln.end) for ln in S.lines(data) if sch_line.strictly_inside(ln.start, ln.end, q)
+    ]
+
+
+@pytest.mark.parametrize("entry", _ENTRIES_AT_P)
+def test_add_wires_splits_its_wire_at_a_bus_entry_end_it_runs_through(tmp_path, entry):
+    """add_wires(A to B) through P, where a bus entry ends. A bus entry end on a new wire is a
+    connection point there (finishSegments collects it, 1182-1202 at 9.0.8), and KiCad 9's
+    cleanup splits a wire at both ends of every bus entry (SCHEMATIC::BreakSegmentsOnJunctions,
+    schematic.cpp:1090-1113 at 9.0.8): P lies inside no wire, and kicad-cli 9, which cuts a
+    wire left whole there and keeps only its first part, reads R1:2 and R2:1 on one net."""
+    p = layout(tmp_path, "aw_entry", parts=("R1", "R2"))
+    bus_entry(p, *entry)
+    schematic.add_wires([w(A, B)], schematic_path=p)
+    assert _lines_through(read(p), P) == []
+    if cli9():
+        assert joins(p, {R1_2, R2_1}) == one_net(R1_2, R2_1)
+
+
+@pytest.mark.parametrize(
+    "cli", [False, pytest.param(True, marks=requires_cli)], ids=["structure", "kicad"]
+)
+@pytest.mark.parametrize("entry", _ENTRIES_AT_P)
+def test_connect_pins_splits_its_wire_at_a_bus_entry_end_it_runs_through(tmp_path, entry, cli):
+    """A bus entry ending at P, then connect_pins(R1:2, R2:1), whose straight wire runs through
+    P. KiCad 9's cleanup splits a wire at both ends of every bus entry
+    (SCHEMATIC::BreakSegmentsOnJunctions, schematic.cpp:1090-1113 at 9.0.8), so the new wire is
+    split there: P lies inside no wire, and kicad-cli 9 reads R1:2 and R2:1 on one net (it
+    cut the wire at P and kept only its first part, leaving R2:1 apart)."""
+    p = layout(tmp_path, "cp_entry", parts=("R1", "R2"))
+    bus_entry(p, *entry)
+    schematic.connect_pins("R1", "2", "R2", "1", schematic_path=p)
+    if not cli:
+        assert _lines_through(read(p), P) == []
+    elif cli9():
+        assert joins(p, {R1_2, R2_1}) == one_net(R1_2, R2_1)
+    else:
+        pytest.skip("kicad-cli 10 breaks no wire at a bus entry end on load, so it sees no cut")
 
 
 BF = (116.84, 101.6)  # a wire end with nothing at it

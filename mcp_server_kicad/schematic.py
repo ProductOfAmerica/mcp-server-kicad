@@ -2496,7 +2496,9 @@ def connect_pins(
     Combines get_pin_positions + coordinate math + add_wires into one call. At its own
     points (both pins and the L's corner) a junction goes where three or more directions
     meet, and any wire through it is split there, as KiCad's wire tool does
-    (sch_line_wire_bus_tool.cpp:1263-1267 at 9.0.8); the result then names each.
+    (sch_line_wire_bus_tool.cpp:1263-1267 at 9.0.8); a leg running through a junction or a
+    bus entry end already on the sheet is split there too, as KiCad's cleanup splits it. The
+    result names each junction and split.
 
     Args:
         ref1: First component reference (e.g. "U1")
@@ -2523,16 +2525,18 @@ def connect_pins(
         new_points.append((x2, y1))  # L-shape corner
     m = _model(root)
     legs = [(_req_point(s[0], s[1]), _req_point(s[2], s[3])) for s in segments]
-    # A junction already on a leg is a point the leg is split at too: KiCad 9's cleanup splits
-    # every wire through a junction (SCHEMATIC::BreakSegmentsOnJunctions, schematic.cpp:
-    # 1090-1113 at 9.0.8), which kicad-cli 9 turns into a cut when the wire is left whole.
-    dots = [
-        (it.x, it.y)
+    # A junction or a bus entry end already on a leg is a point the leg is split at too: KiCad
+    # 9's cleanup splits every wire through a junction and through both ends of every bus entry
+    # (SCHEMATIC::BreakSegmentsOnJunctions, schematic.cpp:1090-1113 at 9.0.8), which kicad-cli
+    # 9 turns into a cut when the wire is left whole.
+    cuts = [
+        q
         for it in m.items
-        if it.kind == "junction"
-        and any(_connectivity._within(it.x, it.y, a[0], a[1], b[0], b[1], 0) for a, b in legs)
+        if it.kind in ("junction", "be")
+        for q in _connectivity._conn_points(it)
+        if any(_connectivity._within(q[0], q[1], a[0], a[1], b[0], b[1], 0) for a, b in legs)
     ]
-    joined = _join_points(root, m, [_req_point(px, py) for px, py in new_points] + dots)
+    joined = _join_points(root, m, [_req_point(px, py) for px, py in new_points] + cuts)
 
     # Auto-add net label for hierarchical ERC compatibility
     # Walk wires from both pin endpoints to find all connected points,
