@@ -49,12 +49,6 @@ from kicad_ref import transform as T
 
 from mcp_server_kicad import schematic
 
-BUG_1 = (
-    "bug 1: move_component leaves its fields behind, and does not report its pins' changed"
-    " wire contacts; fixed by step 9"
-)
-BUG_12 = "bug 12: the snap moves a symbol when called at its own position; fixed by step 9"
-
 #: The 1.27 mm grid move_component snaps a translation to, in internal units.
 GRID = 12_700
 #: Grid steps that keep an anchor inside edit_gen's A3 sheet (420 x 297 mm), clear of its edge.
@@ -128,7 +122,6 @@ def _move(path: Path, at, rotation, reference: str = "R1") -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
 @settings(max_examples=sexpr_gen.budget(4))
 @given(
     state=G.symbol_states(),
@@ -197,7 +190,6 @@ def test_move_to_the_same_place_changes_no_field(state, at, keep_angle, specs, a
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_12)
 @settings(max_examples=sexpr_gen.budget(4))
 @given(
     state=G.symbol_states(),
@@ -296,7 +288,6 @@ def rigid_problems(before: Path, after: Path, moves: dict[str, Move]) -> list[st
 
 
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
 def test_fields_follow_the_symbol_where_kicad_draws_them(tmp_path):
     """48 symbols, each of the 12 states turned to each of the four angles and moved by
     (2.54, 5.08), their Reference and Value shown at asymmetric offsets, at text angles 0
@@ -353,7 +344,6 @@ _SPECS = (((50_800, -25_400), 0), ((-38_100, 63_500), 90), ((0, 0), 0), ((0, 0),
 
 @pytest.mark.nightly
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
 @settings(max_examples=sexpr_gen.budget(25))
 @given(_moves())
 @example(

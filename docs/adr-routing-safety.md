@@ -334,3 +334,14 @@ Each slice appends an entry when it lands.
   not reported. That closes the out-of-scope item on existing files; the release note is the
   pull request's. It reports none on the 36 demo projects KiCad 9.0.8 ships (measured
   2026-10-15).
+
+- 2026-10-15, step 9: move_component reads the model, read-only, to say which pins of the moved
+  symbol changed contacts (`_connectivity.contact_changes`). A pin's contacts are the items with a
+  connection point exactly at its end, its own symbol's pins left out, as
+  CONNECTION_GRAPH::updateItemConnectivity groups them (connection_graph.cpp:1147-1395 at 9.0.8,
+  1361-1542 at 10.0.7; 10.0.7's extra junction-midpoint rule only adds a junction the report names
+  anyway). A pin end on a wire's interior is no contact: KiCad joins it to nothing without a
+  junction. Re-measured against kicad-cli 9.0.8 on 2026-10-15
+  (test_new_sch_tools.py::TestMoveComponent): in all seven netlist scenarios the pins named are
+  exactly those whose net changed, and ERC confirms a no-connect flag the report says was left.
+  The model itself did not change.
