@@ -522,6 +522,7 @@ decisions behind the byte-preserving write path.
 - [Report a bug](https://github.com/ProductOfAmerica/mcp-server-kicad/issues/new)
 - [Browse open issues](https://github.com/ProductOfAmerica/mcp-server-kicad/issues)
 - [Security policy](SECURITY.md)
+- [Code of conduct](CODE_OF_CONDUCT.md)
 
 ## License
 

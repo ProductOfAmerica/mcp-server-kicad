@@ -1,0 +1,53 @@
+# Version updates for the three places this repo pins third-party code:
+# uv.lock, the actions the workflows use, and the MCPB packer release.yml
+# installs. Security updates are switched on in the repository settings and
+# do not depend on this file, and cooldown does not delay them.
+#
+# Cooldown holds a version back for a week after it is published, so a
+# compromised release has time to be noticed and yanked before a PR proposes
+# it. Minor and patch updates arrive as one grouped PR per ecosystem; a major
+# update gets a PR of its own, since that is where a break is likely.
+#
+# mcp-publisher is pinned by sha256 inside release.yml, which Dependabot cannot
+# read, so it is still bumped by hand.
+version: 2
+updates:
+  - package-ecosystem: "uv"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      python:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        applies-to: version-updates
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+
+  # The lock here is the pin release.yml's `npm ci` checks every tarball
+  # against, so an update to it is an update to that pin.
+  - package-ecosystem: "npm"
+    directory: "/.github/tools/mcpb"
+    schedule:
+      interval: "weekly"
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+      include: "scope"
