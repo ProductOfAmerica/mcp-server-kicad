@@ -18,6 +18,7 @@ import hpaths  # noqa: E402
 hpaths.bootstrap(__file__)
 import dhelp as D  # noqa: E402  (imports rlib first)
 from dhelp import R, cstep, wstep  # noqa: E402
+import compat54  # noqa: E402  (frozen 54160c1 add_wires and connect_pins: fixture setup)
 from pathlib import Path  # noqa: E402
 
 R.begin("decisions", __file__, tag="dec_d01")
@@ -47,10 +48,11 @@ R.run_sequence("DEC-01", "d01_autolabel_trap:W3", [
 ], base, script=S)
 
 # W4: the legacy automatic label written by the repo's own connect_pins is fixture state
+# (compat54's frozen 54160c1 copy, which the baselines were taken with)
 w4dir = R.copy_tree(Path(base).parent, "d01_W4")
 w4 = str(w4dir / Path(base).name)
 print("fixture W4.1 B.connect_pins(R1:1, R2:1):",
-      D.schematic.connect_pins(ref1="R1", pin1="1", ref2="R2", pin2="1", schematic_path=w4))
+      compat54.connect_pins(ref1="R1", pin1="1", ref2="R2", pin2="1", schematic_path=w4))
 R.run_sequence("DEC-21", "d01_autolabel_trap:W4", [
     wstep([("R1", "1")], "SIG", "W4.2 wire([R1:1], 'SIG')"),
     wstep([("R5", "1")], "Net-(R1-1)", "W4.3 wire([R5:1], 'Net-(R1-1)')"),

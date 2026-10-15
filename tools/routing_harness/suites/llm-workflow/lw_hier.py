@@ -23,6 +23,7 @@ import rlib as R  # noqa: E402
 from rlib import H  # noqa: E402
 
 import lwlib as LW  # noqa: E402
+import compat54  # noqa: E402  (frozen 54160c1 add_wires and connect_pins: fixture setup)
 from mcp_server_kicad import project  # noqa: E402
 
 R.begin(LW.CAT, __file__, tag="lw_hier" + "".join("_" + a for a in sys.argv[1:]))
@@ -77,7 +78,7 @@ if "hier" in which:
                     num = LW.pin_numbers(str(rr), "U1", "PB7/PB8")[0]
                     px, py, _ = R.M2.pin_positions(str(rr), "U1")[num][0]
                     sx, sy = 177.8 - 2.54, 50.8 + 2.54
-                    msg = B.add_wires(wires=[{"x1": px, "y1": py, "x2": px, "y2": sy},
+                    msg = compat54.add_wires(wires=[{"x1": px, "y1": py, "x2": px, "y2": sy},
                                              {"x1": px, "y1": sy, "x2": sx, "y2": sy}],
                                       schematic_path=str(rr))
                     print(f"  [{dz}] add_wires U1:PB7/PB8 -> sheet stub: {msg}", flush=True)
@@ -117,7 +118,7 @@ if "v10" in which:
         sda = [lbl for lbl in labels if lbl[0] == "SDA"][0]
         lx, ly = float(sda[1]), float(sda[2])
         if variant == "K2":
-            B.add_wires(wires=[{"x1": px, "y1": py, "x2": px, "y2": ly},
+            compat54.add_wires(wires=[{"x1": px, "y1": py, "x2": px, "y2": ly},
                                {"x1": px, "y1": ly, "x2": lx, "y2": ly}], schematic_path=str(root))
         R.run_case("LW-10", f"v_lw10_port:{variant}", "wire_pins_to_net", root,
                    dict(pins=LW.pins_kw([("U1", "PB7/PB8")]), label_text="SDA"), root=root,

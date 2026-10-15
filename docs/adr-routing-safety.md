@@ -191,8 +191,8 @@ scan and a budget test.
   data.
 - Existing files where earlier versions of this repo wrote junctions that cut wires in kicad-cli
   9: a separate read-only check plus a release note.
-- add_wires and add_junctions still write junctions on unsplit wires, and add_label is
-  unchecked. Separate issues.
+- add_label is unchecked. A separate issue. (add_wires and add_junctions writing junctions on
+  unsplit wires, once recorded here too, is closed: status log, 2026-10-14.)
 - Files edited by earlier versions of this repo may hold no-connect flags and wires at the
   mirrored point the old transform gave a pin at rotation 90 or 270 with a mirror.
   remove_no_connect now looks at the pin KiCad draws and will not find such a flag. An
@@ -309,3 +309,14 @@ Each slice appends an entry when it lands.
   and tiny_tapeout; no gate sheet holds a library name twice), so the gate ran again on 8d10aa4
   over those inputs, 73 sweep calls and 9 probe scripts (247 records), and every outcome matched
   the run before, call for call (`pr57pt\coarse\dupref\gate_x_final3.json`).
+
+- 2026-10-14, step 8: add_wires, add_junctions and connect_pins split every wire at a junction they
+  rely on, as KiCad's editor does, and remove_junction merges as KiCad's delete does, so the
+  out-of-scope item on junctions written on unsplit wires is closed. ADR-R2's crossing-hazard
+  evidence was measured at 54160c1, and the crossing probe was run again on the change (kicad-cli
+  9.0.8, 2026-10-14): a label or a junction placed on a crossing by a later call still merges /A and
+  /N (KiCad allows a junction on a crossing and joins it), though the junction no longer splits /N;
+  add_wires along the crossed wire adds nothing, the wire already covering it; and without a
+  crossing a junction on the wire alone is refused. The crossing ban still stands. The harness's
+  smoke step 8 expects these readings, and its fixture builders call frozen copies of the old
+  add_wires and connect_pins.

@@ -297,10 +297,10 @@ app through Controlled folder access.
 | `move_component` | Move a placed component to a new position |
 | `set_component_property` | Set any property (Value, Reference, Footprint, ...) on a placed component |
 | `add_lib_symbol` | Load a symbol definition from a `.kicad_sym` library into the schematic |
-| `add_wires` | Add one or more wires between points, auto-creating junctions on T-connections |
+| `add_wires` | Add one or more wires between points as KiCad's wire tool does: a junction where three or more wires or pins meet, the wires split there |
 | `remove_wire` | Remove a wire segment |
-| `add_junctions` | Add one or more junction dots |
-| `remove_junction` | Remove a junction dot |
+| `add_junctions` | Add one or more junction dots where three or more wires or pins meet, splitting the wires through them; refused anywhere else |
+| `remove_junction` | Remove a junction dot, merging the wires it split as KiCad's delete does |
 | `add_label` | Add a net label at a position |
 | `remove_label` | Remove a net label or global label |
 | `add_global_label` | Add a global net label visible across all sheets |

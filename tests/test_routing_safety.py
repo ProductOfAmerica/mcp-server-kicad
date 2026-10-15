@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 from conftest import netlist_nodes, requires_cli
+from mcp.server.mcpserver.exceptions import ToolError
 from netlist_oracle import judge, model_disagreements, nets
 from routing_checks import assert_only_added, call_wptn
 from routing_fixtures import (
@@ -259,24 +260,13 @@ def _crossing_fixture(tmp_path):
         pytest.param(
             lambda p: schematic.add_global_label("A", *X, schematic_path=p), id="global_label"
         ),
-        pytest.param(
-            lambda p: schematic.add_junctions([{"x": X[0], "y": X[1]}], schematic_path=p),
-            id="add_junctions",
-        ),
-        pytest.param(
-            lambda p: schematic.add_wires(
-                [{"x1": X[0], "y1": X[1], "x2": 114.3, "y2": 96.52}], schematic_path=p
-            ),
-            id="add_wires",
-        ),
     ],
 )
 def test_a_later_tool_at_the_crossing_merges_nothing(tmp_path, follow_up):
-    """Q1-Q5. A stub crossing net A's wire joins nothing when written, but a label, junction or
-    auto-junctioned wire placed on the crossing by a later call merges /A and /N. With the
-    crossing ban the stub is replaced by a label on the pin, so there is no crossing to land on.
-    (add_junctions and add_wires truncate W in kicad-cli 9 whatever this tool did, which renames
-    R2's net; the assertion is about merging A and N, not about those tools.)
+    """Q1-Q3. A stub crossing net A's wire joins nothing when written, but a label placed on
+    the crossing by a later call merges /A and /N. With the crossing ban the stub is replaced
+    by a label on the pin, so there is no crossing to land on. Q4 and Q5, a junction or a wire
+    there, are test_a_later_junction_or_wire_on_the_crossed_wire_changes_nothing.
     """
     p = _crossing_fixture(tmp_path)
     status, msg = wired(p, [("R1", "1")], "N")
@@ -285,6 +275,47 @@ def test_a_later_tool_at_the_crossing_merges_nothing(tmp_path, follow_up):
     follow_up(p)
     v = judge(before, nets(p), [], None)
     assert v.bad_merges == [] and v.named_merge == [], v.problems()
+
+
+@requires_cli
+@pytest.mark.parametrize(
+    "follow_up, refuses",
+    [
+        pytest.param(
+            lambda p: schematic.add_junctions([{"x": X[0], "y": X[1]}], schematic_path=p),
+            True,
+            id="add_junctions",
+        ),
+        pytest.param(
+            lambda p: schematic.add_wires(
+                [{"x1": X[0], "y1": X[1], "x2": 114.3, "y2": 96.52}], schematic_path=p
+            ),
+            False,
+            id="add_wires",
+        ),
+    ],
+)
+def test_a_later_junction_or_wire_on_the_crossed_wire_changes_nothing(tmp_path, follow_up, refuses):
+    """Q4 and Q5. With the crossing ban nothing crosses net A's wire W at X: only W runs
+    through it. A junction there would meet W's two directions alone, which KiCad's editor
+    refuses (IsExplicitJunctionAllowed); a wire along W from X lies on W, which already covers
+    it, so KiCad's wire tool adds nothing (CleanUp's merge). Either call leaves the file
+    byte-identical, and the netlist judge finds nothing wrong at all, where both used to cut W
+    in kicad-cli 9 with a junction inside it.
+    """
+    p = _crossing_fixture(tmp_path)
+    status, msg = wired(p, [("R1", "1")], "N")
+    assert status == "OK" and "on the pin end" in msg
+    before, data = nets(p), Path(p).read_bytes()
+    try:
+        follow_up(p)
+    except ToolError:
+        assert refuses, "add_wires refused a wire along W"
+    else:
+        assert not refuses, "add_junctions accepted a junction on W alone"
+    assert Path(p).read_bytes() == data
+    v = judge(before, nets(p), [], None)
+    assert not v.wrong, v.problems()
 
 
 # ---------------------------------------------------------------------------------------------

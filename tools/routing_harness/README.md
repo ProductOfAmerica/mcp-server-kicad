@@ -43,6 +43,15 @@ and two job lists adapted from that run's `meta/` (working directories made rela
 outputs moved into the run directory: `suites/probeA/jobs_probeA.json`,
 `suites/llm-workflow/jobs_llm.json`).
 
+Since the package's step 8 its `add_wires`, `add_junctions` and `connect_pins` split every wire at a
+junction they rely on, as KiCad's editor does, where 54160c1 left the wire whole for kicad-cli 9 to
+cut. The fixture builders that wired with them (probeA junctions and labels, probeC `dec_d01` and
+`dec_v01`, llm-workflow `lw_small` and `lw_hier`) now call compat54's frozen copies, so their
+fixtures stay what the baselines were taken with, and smoke step 8 expects the new readings of Q4
+and Q5 (measured 2026-10-14 with kicad-cli 9.0.8: Q4 still merges /A and /N, no longer splitting /N;
+Q5 adds nothing and reads clean). `crossban_probe.py` still calls the live tools, judging them being
+its purpose.
+
 Tags used below: **measured** (a run printed it; the date and where are given), **inference** (reasoning,
 not run).
 
@@ -217,7 +226,7 @@ records of steps 7 and 10). It stops at the first failure of a blocking step and
 | 5 judge self-check | `core/selftest_named_merge.py` | all assertions pass |
 | 6 prepare and identity | `prepare.py` | every step passes (above) |
 | 7 PI-15 and PI-17 | `pi_jobs.py` on five jobs, designs X and Hb2 | the four true duplicate references refuse with `dup_ref`, the unresolved symbol with `derived`, bytes unchanged, no ERROR |
-| 8 crossing ban | `analysis/crossban/crossban_probe.py` | without the ban the cli reading shows the hazard (Q1 to Q5 merge /A and /N, Q4 and Q5 also split /N); with it every sequence matches its control; every gui field reads n/a |
+| 8 crossing ban | `analysis/crossban/crossban_probe.py` | without the ban the cli reading shows the hazard (Q1 to Q4 merge /A and /N, splitting nothing; Q5, add_wires along W, adds nothing and reads clean; the controls Q4c refuse and Q5c read clean); with it every sequence matches its control; every gui field reads n/a |
 | 10 demo slice | `run_sweeps.py wptn --limit=10` for design X | informational: no ERROR and no wrong write expected; differences from the scratch records are listed, not blocking |
 | 9 gate | `core/gate.py` over the records of steps 7 and 10 (both must have run in this run) | first line says the gui reading was not taken, `wrong_gui` is null, `wrong_cli` 0 |
 | 11 repo hygiene | ruff, ruff format, pyright, pytest collection, `uv build --sdist`, a forbidden-string scan, git status | lint and types clean; the default collection equals that of `tests/`; no harness path in the sdist; no user name, Windows user-profile path, home directory or home configuration path, venv path, em or en dash in any file here, and no path to a pinned export outside `reports/`; git status of `tools/routing_harness` (ignored files included, `work/` aside) unchanged since the smoke run started |
@@ -338,7 +347,9 @@ All optional:
 
 `core/compat54.py` holds verbatim copies of `mcp_server_kicad/schematic.py` helpers as they were at
 commit 54160c1 (the package's own code, frozen): `place_component`, `add_power_symbol` and the old pin
-transform, plus names later commits moved or removed. The prototypes and the fixture builders use them
+transform, `add_wires`, `connect_pins` and the junction scan they share (`_auto_junctions_cst`,
+`_point_on_wire_interior`), plus names later commits moved or removed. The frozen `connect_pins` reads
+pins through the package's own `_get_pin_pos_cst`, so it reads each target's pins as that target does. The prototypes and the fixture builders use them
 so that valid placements, and the fixtures built with them, stay what the baselines were taken with. It
 adds one attribute to the package at run time (`schematic._lib_unit_style`, only if absent) and never
 edits the package. If the package's behaviour for valid placements ever changes, the identity checks

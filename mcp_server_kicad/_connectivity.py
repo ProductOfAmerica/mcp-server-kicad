@@ -1986,6 +1986,129 @@ class Model:
 
 
 # ---------------------------------------------------------------------------------------------
+# Junctions: where KiCad puts one (JUNCTION_HELPERS::AnalyzePoint)
+# ---------------------------------------------------------------------------------------------
+
+
+def inside(px: int, py: int, ax: int, ay: int, bx: int, by: int) -> bool:
+    """A point strictly inside a segment, where a junction splits a line: on it
+    (IsPointOnSegment, trigo.cpp:89-104 at 9.0.8 and 10.0.7, exact) and at neither end
+    (GetBusesAndWires with aIgnoreEndpoints, sch_screen.cpp:1234-1254 at 9.0.8)."""
+    if (px, py) == (ax, ay) or (px, py) == (bx, by):
+        return False
+    return _within(px, py, ax, ay, bx, by, 0)
+
+
+def exit_angle(x: int, y: int, tx: int, ty: int) -> int:
+    """The direction from (x, y) toward (tx, ty) as SCH_LINE::GetAngleFrom gives it
+    (sch_line.cpp:414-436 at 9.0.8): KiROUND of EDA_ANGLE( VECTOR2D ) in degrees, whose
+    constructor takes the axes and diagonals exactly (eda_angle.h:72-110 at 9.0.8)."""
+    dx, dy = tx - x, ty - y
+    if dx == 0 and dy == 0:
+        deg = 0.0
+    elif dy == 0:
+        deg = 0.0 if dx >= 0 else -180.0
+    elif dx == 0:
+        deg = 90.0 if dy >= 0 else -90.0
+    elif dx == dy:
+        deg = 45.0 if dx >= 0 else -135.0
+    elif dx == -dy:
+        deg = -45.0 if dx >= 0 else 135.0
+    else:
+        deg = math.atan2(dy, dx) / (math.pi / 180.0)
+    return kiround(deg)
+
+
+@dataclass(frozen=True)
+class JunctionPoint:
+    """KiCad's verdict on one point. ``junction`` is IsJunction, three directions on a layer;
+    ``explicit`` is IsExplicitJunction, or with crossings broken IsExplicitJunctionAllowed;
+    ``dot`` says a junction sits exactly there; ``bus_entry`` that a bus entry ends there
+    (sch_screen.cpp:471-504 at 9.0.8)."""
+
+    explicit: bool
+    dot: bool
+    bus_entry: bool
+    junction: bool = False
+
+    @property
+    def needed(self) -> bool:
+        """IsExplicitJunctionNeeded: explicit and no junction there yet."""
+        return self.explicit and not self.dot
+
+
+def junction_info(m: Model, p: Point, *, break_crossings: bool, extra=()) -> JunctionPoint:
+    """KiCad 9's JUNCTION_HELPERS::AnalyzePoint (junction_helpers.cpp:26-142 at 9.0.8) over
+    the model: per layer (wires, buses) the distinct directions leaving the point. A wire or
+    bus ending there adds its direction; one passing through adds both of its directions,
+    but only when something else on its layer ends or connects there (always with
+    ``break_crossings``). A bus entry ending there adds one direction to each layer, a symbol
+    with a pin there that is not of no-connect type one to the wire layer (once per symbol,
+    SCH_SYMBOL::doIsConnected, sch_symbol.cpp:2616-2638 at 9.0.8), a sheet with a pin there
+    one (once per sheet name). Labels add nothing. Three directions on one layer make a
+    junction, and with a bus entry there only if it meets more than two wire directions and
+    one bus direction.
+
+    Deliberate deviation: KiCad finds a line through the point with SCH_LINE::HitTest at
+    accuracy -1, within 1 IU of it (sch_line.cpp:801-813, trigo.cpp:175-206 at 9.0.8); this
+    is exact, because KiCad's split and its connection graph are exact, so a junction 1 IU
+    off a wire would be a dot that joins nothing. Not ported, KiCad 10.0.7's refinements
+    (junction_helpers.cpp:32-288 at 10.0.7): a label there counts as something connecting,
+    and collinear wires meeting at the point are merged before counting. Both only decide
+    whether an unusual point is joined; the split form written either way reads alike in
+    every reader.
+
+    ``extra`` holds lines (wire or bus Items) counted besides the model's own, for a state
+    the model does not hold yet.
+    """
+    m.ensure()
+    x, y = p
+    angles: dict[str, set[int]] = {"wire": set(), "bus": set()}
+    broken = {"wire": False, "bus": False}
+    middles: dict[str, list[Item]] = {"wire": [], "bus": []}
+    near = m._near(x, y, ("wire", "bus"))
+    near += [ln for ln in extra if _within(x, y, ln.x, ln.y, ln.x2, ln.y2, 0)]
+    for ln in near:
+        if (ln.x, ln.y) == (ln.x2, ln.y2):
+            continue
+        if p == (ln.x, ln.y) or p == (ln.x2, ln.y2):
+            broken[ln.kind] = True
+            far = (ln.x2, ln.y2) if p == (ln.x, ln.y) else (ln.x, ln.y)
+            angles[ln.kind].add(exit_angle(x, y, *far))
+        else:
+            broken[ln.kind] = broken[ln.kind] or break_crossings
+            middles[ln.kind].append(ln)
+    unique = 10000  # a symbol, sheet or bus entry never matches a line's direction
+    dot = bus_entry = False
+    owners: set = set()
+    for it in m._pts.get(p, ()):
+        if it.kind == "junction":
+            dot = True
+        elif it.kind == "be":
+            for layer in ("bus", "wire"):
+                broken[layer] = True
+                angles[layer].add(unique)
+                unique += 1
+            bus_entry = True
+        elif it.kind in ("pin", "sheetpin"):
+            owner = ("sym", id(it.sym)) if it.kind == "pin" else ("sheet", it.sub)
+            if (it.kind == "pin" and it.nc) or owner in owners:
+                continue
+            owners.add(owner)
+            broken["wire"] = True
+            angles["wire"].add(unique)
+            unique += 1
+    for layer in ("wire", "bus"):
+        if broken[layer]:
+            for ln in middles[layer]:
+                angles[layer].add(exit_angle(x, y, ln.x, ln.y))
+                angles[layer].add(exit_angle(x, y, ln.x2, ln.y2))
+    is_junction = len(angles["wire"]) >= 3 or len(angles["bus"]) >= 3
+    to_wires = len(angles["wire"]) > 2 and len(angles["bus"]) == 1
+    return JunctionPoint(is_junction and (not bus_entry or to_wires), dot, bus_entry, is_junction)
+
+
+# ---------------------------------------------------------------------------------------------
 # wire_pins_to_net's plan
 # ---------------------------------------------------------------------------------------------
 

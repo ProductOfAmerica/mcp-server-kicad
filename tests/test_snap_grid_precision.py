@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import pytest
 from conftest import reparse
+from routing_fixtures import wire
 
 from mcp_server_kicad import schematic
 
@@ -74,6 +75,9 @@ class TestAddGlobalLabelPreservesCoordinates:
 class TestAddJunctionsPreservesCoordinates:
     def test_off_grid_coordinates_preserved(self, scratch_sch):
         """add_junctions must NOT snap off-grid coordinates."""
+        # An off-grid point where three wire ends meet, which KiCad's editor joins.
+        for dx, dy in ((-5.08, 0), (0, -5.08), (0, 5.08)):
+            wire(str(scratch_sch), round(96.19 + dx, 4), round(100.5 + dy, 4), 96.19, 100.5)
         schematic.add_junctions(points=[{"x": 96.19, "y": 100.5}], schematic_path=str(scratch_sch))
         sch = reparse(str(scratch_sch))
         junc = sch.junctions[-1]

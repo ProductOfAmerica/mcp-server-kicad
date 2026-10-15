@@ -19,10 +19,17 @@ in both forms included.
 The swap: kicad_ref.exchange answers to pcbnew replaying ExchangeFootprint's steps through
 its own Flip, SetOrientation, FindPadByNumber and IsOnCopperLayer, its lock reading to
 pcbnew loading each lock spelling, and edit_gen's netlist builder to kicad-cli's export.
+
+Schematic lines: kicad_ref.sch_line's IsPointOnSegment answers to exact plane geometry
+(geom_judge), and sch_judge.junctions_on_interiors, the judge of every junction a tool
+writes, to KiCad's own files, none of whose junctions lies inside a wire.
 """
 
 from __future__ import annotations
 
+import math
+import os
+import re
 import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
@@ -30,12 +37,14 @@ from pathlib import Path
 import edit_gen as E
 import footprint_judge as FJ
 import geom_gen as G
+import geom_judge
 import kicad_corpus as K
 import pcbnew_fp_ops as OPS
 import pcbnew_judge as PJ
 import pytest
+import sch_judge
 import sexpr_gen
-from conftest import requires_cli
+from conftest import _nightly_skip_reason, requires_cli
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import board_item as B
@@ -44,6 +53,7 @@ from kicad_ref import exchange as X
 from kicad_ref import footprint as F
 from kicad_ref import parse_units as P
 from kicad_ref import pcb_text as T
+from kicad_ref import sch_line
 
 from mcp_server_kicad._shared import _run_cli
 
@@ -1851,3 +1861,89 @@ def test_footprint_port_refuses_a_non_finite_angle_as_kicad_cli_does():
             data = board.read_bytes()
         with pytest.raises(P.ParseRefusal):
             FJ.read(data, "U1")
+
+
+# ---------------------------------------------------------------------------------------------
+# Schematic lines: kicad_ref.sch_line and sch_judge, for the wire and junction tests
+# ---------------------------------------------------------------------------------------------
+
+_COORD = st.integers(-2_000_000, 2_000_000)
+
+
+@st.composite
+def _segment_and_point(draw):
+    """A segment in internal units and a point on its line (inside, at an end or past one),
+    one unit or two off such a point, or anywhere, at any angle."""
+    a = (draw(_COORD), draw(_COORD))
+    b = draw(st.one_of(st.just(a), st.tuples(_COORD, _COORD)))
+    dx, dy = b[0] - a[0], b[1] - a[1]
+    g = math.gcd(dx, dy)
+    kind = draw(st.sampled_from(["on_line", "near", "anywhere"]))
+    if kind == "anywhere" or g == 0:
+        return a, b, (draw(_COORD), draw(_COORD))
+    k = draw(st.integers(-2 * g, 3 * g))
+    p = (a[0] + k * (dx // g), a[1] + k * (dy // g))
+    if kind == "near":
+        p = (p[0] + draw(st.integers(-2, 2)), p[1] + draw(st.integers(-2, 2)))
+    return a, b, p
+
+
+@settings(max_examples=sexpr_gen.budget())
+@given(_segment_and_point())
+@example(((0, 0), (300, 300), (100, 100)))
+@example(((0, 0), (300, 0), (100, 50)))
+@example(((7, 7), (7, 7), (7, 7)))
+def test_point_on_segment_port_matches_exact_geometry(case):
+    """kicad_ref.sch_line.on_segment, the port of IsPointOnSegment, holds exactly where
+    geom_judge, which reasons in Fractions, puts the point on the closed segment, at any
+    angle and for a segment whose ends coincide; strictly_inside is that without the ends."""
+    a, b, p = case
+    on = geom_judge.on_segment(p, a, b)
+    assert sch_line.on_segment(a, b, p) == on
+    assert sch_line.strictly_inside(a, b, p) == (on and p not in (a, b))
+
+
+_SCHEMATICS = K.shipped(suffixes=(".kicad_sch",), names=(), cap=K.PER_PUSH_CAP)
+_JUNCTION_TOKEN = re.compile(rb"\(junction\s")
+_LINE_TOKEN = re.compile(rb"\((?:wire|bus)\s")
+
+
+def _per_file(files):
+    return [pytest.param(path, id=name) for name, path in files] or [
+        pytest.param(None, id="no-install", marks=pytest.mark.skip(reason=K.NO_INSTALL))
+    ]
+
+
+def _nightly_schematics():
+    """Every installed schematic, computed only under the nightly profile."""
+    if _nightly_skip_reason(os.environ.get("HYPOTHESIS_PROFILE")) is not None:
+        return [pytest.param(None, id="nightly-only")]
+    return _per_file(K.shipped(subdirs=None, suffixes=(".kicad_sch",), names=()))
+
+
+def _no_junction_inside_a_line(path: Path) -> None:
+    data = path.read_bytes()
+    found = sch_judge.junctions(data)
+    if len(found) != len(_JUNCTION_TOKEN.findall(data)):
+        raise RuntimeError(f"the judge read {len(found)} junctions of {path.name}'s tokens")
+    if len(sch_judge.lines(data)) != len(_LINE_TOKEN.findall(data)):
+        raise RuntimeError(f"the judge missed wires or buses of {path.name}")
+    inside = sch_judge.junctions_on_interiors(data)
+    assert inside == [], [(point, line.start, line.end) for point, line in inside[:10]]
+
+
+@pytest.mark.parametrize("path", _per_file(_SCHEMATICS))
+def test_kicad_never_writes_a_junction_on_a_wire_interior(path):
+    """No junction in a schematic KiCad saved (its demos and templates, files up to
+    kicad_corpus.PER_PUSH_CAP) lies strictly inside a wire or bus, which is the premise of
+    sch_judge.junctions_on_interiors as the judge of every junction a tool writes: KiCad
+    splits the line at each junction it places (AddJunction, bus-wire-junction.cpp:188-199 at
+    9.0.8). The judge must read as many junctions, and wires and buses, as the file holds."""
+    _no_junction_inside_a_line(path)
+
+
+@pytest.mark.nightly
+@pytest.mark.parametrize("path", _nightly_schematics())
+def test_nightly_kicad_never_writes_a_junction_on_a_wire_interior(path):
+    """The same over every schematic the install holds."""
+    _no_junction_inside_a_line(path)

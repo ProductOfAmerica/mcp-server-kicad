@@ -8,7 +8,7 @@
   v_lw09_zroute.py        LW-09  connect_pins Z1/Z2; if not OK, wire_pins_to_net fallback 'NETZ'.
                                  The raw 3-segment route is a control and is not re-run.
 Fixture code copied from the originals (repo add_wires / add_power_symbol / place_component are
-fixture building).
+fixture building; add_wires and add_power_symbol are compat54's frozen 54160c1 copies).
 """
 
 import json
@@ -24,7 +24,7 @@ hpaths.bootstrap(__file__)
 import rlib as R  # noqa: E402
 from rlib import H  # noqa: E402
 
-import compat54  # noqa: E402  (the frozen 54160c1 add_power_symbol, see v06)
+import compat54  # noqa: E402  (the frozen 54160c1 add_power_symbol, see v06, and add_wires)
 import lwlib as LW  # noqa: E402
 from mcp_server_kicad._shared import _find_kicad_cli  # noqa: E402
 
@@ -39,10 +39,10 @@ if "tee" in which:
         H.place(p, "Device:R", "R1", 139.7, 101.6, value="1k")
         H.place(p, "Device:R", "R9", 165.1, 101.6, value="1k")
         x1, x2 = (129.54, 165.1) if order == "label-end-first" else (165.1, 129.54)
-        B.add_wires(wires=[{"x1": 165.1, "y1": 105.41, "x2": 165.1, "y2": 120.65}], schematic_path=p)
-        B.add_wires(wires=[{"x1": x1, "y1": 120.65, "x2": x2, "y2": 120.65}], schematic_path=p)
+        compat54.add_wires(wires=[{"x1": 165.1, "y1": 105.41, "x2": 165.1, "y2": 120.65}], schematic_path=p)
+        compat54.add_wires(wires=[{"x1": x1, "y1": 120.65, "x2": x2, "y2": 120.65}], schematic_path=p)
         H.label(p, "GND", 129.54, 120.65)
-        B.add_wires(wires=[{"x1": 139.7, "y1": 105.41, "x2": 139.7, "y2": 120.65}], schematic_path=p)
+        compat54.add_wires(wires=[{"x1": 139.7, "y1": 105.41, "x2": 139.7, "y2": 120.65}], schematic_path=p)
         R.run_case("LW-12", f"tee_probe:{order}", "wire_pins_to_net", p,
                    dict(pins=LW.pins_kw([("R1", "2")]), label_text="GND"),
                    script=LW.PROBE + "tee_probe.py", note="re-request R1:2 -> GND after an add_wires tee")
@@ -53,11 +53,11 @@ if "v12" in which:
         p = H.fresh(f"v12_{order}")
         H.place(p, "Device:R", "R1", 127.0, 88.9, value="1k")
         H.place(p, "Device:R", "R9", 152.4, 88.9, value="1k")
-        B.add_wires(wires=[{"x1": 152.4, "y1": 92.71, "x2": 152.4, "y2": 106.68}], schematic_path=p)
+        compat54.add_wires(wires=[{"x1": 152.4, "y1": 92.71, "x2": 152.4, "y2": 106.68}], schematic_path=p)
         xa, xb = (152.4, 114.3) if order == "label-end-last" else (114.3, 152.4)
-        B.add_wires(wires=[{"x1": xa, "y1": 106.68, "x2": xb, "y2": 106.68}], schematic_path=p)
+        compat54.add_wires(wires=[{"x1": xa, "y1": 106.68, "x2": xb, "y2": 106.68}], schematic_path=p)
         H.label(p, "GND", 114.3, 106.68)
-        B.add_wires(wires=[{"x1": 127.0, "y1": 92.71, "x2": 127.0, "y2": 106.68}], schematic_path=p)
+        compat54.add_wires(wires=[{"x1": 127.0, "y1": 92.71, "x2": 127.0, "y2": 106.68}], schematic_path=p)
         R.run_case("LW-12", f"v_lw12_tee:{order}", "wire_pins_to_net", p,
                    dict(pins=LW.pins_kw([("R1", "2")]), label_text="GND"),
                    script=LW.VERIFY + "v_lw12_tee.py")

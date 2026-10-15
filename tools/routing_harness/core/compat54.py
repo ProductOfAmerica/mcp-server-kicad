@@ -1,8 +1,8 @@
 """Frozen copies of mcp_server_kicad.schematic helpers as they were at commit 54160c1.
 
 The code below is the package's own (MIT), copied from `git show 54160c1:mcp_server_kicad/schematic.py`
-with the bodies untouched; only the @mcp.tool decorators are gone and two comments that carried a
-dash were reworded. It is frozen so the prototype designs and the fixture builders behave as they did
+with the bodies untouched; only the @mcp.tool decorators are gone, two comments that carried a
+dash were reworded and connect_pins reads pins through the package (below). It is frozen so the prototype designs and the fixture builders behave as they did
 when the measurement baselines were taken, whatever the package has changed since:
 
   _lib_unit_style           moved to _connectivity and not re-exported (install() restores it)
@@ -15,6 +15,13 @@ when the measurement baselines were taken, whatever the package has changed sinc
                             copy, with its own _copy_lib_symbol_from_file_cst and
                             _copy_system_lib_symbol_cst, does not
   add_power_symbol          the package no longer places a PWR_FLAG beside the symbol; this copy does
+  _point_on_wire_interior, _auto_junctions_cst
+                            the junction scan that never splits a wire (design P's I22), which
+                            the package replaced with KiCad's split
+  add_wires, connect_pins   the wiring the fixture builders run, which writes those junctions;
+                            this connect_pins reads pins with the package's own _get_pin_pos_cst
+                            (imported as _package_get_pin_pos_cst, the one change to its body), so
+                            it reads each target's pins as that target does
 
 Only names that exist in the package both at 54160c1 and now are imported from it (never
 _connectivity), so this module also loads under PT_REPO=<an export of 54160c1>. install() adds
@@ -31,7 +38,7 @@ from typing import Literal
 from mcp.server.mcpserver.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
-from mcp_server_kicad._cst import _fill_at
+from mcp_server_kicad._cst import _fill_at, _node_xy
 from mcp_server_kicad._shared import (
     SCH_PATH,
     _atomic_write,
@@ -45,7 +52,10 @@ from mcp_server_kicad._shared import (
     _sym_property_cst,
     _upsert_root_symbol_instance,
 )
+from mcp_server_kicad.models import WireSpec
 from mcp_server_kicad.schematic import (
+    _JUNCTION_TPL,
+    _LABEL_TPL,
     _PIN_REF_TPL,
     _SYMBOL_TPL,
     _VALID_REF_RE,
@@ -56,9 +66,12 @@ from mcp_server_kicad.schematic import (
     _open_sch_cst,
     _splice_lib_symbol_cst,
     _splice_sch_node,
+    _splice_wire,
     _sym_body_style_cst,
     _sym_unit_cst,
+    _wire_xys,
 )
+from mcp_server_kicad.schematic import _get_pin_pos_cst as _package_get_pin_pos_cst
 
 
 def install() -> None:
@@ -580,3 +593,166 @@ def add_power_symbol(
         result += f" + {flg_ref}"
 
     return result
+
+
+# ---- wires and junctions (54160c1 schematic.py lines 248 to 274, 1030 to 1049, 1214 to 1231
+# and 2300 to 2387, decorators dropped)
+
+
+def _point_on_wire_interior(
+    px: float,
+    py: float,
+    ax: float,
+    ay: float,
+    bx: float,
+    by: float,
+    tol: float = 0.01,
+) -> bool:
+    """Check if point (px, py) lies on the interior of wire segment (a->b).
+
+    Only handles axis-aligned (horizontal/vertical) wires. Returns False
+    for diagonal wires and for points at segment endpoints.
+    """
+    # Horizontal wire
+    if abs(ay - by) < tol:
+        if abs(py - ay) < tol:
+            lo, hi = min(ax, bx), max(ax, bx)
+            if lo + tol < px < hi - tol:
+                return True
+    # Vertical wire
+    if abs(ax - bx) < tol:
+        if abs(px - ax) < tol:
+            lo, hi = min(ay, by), max(ay, by)
+            if lo + tol < py < hi - tol:
+                return True
+    return False
+
+
+def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
+    """Add multiple wires at once. Each wire dict has keys: x1, y1, x2, y2.
+
+    Args:
+        wires: List of wire defs [{x1, y1, x2, y2}, ...]
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
+    """
+    tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    for w in wires:
+        for xk, yk in [("x1", "y1"), ("x2", "y2")]:
+            _bounds_check(w[xk], w[yk], page_w, page_h, page_name)
+    all_points = []
+    for w in wires:
+        all_points += _splice_wire(root, w["x1"], w["y1"], w["x2"], w["y2"])
+    # Auto-add junctions where new wire endpoints hit wire interiors (the scan
+    # includes the wires just spliced, matching the kiutils-era behavior)
+    _auto_junctions_cst(root, all_points)
+    _atomic_write(schematic_path, _cst.serialize(tree))
+    return f"Added {len(wires)} wires"
+
+
+def _auto_junctions_cst(root, new_points: list[tuple[float, float]], tol: float = 0.01) -> None:
+    """CST twin of _auto_junctions for the guard-free wire path."""
+    junctions = [_node_xy(j) for j in root.find_all("junction")]
+    for px, py in new_points:
+        if any(abs(jx - px) < tol and abs(jy - py) < tol for jx, jy in junctions):
+            continue
+        for wire in root.find_all("wire"):
+            pts = _wire_xys(wire)
+            if len(pts) < 2:
+                continue
+            (ax, ay), (bx, by) = pts[0], pts[1]
+            if _point_on_wire_interior(px, py, ax, ay, bx, by, tol):
+                node = _JUNCTION_TPL.copy()
+                _fill_at(node, px, py)
+                node.find("uuid").atoms[1].set_text(_gen_uuid())
+                _splice_sch_node(root, "junction", node)
+                junctions.append((px, py))
+                break
+
+
+def connect_pins(
+    ref1: str,
+    pin1: str,
+    ref2: str,
+    pin2: str,
+    schematic_path: str = SCH_PATH,
+) -> str:
+    """Connect two component pins with Manhattan (L-shaped) wire routing.
+
+    Combines get_pin_positions + coordinate math + add_wires into one call.
+
+    Args:
+        ref1: First component reference (e.g. "U1")
+        pin1: First pin name or number
+        ref2: Second component reference (e.g. "C3")
+        pin2: Second pin name or number
+        schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
+    """
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    x1, y1, _ = _package_get_pin_pos_cst(root, ref1, pin1)
+    x2, y2, _ = _package_get_pin_pos_cst(root, ref2, pin2)
+    if x1 == x2 or y1 == y2:
+        # Axis-aligned: single straight wire
+        segments = [(x1, y1, x2, y2)]
+    else:
+        # L-shaped: horizontal from pin1 to x2, then vertical to pin2
+        segments = [(x1, y1, x2, y1), (x2, y1, x2, y2)]
+    for seg in segments:
+        _splice_wire(root, *seg)
+
+    # Collect all new wire endpoints (pin positions + L-shape corner)
+    new_points = [(x1, y1), (x2, y2)]
+    if x1 != x2 and y1 != y2:
+        new_points.append((x2, y1))  # L-shape corner
+    _auto_junctions_cst(root, new_points)
+
+    # Auto-add net label for hierarchical ERC compatibility
+    # Walk wires from both pin endpoints to find all connected points,
+    # then skip if any connected point already has a label.
+    tol = 0.01
+    wire_ends = []
+    for wire in root.find_all("wire"):
+        pts = _wire_xys(wire)
+        if len(pts) >= 2:
+            wire_ends.append((pts[0], pts[-1]))
+
+    def _connected_points(seed_x: float, seed_y: float) -> set[tuple[float, float]]:
+        """BFS over wires to collect all points electrically connected to seed."""
+        visited: set[tuple[float, float]] = set()
+        queue = [(seed_x, seed_y)]
+        while queue:
+            cx, cy = queue.pop()
+            if (cx, cy) in visited:
+                continue
+            visited.add((cx, cy))
+            for (p0x, p0y), (p1x, p1y) in wire_ends:
+                if abs(p0x - cx) < tol and abs(p0y - cy) < tol:
+                    nxt = (p1x, p1y)
+                    if nxt not in visited:
+                        queue.append(nxt)
+                elif abs(p1x - cx) < tol and abs(p1y - cy) < tol:
+                    nxt = (p0x, p0y)
+                    if nxt not in visited:
+                        queue.append(nxt)
+        return visited
+
+    net_points = _connected_points(x1, y1) | _connected_points(x2, y2)
+
+    label_positions = [
+        _node_xy(n) for token in ("label", "global_label") for n in root.find_all(token)
+    ]
+    has_label = any(
+        abs(lx - px) < tol and abs(ly - py) < tol
+        for lx, ly in label_positions
+        for px, py in net_points
+    )
+    if not has_label:
+        node = _LABEL_TPL.copy()
+        node.atoms[1].set_text(f"Net-({ref1}-{pin1})")
+        _fill_at(node, round(x1, 4), round(y1, 4), 0)
+        node.find("uuid").atoms[1].set_text(_gen_uuid())
+        _splice_sch_node(root, "label", node)
+
+    _atomic_write(schematic_path, _cst.serialize(tree))
+
+    n = len(segments)
+    return f"Connected {ref1}:{pin1} -> {ref2}:{pin2} via {n} wire segment{'s' if n > 1 else ''}"

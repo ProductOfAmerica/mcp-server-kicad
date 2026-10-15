@@ -20,6 +20,7 @@ import hpaths  # noqa: E402
 hpaths.bootstrap(__file__)
 import dhelp as D  # noqa: E402  (imports rlib first)
 from dhelp import R, cstep, wstep  # noqa: E402
+import compat54  # noqa: E402  (frozen 54160c1 add_wires and connect_pins: fixture setup)
 from pathlib import Path  # noqa: E402
 
 R.begin("decisions", __file__, tag="dec_v01")
@@ -52,7 +53,7 @@ R.run_sequence("DEC-01", "v01_autolabel:W3", [
 w4dir = R.copy_tree(Path(base).parent, "v_v01_W4")
 w4 = str(w4dir / Path(base).name)
 print("fixture: B.connect_pins(R1:1, R2:1):",
-      D.schematic.connect_pins(ref1="R1", pin1="1", ref2="R2", pin2="1", schematic_path=w4))
+      compat54.connect_pins(ref1="R1", pin1="1", ref2="R2", pin2="1", schematic_path=w4))
 
 
 def remedy(path):

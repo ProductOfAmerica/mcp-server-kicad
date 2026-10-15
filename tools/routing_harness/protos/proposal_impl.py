@@ -152,6 +152,7 @@ from compat54 import (  # noqa: E402
     _DIR_OFFSETS,
     _PWR_FLAG_LIB_TPL,
     _PWR_FLAG_SYM_TPL,
+    _auto_junctions_cst,
     _get_pin_pos_cst,
     _pin_electrical_types_cst,
     _pin_matches_cst,
@@ -159,7 +160,6 @@ from compat54 import (  # noqa: E402
 )
 from mcp_server_kicad.schematic import (  # noqa: E402
     _LABEL_TPL,
-    _auto_junctions_cst,
     _copy_system_lib_symbol_cst,
     _find_lib_symbol_cst,
     _find_sym_cst,

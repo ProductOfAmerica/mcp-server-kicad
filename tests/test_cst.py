@@ -12,6 +12,8 @@ from pathlib import Path
 
 import edit_judge as J
 import pytest
+import routing_fixtures as RF
+import sch_judge as S
 from conftest import (
     _kicad_cli_major,
     build_test_footprint,
@@ -72,6 +74,14 @@ def _the(data: bytes, *labels: str, where=lambda location, item: True) -> J.Path
 def _uuid_of(item) -> bytes | None:
     """The value of a list item's (uuid ...) child, as the lexer reads it."""
     return next((c.items[1].value for c in item.items if c.head == "uuid"), None)
+
+
+def _tee(path, point, *arms) -> None:
+    """Splice raw wires from point + arm to point, one per arm (mm): wire ends meeting at a
+    point, which is where KiCad's editor takes a junction when three directions meet."""
+    x, y = point
+    for dx, dy in arms:
+        RF.wire(str(path), round(x + dx, 4), round(y + dy, 4), x, y)
 
 
 class TestRoundTrip:
@@ -200,6 +210,10 @@ class TestAddFamilyPreservation:
                 ), (major, atom.raw)
 
     def test_junctions_two_points_one_write(self, kicad_native_sch):
+        # Three wire ends meet at each point, the joinable kind of point KiCad's editor
+        # takes a junction at, and no wire runs through either, so nothing is split.
+        _tee(kicad_native_sch, (50.8, 50.8), (-5.08, 0), (5.08, 0), (0, -5.08))
+        _tee(kicad_native_sch, (96.19, 100.5), (-5.08, 0), (0, -5.08), (0, 5.08))
         before = kicad_native_sch.read_bytes()
         schematic.add_junctions(
             [{"x": 50.8, "y": 50.8}, {"x": 96.19, "y": 100.5}],
@@ -248,7 +262,9 @@ class TestRemoveFamilyPreservation:
 
     def test_remove_junction_single_span(self, kicad_native_sch):
         p = str(kicad_native_sch)
-        schematic.add_junctions([{"x": 50.8, "y": 50.8}], schematic_path=p)
+        # Spliced as a node, not through add_junctions, which refuses a point where nothing
+        # joins; nothing ends there, so the delete merges nothing and is one removal.
+        RF.junction(p, 50.8, 50.8)
         before = kicad_native_sch.read_bytes()
         assert "Removed junction" in schematic.remove_junction(50.8, 50.8, schematic_path=p)
         after = kicad_native_sch.read_bytes()
@@ -329,8 +345,25 @@ class TestWiresPreservation:
             schematic_path=str(kicad_native_sch),
         )
         sch = reparse(kicad_native_sch)
-        assert len(_wires_of(sch)) == 2
         assert (65, 100) in [(j.position.X, j.position.Y) for j in sch.junctions]
+
+    def test_auto_junction_on_t_connection_splits_the_bar(self, kicad_native_sch):
+        """KiCad's form of the T: the fixture wire (50,100)-(80,100) keeps its uuid and start
+        and ends at (65,100), a new wire with the same stroke runs (65,100)-(80,100), and the
+        stem and a junction at (65,100) are inserted whole; nothing else changes and no
+        junction lies inside a wire (sch_judge.assert_split_edit, KiCad's lexer)."""
+        before = kicad_native_sch.read_bytes()
+        schematic.add_wires(
+            [{"x1": 65, "y1": 80, "x2": 65, "y2": 100}],
+            schematic_path=str(kicad_native_sch),
+        )
+        after = kicad_native_sch.read_bytes()
+        (split,) = S.assert_split_edit(before, after, heads=["wire", "wire", "junction"])
+        tee = S.iu_point((65, 100))
+        assert (split.old.start, split.old.end) == (S.iu_point((50, 100)), S.iu_point((80, 100)))
+        assert split.point == tee
+        assert tee in S.junctions(after)
+        assert S.junctions_on_interiors(after) == []
 
     def test_no_junction_at_wire_endpoint(self, kicad_native_sch):
         schematic.add_wires(
@@ -1176,11 +1209,12 @@ class TestGuardRelax:
         bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
         kicad_native_sch.write_bytes(bumped)
         p = str(kicad_native_sch)
+        _tee(kicad_native_sch, (30.48, 96), (-5.08, 0), (5.08, 0), (0, -5.08))
         before = kicad_native_sch.read_bytes()
         schematic.add_global_label("G", 60, 90, schematic_path=p)
         schematic.add_hierarchical_label("H", "input", 60, 92, schematic_path=p)
         schematic.add_text("T", 60, 94, schematic_path=p)
-        schematic.add_junctions([{"x": 60, "y": 96}], schematic_path=p)
+        schematic.add_junctions([{"x": 30.48, "y": 96}], schematic_path=p)
         after = kicad_native_sch.read_bytes()
         assert len(after) > len(before)
         tree = _cst.parse(after)
@@ -1193,16 +1227,17 @@ class TestGuardRelax:
         bumped = kicad_native_sch.read_bytes().replace(b"(version 20250114)", b"(version 20260306)")
         kicad_native_sch.write_bytes(bumped)
         p = str(kicad_native_sch)
+        _tee(kicad_native_sch, (30.48, 96), (-5.08, 0), (5.08, 0), (0, -5.08))
         schematic.add_label("R1X", 60, 90, schematic_path=p)
         schematic.add_hierarchical_label("H1X", "input", 60, 92, schematic_path=p)
-        schematic.add_junctions([{"x": 60, "y": 96}], schematic_path=p)
+        schematic.add_junctions([{"x": 30.48, "y": 96}], schematic_path=p)
         # Slice 12B: reads are CST-native too, so the summary now succeeds.
         assert schematic.get_schematic_summary(schematic_path=p).components >= 0
         assert "1 label(s)" in schematic.remove_label("R1X", schematic_path=p)
         assert "output" in schematic.modify_hierarchical_label(
             "H1X", schematic_path=p, new_shape="output"
         )
-        assert "Removed junction" in schematic.remove_junction(60, 96, schematic_path=p)
+        assert "Removed junction" in schematic.remove_junction(30.48, 96, schematic_path=p)
         assert "Added 1 wires" in schematic.add_wires(
             [{"x1": 20, "y1": 20, "x2": 30, "y2": 20}], schematic_path=p
         )
@@ -1318,7 +1353,10 @@ class TestKicad10E2E:
         assert _cst.parse(after).lists[0].find("text") is not None
 
     def test_junctions_on_real_kicad10(self, kicad_native_sch):
-        before = self._mint(kicad_native_sch)
+        self._mint(kicad_native_sch)
+        # Three wire ends meet at (60, 90): a point KiCad's editor takes a junction at.
+        _tee(kicad_native_sch, (60, 90), (-5.08, 0), (5.08, 0), (0, -5.08))
+        before = kicad_native_sch.read_bytes()
         schematic.add_junctions([{"x": 60, "y": 90}], schematic_path=str(kicad_native_sch))
         after = kicad_native_sch.read_bytes()
         (junction,) = J.assert_inserted(before, after, heads=["junction"])
@@ -1350,18 +1388,28 @@ class TestKicad10E2E:
         assert node.find("shape").atoms[1].text == "output"
 
     def test_wires_on_real_kicad10(self, kicad_native_sch):
+        """A T onto the fixture wire (50,100)-(80,100) of a file kicad-cli 10 minted: a
+        junction at (65,100) and none inside a wire. After the stem is removed, none lies
+        inside a wire still and the bar's pieces run from (50,100) to (80,100) end to end,
+        one connected run. remove_wire leaves the split bar and its junction; KiCad's delete
+        would also delete the junction, no longer explicit, and merge the halves
+        (sch_edit_tool.cpp:1703-1711 at 9.0.8)."""
         self._mint(kicad_native_sch)
         p = str(kicad_native_sch)
-        # T-connects onto the fixture wire (50,100)-(80,100): auto-junction path
-        # runs against a real KiCad 10 file.
         schematic.add_wires([{"x1": 65, "y1": 80, "x2": 65, "y2": 100}], schematic_path=p)
-        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
-        assert len(root.find_all("wire")) == 2
-        assert root.find("junction") is not None
+        data = kicad_native_sch.read_bytes()
+        assert S.iu_point((65, 100)) in S.junctions(data, major=10)
+        assert S.junctions_on_interiors(data, major=10) == []
         assert "Removed 1 wire(s)." in schematic.remove_wire(65, 80, 65, 100, schematic_path=p)
-        root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
-        assert len(root.find_all("wire")) == 1
-        assert root.find("junction") is not None
+        data = kicad_native_sch.read_bytes()
+        assert S.junctions_on_interiors(data, major=10) == []
+        pieces = sorted(
+            tuple(sorted((line.start, line.end)))
+            for line in S.lines(data, major=10)
+            if line.start[1] == line.end[1] == S.iu(100)
+        )
+        ends = [S.iu(50)] + [x for (a, b) in pieces for x in (a[0], b[0])] + [S.iu(80)]
+        assert all(ends[2 * k] == ends[2 * k + 1] for k in range(len(pieces) + 1)), pieces
 
     def test_routing_tools_on_real_kicad10(self, kicad_native_sch):
         # sch upgrade rewrites lib_symbols into the KiCad 10 shape, so this is

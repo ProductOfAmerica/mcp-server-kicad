@@ -6,6 +6,7 @@ from pathlib import Path
 
 import edit_judge as J
 import pytest
+import routing_fixtures as RF
 from conftest import (
     HAS_KICAD_CLI,
     assert_kicad_parseable,
@@ -28,6 +29,13 @@ HAS_KICAD_LIBS = _resolve_system_lib("Device") is not None
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _tee(path, x: float, y: float) -> None:
+    """Splice raw wires ending at (x, y) from the left, the right and below: three wire ends
+    meeting at a point, where KiCad's editor takes a junction."""
+    for dx, dy in ((-5.08, 0), (5.08, 0), (0, 5.08)):
+        RF.wire(str(path), round(x + dx, 4), round(y + dy, 4), x, y)
 
 
 def _get_refs(sch) -> list[str | None]:
@@ -580,7 +588,7 @@ class TestAddWires:
 
         # scratch_sch has a wire from (50,50) to (80,50)
         # Add a new wire whose ENDPOINT lands on the interior of the existing wire.
-        # _auto_junctions checks if new wire endpoints land on existing wire interiors.
+        # Three directions meet there, so add_wires puts a junction and splits the wire.
         # Wire from (65,30) to (65,50) — endpoint (65,50) is on the interior of (50,50)-(80,50)
         result = schematic.add_wires(
             wires=[{"x1": 65, "y1": 30, "x2": 65, "y2": 50}],
@@ -637,6 +645,7 @@ class TestAddLabel:
 
 class TestAddJunction:
     def test_basic_junction(self, scratch_sch):
+        _tee(scratch_sch, 50.8, 50.8)
         schematic.add_junctions(
             [{"x": 50.8, "y": 50.8}],
             schematic_path=str(scratch_sch),
@@ -662,6 +671,8 @@ class TestAddJunctions:
             {"x": 20, "y": 20},
             {"x": 30, "y": 30},
         ]
+        for point in points:
+            _tee(scratch_sch, point["x"], point["y"])
         schematic.add_junctions(
             points=points,
             schematic_path=str(scratch_sch),
@@ -1082,7 +1093,8 @@ class TestSetComponentProperty:
 
 class TestRemoveJunction:
     def test_remove_existing(self, scratch_sch):
-        # First add a junction
+        # First add a junction, where three wire ends meet
+        _tee(scratch_sch, 50.8, 50.8)
         schematic.add_junctions([{"x": 50.8, "y": 50.8}], schematic_path=str(scratch_sch))
         sch = reparse(str(scratch_sch))
         assert any(j.position.X == 50.8 and j.position.Y == 50.8 for j in sch.junctions)

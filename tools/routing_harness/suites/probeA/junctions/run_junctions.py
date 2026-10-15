@@ -8,7 +8,8 @@ moved into rlib's per-job directory. True pin ends come from m2_impl.pin_positio
 transform), never from the repo's _get_pin_pos_cst.
 
 Setup calls that only construct a fixture stay in the builders exactly as the originals made
-them (raw wires, repo add_wires / connect_pins / set_component_property, and the P / M / B
+them (raw wires, repo add_wires / connect_pins as compat54's frozen 54160c1 copies,
+set_component_property, and the P / M / B
 connect_pins that J1, J3, V4 and V4c use as "how the first wire was made"; P = proto's
 proposal_impl, M = proto's mine_impl, both imported read-only). The calls the originals judged
 on P / M / B become rlib steps run on M2 and K. Sequences the design under test makes itself
@@ -38,6 +39,7 @@ from rlib import H, Job, cp, wptn  # noqa: E402
 
 import mine_impl as M  # noqa: E402  (fixture setup only)
 import proposal_impl as P  # noqa: E402  (fixture setup only)
+import compat54  # noqa: E402  (frozen 54160c1 add_wires and connect_pins: fixture setup)
 
 B = H.schematic  # repo main tools (fixture setup only)
 SCRIPT = str(Path(__file__).resolve())
@@ -100,9 +102,10 @@ def v_place(p, lib, ref, x, y, rot=0, value=None):
 
 
 def add_wire(p, a, b):
-    """Repo add_wires from IU a to IU b (auto-junction code of main, as the originals used)."""
-    B.add_wires([{"x1": a[0] / 1e4, "y1": a[1] / 1e4, "x2": b[0] / 1e4, "y2": b[1] / 1e4}],
-                schematic_path=p)
+    """Repo add_wires from IU a to IU b (compat54's frozen 54160c1 copy: the auto-junction code
+    the originals used)."""
+    compat54.add_wires([{"x1": a[0] / 1e4, "y1": a[1] / 1e4, "x2": b[0] / 1e4, "y2": b[1] / 1e4}],
+                       schematic_path=p)
 
 
 # ------------------------------------------------------------------ probe builders (J*)
@@ -124,7 +127,7 @@ def b_J1(variant):
     elif variant == "P_connect":
         P.connect_pins("R1", "1", "R2", "2", schematic_path=p)
     elif variant == "B_connect":
-        B.connect_pins("R1", "1", "R2", "2", schematic_path=p)
+        compat54.connect_pins("R1", "1", "R2", "2", schematic_path=p)
     else:
         raise ValueError(variant)
     return p
@@ -208,7 +211,7 @@ def b_J3(variant):
     elif variant == "M_connect":
         M.connect_pins("R1", "2", "R2", "1", schematic_path=p)
     elif variant == "B_connect":
-        B.connect_pins("R1", "2", "R2", "1", schematic_path=p)
+        compat54.connect_pins("R1", "2", "R2", "1", schematic_path=p)
     elif variant == "own_connect":
         pass  # added variant: step 1 is the design's own connect_pins(R1:2, R2:1)
     else:
@@ -389,7 +392,7 @@ def b_V4(variant):
     elif variant == "P_rev":
         P.connect_pins("R2", "1", "R1", "2", schematic_path=p)
     elif variant == "B_fwd":
-        B.connect_pins("R1", "2", "R2", "1", schematic_path=p)
+        compat54.connect_pins("R1", "2", "R2", "1", schematic_path=p)
     elif variant in ("own_fwd", "own_rev"):
         pass  # added variant: step 1 is the design's own first connection
     else:
@@ -453,7 +456,7 @@ def b_V8b():
     p = rlib.fresh("base")
     v_place(p, "Device:R", "R1", 76.2, 88.9)
     v_place(p, "Device:R", "R2", 101.6, 88.9)
-    B.connect_pins(ref1="R1", pin1="1", ref2="R2", pin2="1", schematic_path=p)  # repo, setup
+    compat54.connect_pins(ref1="R1", pin1="1", ref2="R2", pin2="1", schematic_path=p)  # repo, setup
     return p
 
 
