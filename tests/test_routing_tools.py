@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import sch_judge as S
 from conftest import (
     HAS_KICAD_CLI,
     _default_effects,
@@ -21,6 +22,7 @@ from conftest import (
 from kiutils.items.common import Effects, Font, Position, Property, Stroke
 from kiutils.items.schitems import Connection, SchematicSymbol
 from mcp.server.mcpserver.exceptions import ToolError
+from test_ladder_r3_wires import joins, one_net
 
 from mcp_server_kicad import schematic
 
@@ -732,9 +734,20 @@ class TestAutoPlaceDecouplingCap:
 class TestAutoJunctions:
     """Tests for automatic junction insertion at T-intersections."""
 
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="bug 5: connect_pins writes its corner's junction on the first wire without"
+        " splitting it; fixed by step 8",
+    )
     def test_t_junction_connect_pins(self, tmp_path):
         """Reproduce the D3 bug: two connect_pins calls where the second
-        wire's corner lands mid-segment on the first wire."""
+        wire's corner lands mid-segment on the first wire.
+
+        Three directions meet at the corner (the two legs and the first wire's way up), so
+        KiCad's form is a junction there with the first wire split at it: no junction lies
+        inside a wire (sch_judge), and kicad-cli, where installed, reads R1:2, R2:1 and R3:1
+        on one net."""
         sch = new_schematic()
         sch.libSymbols.append(build_r_symbol())
 
@@ -775,13 +788,13 @@ class TestAutoJunctions:
         # Corner point (100, 96.19) lands on interior of existing wire.
         schematic.connect_pins("R3", "1", "R2", "1", schematic_path=sch_path)
 
-        # A junction should have been auto-created at (100, 96.19)
-        sch_after2 = reparse(sch_path)
-        assert len(sch_after2.junctions) >= 1
-        junc_positions = [(j.position.X, j.position.Y) for j in sch_after2.junctions]
-        assert any(abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02 for x, y in junc_positions), (
-            f"Expected junction near (100, 96.19), got {junc_positions}"
-        )
+        # A junction at the corner (100, 96.19), the first wire split there
+        data = Path(sch_path).read_bytes()
+        assert S.iu_point((100, 96.19)) in S.junctions(data)
+        assert S.junctions_on_interiors(data) == []
+        if HAS_KICAD_CLI:
+            pins = {("R1", "2"), ("R2", "1"), ("R3", "1")}
+            assert joins(sch_path, pins) == one_net(*pins)
 
     def test_no_junction_at_wire_endpoint(self, tmp_path):
         """No junction added when new wire meets existing wire at its endpoint."""
@@ -809,8 +822,18 @@ class TestAutoJunctions:
         sch_after = reparse(sch_path)
         assert len(sch_after.junctions) == 0
 
+    @pytest.mark.xfail(
+        strict=True,
+        raises=AssertionError,
+        reason="bug 5: connect_pins writes its corner's junction on the first wire without"
+        " splitting it; fixed by step 8",
+    )
     def test_no_duplicate_junctions(self, tmp_path):
-        """If a junction already exists at a T-point, don't add another."""
+        """If a junction already exists at a T-point, don't add another.
+
+        The fourth call's corner already has its junction and no wire runs through it, so
+        nothing is added there; no junction lies inside a wire (sch_judge), and kicad-cli,
+        where installed, reads R1:2, R2:1, R3:1 and R4:1 on one net."""
         sch = new_schematic()
         sch.libSymbols.append(build_r_symbol())
 
@@ -859,6 +882,10 @@ class TestAutoJunctions:
             1 for x, y in junc_positions if abs(x - 100) < 0.02 and abs(y - 96.19) < 0.02
         )
         assert near_count == 1, f"Expected 1 junction near (100, 96.19), got {near_count}"
+        assert S.junctions_on_interiors(Path(sch_path).read_bytes()) == []
+        if HAS_KICAD_CLI:
+            pins = {("R1", "2"), ("R2", "1"), ("R3", "1"), ("R4", "1")}
+            assert joins(sch_path, pins) == one_net(*pins)
 
     def test_wire_pins_to_net_refuses_a_pin_end_on_a_wire_interior(self, tmp_path):
         """R1:1 sits on the interior of an unlabelled wire, which in KiCad does not connect.
