@@ -10,19 +10,26 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import edit_gen as E
 import edit_judge as J
+import geom_gen as G
 import pytest
 import routing_fixtures as RF
 import sch_judge as S
 from conftest import (
+    HAS_KICAD_CLI,
     _kicad_cli_major,
+    assert_kicad_parseable,
     build_test_footprint,
     make_dual_unit_sch,
     reparse,
     requires_cli,
+    run_erc,
 )
+from kicad_ref import dsn_lexer as L
 from kicad_ref import eda_units as U
 from kicad_ref import parse_units as P
+from kicad_ref import sch_field as SF
 from kicad_ref import transform as T
 from kicad_ref.richio import quotes
 from kiutils.items.schitems import Connection
@@ -33,10 +40,14 @@ from test_ladder_r2_pins import (
     pin_pos_of,
     placed_symbols,
     port_pin_ends,
+    read_iu,
     reference_property,
+    report_double,
+    report_iu,
     report_map,
     symbol_placement,
 )
+from test_ladder_r3_symbols import Move, move_all, rigid_problems, turned
 
 from mcp_server_kicad import _cst, footprint, project, schematic, symbol
 from mcp_server_kicad._shared import _node_uuid, _resolve_system_lib, _run_cli
@@ -82,6 +93,202 @@ def _tee(path, point, *arms) -> None:
     x, y = point
     for dx, dy in arms:
         RF.wire(str(path), round(x + dx, 4), round(y + dy, 4), x, y)
+
+
+# ---------------------------------------------------------------------------
+# move_component (step 9): what a move changes, by KiCad's rule
+# ---------------------------------------------------------------------------
+
+BUG_1 = (
+    "bug 1: move_component leaves its fields behind, and does not report its pins' changed"
+    " wire contacts; fixed by step 9"
+)
+BUG_96 = (
+    "bug 96: with two (at) nodes move_component rewrites the first while KiCad keeps the last,"
+    " and reports a false success; fixed by step 9"
+)
+BUG_97 = (
+    "bug 97: a symbol with no (at) raises a raw AttributeError instead of a ToolError;"
+    " fixed by step 9"
+)
+BUG_98 = (
+    "bug 98: at a non-quarter angle move_component reports success on a file kicad-cli"
+    " refuses, and the [unloadable] remedy names an impossible repair; fixed by step 9"
+)
+
+#: The fixture's R1 as written: at (100, 100), angle 0.
+_R1_AT = b"(at 100 100 0) (unit 1)"
+
+
+def _r1_variant(tmp_path: Path, name: str, new: bytes) -> Path:
+    """tests/fixtures/kicad_native.kicad_sch with R1's (at) written ``new``, as ``name``."""
+    data = FIXTURE.read_bytes()
+    if data.count(_R1_AT) != 1:
+        raise RuntimeError(f"the fixture holds {_R1_AT!r} {data.count(_R1_AT)} times, not once")
+    path = tmp_path / name
+    path.write_bytes(data.replace(_R1_AT, new))
+    return path
+
+
+def _mm(iu: int) -> float:
+    """A coordinate as a caller passes it: the float of the text KiCad writes for it."""
+    return float(G.sch_mm(iu))
+
+
+def _outcome(call):
+    """(result, None) when ``call()`` returns, (None, exception) when it raises."""
+    try:
+        return call(), None
+    except Exception as exc:  # the type of what escapes is the subject
+        return None, exc
+
+
+def _require_unloadable(path: Path) -> None:
+    """The premise of a test about a file KiCad cannot load: kicad-cli writes no ERC report
+    for it (conftest.run_erc raises). RuntimeError when it loads, so a broken premise never
+    passes for the defect; nothing is checked where kicad-cli is not installed."""
+    if not HAS_KICAD_CLI:
+        return
+    try:
+        run_erc(path)
+    except RuntimeError:
+        return
+    raise RuntimeError(f"the premise is a schematic kicad-cli refuses, and it loads {path.name}")
+
+
+def _last_at(item) -> tuple[int, J.Item]:
+    """(index, list) of the last (at) among a placed symbol's children, the one KiCad keeps."""
+    found = [(index, child) for index, child in enumerate(item.items) if child.head == "at"]
+    if not found:
+        raise RuntimeError("the placed symbol has no (at)")
+    return found[-1]
+
+
+def _with_last_at(data: bytes, reference: str, target, rotation) -> bytes:
+    """``data`` with the last (at) of the placed ``reference`` holding ``target`` and, when
+    ``rotation`` is given, that angle, written as KiCad writes them: the frames KiCad reads
+    once that (at) changes and nothing else that sets a frame does."""
+    location, _ = S.placed_symbol(data, reference)
+    _, at = _last_at(J.item_at(data, location))
+    edits = [(at.items[1], G.sch_mm(target[0])), (at.items[2], G.sch_mm(target[1]))]
+    if rotation is not None:
+        edits.append((at.items[3], str(rotation)))
+    for atom, text in sorted(edits, key=lambda edit: -edit[0].start):
+        data = data[: atom.start] + text.encode() + data[atom.end :]
+    return data
+
+
+def expected_move_changes(before: bytes, reference: str, target, rotation) -> list:
+    """The atoms moving ``reference`` to ``target`` (internal units) at ``rotation`` (None
+    keeps the angle) changes by KiCad's rule, in document order, as (path of the list holding
+    the atom, its index, the value KiCad must read there).
+
+    The last (at)'s x and y change where the target differs from what KiCad reads, and its
+    angle where ``rotation`` differs from the angle KiCad reads (static_cast<int> of
+    parseDouble). Each property's last (at) changes its x and y where the field, carried to
+    the frame KiCad reads it in once the move is made, lands elsewhere: P' = S'_p + T'_p *
+    offset, the offset in the symbol's frame KiCad keeps (kicad_ref.sch_field). Nothing else
+    changes: no angle of a property, no other list."""
+    location, old = S.placed_symbol(before, reference)
+    _, framed = S.placed_symbol(_with_last_at(before, reference, target, rotation), reference)
+    item = J.item_at(before, location)
+    at_index, _ = _last_at(item)
+    out = []
+    for index, child in enumerate(item.items):
+        if index == at_index:
+            path = location + ((index, "at"),)
+            out += [
+                (path, k, target[k - 1])
+                for k in (1, 2)
+                if read_iu(child.items[k].value) != target[k - 1]
+            ]
+            if rotation is not None and int(P.parse_double(child.items[3].value)) != rotation:
+                out.append((path, 3, rotation))
+        elif child.head == "property":
+            field = old.fields[SF.property_name(child)]
+            want = SF.carry_offset(framed.fields[field.name].frame, field.offset)
+            at, _ = _last_at(child)
+            path = location + ((index, "property"), (at, "at"))
+            out += [(path, k, want[k - 1]) for k in (1, 2) if field.written[k - 1] != want[k - 1]]
+    return out
+
+
+#: Moves of the native fixture's R1 from (100, 100): (id, target in internal units, angle).
+_MOVES = [
+    ("translate", (635_000, 635_000), None),
+    ("translate_and_turn", (635_000, 762_000), 90),
+]
+
+#: rule probe sheet B's three child orders: where the symbol sits, its state, the second
+#: (at) the "second_at" order adds, the angle the move asks for, and the mirror after the
+#: last (at), which KiCad keeps.
+_ORDER_CASES = {
+    "properties_first": ((508_000, 508_000), (90, ""), None, 0, ""),
+    "mirror_last": ((1_016_000, 508_000), (0, "y"), None, 90, "y"),
+    "second_at": ((1_524_000, 508_000), (0, ""), (1_651_000, 635_000, 180), 270, ""),
+}
+_ORDER_PARAMS = [
+    "properties_first",
+    pytest.param(
+        "mirror_last", marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
+    ),
+    pytest.param(
+        "second_at", marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_96)
+    ),
+]
+
+
+def _order_symbol(order: str) -> E.SynSymbol:
+    """R1 with its children in ``order`` (edit_gen.SYMBOL_ORDERS), its shown Reference and
+    Value at asymmetric offsets in its frame and at text angles 0 and 90."""
+    at, (rotation, mirror), second, _, _ = _ORDER_CASES[order]
+    fields = (
+        E.SynField("Reference", "R1", (0, 0), 0),
+        E.SynField("Value", "V1", (0, 0), 90),
+        E.SynField("Footprint", "", (0, 0), 0, False),
+        E.SynField("Datasheet", "~", (0, 0), 0, False),
+    )
+    sym = E.SynSymbol("R1", at, rotation, mirror, fields, order, second)
+    offsets = {"Reference": (50_800, -25_400), "Value": (-38_100, 63_500)}
+    return E.at_offsets(sym, offsets | {"Footprint": (0, 0), "Datasheet": (0, 0)})
+
+
+def _order_move(order: str, old: SF.PlacedSymbol):
+    """(target, angle asked, transform KiCad should read after) for _order_symbol(order) as
+    KiCad reads it: 12.7 mm right and 25.4 mm down, the angle the case asks for, the mirror
+    after the last (at) kept."""
+    _, _, _, rotation, kept = _ORDER_CASES[order]
+    target = (old.position[0] + 127_000, old.position[1] + 254_000)
+    return target, rotation, turned((rotation, kept), rotation)
+
+
+def _written_fields(data: bytes, reference: str) -> dict:
+    """{name: ((x, y), angle)} of the placed ``reference``'s properties: each last (at) as
+    KiCad reads its numbers, whatever the symbol's own angle (the lexer port, no transform)."""
+    (symbol,) = [s for s in placed_symbols(lexed_root(data)) if reference_property(s) == reference]
+    out = {}
+    for prop in symbol.items:
+        if prop.kind == L.GROUP and prop.items and prop.items[0].value == b"property":
+            (*_, at) = [c for c in prop.items if c.kind == L.GROUP and c.items[0].value == b"at"]
+            xy = (read_iu(at.items[1]), read_iu(at.items[2]))
+            out[SF.property_name(prop)] = (xy, P.parse_double(at.items[3].value))
+    return out
+
+
+def check_move_changes(before: bytes, after: bytes, reference: str, target, rotation) -> None:
+    """The move changed exactly the atoms expected_move_changes names (edit_judge's exact
+    atom list: nothing else, separators included), each to text KiCad reads as the value."""
+    want = expected_move_changes(before, reference, target, rotation)
+    got = J.atom_changes(before, after)
+    assert [(c.path, c.index) for c in got] == [(p, k) for p, k, _ in want], (
+        "the move changed other atoms than KiCad's rule moves:\n"
+        f"changed {[(c.path[-1], c.index, c.new) for c in got]}\n"
+        f"rule    {[(p[-1], k, v) for p, k, v in want]}"
+    )
+    for change, (_, k, value) in zip(got, want):
+        text = change.new.decode("utf-8", "surrogateescape")
+        read = report_double(text) if k == 3 else report_iu(text)
+        assert read == value, f"{change.path[-1]} atom {k} reads {read}, the rule puts {value}"
 
 
 class TestRoundTrip:
@@ -808,6 +1015,148 @@ class TestSymbolFamilyPreservation:
         expected = {name: (x + dx, y + dy, angle) for name, (x, y, angle) in fields(old).items()}
         assert fields(new) == expected, "the symbol moved and its fields stayed where they were"
 
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
+    @pytest.mark.parametrize("move", _MOVES, ids=[m[0] for m in _MOVES])
+    @pytest.mark.parametrize("newline", [b"\n", b"\r\n"], ids=["lf", "crlf"])
+    def test_move_changes_only_position_atoms(self, tmp_path, newline, move):
+        """Moving the native fixture's R1 (translated, and translated and turned) changes
+        exactly the atoms KiCad's rule moves (expected_move_changes): its last (at)'s x, y
+        and angle where they change, and each property's x and y where the field, kept at
+        its offset in the symbol's frame, lands elsewhere; no text angle, no
+        (fields_autoplaced), no separator. On LF and on CRLF line endings alike."""
+        _, target, rotation = move
+        data = FIXTURE.read_bytes().replace(b"\r\n", b"\n").replace(b"\n", newline)
+        path = tmp_path / "kicad_native.kicad_sch"
+        path.write_bytes(data)
+        schematic.move_component(
+            "R1", _mm(target[0]), _mm(target[1]), rotation=rotation, schematic_path=str(path)
+        )
+        check_move_changes(data, path.read_bytes(), "R1", target, rotation)
+
+    @pytest.mark.parametrize("order", _ORDER_PARAMS)
+    def test_move_reads_properties_in_kicads_file_order(self, tmp_path, order):
+        """A symbol whose children KiCad loads in an order it never writes (every property
+        before the (at); the (mirror) after the properties; a second (at) after them),
+        moved by (12.7, 25.4) and turned: KiCad reads it at the target with the new angle and
+        the mirror after its last (at), and reads every field at the offset in the symbol's
+        frame it had before (kicad_ref.sch_field, which reads each property in the frame in
+        force where it sits). The properties-first order passes today: its properties are
+        read before any (at), so their (at)s must not change at all."""
+        path = E.write_symbol_sheet(tmp_path / "order.kicad_sch", [_order_symbol(order)])
+        before = path.read_bytes()
+        _, old = S.placed_symbol(before, "R1")
+        target, rotation, transform = _order_move(order, old)
+        message = schematic.move_component(
+            "R1", _mm(target[0]), _mm(target[1]), rotation=rotation, schematic_path=str(path)
+        )
+        _, new = S.placed_symbol(path.read_bytes(), "R1")
+        assert (new.position, new.transform) == (target, transform), (
+            f"returned {message!r}, and KiCad reads R1 at {new.position}, {new.transform}"
+        )
+        assert {n: f.offset for n, f in new.fields.items()} == {
+            n: f.offset for n, f in old.fields.items()
+        }, "the symbol moved and its fields did not keep their place on it"
+
+    @requires_cli
+    @pytest.mark.parametrize("order", _ORDER_PARAMS)
+    def test_move_in_kicads_file_order_where_kicad_draws_it(self, tmp_path, order):
+        """The kicad-cli sibling: in its SVG, each shown field of that symbol moves rigidly
+        with it and turns with it (test_ladder_r3_symbols.rigid_problems)."""
+        before = E.write_symbol_sheet(tmp_path / "order.kicad_sch", [_order_symbol(order)])
+        _, old = S.placed_symbol(before.read_bytes(), "R1")
+        target, rotation, transform = _order_move(order, old)
+        moves = {"R1": Move(target, rotation, transform, ("R1", "V1"))}
+        after = tmp_path / "moved.kicad_sch"
+        move_all(before, after, moves)
+        problems = rigid_problems(before, after, moves)
+        assert not problems, "\n".join(problems)
+
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_96)
+    def test_move_rewrites_the_at_kicad_keeps(self, tmp_path):
+        """R1 written with two (at) lists, (100, 100) and then (127, 127), which kicad-cli
+        9.0.8 loads (measured 2026-10-14): KiCad's parser keeps the last, since each (at)
+        sets the position and the transform anew (sch_io_kicad_sexpr_parser.cpp:3071-3085
+        at 9.0.8, 3188-3202 at 10.0.7). After a move to (63.5, 63.5) KiCad reads R1 there."""
+        path = _r1_variant(tmp_path, "two_at.kicad_sch", b"(at 100 100 0) (at 127 127 0) (unit 1)")
+        _, old = S.placed_symbol(path.read_bytes(), "R1")
+        if old.position != (1_270_000, 1_270_000):
+            raise RuntimeError(f"the premise is KiCad reading the last (at); read {old.position}")
+        message = schematic.move_component("R1", 63.5, 63.5, schematic_path=str(path))
+        _, new = S.placed_symbol(path.read_bytes(), "R1")
+        assert new.position == (635_000, 635_000), (
+            f"returned {message!r}, and KiCad reads R1 at {new.position}"
+        )
+
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_97)
+    def test_move_refuses_a_symbol_without_at(self, tmp_path):
+        """R1 written with no (at), which kicad-cli 9.0.8 loads (measured 2026-10-14):
+        move_component refuses with a ToolError, the file byte for byte as it was, rather
+        than letting an exception from inside escape."""
+        path = _r1_variant(tmp_path, "no_at.kicad_sch", b"(unit 1)")
+        before = path.read_bytes()
+        result, raised = _outcome(
+            lambda: schematic.move_component("R1", 63.5, 63.5, schematic_path=str(path))
+        )
+        assert isinstance(raised, ToolError), f"returned {result!r}, raised {raised!r}"
+        assert path.read_bytes() == before
+
+    @pytest.mark.kicad_placeholder("angle45.kicad_sch")
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_98)
+    def test_unloadable_angle_needs_a_rotation(self, tmp_path):
+        """R1 at angle 45, which KiCad cannot load (its parser takes 0, 90, 180 and 270
+        only, sch_io_kicad_sexpr_parser.cpp:3074-3081 at 9.0.8, 3191-3198 at 10.0.7), the
+        premise checked with kicad-cli: a move with no rotation refuses with a ToolError that
+        names the rotation as the repair, and leaves the file byte for byte as it was. The
+        unloadable input is this test's subject, so the oracle skips it."""
+        path = _r1_variant(tmp_path, "angle45.kicad_sch", b"(at 100 100 45) (unit 1)")
+        _require_unloadable(path)
+        before = path.read_bytes()
+        result, raised = _outcome(
+            lambda: schematic.move_component("R1", 63.5, 63.5, schematic_path=str(path))
+        )
+        assert isinstance(raised, ToolError), (
+            f"returned {result!r}, raised {raised!r}, on a file kicad-cli cannot load"
+        )
+        assert "rotation" in str(raised), f"the refusal names no repair: {raised}"
+        assert path.read_bytes() == before
+
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
+    def test_unloadable_angle_is_repaired_by_a_rotation(self, tmp_path):
+        """R1 at angle 45, moved to (63.5, 63.5) at rotation 90: KiCad reads R1 there at 90,
+        and every field moved by R1's own displacement and was not turned, since an angle
+        KiCad cannot load gives the old orientation no meaning; the result says R1 was at
+        45. The oracle then checks that kicad-cli loads the repaired file."""
+        path = _r1_variant(tmp_path, "angle45.kicad_sch", b"(at 100 100 45) (unit 1)")
+        _require_unloadable(path)
+        written = _written_fields(path.read_bytes(), "R1")
+        message = schematic.move_component("R1", 63.5, 63.5, rotation=90, schematic_path=str(path))
+        _, new = S.placed_symbol(path.read_bytes(), "R1")
+        assert (new.position, new.transform) == ((635_000, 635_000), turned((0, ""), 90))
+        dx, dy = 635_000 - 1_000_000, 635_000 - 1_000_000
+        moved = {name: (x + dx, y + dy, angle) for name, ((x, y), angle) in written.items()}
+        assert {n: (*f.written, f.angle) for n, f in new.fields.items()} == moved, (
+            "the fields did not move with the repaired symbol"
+        )
+        assert "45" in message, f"the result does not say R1 was at angle 45: {message!r}"
+
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_98)
+    def test_unloadable_angle_remedy_names_a_repair_that_works(self, tmp_path):
+        """A pin read of R1 at angle 45 refuses [unloadable]. KiCad cannot open the sheet,
+        so a remedy pointing at KiCad cannot be followed; the one that works is
+        move_component with a legal rotation, which the refusal must name. Following it
+        leaves a file kicad-cli loads and the pin read then answers."""
+        path = _r1_variant(tmp_path, "angle45.kicad_sch", b"(at 100 100 45) (unit 1)")
+        _require_unloadable(path)
+        with pytest.raises(ToolError) as refused:
+            schematic.get_pin_positions("R1", schematic_path=str(path))
+        assert "move_component" in str(refused.value), (
+            f"the remedy names no repair that works: {refused.value}"
+        )
+        schematic.move_component("R1", 100, 100, rotation=0, schematic_path=str(path))
+        if HAS_KICAD_CLI:
+            assert_kicad_parseable(path)
+        schematic.get_pin_positions("R1", schematic_path=str(path))
+
     def test_set_component_property_existing_and_new(self, kicad_native_sch):
         p = str(kicad_native_sch)
         before = kicad_native_sch.read_bytes()
@@ -1451,6 +1800,21 @@ class TestKicad10E2E:
         root = _cst.parse(kicad_native_sch.read_bytes()).lists[0]
         assert root.find("symbol") is None
         assert root.find("paper").atoms[1].text == "A3"
+
+    @pytest.mark.xfail(strict=True, raises=AssertionError, reason=BUG_1)
+    def test_move_component_carries_fields_on_real_kicad10(self, kicad_native_sch):
+        """On a schematic kicad-cli 10 minted: a translation of R1 to (63.5, 63.5), then a
+        turn to 90 in place there, each change exactly the atoms KiCad's rule moves
+        (expected_move_changes, read from the minted file's own tokens), and the autouse
+        oracle loads the result with kicad-cli 10."""
+        self._mint(kicad_native_sch)
+        for rotation in (None, 90):
+            before = kicad_native_sch.read_bytes()
+            schematic.move_component(
+                "R1", 63.5, 63.5, rotation=rotation, schematic_path=str(kicad_native_sch)
+            )
+            after = kicad_native_sch.read_bytes()
+            check_move_changes(before, after, "R1", (635_000, 635_000), rotation)
 
     def test_place_component_on_real_kicad10(self, kicad_native_sch):
         self._mint(kicad_native_sch)

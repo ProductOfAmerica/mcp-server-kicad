@@ -23,6 +23,11 @@ pcbnew loading each lock spelling, and edit_gen's netlist builder to kicad-cli's
 Schematic lines: kicad_ref.sch_line's IsPointOnSegment answers to exact plane geometry
 (geom_judge), and sch_judge.junctions_on_interiors, the judge of every junction a tool
 writes, to KiCad's own files, none of whose junctions lies inside a wire.
+
+Schematic fields: kicad_ref.sch_field's reading of a placed symbol's fields, in KiCad's
+child order and in three orders KiCad loads but never writes, answers to where kicad-cli
+plots them (svg_judge, which reads the plotted anchors), on sheets edit_gen writes; its
+arithmetic answers to the laws of the frames the twelve states make.
 """
 
 from __future__ import annotations
@@ -44,6 +49,7 @@ import pcbnew_judge as PJ
 import pytest
 import sch_judge
 import sexpr_gen
+import svg_judge as SVG
 from conftest import _nightly_skip_reason, requires_cli
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
@@ -53,7 +59,9 @@ from kicad_ref import exchange as X
 from kicad_ref import footprint as F
 from kicad_ref import parse_units as P
 from kicad_ref import pcb_text as T
+from kicad_ref import sch_field as SF
 from kicad_ref import sch_line
+from kicad_ref import transform as TR
 
 from mcp_server_kicad._shared import _run_cli
 
@@ -1947,3 +1955,156 @@ def test_kicad_never_writes_a_junction_on_a_wire_interior(path):
 def test_nightly_kicad_never_writes_a_junction_on_a_wire_interior(path):
     """The same over every schematic the install holds."""
     _no_junction_inside_a_line(path)
+
+
+# ---------------------------------------------------------------------------------------------
+# Schematic fields: kicad_ref.sch_field and svg_judge, for the move tests
+# ---------------------------------------------------------------------------------------------
+
+#: Field offsets in the symbol's frame (internal units) and text angles, chosen asymmetric so
+#: that no wrong transform, mirror or reading order lands a field on its right place.
+FIELD_OFFSETS = {"Reference": ((50_800, -25_400), 0), "Value": ((-38_100, 63_500), 90)}
+
+
+def _field_symbol(k: int, rotation: int, mirror: str, order: str, at) -> E.SynSymbol:
+    """Placed symbol R<k>: centred, visible Reference "R<k>" and Value "V<k>" at
+    FIELD_OFFSETS as KiCad reads them in ``order``, hidden Footprint and Datasheet."""
+    fields = tuple(
+        E.SynField(name, f"{name[0]}{k}", (0, 0), angle)
+        for name, (_, angle) in FIELD_OFFSETS.items()
+    ) + (
+        E.SynField("Footprint", "", (0, 0), 0, False),
+        E.SynField("Datasheet", "~", (0, 0), 0, False),
+    )
+    second = (
+        (at[0] + 127_000, at[1] + 127_000, (rotation + 90) % 360) if order == "second_at" else None
+    )
+    sym = E.SynSymbol(f"R{k}", at, rotation, mirror, fields, order, second)
+    offsets = {name: offset for name, (offset, _) in FIELD_OFFSETS.items()}
+    return E.at_offsets(sym, offsets | {"Footprint": (0, 0), "Datasheet": (0, 0)})
+
+
+def field_port_sheet() -> list[E.SynSymbol]:
+    """Every state in KiCad's order and in the three it loads but never writes (the mirror
+    after the properties in the eight mirrored states only): 44 symbols on an A3 sheet."""
+    symbols = []
+    for order in E.SYMBOL_ORDERS:
+        for rotation, mirror in G.STATES:
+            if order == "mirror_last" and not mirror:
+                continue
+            k = len(symbols)
+            at = (254_000 + 304_800 * (k % 12), 381_000 + 635_000 * (k // 12))
+            symbols.append(_field_symbol(k + 1, rotation, mirror, order, at))
+    return symbols
+
+
+def field_port_problems(path: Path, symbols) -> list[str]:
+    """Each shown field of ``symbols`` whose anchor in kicad-cli's SVG of ``path`` is not the
+    drawn position kicad_ref.sch_field reads from the file (svg_judge.TOLERANCE), or whose
+    orientation is not GetDrawRotation's."""
+    data = path.read_bytes()
+    want = {}
+    for sym in symbols:
+        _, placed = sch_judge.placed_symbol(data, sym.reference)
+        for field in sym.fields:
+            if field.visible and field.value:
+                angle = placed.fields[field.name].angle
+                want[field.value] = (
+                    placed.drawn(field.name),
+                    SF.draw_rotation(placed.transform, angle),
+                )
+    found = SVG.anchors(path, want, text_height=E.FIELD_TEXT_HEIGHT)
+    problems = []
+    for text, ((x, y), rotation) in sorted(want.items()):
+        if len(found[text]) != 1:
+            problems.append(f"{text}: plotted {len(found[text])} times")
+            continue
+        (anchor,) = found[text]
+        off = max(abs(anchor.x - x), abs(anchor.y - y))
+        if off > SVG.TOLERANCE or anchor.vertical != (rotation == 90):
+            problems.append(f"{text}: port ({x}, {y}) at {rotation}, kicad-cli {anchor}")
+    return problems
+
+
+@requires_cli
+def test_field_port_draws_where_kicad_cli_draws(tmp_path):
+    """kicad_ref.sch_field reads a placed symbol's fields as KiCad does: on a sheet of 44
+    symbols, every state in KiCad's own child order and in the three orders it loads but
+    never writes (properties before the (at), the mirror after them, a second (at) after
+    them), each shown field's anchor in kicad-cli's SVG is the drawn position the port
+    reads from the file, and it is vertical exactly when GetDrawRotation says. The fields
+    are centred, so the plotted anchor, their text box's centre, is their drawn position."""
+    symbols = field_port_sheet()
+    path = E.write_symbol_sheet(tmp_path / "fields.kicad_sch", symbols)
+    problems = field_port_problems(path, symbols)
+    assert not problems, f"{len(problems)} fields off:\n" + "\n".join(problems[:20])
+
+
+@st.composite
+def _field_sheets(draw):
+    """1 to 6 placed symbols, each in a drawn state and child order at its own 50.8 mm cell
+    (off the 1.27 mm grid by a drawn amount), with its two shown fields at drawn offsets and
+    text angles."""
+    symbols = []
+    for k in range(draw(st.integers(1, 6))):
+        rotation, mirror = draw(G.symbol_states())
+        order = draw(st.sampled_from(E.SYMBOL_ORDERS))
+        if order == "mirror_last" and not mirror:
+            mirror = draw(st.sampled_from(("x", "y")))
+        at = (
+            508_000 + 508_000 * (k % 3) + draw(st.integers(0, 12_699)),
+            508_000 + 762_000 * (k // 3) + draw(st.integers(0, 12_699)),
+        )
+        sym = _field_symbol(k + 1, rotation, mirror, order, at)
+        offsets = {
+            name: (draw(st.integers(-127_000, 127_000)), draw(st.integers(-127_000, 127_000)))
+            for name in FIELD_OFFSETS
+        }
+        angles = {name: draw(st.sampled_from((0, 90))) for name in FIELD_OFFSETS}
+        sym = sym._replace(
+            fields=tuple(f._replace(angle=angles.get(f.name, f.angle)) for f in sym.fields)
+        )
+        symbols.append(E.at_offsets(sym, offsets | {"Footprint": (0, 0), "Datasheet": (0, 0)}))
+    return symbols
+
+
+@pytest.mark.nightly
+@requires_cli
+@settings(max_examples=sexpr_gen.budget(25))
+@given(_field_sheets())
+def test_nightly_field_port_draws_where_kicad_cli_draws(symbols):
+    """The same over generated sheets: states, child orders, anchors off the grid, field
+    offsets and text angles."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as work:
+        path = E.write_symbol_sheet(Path(work) / "fields.kicad_sch", symbols)
+        problems = field_port_problems(path, symbols)
+    assert not problems, f"{len(problems)} fields off:\n" + "\n".join(problems[:20])
+
+
+#: The eight transforms the twelve states make.
+_MATRICES = sorted(
+    {
+        TR.parse_symbol_transform([("at", str(r))] + ([("mirror", m)] if m else []))
+        for r, m in G.STATES
+    }
+)
+
+
+@settings(max_examples=sexpr_gen.budget())
+@given(
+    st.sampled_from(_MATRICES),
+    st.tuples(st.integers(-2_000_000, 2_000_000), st.integers(-2_000_000, 2_000_000)),
+    st.tuples(st.integers(-2_000_000, 2_000_000), st.integers(-2_000_000, 2_000_000)),
+)
+def test_field_port_laws(matrix, at, point):
+    """The port's arithmetic: GetPosition and SetPosition invert each other in every frame
+    the twelve states make, carry_offset is GetPosition of S + offset, and KiCad's
+    InverseTransform, the adjugate over a determinant of +-1, is the transpose for each of
+    the eight matrices."""
+    frame = (at, matrix)
+    assert SF.get_position(frame, SF.set_position(frame, point)) == point
+    assert SF.set_position(frame, SF.get_position(frame, point)) == point
+    offset = (point[0] - at[0], point[1] - at[1])
+    assert SF.carry_offset(frame, offset) == SF.get_position(frame, point)
+    x1, y1, x2, y2 = matrix
+    assert TR.inverse_transform(matrix) == (x1, x2, y1, y2)

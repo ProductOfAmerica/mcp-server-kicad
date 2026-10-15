@@ -39,6 +39,13 @@ footprint's text and ``construct_library`` writes a library footprint holding on
 ``netlist_text`` writes the netlist the board update reads, in kicad-cli's kicadxml form,
 each field as the running kicad-cli's major prints it (checked against a kicad-cli export
 in test_ladder_r3_judges.py).
+
+``symbol_sheet_text`` and ``write_symbol_sheet`` write a KiCad 9 schematic of placed
+Device:R symbols (KiCad 9.0.8's stock symbol, from tests/fixtures/routing.kicad_sym), each
+``SynSymbol``'s children in one of ``SYMBOL_ORDERS``: KiCad's own, or one of three it loads
+but never writes. ``at_offsets`` writes a symbol's fields where KiCad reads them at given
+offsets in the symbol's frame. That kicad-cli draws these fields where kicad_ref.sch_field
+says is checked in test_ladder_r3_judges.py.
 """
 
 from __future__ import annotations
@@ -62,6 +69,7 @@ from kicad_ref import dsn_lexer as L
 from kicad_ref import footprint as F
 from kicad_ref import pad as PAD
 from kicad_ref import pcb_text as T
+from kicad_ref import sch_field as SF
 from kicad_ref.eda_units import format_angle
 
 Point = tuple[int, int]
@@ -1515,4 +1523,166 @@ def has_zone(path: Path) -> bool:
         return False
     return any(
         F.head(item) == b"zone" for item in L.tree(data, knows_bar=L.knows_bar_of(data))[0].items
+    )
+
+
+# ---------------------------------------------------------------------------
+# placed symbols and their fields
+# ---------------------------------------------------------------------------
+
+#: The uuid symbol_sheet_text gives the root sheet, which every symbol's instance names.
+SHEET_UUID = "6f1d0c2a-0000-4000-8000-00000000a3a3"
+#: The orders symbol_sheet_text writes a placed symbol's children in: KiCad's own (the
+#: writer's, sch_io_kicad_sexpr.cpp:672-777 at 9.0.8, 719-814 at 10.0.7), and three it
+#: never writes but loads: every property before the (at), the (mirror) after the
+#: properties, and a second (at) after the properties.
+SYMBOL_ORDERS = ("canonical", "properties_first", "mirror_last", "second_at")
+#: The height of every field symbol_sheet_text writes, in schematic internal units: KiCad's
+#: default text size, 1.27 mm (the stock libraries' fields).
+FIELD_TEXT_HEIGHT = 12_700
+
+
+class SynField(NamedTuple):
+    """A property of a placed symbol: its name and text, the x and y its (at) writes
+    (schematic internal units), the text angle written there, whether it is shown, and
+    its justification, "" for centred or "left" or "right"."""
+
+    name: str
+    value: str
+    at: Point
+    angle: int = 0
+    visible: bool = True
+    justify: str = ""
+
+
+class SynSymbol(NamedTuple):
+    """A placed Device:R. ``at`` and ``rotation`` are its (at), ``mirror`` is "", "x" or
+    "y", ``fields`` its properties in file order, ``order`` one of SYMBOL_ORDERS,
+    ``second_at`` the (at) x, y and angle the "second_at" order writes after the
+    properties, and ``autoplaced`` whether it carries (fields_autoplaced yes)."""
+
+    reference: str
+    at: Point
+    rotation: int = 0
+    mirror: str = ""
+    fields: tuple[SynField, ...] = ()
+    order: str = "canonical"
+    second_at: tuple[int, int, int] | None = None
+    autoplaced: bool = False
+
+
+@functools.cache
+def _stock_r() -> str:
+    """KiCad 9.0.8's stock Device:R as tests/fixtures/routing.kicad_sym holds it, named
+    "Device:R" the way a schematic's lib_symbols names an imported symbol, its lines
+    indented one level deeper for that list."""
+    path = Path(__file__).parent / "fixtures" / "routing.kicad_sym"
+    data = path.read_bytes()
+    (r,) = [
+        item
+        for item in L.tree(data, knows_bar=L.knows_bar_of(data))[0].items
+        if F.head(item) == b"symbol" and item.items[1].value == b"R"
+    ]
+    text = data[r.start : r.end].decode("utf-8").replace("\r\n", "\n")
+    head = '(symbol "R"'
+    if not text.startswith(head):
+        raise RuntimeError(f"routing.kicad_sym's R does not open with {head!r}")
+    return "\t\t" + ('(symbol "Device:R"' + text[len(head) :]).replace("\n", "\n\t") + "\n"
+
+
+def _sch_pt(p: Point) -> str:
+    return f"{G.sch_mm(p[0])} {G.sch_mm(p[1])}"
+
+
+def _quoted(text: str) -> str:
+    if any(c in text for c in ('"', "\\", "\n", "\r")):
+        raise ValueError(f"{text!r} needs escapes, which these builders do not write")
+    return f'"{text}"'
+
+
+def _sch_field(field: SynField) -> str:
+    lines = [
+        f"\t\t(property {_quoted(field.name)} {_quoted(field.value)}\n",
+        f"\t\t\t(at {_sch_pt(field.at)} {field.angle})\n",
+        "\t\t\t(effects\n\t\t\t\t(font\n\t\t\t\t\t(size 1.27 1.27)\n\t\t\t\t)\n",
+    ]
+    if field.justify:
+        lines.append(f"\t\t\t\t(justify {field.justify})\n")
+    if not field.visible:
+        lines.append("\t\t\t\t(hide yes)\n")
+    lines.append("\t\t\t)\n\t\t)\n")
+    return "".join(lines)
+
+
+def placed_symbol_text(sym: SynSymbol, *, project: str) -> str:
+    """One placed symbol as KiCad 9.0.8 writes it (lines and indentation as in its demo
+    ecc83-pp_v2.kicad_sch), its children in the order ``sym.order`` names, its instance on
+    the root sheet SHEET_UUID of ``project``."""
+    at = f"\t\t(at {_sch_pt(sym.at)} {sym.rotation})\n"
+    mirror = f"\t\t(mirror {sym.mirror})\n" if sym.mirror else ""
+    flags = "\t\t(unit 1)\n\t\t(exclude_from_sim no)\n\t\t(in_bom yes)\n\t\t(on_board yes)\n"
+    flags += "\t\t(dnp no)\n" + ("\t\t(fields_autoplaced yes)\n" if sym.autoplaced else "")
+    flags += f'\t\t(uuid "{_uid()}")\n'
+    props = "".join(_sch_field(field) for field in sym.fields)
+    if sym.order == "canonical":
+        body = at + mirror + flags + props
+    elif sym.order == "properties_first":
+        body = props + at + mirror + flags
+    elif sym.order == "mirror_last":
+        if not sym.mirror:
+            raise ValueError("the mirror_last order needs a mirror")
+        body = at + flags + props + mirror
+    elif sym.order == "second_at":
+        if sym.second_at is None:
+            raise ValueError("the second_at order needs a second (at)")
+        x, y, angle = sym.second_at
+        body = at + mirror + flags + props + f"\t\t(at {_sch_pt((x, y))} {angle})\n"
+    else:
+        raise ValueError(f"unknown order {sym.order!r}")
+    pins = "".join(f'\t\t(pin "{n}"\n\t\t\t(uuid "{_uid()}")\n\t\t)\n' for n in ("1", "2"))
+    instance = (
+        f"\t\t(instances\n\t\t\t(project {_quoted(project)}\n"
+        f'\t\t\t\t(path "/{SHEET_UUID}"\n\t\t\t\t\t(reference {_quoted(sym.reference)})\n'
+        "\t\t\t\t\t(unit 1)\n\t\t\t\t)\n\t\t\t)\n\t\t)\n"
+    )
+    return '\t(symbol\n\t\t(lib_id "Device:R")\n' + body + pins + instance + "\t)\n"
+
+
+def symbol_sheet_text(symbols: Sequence[SynSymbol], *, project: str, paper: str = "A3") -> str:
+    """A KiCad 9 schematic (format 20250114) holding ``symbols``, each placed from the stock
+    Device:R, with ``project`` as the name its symbols' instances give the project (a
+    standalone sheet's is its file's stem)."""
+    return (
+        '(kicad_sch\n\t(version 20250114)\n\t(generator "eeschema")\n'
+        f'\t(generator_version "9.0")\n\t(uuid "{SHEET_UUID}")\n\t(paper "{paper}")\n'
+        f"\t(lib_symbols\n{_stock_r()}\t)\n"
+        + "".join(placed_symbol_text(sym, project=project) for sym in symbols)
+        + '\t(sheet_instances\n\t\t(path "/"\n\t\t\t(page "1")\n\t\t)\n\t)\n'
+        + "\t(embedded_fonts no)\n)\n"
+    )
+
+
+def write_symbol_sheet(path: Path, symbols: Sequence[SynSymbol], *, paper: str = "A3") -> Path:
+    """symbol_sheet_text into ``path``, with LF line endings, its project named after it."""
+    path.write_text(
+        symbol_sheet_text(symbols, project=path.stem, paper=paper), encoding="utf-8", newline="\n"
+    )
+    return path
+
+
+def at_offsets(sym: SynSymbol, offsets: dict[str, Point]) -> SynSymbol:
+    """``sym`` with each field named in ``offsets`` written where KiCad, reading the symbol's
+    children in its order, takes it to lie at that offset in the symbol's own frame
+    (kicad_ref.sch_field: the property's (at) is carried from the frame in force where it
+    is read, which only the (at) and (mirror) before it decide)."""
+    text = placed_symbol_text(sym, project="frames")
+    (group,) = L.tree(text.encode(), knows_bar=True)
+    frames = {name: f.frame for name, f in SF.read_placed_symbol(group, major=9).fields.items()}
+    return sym._replace(
+        fields=tuple(
+            f._replace(at=SF.carry_offset(frames[f.name], offsets[f.name]))
+            if f.name in offsets
+            else f
+            for f in sym.fields
+        )
     )
