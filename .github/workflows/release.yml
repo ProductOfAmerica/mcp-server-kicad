@@ -10,35 +10,44 @@ on:
           - patch
           - minor
           - major
-permissions:
-  contents: write
-  id-token: write
-  # Read-only, for the gate below: listing a workflow's runs needs it once
-  # the token's permissions are spelled out.
-  actions: read
+# Three jobs, so that no credential shares a machine with code it does not need
+# to trust. gate reads run history and nothing else. build bumps the version,
+# packs the MCPB bundle and builds the wheel and sdist with a read-only token
+# and no secrets; the packer and the build backend are the third-party code that
+# runs there. publish runs none of this project's code or dependencies: it
+# applies the bump build produced, pushes it with the release app's token, and
+# uploads what build made through PyPI's and the MCP Registry's OIDC. A step
+# that misbehaves in build can still poison the artifacts, but it cannot reach a
+# token that writes to main, PyPI or the registry.
+#
+# There is no test run here. The gate refuses a commit unless ci.yml (lint,
+# pyright, and pytest on 3.11 to 3.14) and the three KiCad suites passed on it,
+# so a run here would repeat ci.yml's 3.11 leg with less coverage, and
+# installing the dev dependencies is the code publish must not share a job with.
+permissions: {}
 jobs:
-  release:
+  gate:
     # Pinned to the image this has always released from. Nothing exercises it
     # short of a real release, so it moves to ubuntu-26.04 after ci.yml has run
-    # clean there, not on GitHub's schedule for ubuntu-latest.
+    # clean there, not on GitHub's schedule for ubuntu-latest. The same holds
+    # for the two jobs below.
     runs-on: ubuntu-24.04
-    environment: pypi
+    permissions:
+      contents: read
+      # Listing a workflow's runs needs it once permissions are spelled out.
+      actions: read
     steps:
       - uses: actions/checkout@v7
         with:
           # Full history, so the gate can walk back through bump commits.
           fetch-depth: 0
-          # No token left in .git/config while the test suite and its
-          # dependencies run; the only git write this job makes is the bump
-          # push, which brings its own token.
           persist-credentials: false
 
       # Refuse, before anything is built, bumped or pushed, unless CI and every
-      # KiCad suite passed on the commit being released. This job's own pytest
-      # run below has no KiCad installed, so every test that needs kicad-cli or
-      # pcbnew skips here, and it runs Python 3.11 only: ci.yml is the only
-      # place 3.12 to 3.14 are tested, and the three KiCad workflows the only
-      # place the write paths are checked against KiCad 9 and KiCad 10.
+      # KiCad suite passed on the commit being released. This workflow runs no
+      # tests of its own: ci.yml is where lint, pyright and pytest run on 3.11
+      # to 3.14, and the three KiCad workflows the only place the write paths
+      # are checked against KiCad 9 and KiCad 10.
       #
       # The latest push or workflow_dispatch run per workflow decides, so a
       # failure that was re-run green counts as green and a green run followed
@@ -126,20 +135,116 @@ jobs:
           done
           exit "$failed"
 
-      # The two tools this job downloads at release time are fetched here, at
-      # pinned versions, and checked before they run: a mismatch stops the
-      # release before anything is pushed, rather than after PyPI already has
-      # the package. They run in the job that holds the PyPI environment and the
-      # registry's OIDC token, which is why "whatever is newest today" is not
-      # good enough for them. (The actions and uv's build backend are pinned by
-      # version tag and range, not by hash; that is a separate hardening.)
-      #
-      # mcp-publisher: the release's tarball, against the sha256 its own
-      # checksums file lists (registry_1.8.1_checksums.txt, read 2026-10-10).
-      # mcpb: npm ci installs exactly the tree in .github/tools/mcpb's
+  build:
+    needs: gate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.bump.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # npm ci installs exactly the tree in .github/tools/mcpb's
       # package-lock.json and fails on any tarball whose integrity hash differs.
-      # --ignore-scripts because packing needs no install hook.
-      - name: Fetch the pinned release tools
+      # --ignore-scripts because packing needs no install hook. Bumping mcpb
+      # means updating that lock, not removing it.
+      - name: Install the pinned MCPB packer
+        run: npm ci --prefix .github/tools/mcpb --ignore-scripts --no-audit --no-fund
+
+      - uses: astral-sh/setup-uv@v10.2.0
+        with:
+          python-version: "3.11"
+          # No cache in a release. setup-uv's "auto" turns caching off for
+          # release events but not for workflow_dispatch, which is how this
+          # runs, and a restored cache is input this run did not build.
+          enable-cache: false
+
+      # uv version re-locks, so uv.lock's own version line follows. --no-sync
+      # because nothing here needs the project's environment installed.
+      - name: Bump version
+        id: bump
+        run: |
+          V=$(uv version --bump "${{ inputs.bump }}" --short --no-sync)
+          node -e 'const fs=require("fs"),p=".claude-plugin/plugin.json",d=JSON.parse(fs.readFileSync(p,"utf8"));d.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n")' "$V"
+          # server.json carries the version twice: the server's own version and
+          # the PyPI package it points at. The MCP Registry rejects a package
+          # version that is not live on PyPI, so both track the release.
+          node -e 'const fs=require("fs"),p="server.json",d=JSON.parse(fs.readFileSync(p,"utf8"));d.version=process.argv[1];d.packages[0].version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n")' "$V"
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      # Both versions in mcpb/ are placeholders stamped here rather than
+      # committed, so the bundle is not a fifth place to bump: the bump patch
+      # below names its four files and leaves these out on purpose.
+      #
+      # This job finishes before publish starts, so a packing failure ends the
+      # release with nothing pushed or published.
+      #
+      # The bundle lands in bundle/, never dist/, because the PyPI publish step
+      # uploads everything in dist/ and would choke on a non-package file.
+      #
+      # No uv.lock ships with it: the manifest pins the version being released,
+      # which is not live on PyPI until publish, so a lock cannot be resolved
+      # yet. Users resolve on first launch instead, fenced by the mcp bound in
+      # the package's own pyproject.toml.
+      - name: Pack MCPB bundle
+        run: |
+          V="${{ steps.bump.outputs.version }}"
+          mkdir -p bundle
+          node -e 'const fs=require("fs"),p="mcpb/manifest.json",d=JSON.parse(fs.readFileSync(p,"utf8"));d.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n")' "$V"
+          sed -i "s|mcp-server-kicad==[^\"]*|mcp-server-kicad==$V|" mcpb/pyproject.toml
+          # A reformatted pyproject would slip past sed and ship a bundle
+          # pinned to the wrong release, so confirm the stamp landed.
+          grep -q "\"mcp-server-kicad==$V\"" mcpb/pyproject.toml
+          .github/tools/mcpb/node_modules/.bin/mcpb pack mcpb "bundle/kicad-$V.mcpb"
+
+      - run: uv build
+
+      # The bump travels to publish as a patch of exactly the four files the
+      # commit stages, written after uv build so the sdist never contains it.
+      - name: Record the bump
+        run: |
+          mkdir -p bump
+          git diff --binary -- pyproject.toml uv.lock .claude-plugin/plugin.json server.json > bump/bump.patch
+          echo "${{ steps.bump.outputs.version }}" > bump/version
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release
+          path: |
+            dist/
+            bundle/
+            bump/
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-24.04
+    environment: pypi
+    permissions:
+      # For gh release; the bump push goes through the release app instead.
+      contents: write
+      # PyPI trusted publishing and the MCP Registry's github-oidc login.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v8
+        with:
+          name: release
+
+      # mcp-publisher is fetched at a pinned version and checked against the
+      # sha256 its release's checksums file lists (registry_1.8.1_checksums.txt,
+      # read 2026-10-10) before it runs here, next to the registry's OIDC token,
+      # which is why "whatever is newest today" is not good enough for it. The
+      # check comes before anything is pushed, so a mismatch stops the release
+      # with nothing published. (The actions and uv's build backend are pinned
+      # by version tag and range, not by hash; that is a separate hardening.)
+      - name: Fetch the pinned mcp-publisher
         env:
           MCP_PUBLISHER_VERSION: v1.8.1
           MCP_PUBLISHER_SHA256: a06c9096dcb9727c13555b6be26c7effa707b01f06a4c561ba7a3635443cf2cc
@@ -151,79 +256,31 @@ jobs:
             "https://github.com/modelcontextprotocol/registry/releases/download/$MCP_PUBLISHER_VERSION/mcp-publisher_linux_amd64.tar.gz"
           echo "$MCP_PUBLISHER_SHA256  $tools/mcp-publisher.tar.gz" | sha256sum -c -
           tar -xzf "$tools/mcp-publisher.tar.gz" -C "$tools" mcp-publisher
-          npm ci --prefix .github/tools/mcpb --ignore-scripts --no-audit --no-fund
           echo "MCP_PUBLISHER=$tools/mcp-publisher" >> "$GITHUB_ENV"
-          echo "MCPB=$GITHUB_WORKSPACE/.github/tools/mcpb/node_modules/.bin/mcpb" >> "$GITHUB_ENV"
 
-      - uses: astral-sh/setup-uv@v10.2.0
-        with:
-          python-version: "3.11"
-          # No cache in the job that publishes. setup-uv's "auto" turns caching
-          # off for release events but not for workflow_dispatch, which is how
-          # this runs, and a restored cache is input this job did not build.
-          enable-cache: false
-
-      - run: uv sync --frozen --all-extras --dev
-
-      # Lint
-      - run: uv run ruff check .
-      - run: uv run ruff format --check .
-      - run: uv run pyright
-
-      # Test
-      - run: uv run pytest -v -n auto
-
-      # Bump version (uv version re-locks, so no separate uv lock step)
-      - name: Bump version
-        id: bump
+      # Checked before any token exists: the patch must touch the four bump
+      # files and nothing else, and land the version build reported, for which
+      # the three release files must all exist.
+      - name: Apply the bump
+        env:
+          V: ${{ needs.build.outputs.version }}
         run: |
-          V=$(uv version --bump "${{ inputs.bump }}" --short)
-          node -e 'const fs=require("fs"),p=".claude-plugin/plugin.json",d=JSON.parse(fs.readFileSync(p,"utf8"));d.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n")' "$V"
-          # server.json carries the version twice: the server's own version and
-          # the PyPI package it points at. The MCP Registry rejects a package
-          # version that is not live on PyPI, so both track the release.
-          node -e 'const fs=require("fs"),p="server.json",d=JSON.parse(fs.readFileSync(p,"utf8"));d.version=process.argv[1];d.packages[0].version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n")' "$V"
-          echo "version=$V" >> "$GITHUB_OUTPUT"
-
-      # Pack the MCPB bundle. Both versions in mcpb/ are placeholders stamped
-      # here rather than committed, so the bundle is not a fifth place to bump.
-      # The commit below stages four explicit paths and passes no -a, so these
-      # stamped files stay dirty and out of git on purpose: they are build
-      # output, not repo state.
-      #
-      # This runs before the push so that a packing failure aborts the release
-      # with nothing pushed, rather than stranding a bump commit on main with no
-      # release and no PyPI upload to match it. The packer itself was installed
-      # and checked in "Fetch the pinned release tools", before the bump.
-      #
-      # The bundle lands in bundle/, never dist/, because the PyPI publish step
-      # uploads everything in dist/ and would choke on a non-package file.
-      #
-      # No uv.lock ships with it: the manifest pins the version being released,
-      # which is not live on PyPI until the publish step below, so a lock cannot
-      # be resolved yet. Users resolve on first launch instead, fenced by the
-      # mcp bound in the package's own pyproject.toml.
-      - name: Pack MCPB bundle
-        run: |
-          V="${{ steps.bump.outputs.version }}"
-          mkdir -p bundle
-          node -e 'const fs=require("fs"),p="mcpb/manifest.json",d=JSON.parse(fs.readFileSync(p,"utf8"));d.version=process.argv[1];fs.writeFileSync(p,JSON.stringify(d,null,2)+"\n")' "$V"
-          sed -i "s|mcp-server-kicad==[^\"]*|mcp-server-kicad==$V|" mcpb/pyproject.toml
-          # A reformatted pyproject would slip past sed and ship a bundle
-          # pinned to the wrong release, so confirm the stamp landed.
-          grep -q "\"mcp-server-kicad==$V\"" mcpb/pyproject.toml
-          "$MCPB" pack mcpb "bundle/kicad-$V.mcpb"
+          set -euo pipefail
+          git apply --index bump/bump.patch
+          changed=$(git diff --cached --name-only | LC_ALL=C sort | tr '\n' ' ')
+          if [ "$changed" != ".claude-plugin/plugin.json pyproject.toml server.json uv.lock " ]; then
+            echo "::error::the bump patch changed: $changed"
+            exit 1
+          fi
+          [ "$(cat bump/version)" = "$V" ]
+          grep -qx "version = \"$V\"" pyproject.toml
+          ls "dist/mcp_server_kicad-$V.tar.gz" "dist/mcp_server_kicad-$V-py3-none-any.whl" "bundle/kicad-$V.mcpb"
 
       # The bump goes to main through a GitHub App, because main's ruleset
       # requires a CodeRabbit status and the default GITHUB_TOKEN cannot be
       # exempted from a ruleset on a user-owned repository (GitHub refuses the
       # GitHub Actions app as a bypass actor). The release app is on that
-      # ruleset's bypass list, and its token is scoped to contents: write and
-      # minted here, after the tests, so it is never on disk while they run.
-      # That is not isolation: an earlier step can still plant a git hook or
-      # config, or write $GITHUB_ENV, and reach this step. Only a separate job
-      # would isolate it, and the PyPI and registry OIDC tokens below share
-      # this job the same way.
+      # ruleset's bypass list, and its token is scoped to contents: write.
       - name: Mint the release app's token
         id: app-token
         uses: actions/create-github-app-token@v3
@@ -232,32 +289,31 @@ jobs:
           private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
           permission-contents: write
 
-      # Commit and push. The author stays github-actions[bot]: the gate above
-      # recognises a bump commit by that name.
+      # The author stays github-actions[bot]: the gate recognises a bump commit
+      # by that name.
       - name: Commit and push
         env:
           APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          V: ${{ needs.build.outputs.version }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml uv.lock .claude-plugin/plugin.json server.json
-          git commit -m "chore: bump version to v${{ steps.bump.outputs.version }}"
+          git commit -m "chore: bump version to v$V"
           git push "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
 
-      # Build
-      - run: uv build
-
-      # Create GitHub release
+      # Tagged at the bump commit itself, not at whatever main points to by the
+      # time this runs.
       - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ needs.build.outputs.version }}
         run: |
-          gh release create "v${{ steps.bump.outputs.version }}" \
-            --title "v${{ steps.bump.outputs.version }}" \
+          gh release create "v$V" \
+            --target "$(git rev-parse HEAD)" \
+            --title "v$V" \
             --generate-notes \
             dist/* bundle/*.mcpb
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # Publish to PyPI
       - uses: pypa/gh-action-pypi-publish@release/v1
 
       # Publish to the MCP Registry. Last on purpose: it validates that the PyPI
@@ -269,14 +325,15 @@ jobs:
       # (measured 2026-08-10), so a hand-run publish is a race against the clock
       # every single release. OIDC uses the id-token permission declared above.
       - name: Publish to the MCP Registry
+        env:
+          V: ${{ needs.build.outputs.version }}
         run: |
-          # Fetched and checksummed in "Fetch the pinned release tools" above.
           "$MCP_PUBLISHER" login github-oidc
           # PyPI serves a new version through a CDN, so the registry can still be
           # unable to see it for a few seconds after the publish step returns.
           for attempt in 1 2 3 4 5; do
             "$MCP_PUBLISHER" publish && exit 0
-            echo "attempt $attempt failed; waiting for PyPI to serve ${{ steps.bump.outputs.version }}"
+            echo "attempt $attempt failed; waiting for PyPI to serve $V"
             sleep 30
           done
           exit 1
