@@ -26,9 +26,12 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
           # Full history, so the gate can walk back through bump commits.
           fetch-depth: 0
+          # No token left in .git/config while the test suite and its
+          # dependencies run; the only git write this job makes is the bump
+          # push, which brings its own token.
+          persist-credentials: false
 
       # Refuse, before anything is built, bumped or pushed, unless CI and every
       # KiCad suite passed on the commit being released. This job's own pytest
@@ -42,8 +45,11 @@ jobs:
       # by a red one does not. A run still queued or in progress has no
       # conclusion yet and is refused, as is an API error.
       #
-      # A release's own bump commit is pushed with the default GITHUB_TOKEN and
-      # triggers no runs, so releasing again from one would always be refused.
+      # Bump commits from before the release app were pushed with the default
+      # GITHUB_TOKEN, which triggers no runs, so releasing again from one would
+      # always be refused. Later bumps are pushed with the release app's token,
+      # which does trigger runs, so they get runs of their own; the newest run
+      # still decides, and one still in progress is refused like any other.
       # When HEAD is a bump commit, the commit it bumped joins the evidence (and
       # the one before that, through any chain of bumps), and the newest run
       # across them decides: the tree is the same, so a suite dispatched on the
@@ -208,14 +214,35 @@ jobs:
           grep -q "\"mcp-server-kicad==$V\"" mcpb/pyproject.toml
           "$MCPB" pack mcpb "bundle/kicad-$V.mcpb"
 
-      # Commit and push
+      # The bump goes to main through a GitHub App, because main's ruleset
+      # requires a CodeRabbit status and the default GITHUB_TOKEN cannot be
+      # exempted from a ruleset on a user-owned repository (GitHub refuses the
+      # GitHub Actions app as a bypass actor). The release app is on that
+      # ruleset's bypass list, and its token is scoped to contents: write and
+      # minted here, after the tests, so it is never on disk while they run.
+      # That is not isolation: an earlier step can still plant a git hook or
+      # config, or write $GITHUB_ENV, and reach this step. Only a separate job
+      # would isolate it, and the PyPI and registry OIDC tokens below share
+      # this job the same way.
+      - name: Mint the release app's token
+        id: app-token
+        uses: actions/create-github-app-token@v3
+        with:
+          client-id: ${{ vars.RELEASE_APP_CLIENT_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          permission-contents: write
+
+      # Commit and push. The author stays github-actions[bot]: the gate above
+      # recognises a bump commit by that name.
       - name: Commit and push
+        env:
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add pyproject.toml uv.lock .claude-plugin/plugin.json server.json
           git commit -m "chore: bump version to v${{ steps.bump.outputs.version }}"
-          git push
+          git push "https://x-access-token:${APP_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" HEAD:main
 
       # Build
       - run: uv build
