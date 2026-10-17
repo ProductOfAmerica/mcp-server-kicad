@@ -62,7 +62,8 @@ These are the kicad MCP tools you should be using during verification:
 - `get_net_connections` — trace a net to debug connectivity issues
 - `validate_hierarchy` — check for unannotated refs, duplicate refs,
   orphaned labels/pins, direction mismatches, junctions and bus entry
-  ends left inside wires (run from root schematic)
+  ends left inside wires, and no-connect flags and wire ends left off
+  the pins of mirrored, rotated parts (run from root schematic)
 - `trace_hierarchical_net` — trace a net across sheet boundaries to
   debug cross-sheet connectivity issues
 
@@ -146,6 +147,16 @@ wire, and kicad-cli 9 (ERC, netlist, PCB update) cuts the wire there.
 Make the call each issue names in `repair`, exactly as given, then
 re-run `validate_hierarchy` to confirm.
 
+**If `no_connect_off_pin` or `wire_end_off_pin`:** an earlier version
+put a no-connect flag or a wire end where it computed a pin of a part
+rotated 90 or 270 degrees and mirrored, and KiCad draws that pin at
+`pin_x`, `pin_y`, so the flag or the wire misses it. For a wire end
+with a `repair`, make that call exactly as given: it joins the pin to
+what the wire reaches, and leaves the old wire where it is (if that
+wire then dangles, `run_erc` lists it and `remove_wire` removes it). A
+flag always carries a `note` (below), since no tool removes a flag by
+its position.
+
 **If an issue carries a `note` and no `repair`:** no tool call fixes it,
 and the note says why. Do not work around it with other tools (removing,
 redrawing or moving wires, junctions or bus entries). Report the note to
@@ -160,6 +171,12 @@ the user and wait, as in stuck escalation below:
   nothing to a schematic already in KiCad 9's format.
 - `references_unchecked`: the hierarchy has too many sheet instances
   for the reference check; tell the user it was not completed.
+- `no_connect_off_pin`: the user deletes the flag at `x`, `y` in
+  KiCad's editor. After that, make the `no_connect_pin` call the note
+  names, if it names one.
+- `wire_end_off_pin` with a note: the call that would join the pin
+  refuses, or what the wire was meant to join is unknown; the note
+  says which. The user decides how the pin is wired.
 After the user acts, re-run `validate_hierarchy`.
 
 **Debug cross-sheet nets:** Use `trace_hierarchical_net` to follow a net

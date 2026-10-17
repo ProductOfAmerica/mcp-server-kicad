@@ -197,7 +197,8 @@ scan and a budget test.
 - Files edited by earlier versions of this repo may hold no-connect flags and wires at the
   mirrored point the old transform gave a pin at rotation 90 or 270 with a mirror.
   remove_no_connect now looks at the pin KiCad draws and will not find such a flag. An
-  inference, not measured; a read-only check could list them.
+  inference, not measured; a read-only check could list them. (Closed: measured, and
+  validate_hierarchy lists them; status log, 2026-10-16, step 8c.)
 
 ## Decisions (2026-10-04)
 
@@ -334,3 +335,34 @@ Each slice appends an entry when it lands.
   not reported. That closes the out-of-scope item on existing files; the release note is the
   pull request's. It reports none on the 36 demo projects KiCad 9.0.8 ships (measured
   2026-10-15).
+
+- 2026-10-16, step 8c: the mirrored pin point, measured. mcp-server-kicad 0.20.1 from PyPI,
+  whose sources are the v0.20.1 tag's, ran no_connect_pin, wire_pins_to_net (direction auto) and
+  connect_pins once on every pin of R, D and Q_NPN_BCE in all 12 states, 252 calls. Each wrote
+  at the point its get_pin_positions reported: the flag, the stub's first end, the route's first
+  end and the Net-(REF-PIN) label there. At rotation 90 or 270 with a mirror that point is
+  KiCad's pin end reflected through the symbol's origin, in the other eight states it is the
+  end, which confirms the inference recorded above. kicad-cli 9.0.8 read every write at those
+  four states as missing its pin: on R and D it flagged or wired the other pin, on the
+  transistor nothing. validate_hierarchy now lists per file each flag (no_connect_off_pin) and
+  wire end (wire_end_off_pin) at such a point where KiCad draws no pin, with the symbol, the pin
+  and both points, but not a flag that shares its point with a sheet pin or a hierarchical
+  label, which KiCad's ERC accepts (connection_graph.cpp:3735-3750 at 9.0.8). The two-pin case
+  is not listed: there 0.20.1 wrote on the other pin's end the bytes an edit of that pin writes.
+  The only traces left are connect_pins' Net-(REF-PIN) label, written only where the net had no
+  label yet, and the auto stub's direction, toward the symbol's origin at 90 and 270 whether
+  mirrored or not. A wire end that meets anything else at the point, other than such a flag or
+  that label, is not listed: in KiCad 9.0.8's demos, of the 6,002 points where a pin's end
+  reflected through its symbol's origin finds no pin, 27 hold wire ends, 77 in all, each meeting
+  another wire's end, a junction or a label and none dangling, and no flag; the 28 such points
+  of symbols at 90 or 270 with a mirror hold nothing. A wire end those releases ran onto a wire
+  passing through the point meets the junction they added there, so it is not listed either;
+  that junction is, as junction_inside_wire. A flag carries a note, since no tool removes one by
+  its position. A wire end's repair is wire_pins_to_net with its net's local label name, planned
+  first, else connect_pins to the pin its wires run to. On the sheet 0.20.1 wrote
+  (tests/fixtures/mirrored_0_20_1.kicad_sch), those repairs, and for each flag a deletion as in
+  KiCad's editor followed by the no_connect_pin its note names, leave every transistor pin as
+  the calls meant it in kicad-cli 9.0.8's netlist, nothing else changed. kicad-cli's ERC on that
+  sheet reports the four stray flags as no_connect_dangling and the four stubs' first ends as
+  unconnected_wire_endpoint; of the four stray routes it reports only their labels, as
+  label_dangling, as it does every label there whose net holds fewer than two pins.
