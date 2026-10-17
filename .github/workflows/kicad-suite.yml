@@ -13,8 +13,9 @@ name: KiCad suite (Linux)
 #
 # Unlike macos-discovery.yml, this does run on pull requests: Linux runners are far
 # cheaper than macos-15, and this guards the whole suite rather than checking one
-# derivation. Drop the pull_request trigger if the added latency stops being worth
-# it.
+# derivation. Its result job is a check main's ruleset requires, so dropping the
+# pull_request trigger would leave every pull request waiting on it; drop the
+# requirement first.
 #
 # It runs once per supported KiCad major. The two KiCad 10 gates, macOS and
 # Windows, run only on pushes to main and ci/**, so before the 10.0 leg a pull
@@ -25,36 +26,63 @@ on:
     branches: [main, master, "ci/**"]
   pull_request:
     branches: [main, master]
-    # A pull request touching only these files runs nothing here. The tests
-    # read none of them; uv sync reads README.md, the package readme, but
-    # ci.yml runs the same sync on every Markdown change and so catches a
-    # README that breaks the build. ci.yml skips the same files except
-    # Markdown, which its ruff step reads. Pushes to main and ci/** are not
-    # filtered: release.yml refuses a commit without its own green push runs.
-    # If a ruleset ever requires this job, a PR touching only these files would
-    # wait on it forever.
-    paths-ignore:
-      - "README.md"
-      - "CONTRIBUTING.md"
-      - "SECURITY.md"
-      - "SUPPORT.md"
-      - "CODE_OF_CONDUCT.md"
-      - "CLAUDE.md"
-      - "NOTICE"
-      - "docs/**"
-      - ".coderabbit.yaml"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/pull_request_template.md"
-      - ".github/FUNDING.yml"
-      - ".github/dependabot.yml"
-      - ".github/assets/**"
 
 permissions:
   contents: read
 
 jobs:
+  # Decides whether the suite runs. The workflow itself always runs, so the
+  # result job below always reports and main's ruleset can require it; a
+  # paths-ignore filter would leave a docs-only PR waiting on it forever.
+  changes:
+    runs-on: ubuntu-24.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A PR checks out its merge commit; its first parent is the base.
+          fetch-depth: 2
+      # A pull request touching only these files skips the suite. The tests
+      # read none of them; uv sync reads README.md, the package readme, but
+      # ci.yml runs the same sync on every Markdown change and so catches a
+      # README that breaks the build. ci.yml skips the same files except
+      # Markdown, which its ruff step reads. Pushes and manual runs skip
+      # nothing: release.yml refuses a commit without its own green push runs.
+      - id: diff
+        # Explicit, for pipefail: the default shell would let a failing
+        # docs_only.py hide behind tee's exit status.
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cat > "$RUNNER_TEMP/skip.txt" <<'EOF'
+          README.md
+          CONTRIBUTING.md
+          SECURITY.md
+          SUPPORT.md
+          CODE_OF_CONDUCT.md
+          CLAUDE.md
+          NOTICE
+          docs/**
+          .coderabbit.yaml
+          .github/ISSUE_TEMPLATE/**
+          .github/pull_request_template.md
+          .github/FUNDING.yml
+          .github/dependabot.yml
+          .github/assets/**
+          EOF
+          git diff --name-only HEAD^1 HEAD | tee "$RUNNER_TEMP/changed.txt"
+          python3 .github/tools/docs_only.py "$RUNNER_TEMP/skip.txt" < "$RUNNER_TEMP/changed.txt" | tee -a "$GITHUB_OUTPUT"
+
   suite:
     name: suite (KiCad ${{ matrix.kicad }})
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     # Pinned rather than ubuntu-latest: this depends on an external PPA, and a
     # runner image bump to a series the PPA has not built for would break the job
     # for reasons that have nothing to do with the code.
@@ -159,3 +187,22 @@ jobs:
       # -rs prints each skip's reason, so a leg's log says which tests did
       # not run and why.
       - run: uv run pytest -v -n auto -rs
+
+  # The one check main's ruleset requires from this workflow. It passes when
+  # both KiCad legs passed, or when changes found a docs-only PR and the suite
+  # was skipped; anything else, a cancelled run included, fails it.
+  result:
+    name: KiCad suite result
+    if: always()
+    needs: [changes, suite]
+    runs-on: ubuntu-24.04
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          SUITE: ${{ needs.suite.result }}
+        run: |
+          echo "changes=$CHANGES code=$CODE suite=$SUITE"
+          [ "$CHANGES" = success ] || exit 1
+          if [ "$CODE" = false ]; then want=skipped; else want=success; fi
+          [ "$SUITE" = "$want" ]
