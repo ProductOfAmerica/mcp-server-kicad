@@ -327,9 +327,10 @@ Each slice appends an entry when it lands.
   strictly inside one, with the stretch of each line kicad-cli 9 keeps and the one it drops,
   KiCad 9's editor reading, and the add_junctions or remove_junction call that leaves the line
   split as that editor holds it (a note where no call can). KiCad 10 cuts no line at a bus
-  entry end (CleanUp, schematic.cpp:1537-1728 at 10.0.7, never calls BreakSegmentsOnJunctions)
-  and its graph joins a line inside it only under a junction or a label, never at a bus entry
-  end (connection_graph.cpp:1393-1429 and 1443-1462), so every KiCad 10 reader reads such a
-  file alike and it is not reported. That closes the out-of-scope item on existing
-  files; the release note is the pull request's. It reports none on the 36 demo projects KiCad
-  9.0.8 ships (measured 2026-10-15).
+  entry end (CleanUp, schematic.cpp:1537-1728 at 10.0.7, never calls BreakSegmentsOnJunctions),
+  and its graph reads a line through one whole, joining a wire there to nothing and a bus to the
+  entry, since GetBus finds a bus anywhere along it (connection_graph.cpp:1438-1460 and
+  1523-1536, sch_screen.h:451-455), so every KiCad 10 reader reads such a file alike and it is
+  not reported. That closes the out-of-scope item on existing files; the release note is the
+  pull request's. It reports none on the 36 demo projects KiCad 9.0.8 ships (measured
+  2026-10-15).

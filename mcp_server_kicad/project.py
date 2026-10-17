@@ -815,10 +815,12 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     direction mismatches, a missing file, a file that cannot be parsed ("unreadable_file",
     whose "note" names the file; its checks are skipped, the rest still run). Per sheet
     instance, so a reused sheet counts once per use: duplicate and unannotated reference
-    designators, each read as KiCad reads it at that instance (the units of one multi-unit
-    part share theirs); past 4096 instances a "references_unchecked" note says the rest went
-    unchecked. Per file: the points where kicad-cli 9 drops part of a line that KiCad's editor
-    keeps.
+    designators, each read from the entry KiCad reads at that instance, the root's
+    symbol_instances table on a root in KiCad 6's form, else the symbol's own (the units of
+    one multi-unit part share theirs); an instance with no entry reads the symbol's first
+    entry, else its Reference property. Past 4096 instances a "references_unchecked" note says
+    the rest went unchecked. Per file: the points where kicad-cli 9 drops part of a line that
+    KiCad's editor keeps.
 
     Those are a junction strictly inside a wire or bus ("junction_inside_wire") and, in a file
     kicad-cli 9 loads, a bus entry end strictly inside one ("bus_entry_inside_wire"); KiCad's
@@ -937,15 +939,26 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
             todo += [(child_path, s, below) for s in reversed(child_root.find_all("sheet"))]
 
     # References, per sheet instance: a reused sheet's symbol carries one per instance path,
-    # "/<root uuid>/<sheet uuid>/..." (SymRecord.at, after sch_symbol.cpp GetRef at 9.0.8).
+    # "/<root uuid>/<sheet uuid>/..." (SymRecord.at, after sch_symbol.cpp GetRef at 9.0.8). On
+    # a root older than 20221002, KiCad 6's form, a symbol takes at each instance the first
+    # entry of the root's (symbol_instances) table for that instance, whose path is written
+    # below the root, as the parser puts the root's uuid in front (UpdateSymbolInstanceData,
+    # sch_sheet_path.cpp:1277-1318, called from eeschema_helpers.cpp:180-181, and
+    # sch_io_kicad_sexpr_parser.cpp:2543-2552, at 9.0.8).
+    top_facts = _connectivity.sheet_facts(root)
+    table: dict[str, tuple[str, int]] = {}
+    if top_facts.version < _connectivity._ON_SYMBOL_VERSION:
+        for where, ref, unit in top_facts.legacy:
+            table.setdefault(where, (ref, unit))
     all_refs: dict[str, list] = {}  # ref -> [(record, (unit,), sheet label)], one per instance
-    records: dict[Path, tuple] = {}
-    walk: list[tuple[Path, str, str, tuple[Path, ...]]] = [
-        (top_real, f"/{_node_uuid(root)}", top.name, (top_real,))
+    records: dict[Path, tuple] = {top_real: top_facts.records}
+    # (file, its instance path, that path below the root, sheet label, files root to it)
+    walk: list[tuple[Path, str, str, str, tuple[Path, ...]]] = [
+        (top_real, f"/{_node_uuid(root)}", "", top.name, (top_real,))
     ]
     seen = 0
     while walk:
-        real, kpath, label, chain = walk.pop()
+        real, kpath, under, label, chain = walk.pop()
         seen += 1
         if seen > _connectivity._MAX_INSTANCES:
             issues.append(
@@ -960,16 +973,25 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
         if real not in records:
             records[real] = _connectivity.sheet_facts(trees[real]).records
         for rec in records[real]:
-            if not rec.entries and rec.prop_ref == "?":
+            hit = table.get(f"{under}/{rec.uuid}")
+            if hit is not None:
+                ref, unit = hit
+            elif not rec.entries and rec.prop_ref == "?":
                 continue  # no Reference at all
-            ref, unit = rec.at(kpath)
+            else:
+                # Not modelled: at an instance with no entry, KiCad reads the reference and unit
+                # its load last left in the symbol, the entry of the last instance in its page
+                # order that has one (UpdateAllScreenReferences, sch_sheet_path.cpp:376-396 at
+                # 9.0.8). SymRecord.at reads the first entry, else the Reference property, which
+                # KiCad reads too unless an entry at another instance names something else.
+                ref, unit = rec.at(kpath)
             if "?" in ref:
                 issues.append({"type": "unannotated_ref", "sheet": label, "reference": ref})
             else:
                 all_refs.setdefault(ref, []).append((rec, (unit,), label))
         for su, child, name in reversed(kids.get(real, ())):
             if child not in chain:
-                walk.append((child, f"{kpath}/{su}", name, (*chain, child)))
+                walk.append((child, f"{kpath}/{su}", f"{under}/{su}", name, (*chain, child)))
 
     for ref, placed in all_refs.items():
         if ref.startswith("#"):  # Skip power symbols

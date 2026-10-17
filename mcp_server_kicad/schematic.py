@@ -1264,10 +1264,11 @@ def _cuts_inside_lines(root, path: str) -> list[dict]:
     remove_junction, which leaves the line whole (where a bus entry also ends there, the re-run
     reports that end). A bus-entry end where KiCad allows no junction gets a note instead. A
     KiCad 10 file holds no bus-entry cut: KiCad 10 breaks no line on load (CleanUp,
-    schematic.cpp:1537-1728 at 10.0.7) and its graph joins a line inside it only under a
-    junction or a label (connection_graph.cpp:1393-1429 and 1443-1462). A sheet the model
-    refuses, a symbol or pin at an angle KiCad cannot load, gets the reason in place of the
-    readings and the repair."""
+    schematic.cpp:1537-1728 at 10.0.7), and its graph reads a line through a bus-entry end
+    whole, joining a wire there to nothing and a bus to the entry, since GetBus finds a bus
+    anywhere along it (connection_graph.cpp:1438-1460 and 1523-1536, sch_screen.h:451-455). A
+    sheet the model refuses, a symbol or pin at an angle KiCad cannot load, gets the reason in
+    place of the readings and the repair."""
     lines = []
     for node in root.lists:
         xys = _line_xys(node) if node.head in ("wire", "bus") else None
@@ -1340,9 +1341,17 @@ def _cuts_inside_lines(root, path: str) -> list[dict]:
                 "arguments": {**spot, "schematic_path": path},
             }
         else:
+            # KiCad 9's editor splits the line as it loads the schematic, through a commit it
+            # never pushes, and adding the second half marks nothing modified (files-io.cpp:
+            # 537-539, schematic.cpp:1054-1072, sch_base_frame.cpp:459-479 at 9.0.8). Its save
+            # then writes nothing to a root already in its own format unless something was
+            # edited (files-io.cpp:999-1006); an undo counts as an edit (OnModify,
+            # tools/sch_editor_control.cpp:1289-1316).
             issue["note"] = (
                 "KiCad allows no junction at this bus-entry end, so no call here splits the"
-                " line; open and save the sheet in KiCad 9's editor, which splits it on load."
+                " line. KiCad 9's editor splits it when it opens the schematic, but saves a"
+                " schematic already in its own format only once something was edited: there,"
+                " make any edit and undo it, then save."
             )
         issues.append(issue)
     return issues
@@ -1903,8 +1912,10 @@ def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> st
     1465-1497 at 9.0.8), and its cleanup deletes one placed there, so the whole call is
     refused, naming each such point, and nothing is written. Every wire through a junction
     is split there, which kicad-cli 9 needs to read the join; where a junction is already
-    exactly at a point no second one is added, but a wire still running through it is split,
-    even off the page, where KiCad reads it as anywhere else. The result names each junction
+    exactly at a point no second one is added, but a wire still running through it is split.
+    A point where KiCad allows a junction, or where one already is, is taken even off the
+    page: it lies on wires or pins already drawn, which KiCad reads there as anywhere else.
+    Any other point off the page is refused as off the page. The result names each junction
     written, each one already there and each split.
 
     Args:
@@ -1914,12 +1925,6 @@ def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> st
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     before = _cst.serialize(tree)
     m = _model(root)
-    # The page check is for a junction this call would place: where one already is, the call
-    # places none and only splits the wires through it.
-    dots = {(it.x, it.y) for it in m.items if it.kind == "junction"}
-    for p in points:
-        if _req_point(p["x"], p["y"]) not in dots:
-            _bounds_check(p["x"], p["y"], page_w, page_h, page_name)
     wanted = {}
     for spec in points:
         wanted.setdefault(_req_point(spec["x"], spec["y"]), spec)
@@ -1928,6 +1933,12 @@ def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> st
         info = _connectivity.junction_info(m, q, break_crossings=True)
         if not info.dot and not info.explicit:
             refused.append(spec)
+    # The page check is for a point the rule refuses, where it names the likelier mistake. A
+    # point KiCad takes a junction at, or that holds one, lies on wires or pins already drawn,
+    # which KiCad reads off the page as anywhere else, so the repairs validate_hierarchy names
+    # hold there as well.
+    for spec in refused:
+        _bounds_check(spec["x"], spec["y"], page_w, page_h, page_name)
     if refused:
         named = ", ".join(f"({spec['x']}, {spec['y']})" for spec in refused)
         raise ToolError(

@@ -1096,10 +1096,11 @@ def test_validate_hierarchy_reports_no_entry_end_on_a_kicad_10_file():
     can load it: CleanUp breaks no line on load (schematic.cpp:1537-1728 at 10.0.7; its only
     BreakSegmentsOnJunctions, sch_line_wire_bus_tool.cpp:1459, is never called), and the
     graph joins items at their own connection points (connection_graph.cpp:1361-1392), a
-    wire's being its ends, and a line inside it only under a label or a junction
-    (1393-1429); a bus entry end inside a wire joins nothing but a bus there (1443-1462).
-    The wire stays whole, so there is no cut to report. Written outside the test's
-    directory, since the local kicad-cli 9 cannot load it."""
+    wire's being its ends, and a wire inside it only under a label or a junction
+    (1393-1429); a bus entry end inside a wire joins nothing there, since off its own points
+    an entry joins only a bus (1438-1460 and 1523-1536). The wire stays whole, so there is
+    no cut to report. Written outside the test's directory, since the local kicad-cli 9
+    cannot load it."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as work:
         case = _ENTRY_THROUGH
         p = _entry_sheet(Path(work), "k10", case, case.lines, case.dots)
@@ -1158,6 +1159,61 @@ def _reused_apart(tmp_path) -> Path:
     return root
 
 
+def _as_kicad6(root: Path, child: Path) -> None:
+    """Rewrite a root and its one child file, as the tools build them, in KiCad 6's form
+    (version 20211123): no symbol and no sheet carries (instances); each instance entry
+    becomes an entry of the root's (symbol_instances) table and each sheet's page one of its
+    (sheet_instances), every path written below the root, to which the parser puts the root's
+    uuid in front (sch_io_kicad_sexpr_parser.cpp:2445-2455 and 2543-2552 at 9.0.8)."""
+    files = {f: _cst.parse(read(f)) for f in (root, child)}
+    top = files[root].lists[0]
+    prefix = f"/{top.find('uuid').atoms[1].text}"
+    pages = ['(path "/" (page "1"))']
+    for k, block in enumerate(top.find_all("sheet")):
+        pages.append(f'(path "/{block.find("uuid").atoms[1].text}" (page "{k + 2}"))')
+        block.remove_child(block.find("instances"))
+    entries = []
+    for tree in files.values():
+        doc = tree.lists[0]
+        doc.find("version").atoms[1].set_text("20211123")
+        for sym in doc.find_all("symbol"):
+            fields = {
+                q.atoms[1].text: q.atoms[2].text
+                for q in sym.find_all("property")
+                if len(q.atoms) > 2
+            }
+            inst = sym.find("instances")
+            for path in (p for proj in inst.find_all("project") for p in proj.find_all("path")):
+                where = path.atoms[1].text
+                if not where.startswith(prefix):
+                    raise RuntimeError(f"premise: {where} is not an instance path of the root")
+                entries.append(
+                    f'(path "{where[len(prefix) :]}/{sym.find("uuid").atoms[1].text}"'
+                    f' (reference "{path.find("reference").atoms[1].text}")'
+                    f" (unit {path.find('unit').atoms[1].text})"
+                    f' (value "{fields["Value"]}") (footprint "{fields["Footprint"]}"))'
+                )
+            sym.remove_child(inst)
+    top.remove_child(top.find("sheet_instances"))
+    for table in (
+        f"(sheet_instances {' '.join(pages)})",
+        f"(symbol_instances {' '.join(entries)})",
+    ):
+        top.append_child(_cst.parse(table.encode()).lists[0], b"\n\t")
+    for f, tree in files.items():
+        f.write_bytes(_cst.serialize(tree))
+
+
+def _reused_apart_kicad6(tmp_path, root_part: str = "") -> Path:
+    """_reused_apart in KiCad 6's form (_as_kicad6), with a part *root_part* on the root when
+    given."""
+    root = _reused_apart(tmp_path)
+    if root_part:
+        place(str(root), "R", root_part, 152.4, 101.6)
+    _as_kicad6(root, root.parent / "child.kicad_sch")
+    return root
+
+
 def _units(tmp_path, child_unit: int) -> Path:
     """RN1, an R_Network03_Split (three units), placed on the child as unit *child_unit* and on
     the root as unit 1: two units of one part, or one unit placed twice."""
@@ -1174,23 +1230,42 @@ def _units(tmp_path, child_unit: int) -> Path:
 
 @requires_cli
 @pytest.mark.parametrize(
-    "build",
-    [_reused_shared, _reused_apart, lambda t: _units(t, 2), lambda t: _units(t, 1)],
-    ids=["shared", "apart", "two_units_of_one_part", "one_unit_twice"],
+    "build, exact",
+    [
+        pytest.param(_reused_shared, True, id="shared"),
+        pytest.param(_reused_apart, True, id="apart"),
+        pytest.param(_reused_apart_kicad6, True, id="apart_kicad6"),
+        pytest.param(
+            lambda t: _reused_apart_kicad6(t, root_part="R101"),
+            True,
+            id="apart_kicad6_with_a_root_part_sharing_one",
+        ),
+        pytest.param(lambda t: _units(t, 2), False, id="two_units_of_one_part"),
+        pytest.param(lambda t: _units(t, 1), False, id="one_unit_twice"),
+    ],
 )
-def test_validate_hierarchy_reads_references_per_sheet_instance(tmp_path, build):
+def test_validate_hierarchy_reads_references_per_sheet_instance(tmp_path, build, exact):
     """A reused sheet's symbol has one reference per instance: the instance entry for that
     sheet path, else its first entry, else its Reference property (SymRecord.at, after
-    sch_symbol.cpp GetRef at 9.0.8). kicad-cli 9 judges: validate_hierarchy reports a
-    duplicate wherever its netlist lists two components under one reference, and reports one
-    exactly when it warns of annotation errors. Both instances of the shared child read R1;
-    the child annotated apart has none; two units of one part share a reference, and one
-    unit placed twice is a duplicate."""
+    sch_symbol.cpp GetRef at 9.0.8). On a root older than 20221002, KiCad 6's form, the
+    root's (symbol_instances) table gives it first: each instance takes the table's first
+    entry for its path (UpdateSymbolInstanceData, sch_sheet_path.cpp:1277-1318 at 9.0.8,
+    called from eeschema_helpers.cpp:180-181). kicad-cli 9 judges: validate_hierarchy reports
+    a duplicate wherever its netlist lists two components under one reference, and reports
+    one exactly when it warns of annotation errors. Both instances of the shared child read
+    R1; the child annotated apart has none, in either form, and shares R101 with a part on the
+    KiCad 6 root; two units of one part share a reference, and one unit placed twice is a
+    duplicate. The netlist lists a reference once per sheet instance (makeSymbols,
+    netlist_exporter_xml.cpp:245-300 at 9.0.8) and a part of several units once in all
+    (findNextSymbol, netlist_exporter_base.cpp:114-118). So where every part has one unit and
+    no reference repeats within one sheet instance, the first four, the duplicates are
+    exactly the references it lists twice."""
     root = build(tmp_path)
     counts, warned = _component_refs(root)
     issues = project.validate_hierarchy(schematic_path=str(root)).issues
     dups = {i["reference"] for i in issues if i["type"] == "duplicate_ref"}
-    assert dups >= {ref for ref, n in counts.items() if n > 1}
+    listed_twice = {ref for ref, n in counts.items() if n > 1}
+    assert (dups == listed_twice) if exact else (dups >= listed_twice), (dups, listed_twice)
     assert bool(dups) == warned, (dups, warned)
 
 
@@ -1249,3 +1324,22 @@ def test_the_repair_named_for_a_junction_off_the_page_works(tmp_path):
     assert _junction_issues(p) == []
     if cli9():
         assert joins(p, _T.pins) == one_net(*_T.pins)
+
+
+def test_the_repair_named_for_a_bus_entry_end_off_the_page_works(tmp_path):
+    """A wire drawn through a bus entry's wire end, on a sheet whose page now ends short of
+    them. KiCad allows a junction at that end (IsExplicitJunctionAllowed, sch_screen.cpp:
+    498-504 at 9.0.8) and reads items off the page as any other, so the add_junctions named
+    there places one, off the page, and splits the wire as BreakAt splits it: the re-run is
+    clean, and kicad-cli 9 joins the wire's two pins again."""
+    case = _ENTRY_THROUGH
+    p = _entry_sheet(tmp_path, "offpage_entry", case, case.lines, case.dots)
+    schematic.set_page_size("User", width=60, height=60, schematic_path=p)
+    (issue,) = _issues_of(p, "bus_entry_inside_wire")
+    before = read(p)
+    _repair(issue)
+    (split,) = S.assert_split_edit(before, read(p), heads=["wire", "junction"])
+    assert split.point == _spot(issue)
+    assert _issues_of(p, "bus_entry_inside_wire") == []
+    if cli9():
+        assert joins(p, case.pins) == one_net(*case.pins)
