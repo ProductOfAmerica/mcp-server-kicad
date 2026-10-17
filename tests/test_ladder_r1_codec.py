@@ -10,7 +10,7 @@ No judge here is the CST:
   by its FromUTF8 model for the string KiCad stores;
 - kicad-cli itself, through the component fields of its kicadxml netlist
   (conftest.netlist_fields);
-- KiCad's board writer, for the pcb.py helpers that quote by hand.
+- KiCad's board writer, for the pcb.py helpers that write a net name or a footprint path.
 
 Atom.text is judged at the token-byte level. The CST keeps a string's bytes by design;
 KiCad then stores FromUTF8 of them, which ends a KiCad 9 value at its first NUL and reads
@@ -52,17 +52,6 @@ FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
 
 #: The majors whose reading a written value must survive (see the module docstring).
 MAJORS = (9, 10)
-
-_BUG_67 = (
-    "bug 67: pcb._pad_net_bytes, _ensure_net_rows and _set_fp_path quote by hand, not"
-    " as Quotew does (LF and CR raw, the path not escaped at all); fixed by step 11"
-)
-
-
-def _xfail(reason: str):
-    """The one xfail the ladder allows: strict, and only for the bug's own assertion."""
-    return pytest.mark.xfail(strict=True, raises=AssertionError, reason=reason)
-
 
 # ---------------------------------------------------------------------------
 # strategies and helpers
@@ -581,7 +570,7 @@ def test_kicad_cli_reads_back_quoted_nul(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# board writers that quote by hand
+# board writers that write a net name or a footprint path
 # ---------------------------------------------------------------------------
 
 #: A KiCad 9 board header (SEXPR_BOARD_FILE_VERSION 20241229, pcbnew/pcb_io/kicad_sexpr/
@@ -629,13 +618,12 @@ _BOARD_WRITERS = {
 }
 
 
-@_xfail(_BUG_67)
 @pytest.mark.parametrize("writer", sorted(_BOARD_WRITERS))
 @given(G.kicad_text.filter(lambda text: text not in ("", "GND")))
 @example("a\nb")
 @example('/a"b')
 def test_board_writers_quote_as_kicad_does(writer, text):
-    """Each hand-quoting board writer emits the bytes KiCad's own writer emits: "(net %d
+    """Each board writer of a name or a path emits the bytes KiCad's own writer emits: "(net %d
     %s)" with Quotew for a net row and a pad's net (pcb_io_kicad_sexpr.cpp:678-680 and
     1613-1614 at 9.0.8), "(net %s)" in a KiCad 10 board (1858 at 10.0.7), and "(path %s)"
     for a footprint's path (1175 at 9.0.8, 1278 at 10.0.7). A writer that cannot parse
@@ -645,6 +633,27 @@ def test_board_writers_quote_as_kicad_does(writer, text):
     except SyntaxError as exc:
         raise AssertionError(f"{writer} cannot parse what it built for {text!r}: {exc}") from exc
     assert got == want
+
+
+@pytest.mark.parametrize("writer", sorted(_BOARD_WRITERS))
+def test_board_writers_refuse_a_name_holding_a_nul(writer):
+    """KiCad 9 ends a value at a NUL (include/dsnlexer.h:434-437 at 9.0.8), so no spelling of a
+    net name or a footprint path holding one reaches both majors: each board writer refuses it
+    the way set_text does."""
+    with pytest.raises(ValueError):
+        _BOARD_WRITERS[writer]("A\x00B")
+
+
+def test_a_refused_net_row_or_path_leaves_the_tree_as_it_was():
+    """The refusal comes before any insertion, so a board a tool is working on stays whole."""
+    root = _cst.parse(_K9_BOARD).lists[0]
+    fp = _cst.parse(_FOOTPRINT).lists[0]
+    before = _cst.serialize(root), _cst.serialize(fp)
+    with pytest.raises(ValueError):
+        pcb._ensure_net_rows(root, ["A\x00B"])
+    with pytest.raises(ValueError):
+        pcb._set_fp_path(fp, "A\x00B")
+    assert (_cst.serialize(root), _cst.serialize(fp)) == before
 
 
 # ---------------------------------------------------------------------------

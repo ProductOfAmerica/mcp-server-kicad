@@ -304,6 +304,14 @@ _VIA_TPL = _cst.parse(
     b'\n\t\t(layers "F.Cu" "B.Cu")\n\t\t(net 0)\n\t\t(uuid "x")\n\t)'
 ).lists[0]
 
+# The three constructs written with a name or path in them, filled with set_text, whose
+# quoting of a quoted atom is KiCad's (pcb_io_kicad_sexpr.cpp:678-680, 1613-1614 and 1175 at
+# 9.0.8; 1858 and 1278 at 10.0.7): a KiCad 9 net row or pad net, a KiCad 10 net, a
+# footprint's path.
+_NET_ROW_TPL = _cst.parse(b'(net 0 "x")').lists[0]
+_NET_NAMED_TPL = _cst.parse(b'(net "x")').lists[0]
+_FP_PATH_TPL = _cst.parse(b'(path "x")').lists[0]
+
 #: Most vias add_thermal_vias places in one call. A heuristic, not a KiCad
 #: limit: real exposed-pad grids run about 3x3 to 10x10, and every via rescans
 #: the board before the one write, so the cost is grid size times board size.
@@ -365,7 +373,7 @@ def _set_item_net(node, root, net: int) -> None:
             "references are silently rebound by load order there, so the tool "
             "refuses rather than emit one (ADR-2 guardrail 5)."
         )
-    named = _cst.parse(b'(net "x")').lists[0]
+    named = _NET_NAMED_TPL.copy()
     named.atoms[1].set_text(name)
     named.sep = net_node.sep
     node.children[node.children.index(net_node)] = named
@@ -3881,11 +3889,13 @@ def _set_fp_path(fp, path: str) -> None:
     """The KIID path that links a board footprint to its schematic symbol.
 
     Replaced rather than appended, because a swapped footprint carries the old
-    one. GUI linkage only, so a board without it is still correct.
+    one. GUI linkage only, so a board without it is still correct. The path is
+    written by set_text, so it is quoted as KiCad quotes it and a NUL is refused.
     """
     if not path:
         return
-    node = _cst.parse(f'(path "{path}")'.encode()).lists[0]
+    node = _FP_PATH_TPL.copy()
+    node.atoms[1].set_text(path)
     existing = fp.find("path")
     if existing is not None:
         node.sep = existing.sep
@@ -3900,13 +3910,17 @@ def _pad_net_bytes(root, number: int, name: str) -> bytes:
 
     ADR-2 guardrail 5, and the one place a mistake is silent rather than loud:
     a numeric reference in a KiCad 10 board is accepted and rebound by load
-    order, measured landing (net 2) on GND with no error at all.
+    order, measured landing (net 2) on GND with no error at all. The name is
+    written by set_text, so it is quoted as KiCad quotes it and a NUL is refused.
     """
     if _board_version(root) <= _NUMERIC_NET_VERSION_MAX:
-        escaped = name.replace("\\", "\\\\").replace('"', '\\"')
-        return f'(net {number} "{escaped}")'.encode()
-    escaped = name.replace("\\", "\\\\").replace('"', '\\"')
-    return f'(net "{escaped}")'.encode()
+        node = _NET_ROW_TPL.copy()
+        node.atoms[1].set_text(str(number))
+        node.atoms[2].set_text(name)
+    else:
+        node = _NET_NAMED_TPL.copy()
+        node.atoms[1].set_text(name)
+    return _cst.serialize(node)
 
 
 def _bind_pad_net(root, pad, number: int, name: str) -> None:
@@ -3940,7 +3954,8 @@ def _ensure_net_rows(root, names: list[str]) -> int:
     KiCad 9 format boards carry a (net N "NAME") table at the root and numbers
     are assigned from it. KiCad 10 dropped the table entirely: nets exist only
     as name references on the items that use them, so there is nothing to
-    declare and this reports zero rather than inventing a number.
+    declare and this reports zero rather than inventing a number. A name is
+    written by set_text, so it is quoted as KiCad quotes it and a NUL is refused.
     """
     if _board_version(root) > _NUMERIC_NET_VERSION_MAX:
         return 0
@@ -3953,8 +3968,9 @@ def _ensure_net_rows(root, names: list[str]) -> int:
     for name in names:
         if name in have:
             continue
-        escaped = name.replace("\\", "\\\\").replace('"', '\\"')
-        node = _cst.parse(f'(net {nxt} "{escaped}")'.encode()).lists[0]
+        node = _NET_ROW_TPL.copy()
+        node.atoms[1].set_text(str(nxt))
+        node.atoms[2].set_text(name)
         if anchor is not None:
             root.insert_after(anchor, node)
         else:
