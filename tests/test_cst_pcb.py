@@ -340,7 +340,8 @@ class TestAddTraceViaCst:
         assert [(t.type, t.net) for t in traces] == [("segment", 1)]
         pads = pcb.get_footprint_pads("R1", p)
         assert "net=/SIG" in pads and "net=/GND" in pads
-        assert "Nets: 2" in pcb.get_board_info(p)
+        # The two named nets and the unconnected net 0, which pcbnew always holds.
+        assert "Nets: 3" in pcb.get_board_info(p)
 
         before = Path(p).read_bytes()
         pcb.add_trace(50, 50, 60, 50, net=2, pcb_path=p)

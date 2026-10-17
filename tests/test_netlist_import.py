@@ -1304,14 +1304,6 @@ class TestUpdatePcbE2E:
             assert [read["items"][uuid][1] for uuid in uuids] == ["", ""], read["items"]
             assert "/SIG" not in [name for _, name in read["nets"]], read["nets"]
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason=(
-            "bug 22: the pad pass clears every matched pad's net and inserts it again after"
-            " (layers ...), so a pad whose net did not change moves; fixed by step 10"
-        ),
-    )
     def test_a_kicad10_board_keeps_unchanged_pads_in_place(self, tmp_path):
         """The same board and update, judged on its pads (bug 22 on KiCad 10): the pads of the
         footprints the update did not swap whose net did not change (R1 and R2's pads on /GND)

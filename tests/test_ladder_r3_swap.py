@@ -696,12 +696,6 @@ def test_stale_removal_removes_an_unlocked_footprint(tmp_path, spelling):
     assert _stale_removed(tmp_path, spelling)
 
 
-_BUG_90 = (
-    "bug 90: delete_stale removes a footprint marked board_only, which KiCad's updater never"
-    " deletes; fixed by step 10"
-)
-
-
 def _removed_with_attr(work: Path, attr: str) -> bool:
     """Whether update with delete_stale removes U1, which the netlist leaves out, when its
     attributes read ``attr`` (its (attr ...) list, in place of the (attr smd) edit_gen writes);
@@ -723,7 +717,6 @@ def _removed_with_attr(work: Path, attr: str) -> bool:
     return removed
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_90)
 @pytest.mark.parametrize(
     "attr",
     [

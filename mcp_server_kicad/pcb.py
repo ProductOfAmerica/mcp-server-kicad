@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Literal, NamedTuple
 
@@ -213,37 +214,153 @@ def _fp_layer(fp) -> str:
     return layer.atoms[1].text if layer is not None else "F.Cu"
 
 
+#: The board-level items that carry a (net ...): tracks, zones and the copper
+#: shapes, the set KiCad's AllConnectedItems walks over the board itself
+#: (pcbnew/board.cpp:2898-2921 at 9.0.8, 3542-3574 at 10.0.7). A shape's net is
+#: written at pcb_io_kicad_sexpr.cpp:1027-1028 at 9.0.8 and 1117-1118 at 10.0.7.
+#: Footprint-level zones and graphics are not in it.
+_NET_ITEMS = (
+    "segment",
+    "arc",
+    "via",
+    "zone",
+    "gr_line",
+    "gr_rect",
+    "gr_circle",
+    "gr_arc",
+    "gr_poly",
+    "gr_curve",
+)
+
+#: What KiCad's lexer reads as a NUMBER: a sign, digits with at most one point,
+#: and an exponent with digits of its own (isNumber, common/dsnlexer.cpp:495-542
+#: at 9.0.8, 491-538 at 10.0.7). A quoted token is a string, digits or not
+#: (dsnlexer.cpp:643-725 at 10.0.7).
+_NUMBER_TOKEN = re.compile(rb"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
+_INTEGER_PREFIX = re.compile(rb"[-+]?[0-9]+")
+
+
+def _net_code(atom) -> int | None:
+    """The net number a (net ...) atom gives, or None when it gives a name.
+
+    Decided on the atom's raw bytes, which keep the quotes: KiCad's lexer reads
+    a quoted token as a string and an unquoted one as a number only when all of
+    it is one, and a net reference takes the number's integer part, strtol
+    (parseInt, pcb_io_kicad_sexpr_parser.h:354-363 at 9.0.8). So "5" is a name
+    wherever it is written, 5 is a number, 1.5 is the number 1 and .5 is 0.
+    KiCad 10 writes every net name quoted, digits or not (pcb_io_kicad_sexpr.cpp:
+    2861 and OUTPUTFORMATTER::Quotes, common/richio.cpp:470-506 at 10.0.7), and
+    its parser takes a quoted token for a name (pcb_io_kicad_sexpr_parser.cpp:
+    296-342 at 10.0.7).
+    """
+    raw = atom.raw
+    if raw[:1] == b'"' or not _NUMBER_TOKEN.fullmatch(raw):
+        return None
+    digits = _INTEGER_PREFIX.match(raw)
+    return int(digits.group()) if digits else 0
+
+
+def _net_rows(root) -> list[tuple[int, str]]:
+    """(number, name) of each (net N "NAME") row of the board's net table.
+
+    Only a board of KiCad 9's format or of KiCad 10's development formats has
+    one. KiCad 9 binds a net number only through a row (getNetCode over the map
+    parseNETINFO_ITEM fills, pcb_io_kicad_sexpr_parser.h:156-162 and
+    pcb_io_kicad_sexpr_parser.cpp:2693-2721 at 9.0.8), so the rows, never the
+    synthesized table of _net_table, say which numbers a KiCad 9 board can refer to.
+    """
+    rows = []
+    for row in root.find_all("net"):
+        atoms = row.atoms
+        code = _net_code(atoms[1]) if len(atoms) > 1 else None
+        if code is not None:
+            rows.append((code, atoms[2].text if len(atoms) > 2 else ""))
+    return rows
+
+
+def _by_number(nets: list[tuple[int, str]]) -> dict[int, str]:
+    """The name of each number of ``nets``, the first where two rows share one."""
+    names: dict[int, str] = {}
+    for number, name in nets:
+        names.setdefault(number, name)
+    return names
+
+
+def _row_names(root) -> dict[int, str]:
+    """The name of each numbered row of the board's table (_net_rows)."""
+    return _by_number(_net_rows(root))
+
+
+def _read_net_name(node, version: int, rows: Mapping[int, str]) -> str:
+    """The name of the net an item's (net ...) puts it on, "" for no net.
+
+    A quoted or non-numeric atom is a name. A bare number is a row of ``rows``
+    (the board's table, which a board of KiCad 10's format does not have, so there
+    a number names nothing). A pad's (net N "NAME") is its name.
+
+    A zone is read the way the KiCad that writes its format reads it. KiCad 9
+    puts a copper zone on the net its net_name names and, with none or an empty
+    one, on no net, whatever its number says (pcb_io_kicad_sexpr_parser.cpp:
+    7387-7412 at 9.0.8). KiCad 10 does the same for a non-empty net_name and
+    otherwise reads the (net ...) child as for any item (8037-8041 and 8673-8697
+    at 10.0.7).
+
+    ``version`` is the board's format, ``rows`` the board's numbered rows
+    (_row_names); a caller reading many items computes both once, since finding
+    either walks the whole board.
+    """
+    if node.head == "zone":
+        legacy = node.find("net_name")
+        named = legacy.atoms[1].text if legacy is not None and len(legacy.atoms) > 1 else ""
+        if named or version <= _NUMERIC_NET_VERSION_MAX:
+            return named
+    net = node.find("net")
+    if net is None or len(net.atoms) < 2:
+        return ""
+    code = _net_code(net.atoms[1])
+    if code is None:
+        return net.atoms[1].text
+    if len(net.atoms) > 2:
+        return net.atoms[2].text
+    return rows.get(code, "")
+
+
+def _net_name_of(root, node) -> str:
+    """The name of the net an item's (net ...) puts it on, in either dialect
+    (_read_net_name). Callers reading many items use that with a version and rows
+    computed once."""
+    return _read_net_name(node, _board_version(root), _row_names(root))
+
+
 def _net_table(root) -> list[tuple[int, str]]:
     """(number, name) rows for the board's nets, both dialects.
 
     KiCad 9 format boards declare (net N "NAME") rows at the root. KiCad 10
     dropped the table and the numbers entirely: nets exist only as name
-    references on pads, segments, vias and zones (measured on the K10
+    references on pads, tracks, zones and copper shapes (measured on the K10
     runner, slice 13 probe), so numbers are synthesized from document order
-    for the tool surface. The same derivation feeds reads and writers, so
-    a number handed out by list_pcb_nets resolves back to its name.
+    for the tool surface, every name once, net 0 left out. The same derivation
+    feeds reads and writers, so a number handed out by list_pcb_nets resolves
+    back to its name.
     """
-    rows = [c for c in root.find_all("net") if len(c.atoms) > 1]
+    rows = _net_rows(root)
     if rows:
-        return [(int(n.atoms[1].text), n.atoms[2].text if len(n.atoms) > 2 else "") for n in rows]
+        return rows
+    version = _board_version(root)
     names: list[str] = []
     seen: set[str] = set()
-
-    def _add(name: str) -> None:
-        if name and not name.lstrip("-").isdigit() and name not in seen:
-            seen.add(name)
-            names.append(name)
-
     for item in root.lists:
         if item.head == "footprint":
-            for pad in item.find_all("pad"):
-                net = pad.find("net")
-                if net is not None and len(net.atoms) > 1:
-                    _add(net.atoms[1].text)
-        elif item.head in ("segment", "arc", "via", "zone"):
-            net = item.find("net_name") or item.find("net")
-            if net is not None and len(net.atoms) > 1:
-                _add(net.atoms[1].text)
+            holders = item.find_all("pad")
+        elif item.head in _NET_ITEMS:
+            holders = [item]
+        else:
+            continue
+        for holder in holders:
+            name = _read_net_name(holder, version, {})
+            if name and name not in seen:
+                seen.add(name)
+                names.append(name)
     return [(i + 1, n) for i, n in enumerate(names)]
 
 
@@ -251,32 +368,10 @@ def _item_net_number(net_node, name_to_num: dict[str, int]) -> int:
     """Net number from a segment/via (net ...) child, either dialect."""
     if net_node is None or len(net_node.atoms) < 2:
         return 0
-    t = net_node.atoms[1].text
-    if t.lstrip("-").isdigit():
-        return int(t)
-    return name_to_num.get(t, 0)
-
-
-def _net_name_of(root, node) -> str:
-    """The net name a (net ...) child refers to, in either dialect.
-
-    KiCad 9 writes (net N "NAME") on pads and (net N) on tracks, so the number
-    has to be looked up in the root table; KiCad 10 writes (net "NAME") and has
-    no table at all. Both answer the same question and callers only ever want
-    the name.
-    """
-    net = node.find("net")
-    if net is None or len(net.atoms) < 2:
-        return ""
-    first = net.atoms[1].text
-    if not first.lstrip("-").isdigit():
-        return first
-    if len(net.atoms) > 2:
-        return net.atoms[2].text
-    for num, name in _net_table(root):
-        if num == int(first):
-            return name
-    return ""
+    code = _net_code(net_node.atoms[1])
+    if code is not None:
+        return code
+    return name_to_num.get(net_node.atoms[1].text, 0)
 
 
 # Token head to kiutils class name, so list_pcb_graphic_items output matches
@@ -305,10 +400,12 @@ _VIA_TPL = _cst.parse(
 ).lists[0]
 
 #: Most vias add_thermal_vias places in one call. A heuristic, not a KiCad
-#: limit: real exposed-pad grids run about 3x3 to 10x10, and every via rescans
-#: the board before the one write, so the cost is grid size times board size.
-#: 256 measured 7.8 s on a KiCad 10 board of 1000 footprints (1.0 s on KiCad 9),
-#: where each via resolves its net by walking every pad and track.
+#: limit: real exposed-pad grids run about 3x3 to 10x10, and every via is spliced
+#: in after the board's last track before the one write, so the cost is grid size
+#: times board size. 256 took 0.8 s on a synthetic board of 1000 footprints and
+#: 1000 tracks in either format, measured 2026-10-17. Resolving the via's net
+#: once per call matters: doing it for every via took 9.7 s on the KiCad 10 board
+#: (1.2 s on KiCad 9), where it walks every pad and track.
 _MAX_THERMAL_VIAS = 256
 
 
@@ -338,37 +435,119 @@ def _splice_pcb_node(root, node) -> None:
     _splice_after(root, node, ("segment", "arc", "via"), ("zone", "group", "embedded_fonts"))
 
 
-def _set_item_net(node, root, net: int) -> None:
-    """Fill the (net ...) child per ADR-2 guardrail 5: numeric for KiCad 9
-    format boards, name-based (quoted) for newer, never the wrong dialect.
+def _unknown_net(net: int, nets: list[tuple[int, str]]) -> ToolError:
+    """The refusal of a net number that is no net of the board. The leading words
+    stay "Net N not found", which callers and tests match on."""
+    listed = ", ".join(f"{num} ({name})" for num, name in nets if name) or "none"
+    return ToolError(
+        f"Net {net} not found: no net on this board has that number, and 0 means no net."
+        f" The board's nets are {listed}. Nothing was written."
+    )
 
-    Net 0, no net, has no name to look up on a KiCad 10 format board, so it is
-    written as KiCad 10 writes it: (net "") on a segment, arc or via, whose net
-    KiCad 10 always writes by name, net 0's being empty, and no net token on any
-    other item, which it gives one only above net 0; a zone's legacy
-    (net_name ...) goes too, because KiCad 10 puts the zone on a non-empty one's
-    net, creating it if need be (pcb_io_kicad_sexpr.cpp:2860-2861, 2872-2876 and
-    1117-1118, netinfo_list.cpp:44-45, pcb_io_kicad_sexpr_parser.cpp:8673-8697,
-    all at 10.0.7)."""
-    net_node = node.find("net")
-    if _board_version(root) <= _NUMERIC_NET_VERSION_MAX:
-        net_node.atoms[1].set_text(str(net))
+
+def _new_net(value: str, *, quoted: bool):
+    """A (net ...) node holding ``value``, a quoted name or a bare number."""
+    node = _cst.parse(b'(net "x")' if quoted else b"(net 0)").lists[0]
+    node.atoms[1].set_text(value)
+    return node
+
+
+def _put_net(node, old, new) -> None:
+    """Make ``new`` the (net ...) child of ``node``: in place of ``old`` with its
+    separator, else where KiCad writes one (straight after a zone's head, before
+    any other item's uuid)."""
+    if old is not None:
+        new.sep = old.sep
+        node.children[node.children.index(old)] = new
+    elif node.head == "zone":
+        first = node.lists[0] if node.lists else None
+        node.insert_after(node.atoms[0], new, sep=first.sep if first is not None else b"\n\t\t")
+    else:
+        uuid = node.find("uuid")
+        if uuid is not None:
+            node.insert_before(uuid, new)
+        else:
+            node.append_child(new, node.lists[-1].sep if node.lists else b"\n\t\t")
+
+
+def _set_zone_net_name(zone, name: str) -> None:
+    """A KiCad 9 zone's (net_name ...), which KiCad reads the zone's net by, set to
+    ``name`` and put straight after its (net ...) when the zone has none."""
+    held = zone.find("net_name")
+    if held is not None and len(held.atoms) > 1:
+        if held.atoms[1].text != name:
+            held.atoms[1].set_text(name)
         return
-    if net == 0 and node.head not in ("segment", "arc", "via"):
+    new = _cst.parse(b'(net_name "")').lists[0]
+    new.atoms[1].set_text(name)
+    if held is not None:
+        new.sep = held.sep
+        zone.children[zone.children.index(held)] = new
+    else:
+        net = zone.find("net")
+        zone.insert_after(net, new, sep=net.sep)
+
+
+def _set_item_net(node, root, net: int, version: int | None = None) -> None:
+    """Put a segment, arc, via, zone or copper shape on net ``net`` as the board's
+    format writes it, or refuse and leave everything as it was.
+
+    ``net`` is 0, which is no net, or the number of one of the board's nets: a row
+    of its table on a board of KiCad 9's format, a number list_pcb_nets reports on
+    any other. KiCad 9 binds a number only through a row, so a number past the table
+    finds no net ("Invalid net ID") and a negative one or one in a gap lands on net
+    0 (getNetCode and SetNetCode, pcb_io_kicad_sexpr_parser.h:156-162 and
+    pcbnew/board_connected_item.cpp:87-115 at 9.0.8); KiCad 10 rebinds a number by
+    load order (ADR-2 guardrail 5). The check comes before the first change.
+
+    A net is written in the board's dialect, never the other (ADR-2 guardrail 5): a
+    number up to format 20241229, (net N) and on a zone also (net_name "NAME"), the
+    name KiCad 9 reads a copper zone's net by; a quoted name above it. No net is
+    spelled by item, as KiCad's writer spells it (pcb_io_kicad_sexpr.cpp, 9.0.8 then
+    10.0.7):
+
+    - a segment, arc or via: (net 0), then (net "") (2436, 2860-2861), net 0 being
+      the net a board's net list registers under the empty name
+      (netinfo_list.cpp:44-45 at 10.0.7)
+    - a zone: (net 0) with (net_name ""), then no token at all (2452-2454,
+      2872-2876); a legacy (net_name ...) that is not empty would put a KiCad 10
+      zone on a net of that name, creating it if need be
+      (pcb_io_kicad_sexpr_parser.cpp:8037-8041 and 8673-8697 at 10.0.7), so the zone
+      loses it
+    - a copper shape: no token on either (1027-1028, 1117-1118)
+
+    ``version`` is the board's format when the caller has it, since finding it walks
+    the whole board.
+    """
+    numeric = (_board_version(root) if version is None else version) <= _NUMERIC_NET_VERSION_MAX
+    name = ""
+    if net != 0:
+        nets = _net_rows(root) if numeric else _net_table(root)
+        names = _by_number(nets)
+        if net not in names:
+            raise _unknown_net(net, nets)
+        name = names[net]
+    is_zone = node.head == "zone"
+    if net == 0 and node.head not in ("segment", "arc", "via") and not (numeric and is_zone):
         for stale in node.find_all("net") + node.find_all("net_name"):
             node.remove_child(stale)
         return
-    name = "" if net == 0 else next((n for num, n in _net_table(root) if num == net), None)
-    if name is None:
-        raise ToolError(
-            f"Net {net} not found in this KiCad 10 format board. Numeric net "
-            "references are silently rebound by load order there, so the tool "
-            "refuses rather than emit one (ADR-2 guardrail 5)."
-        )
-    named = _cst.parse(b'(net "x")').lists[0]
-    named.atoms[1].set_text(name)
-    named.sep = net_node.sep
-    node.children[node.children.index(net_node)] = named
+    held = node.find("net")
+    if numeric:
+        atoms = held.atoms if held is not None else []
+        if len(atoms) == 2 and _net_code(atoms[1]) is not None:
+            if _net_code(atoms[1]) != net:
+                atoms[1].set_text(str(net))
+        else:
+            _put_net(node, held, _new_net(str(net), quoted=False))
+        if is_zone:
+            _set_zone_net_name(node, name)
+        return
+    atoms = held.atoms if held is not None else []
+    if not (len(atoms) == 2 and atoms[1].raw[:1] == b'"' and atoms[1].text == name):
+        _put_net(node, held, _new_net(name, quoted=True))
+    for stale in node.find_all("net_name"):
+        node.remove_child(stale)
 
 
 def _find_fp_cst(root, reference):
@@ -379,16 +558,6 @@ def _find_fp_cst(root, reference):
     raise ToolError(
         f"Footprint {reference!r} not found. Use list_pcb_footprints to see what is on the board."
     )
-
-
-def _pad_net_name(net_node, default: str) -> str:
-    """Display name from a pad's (net ...) child, either dialect."""
-    if net_node is None or len(net_node.atoms) < 2:
-        return default
-    if len(net_node.atoms) > 2:
-        return net_node.atoms[2].text
-    t = net_node.atoms[1].text
-    return t if not t.lstrip("-").isdigit() else default
 
 
 def _edge_polygon_cst(root) -> list[tuple[float, float]] | None:
@@ -1970,6 +2139,7 @@ def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
+    version, rows = _board_version(root), _row_names(root)
     items: list[ZoneItem] = []
     for z in root.find_all("zone"):
         ko = z.find("keepout")
@@ -1981,14 +2151,9 @@ def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
                 {"x": _numish(p.atoms[1].text), "y": _numish(p.atoms[2].text)}
                 for p in poly.find("pts").find_all("xy")
             ]
-        net_name = z.find("net_name")
-        if net_name is not None:
-            zone_net = net_name.atoms[1].text
-        else:
-            # K10 zones carry name-only (net "NAME") and no net_name child.
-            znet = z.find("net")
-            t = znet.atoms[1].text if znet is not None and len(znet.atoms) > 1 else ""
-            zone_net = t if t and not t.lstrip("-").isdigit() else ""
+        # The net as the KiCad that wrote the zone's format reads it: KiCad 9 by the
+        # net_name, KiCad 10 by the (net "NAME") a zone on a net carries.
+        zone_net = _read_net_name(z, version, rows)
         layers_node = z.find("layers") or z.find("layer")
         priority = z.find("priority")
         items.append(
@@ -2069,6 +2234,7 @@ def list_pcb_graphic_items(pcb_path: str = PCB_PATH) -> list[GraphicItem]:
 @mcp.tool(annotations=_READ_ONLY)
 def get_board_info(pcb_path: str = PCB_PATH) -> str:
     """Get board summary: footprint count, trace count, net count, thickness.
+    The net count includes the unconnected net, as KiCad's own count does.
 
     Args:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
@@ -2085,7 +2251,7 @@ def get_board_info(pcb_path: str = PCB_PATH) -> str:
         f"Footprints: {counts['footprint']}\n"
         f"Traces: {counts['segment']}\n"
         f"Vias: {counts['via']}\n"
-        f"Nets: {len(_net_table(root))}\n"
+        f"Nets: {len({name for _, name in _net_table(root) if name}) + 1}\n"
         f"Zones: {counts['zone']}\n"
         f"Thickness: {tval}mm"
     )
@@ -2105,13 +2271,14 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
     fp_x, fp_y = _xy(fp_at)
     fp_angle = float(fp_at.atoms[3].text) if len(fp_at.atoms) > 3 else 0
     major = _board_major(root)
+    version, rows = _board_version(root), _row_names(root)
     lines = [
         f"{reference} pads "
         f"(footprint origin ({_numish(fp_x)}, {_numish(fp_y)}), "
         f"rotation {_numish(fp_angle)}, layer {_fp_layer(fp)}):"
     ]
     for pad in fp.find_all("pad"):
-        net_name = _pad_net_name(pad.find("net"), "none")
+        net_name = _read_net_name(pad, version, rows) or "none"
         at, size = pad.find("at"), pad.find("size")
         layers = pad.find("layers")
         local_x, local_y = _xy(at)
@@ -2876,8 +3043,10 @@ def add_trace(
         y2: End Y
         width: Trace width in mm
         layer: Copper layer (e.g. "F.Cu", "B.Cu")
-        net: Net number. 0 means no net, which a KiCad 10 board writes as (net "")
-            (pcb_io_kicad_sexpr.cpp:2860-2861 at 10.0.7).
+        net: A net number from list_pcb_nets, or 0 for no net. Any other number is refused
+            and nothing is written. A KiCad 10 board holds nets by name and its numbers are
+            derived from where each net first appears, so read list_pcb_nets again after
+            an edit.
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     tree, root, key = _open_pcb_cst(pcb_path)
@@ -2915,8 +3084,10 @@ def add_via(
         y: Y position
         size: Via pad size in mm
         drill: Drill diameter in mm
-        net: Net number. 0 means no net, which a KiCad 10 board writes as (net "")
-            (pcb_io_kicad_sexpr.cpp:2860-2861 at 10.0.7).
+        net: A net number from list_pcb_nets, or 0 for no net. Any other number is refused
+            and nothing is written. A KiCad 10 board holds nets by name and its numbers are
+            derived from where each net first appears, so read list_pcb_nets again after
+            an edit.
         layers: Via layers (default: ["F.Cu", "B.Cu"])
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
@@ -3066,12 +3237,8 @@ def add_copper_zone(
     fill.find("thermal_gap").atoms[1].set_text(_num(thermal_gap))
     fill.find("thermal_bridge_width").atoms[1].set_text(_num(thermal_bridge_width))
     _fill_zone_polygon(node, corners)
-    if _board_version(root) <= _NUMERIC_NET_VERSION_MAX:
-        node.find("net").atoms[1].set_text(str(net_num))
-        node.find("net_name").atoms[1].set_text(net_name)
-    else:
-        _set_item_net(node, root, net_num)
-        node.remove_child(node.find("net_name"))
+    _set_item_net(node, root, net_num)
+    if _board_version(root) > _NUMERIC_NET_VERSION_MAX:
         node.remove_child(node.find("filled_areas_thickness"))
     _splice_pcb_zone(root, node)
     _atomic_write(key, _cst.serialize(tree))
@@ -3129,10 +3296,7 @@ def add_keepout_zone(
     for k, v in restrictions.items():
         ko.find(k).atoms[1].set_text(v)
     _fill_zone_polygon(node, corners)
-    if _board_version(root) > _NUMERIC_NET_VERSION_MAX:
-        # Measured K10 rule areas carry no net tokens at all.
-        node.remove_child(node.find("net"))
-        node.remove_child(node.find("net_name"))
+    _set_item_net(node, root, 0)
     _splice_pcb_zone(root, node)
     _atomic_write(key, _cst.serialize(tree))
     return KeepoutZoneResult(
@@ -3249,10 +3413,17 @@ def update_pcb_from_schematic(
     still takes the symbol's value, fields and nets. A new footprint carrying
     what this tool cannot move is not added (skipped: footprint_unsupported).
     Stale board footprints are reported, and removed only with delete_stale
-    (a locked one, in any spelling KiCad reads, never is). Zones are NOT
-    refilled: run fill_zones afterward. Net names arrive exactly as KiCad's F8
-    produces them (local labels sheet-prefixed, e.g. "/SIG"); read them
-    with list_pcb_nets.
+    (a locked one, in any spelling KiCad reads, never is, and neither is one
+    marked board only: KiCad's update keeps both). Zones are NOT refilled: run
+    fill_zones afterward. Net names arrive exactly as KiCad's F8 produces them
+    (local labels sheet-prefixed, e.g. "/SIG"); read them with list_pcb_nets.
+    A pad whose net did not change is left as it is, and one that gains a net
+    gets it where KiCad's writer puts it. Everything on a net that left the
+    schematic goes to no net, written as the board's format writes no net:
+    segments, arcs and vias are counted in orphaned_tracks, zones in
+    orphaned_zones, and copper shapes are named in warnings. That includes a via
+    or a zone on a net that was renamed, which KiCad's own update reconnects to
+    the new name and this one does not.
 
     What KiCad's own update copies from the symbol follows it here, with
     two exceptions named below. The Value. Every other symbol field, as hidden
@@ -3300,7 +3471,8 @@ def update_pcb_from_schematic(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         pcb_path: Path to .kicad_pcb file (created if missing).
             Optional; omit to use the configured default.
-        delete_stale: Remove unlocked board footprints absent from the schematic
+        delete_stale: Remove unlocked board footprints absent from the schematic, except
+            those marked board only
         project_path: Path to .kicad_pro for explicit root resolution (sub-sheets)
     """
     # The schematic only. pcb_path is deliberately not required to exist: this
@@ -3489,13 +3661,20 @@ def add_thermal_vias(
         major=_board_major(root),
     )
 
-    # Determine net. A netless pad resolves to net 0, no net, which _set_item_net
-    # writes in the board's own spelling: (net 0) on KiCad 9, (net "") on KiCad 10.
-    name_to_num = {name: num for num, name in _net_table(root)}
+    # Determine net. A netless pad, or one on a net the board does not hold, is on
+    # no net, net 0, which _set_item_net writes in the board's own spelling:
+    # (net 0) on KiCad 9, (net "") on KiCad 10.
+    pad_net = _net_name_of(root, pad)
     if net_name:
         via_net = _resolve_net_cst(root, net_name)
     else:
-        via_net = _item_net_number(pad.find("net"), name_to_num)
+        via_net = next((num for num, name in _net_table(root) if name and name == pad_net), 0)
+
+    # One via with its net, copied for the grid: resolving the net walks the board.
+    via = _VIA_TPL.copy()
+    _set_item_net(via, root, via_net)
+    via.find("size").atoms[1].set_text(_num(via_size))
+    via.find("drill").atoms[1].set_text(_num(via_drill))
 
     # Generate grid centered on pad
     vias_added = 0
@@ -3503,13 +3682,10 @@ def add_thermal_vias(
         for c in range(cols):
             vx = pad_x + (c - (cols - 1) / 2) * spacing
             vy = pad_y + (r - (rows - 1) / 2) * spacing
-            node = _VIA_TPL.copy()
+            node = via.copy()
             via_at = node.find("at")
             via_at.atoms[1].set_text(_num(round(vx, 4)))
             via_at.atoms[2].set_text(_num(round(vy, 4)))
-            node.find("size").atoms[1].set_text(_num(via_size))
-            node.find("drill").atoms[1].set_text(_num(via_drill))
-            _set_item_net(node, root, via_net)
             node.find("uuid").atoms[1].set_text(_gen_uuid())
             _splice_pcb_node(root, node)
             vias_added += 1
@@ -3519,7 +3695,7 @@ def add_thermal_vias(
         vias_added=vias_added,
         reference=reference,
         pad=pad.atoms[1].text,
-        net=net_name or _pad_net_name(pad.find("net"), ""),
+        net=net_name or pad_net,
         center={"x": round(pad_x, 4), "y": round(pad_y, 4)},
     )
 
@@ -3891,34 +4067,104 @@ def _set_fp_path(fp, path: str) -> None:
     fp.insert_after(at, node)
 
 
-def _pad_net_bytes(root, number: int, name: str) -> bytes:
+def _pad_net_bytes(root, number: int, name: str, version: int | None = None) -> bytes:
     """A (net ...) child in this board's own dialect.
 
     ADR-2 guardrail 5, and the one place a mistake is silent rather than loud:
     a numeric reference in a KiCad 10 board is accepted and rebound by load
     order, measured landing (net 2) on GND with no error at all.
+
+    ``version`` is the board's format when the caller has it, since finding it
+    walks the whole board.
     """
-    if _board_version(root) <= _NUMERIC_NET_VERSION_MAX:
+    if (_board_version(root) if version is None else version) <= _NUMERIC_NET_VERSION_MAX:
         escaped = name.replace("\\", "\\\\").replace('"', '\\"')
         return f'(net {number} "{escaped}")'.encode()
     escaped = name.replace("\\", "\\\\").replace('"', '\\"')
     return f'(net "{escaped}")'.encode()
 
 
-def _bind_pad_net(root, pad, number: int, name: str) -> None:
-    """Put *pad* on a net, inserting the child when it has none.
+#: The children format( PAD ) writes before a pad's (net ...), in its order
+#: (pcb_io_kicad_sexpr.cpp:1432-1613 at 9.0.8, 1635-1858 at 10.0.7; the four before
+#: property are 10.0.7's only). KiCad writes the net straight after the last of
+#: them a pad holds, then pinfunction, pintype, the margins and the rest. Counted
+#: 2026-10-17 over the demos and templates KiCad 9.0.8 ships: 13,497 pads carry a
+#: net, every one right after the last of these; 6,215 right after (layers ...),
+#: 4,141 after remove_unused_layers and 3,141 after roundrect_rratio.
+_PAD_HEADS_BEFORE_NET = (
+    "at",
+    "size",
+    "rect_delta",
+    "drill",
+    "backdrill",
+    "tertiary_drill",
+    "front_post_machining",
+    "back_post_machining",
+    "property",
+    "layers",
+    "remove_unused_layers",
+    "keep_end_layers",
+    "zone_layer_connections",
+    "roundrect_rratio",
+    "chamfer_ratio",
+    "chamfer",
+)
 
-    _set_item_net mutates an existing (net ...) atom, which every track and via
-    already has. A pad copied out of a .kicad_mod has no net child at all, so
-    this inserts one, after (layers ...) where KiCad writes it.
+#: The first board format whose writer leaves net numbers out (pcb_io_kicad_sexpr.h:
+#: 201 at 10.0.7). The formats between KiCad 9's last, 20241229, and it are KiCad
+#: 10's development: they declare the table and write a pad's net as the pair
+#: (net N "NAME"), as KiCad 9 does, while the tools write the name alone for every
+#: format above 20241229.
+_NET_NAMES_ONLY_VERSION = 20251028
+
+
+def _pad_holds_net(net, number: int, name: str, version: int) -> bool:
+    """Whether a pad's (net ...) child already puts it on net ``number``, named
+    ``name``, in a shape its board's format writes: the pair up to format 20241229,
+    the name alone from 20251028, either between (_NET_NAMES_ONLY_VERSION)."""
+    atoms = net.atoms[1:]
+    if len(atoms) == 1:
+        return (
+            version > _NUMERIC_NET_VERSION_MAX
+            and _net_code(atoms[0]) is None
+            and atoms[0].text == name
+        )
+    return (
+        len(atoms) == 2
+        and version < _NET_NAMES_ONLY_VERSION
+        and _net_code(atoms[0]) == number
+        and atoms[1].text == name
+    )
+
+
+def _bind_pad_net(root, pad, number: int, name: str, version: int | None = None) -> None:
+    """Put *pad* on net ``number``, ``name``, changing it only where it is not
+    already on it.
+
+    A pad whose one (net ...) child already puts it there is left alone, whatever
+    its bytes (_pad_holds_net). Otherwise the child is replaced where it stands, and
+    a pad with none (one copied out of a .kicad_mod, or one that just gained a net)
+    gets one straight after the last child KiCad writes before it
+    (_PAD_HEADS_BEFORE_NET). That is after (layers ...) on a plain pad and after
+    remove_unused_layers or roundrect_rratio on others, which is where KiCad's own
+    writer puts it, not after (layers ...) always.
+
+    ``version`` is the board's format when the caller has it, since finding it walks
+    the whole board.
     """
-    node = _cst.parse(_pad_net_bytes(root, number, name)).lists[0]
-    existing = pad.find("net")
-    if existing is not None:
-        node.sep = existing.sep
-        pad.children[pad.children.index(existing)] = node
+    if version is None:
+        version = _board_version(root)
+    held = pad.find_all("net")
+    if len(held) == 1 and _pad_holds_net(held[0], number, name, version):
         return
-    anchor = pad.find("layers") or pad.find("drill") or pad.find("size")
+    node = _cst.parse(_pad_net_bytes(root, number, name, version)).lists[0]
+    if held:
+        node.sep = held[0].sep
+        pad.children[pad.children.index(held[0])] = node
+        for extra in held[1:]:
+            pad.remove_child(extra)
+        return
+    anchor = next((c for c in reversed(pad.lists) if c.head in _PAD_HEADS_BEFORE_NET), None)
     if anchor is not None:
         pad.insert_after(anchor, node)
     else:
@@ -3930,6 +4176,26 @@ def _clear_pad_net(pad) -> None:
         pad.remove_child(net)
 
 
+def _referenced_net_numbers(root) -> list[int]:
+    """Every net number a pad or a net-carrying board item refers to, a name or no
+    net leaving none: the set KiCad 9's writer numbers the nets in use from
+    (NETINFO_MAPPING::Update, pcbnew/netinfo_list.cpp:286-330 at 9.0.8)."""
+    numbers = []
+    for item in root.lists:
+        if item.head == "footprint":
+            holders = item.find_all("pad")
+        elif item.head in _NET_ITEMS:
+            holders = [item]
+        else:
+            continue
+        for holder in holders:
+            net = holder.find("net")
+            code = _net_code(net.atoms[1]) if net is not None and len(net.atoms) > 1 else None
+            if code is not None:
+                numbers.append(code)
+    return numbers
+
+
 def _ensure_net_rows(root, names: list[str]) -> int:
     """Declare any missing nets, returning how many were added.
 
@@ -3937,12 +4203,21 @@ def _ensure_net_rows(root, names: list[str]) -> int:
     are assigned from it. KiCad 10 dropped the table entirely: nets exist only
     as name references on the items that use them, so there is nothing to
     declare and this reports zero rather than inventing a number.
+
+    A name is declared when no row has it, whoever else spells it: a board with
+    no table at all (KiCad always writes one) gets a row for every name, a zone's
+    net_name included, since KiCad 9 binds a number only through a row. A new row
+    is numbered one above the largest number the board uses, a row's or the number
+    of a pad, track, via, zone or copper shape: on a board KiCad wrote every one of
+    those is a row, so that is the number one above the last row, but a number an
+    earlier version wrote that no row has must not become the new row's, or its
+    item would silently land on the new net.
     """
     if _board_version(root) > _NUMERIC_NET_VERSION_MAX:
         return 0
-    table = _net_table(root)
+    table = _net_rows(root)
     have = {name for _, name in table}
-    nxt = max((num for num, _ in table), default=0) + 1
+    nxt = max([*(num for num, _ in table), *_referenced_net_numbers(root)], default=0) + 1
     added = 0
     rows = [c for c in root.find_all("net") if len(c.atoms) > 1]
     anchor = rows[-1] if rows else None
@@ -3968,8 +4243,8 @@ def _prune_net_rows(root, used: set) -> int:
         return 0
     removed = 0
     for row in [c for c in root.find_all("net") if len(c.atoms) > 2]:
-        number, name = int(row.atoms[1].text), row.atoms[2].text
-        if number == 0 or name in used:
+        number, name = _net_code(row.atoms[1]), row.atoms[2].text
+        if not number or name in used:
             continue
         root.remove_child(row)
         removed += 1
@@ -3995,6 +4270,16 @@ def _fp_anchor(root) -> tuple[float, float]:
     if not xs:
         return 25.4, 25.4
     return min(xs), max(ys) + 10.0
+
+
+def _fp_board_only(fp) -> bool:
+    """Whether KiCad reads the footprint as board only (a mounting hole, a
+    fiducial: a part that exists on the board alone). Its parser ORs the tokens of
+    every (attr ...) list into the footprint's attributes, so board_only counts from
+    any of them (pcb_io_kicad_sexpr_parser.cpp:4772-4819 and 5007 at 9.0.8,
+    5558-5605 and 5822 at 10.0.7), and its update never deletes such a footprint
+    (board_netlist_updater.cpp:1427-1428 at 9.0.8, 2334-2335 at 10.0.7)."""
+    return any(a.raw == b"board_only" for attr in fp.find_all("attr") for a in attr.atoms[1:])
 
 
 def _fp_locked(fp) -> bool:
@@ -4264,9 +4549,21 @@ def _apply_netlist_cst(
     the format stamp raised in place, and on Windows every line ending rewritten
     even on a no-op round trip.
 
-    Structure follows apply() pass for pass, so the two can be diffed: match by
-    reference, add or swap, declare nets, rebind pads, orphan what left the
-    schematic, report or remove stale footprints, prune the table.
+    The passes, in order: match by reference, add or swap footprints, declare the
+    schematic's nets (a KiCad 9 format board's table, _ensure_net_rows), bind pads,
+    send what is on a net that left the schematic to no net, report or remove stale
+    footprints, prune the rows nothing uses.
+
+    A pad is bound only where its net changes (_bind_pad_net), so one the update has
+    nothing to change is not touched, and a pad of a matched footprint that the
+    netlist leaves without a net loses its (net ...). Every segment, arc, via, zone
+    and copper shape on a net that is not in the netlist is put on no net, spelled
+    as the board's format spells it (_set_item_net); segments, arcs and vias are
+    counted in orphaned_tracks, zones in orphaned_zones, and a shape, which has no
+    field, is named in warnings. This differs from KiCad's own update, which
+    reconnects a via or a copper zone on a net that was renamed to the new name
+    (updateCopperZoneNets, pcbnew/netlist_reader/board_netlist_updater.cpp:1005-1221
+    at 9.0.8) where this one orphans them.
     """
     components, nets = _parse_netlist(netlist_path)
     summary = _new_summary()
@@ -4345,13 +4642,12 @@ def _apply_netlist_cst(
     summary["nets_added"] = _ensure_net_rows(root, [n["name"] for n in nets])
     numbers = {name: num for num, name in _net_table(root)}
 
-    # --- Pads: clear then rebind, scoped to netlist-matched footprints, so
-    # board-only footprints (mounting holes and the like) are never touched ---
-    for ref in netlist_refs:
-        fp = by_ref.get(ref)
-        if fp is not None:
-            for pad in fp.find_all("pad"):
-                _clear_pad_net(pad)
+    # --- Pads, scoped to netlist-matched footprints, so board-only footprints
+    # (mounting holes and the like) are never touched. A pad the netlist puts on a
+    # net is bound to it, which changes nothing when it is on it already; a pad it
+    # leaves without a net loses its net, as KiCad's update sets it unconnected ---
+    version = _board_version(root)
+    wanted: dict[tuple[str, str], tuple[int, str]] = {}
     for net in nets:
         name = net["name"]
         number = numbers.get(name, 0)
@@ -4361,38 +4657,53 @@ def _apply_netlist_cst(
             fp = by_ref.get(ref)
             if fp is None:
                 summary["warnings"].append(f"net {name}: {ref}.{pin} not on board")
-                continue
-            hit = False
-            for pad in fp.find_all("pad"):
-                if pad.atoms[1].text == pin:
-                    _bind_pad_net(root, pad, number, name)
-                    hit = True
-            if hit:
+            elif any(pad.atoms[1].text == pin for pad in fp.find_all("pad")):
+                wanted[ref, pin] = (number, name)
                 summary["pads_bound"] += 1
             else:
                 summary["warnings"].append(f"{ref}: pad {pin} not on footprint (net {name})")
+    for ref in netlist_refs:
+        fp = by_ref.get(ref)
+        if fp is None:
+            continue
+        for pad in fp.find_all("pad"):
+            bound = wanted.get((ref, pad.atoms[1].text))
+            if bound is None:
+                _clear_pad_net(pad)
+            else:
+                _bind_pad_net(root, pad, bound[0], bound[1], version)
 
-    # --- Items on nets whose name left the schematic go back to net 0 ---
+    # --- Items on nets whose name left the schematic go to no net ---
     live = {n["name"] for n in nets}
+    rows = _row_names(root)
     for item in root.lists:
-        if item.head not in ("segment", "arc", "via", "zone"):
+        if item.head not in _NET_ITEMS:
             continue
-        net_node = item.find("net_name") or item.find("net")
-        if net_node is None or len(net_node.atoms) < 2:
-            continue
-        name = _net_name_of(root, item)
+        name = _read_net_name(item, version, rows)
         if not name or name in live:
             continue
-        _set_item_net(item, root, 0)
-        summary["orphaned_zones" if item.head == "zone" else "orphaned_tracks"] += 1
+        _set_item_net(item, root, 0, version)
+        if item.head == "zone":
+            summary["orphaned_zones"] += 1
+        elif item.head in ("segment", "arc", "via"):
+            summary["orphaned_tracks"] += 1
+        else:
+            layer = item.find("layer")
+            where = f" on {layer.atoms[1].text}" if layer is not None else ""
+            summary["warnings"].append(
+                f"{item.head}{where} was on net {name}, which left the schematic;"
+                " it is on no net now"
+            )
 
-    # --- Stale footprints: always reported, removed only on request ---
+    # --- Stale footprints: always reported, removed only on request. KiCad's
+    # update never deletes a footprint marked board only, whatever the option, nor
+    # does this one; a locked one is kept too ---
     for fp in list(root.find_all("footprint")):
         ref = _fp_prop_cst(fp, "Reference")
         if ref in netlist_refs:
             continue
         summary["stale_footprints"].append(ref)
-        if delete_stale and not _fp_locked(fp):
+        if delete_stale and not _fp_locked(fp) and not _fp_board_only(fp):
             root.remove_child(fp)
             by_ref.pop(ref, None)
             summary["stale_removed"].append(ref)
@@ -4402,9 +4713,9 @@ def _apply_netlist_cst(
     for item in root.lists:
         if item.head == "footprint":
             for pad in item.find_all("pad"):
-                used.add(_net_name_of(root, pad))
-        elif item.head in ("segment", "arc", "via", "zone"):
-            used.add(_net_name_of(root, item))
+                used.add(_read_net_name(pad, version, rows))
+        elif item.head in _NET_ITEMS:
+            used.add(_read_net_name(item, version, rows))
     summary["nets_removed"] = _prune_net_rows(root, used)
 
     if summary["skipped"]:
@@ -4873,7 +5184,6 @@ def _trace_counts(pcb_path: str) -> tuple[int, int, int]:
 
 
 _HATCH_TPL = _cst.parse(b"(hatch edge 0.5)").lists[0]
-_ZONE_NET_TPLS = _cst.parse(b'(net 0)\n(net_name "")').lists
 _UUID_TPL = _cst.parse(b'(uuid "x")').lists[0]
 
 
@@ -4885,26 +5195,6 @@ def _replace_child(node, new) -> None:
         return
     new.sep = old.sep
     node.children[node.children.index(old)] = new
-
-
-def _set_promoted_zone_net(zone, root) -> None:
-    """Net tokens on a promoted keepout, per the measured board dialects.
-
-    Numeric (net 0) with an empty net_name at or below the KiCad 9 format;
-    no net tokens at all above it, which is the KiCad 10 rule-area shape
-    add_keepout_zone emits (ADR-2 guardrail 5).
-    """
-    for head in ("net", "net_name"):
-        stale = zone.find(head)
-        if stale is not None:
-            zone.remove_child(stale)
-    if _board_version(root) > _NUMERIC_NET_VERSION_MAX:
-        return
-    anchor = zone.atoms[0]
-    for tpl in _ZONE_NET_TPLS:
-        node = tpl.copy()
-        zone.insert_after(anchor, node, sep=b" ")
-        anchor = node
 
 
 def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
@@ -4942,7 +5232,7 @@ def _promote_footprint_keepouts(pcb_path: str, output_path: str) -> int:
             fresh_uuid = _UUID_TPL.copy()
             fresh_uuid.atoms[1].set_text(_gen_uuid())
             _replace_child(zone, fresh_uuid)
-            _set_promoted_zone_net(zone, root)
+            _set_item_net(zone, root, 0)
             _splice_pcb_zone(root, zone)
             count += 1
 

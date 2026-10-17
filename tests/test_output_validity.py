@@ -374,23 +374,7 @@ def _run_sweep(cases, is_board: bool):
     return failures
 
 
-@pytest.mark.parametrize(
-    "which",
-    [
-        pytest.param(
-            _PCB_SWEEP,
-            marks=pytest.mark.xfail(
-                strict=True,
-                raises=AssertionError,
-                reason=(
-                    "bug 3: add_trace and add_via write a net number that is no row of a KiCad 9"
-                    " board's table; fixed by step 10"
-                ),
-            ),
-        ),
-        _PCB_K10_SWEEP,
-    ],
-)
+@pytest.mark.parametrize("which", [_PCB_SWEEP, _PCB_K10_SWEEP])
 def test_hostile_values_never_reach_a_pcb(which, tmp_path):
     """Accepted-and-written is the outcome that shipped a broken board. The sweep runs on a
     board of KiCad 9's format and on one of KiCad 10's, and judges what a call wrote with

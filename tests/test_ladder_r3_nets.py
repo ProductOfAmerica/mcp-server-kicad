@@ -76,7 +76,7 @@ import pcbnew_judge as PJ
 import pcbnew_nets as PN
 import pytest
 import sexpr_gen
-from conftest import _kicad_cli_major, requires_cli
+from conftest import requires_cli
 from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import dsn_lexer as L
@@ -557,13 +557,6 @@ def _kinds(item: J.Item) -> list[list[str]]:
     ]
 
 
-def _on_kicad_9() -> bool:
-    """Whether the kicad-cli of this machine, and so the pcbnew of the same install, is KiCad
-    9's (or absent). The xfail conditions that name this are strings, evaluated when the test
-    is set up, so that no kicad-cli runs while the module is collected."""
-    return _kicad_cli_major() < 10
-
-
 def _need_pcbnew() -> None:
     reason = PJ.skip_reason()
     if reason:
@@ -580,11 +573,6 @@ def _pcbnew_nets(board: Path) -> dict:
 # bug 3: a net number on a KiCad 9 board is 0 or a row of its table
 # ---------------------------------------------------------------------------
 
-_BUG_3 = (
-    "bug 3: add_trace and add_via write a net number that is no row of a KiCad 9 board's table;"
-    " fixed by step 10"
-)
-
 
 def _table_board(work: str | Path, numbers: Sequence[int]) -> Path:
     """A KiCad 9 board whose table holds net 0 and one row per number of ``numbers``, row n
@@ -592,7 +580,6 @@ def _table_board(work: str | Path, numbers: Sequence[int]) -> Path:
     return _board(Path(work), [], version="k9", rows={f"/N{n}": n for n in numbers})
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_3)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(numbers=[1, 3], net=2, tool="add_trace")
 @example(numbers=[1, 2], net=3, tool="add_via")
@@ -644,14 +631,7 @@ def test_k9_valid_net_lands_on_its_row(numbers, pick, tool):
 
 @pytest.mark.parametrize(
     "case",
-    [
-        pytest.param("valid", id="valid"),
-        pytest.param(
-            "unknown",
-            id="unknown",
-            marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_3),
-        ),
-    ],
+    ["valid", "unknown"],
 )
 def test_k9_nets_read_by_pcbnew(tmp_path, case):
     """pcbnew reads a KiCad 9 board's nets the way the tools must write them. "valid": the
@@ -751,11 +731,6 @@ def test_zone_net_is_written_in_the_boards_dialect(tmp_path, version, name):
 # bug 19: a KiCad 9 zone is on the net its net_name names
 # ---------------------------------------------------------------------------
 
-_BUG_19 = (
-    "bug 19: the orphan pass sets a KiCad 9 zone's net to 0 and keeps its net_name, which KiCad"
-    " reads the zone's net by; fixed by step 10"
-)
-
 
 def _edits(before: bytes, after: bytes) -> list[tuple]:
     """The structural edits that turn ``before`` into ``after`` (edit_judge.diff), each as
@@ -776,7 +751,6 @@ def _zone_board(tmp_path: Path, zone: str) -> Path:
     return _board(tmp_path, items, version="k9", rows=_ROWS)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_19)
 def test_k9_orphaned_zone_drops_its_net_name(tmp_path):
     """A KiCad 9 board holding a copper zone on /SIG, updated from a netlist without /SIG: the
     zone is counted in orphaned_zones and ends on no net the way KiCad 9 writes a zone on none,
@@ -802,7 +776,6 @@ def _zone_net_in_pcbnew(board: Path, uuid: str) -> tuple[list, list]:
     return read["items"][uuid], read["nets"]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_19)
 def test_k9_orphaned_zone_reads_on_no_net_in_pcbnew(tmp_path):
     """The same update, judged by pcbnew 9 reading the result: the zone is on no net (name "")
     and the board has no /SIG net; before the update it is on /SIG. Skipped on pcbnew 10,
@@ -822,7 +795,6 @@ def test_k9_orphaned_zone_reads_on_no_net_in_pcbnew(tmp_path):
     assert "/SIG" not in [name for _, name in nets], f"pcbnew 9 recreated /SIG: {nets}"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_19)
 def test_a_zone_left_with_a_stale_net_name_is_orphaned(tmp_path):
     """The damage an earlier version left: a KiCad 9 zone on (net 0) whose net_name still reads
     /SIG, a net the table no longer holds. KiCad 9 reads that zone on a /SIG it makes up
@@ -860,19 +832,6 @@ def test_a_zone_left_with_a_stale_net_name_is_orphaned(tmp_path):
 # bugs 99, 101 and 100: the copper shapes, the numbers and the rows of the update
 # ---------------------------------------------------------------------------
 
-_BUG_99 = (
-    "bug 99: the orphan and prune passes skip the board-level copper shapes that carry a net;"
-    " fixed by step 10"
-)
-_BUG_100 = (
-    "bug 100: on a KiCad 9 board with no net table a name a zone spells is never declared, so"
-    " the pads bound to it get net 0; fixed by step 10"
-)
-_BUG_101 = (
-    "bug 101: a new net row takes the number a segment, via or shape already refers to;"
-    " fixed by step 10"
-)
-
 
 def _rows_of(data: bytes) -> dict[int, str]:
     """A board's net table as KiCad's lexer reads it: the root (net N "NAME") rows."""
@@ -894,7 +853,6 @@ def _pad_nets_of(data: bytes, ref: str) -> dict[str, list[str]]:
     return out
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_99)
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_a_copper_shape_on_a_net_that_left_goes_to_no_net(tmp_path, version):
     """A copper gr_poly on /SIG (KiCad ships such shapes, the RoyalBlue54L-NFC-Antenna board's
@@ -950,7 +908,6 @@ def test_a_copper_shape_on_a_net_that_left_reads_on_no_net_in_pcbnew(tmp_path):
     assert "/SIG" not in [name for _, name in read["nets"]], read["nets"]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_99)
 def test_a_copper_shape_never_follows_a_number_a_later_net_takes(tmp_path):
     """Two updates on a KiCad 9 board whose /SIG row is the table's last (2) and whose copper
     shape is on it. The first, from a netlist without /SIG, prunes the row; the second adds
@@ -978,7 +935,6 @@ def test_a_copper_shape_never_follows_a_number_a_later_net_takes(tmp_path):
     assert named == [], f"the shape is on {named} after a net was added"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_101)
 def test_a_new_net_row_never_takes_a_number_an_item_uses(tmp_path):
     """A KiCad 9 board whose table holds net 0 and /GND (1) and a segment on (net 2), a number
     no row has, as an earlier add_trace left it: pcbnew 9 reads the segment on no net. An
@@ -1008,7 +964,6 @@ def test_a_new_net_row_never_takes_a_number_an_item_uses(tmp_path):
         assert read[1] == "", f"pcbnew 9 reads the segment on {read} after the update"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_100)
 def test_every_net_the_import_binds_has_a_row(tmp_path):
     """A KiCad 9 board with no net table at all (hand-made: KiCad writes (net 0 "") always)
     holding a copper zone whose net_name is GND, imported with a netlist that puts U1's pad 1
@@ -1040,11 +995,6 @@ def test_every_net_the_import_binds_has_a_row(tmp_path):
 # bug 20: a quoted net atom is a name, even when it is all digits
 # ---------------------------------------------------------------------------
 
-_BUG_20 = (
-    "bug 20: a net atom that is all digits is read as a number, whether or not it is quoted,"
-    " so a KiCad 10 net named 5 is invisible to the read tools; fixed by step 10"
-)
-
 #: Names a KiCad 10 board can give its nets, quoted as KiCad writes every net name (Quotew,
 #: pcb_io_kicad_sexpr.cpp:1856-1858 and 2860-2861 at 10.0.7): digits, a leading zero, a sign,
 #: net 0's number, and a decimal.
@@ -1063,7 +1013,6 @@ def _digit_board(tmp_path: Path) -> Path:
     return _board(tmp_path, items, version="k10")
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_20)
 def test_kicad10_net_names_are_names(tmp_path):
     """A KiCad 10 board whose nets are named 5, 007, -7, 0 and 1.5, each quoted as KiCad writes
     a name. KiCad's lexer reads a quoted token as a STRING and only an unquoted number as a
@@ -1134,7 +1083,6 @@ _ATOM_SPELLINGS = st.one_of(
 )
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_20)
 @settings(max_examples=sexpr_gen.budget(2))
 @example(spelling=b'"5"')
 @example(spelling=b'"-7"')
@@ -1147,8 +1095,10 @@ def test_net_code_matches_kicads_lexer(spelling):
     KiCad writer or a hand could put there, quoted or bare: the tools read it as the name
     KiCad's parser gives it. KiCad's lexer (the port in tests/kicad_ref) says whether the atom
     is a NUMBER, which parseNet takes for a legacy code naming no net on a board with no
-    table, or a STRING or SYMBOL, which it takes for a name. The tools took a quoted string of
-    digits for a number, and a bare decimal such as 1.5 for a name."""
+    table, or a STRING or SYMBOL, which it takes for a name. The number of a NUMBER is the
+    integer strtol takes from it (parseInt), which pcb._net_code agrees with, and it gives
+    none for a name. The tools took a quoted string of digits for a number, and a bare
+    decimal such as 1.5 for a name."""
     item = _u1({"1": "PLACEHOLDER"})
     text = E.layered_board_text([item.replace('(net "PLACEHOLDER")', f"(net {spelling.decode()})")])
     data = text.encode()
@@ -1158,23 +1108,16 @@ def test_net_code_matches_kicads_lexer(spelling):
     root = _cst.parse(data).lists[0]
     pad = root.find("footprint").find_all("pad")[0]
     assert pcb._net_name_of(root, pad) == expected, f"{spelling!r} is a {token[0].kind}"
+    atom = pad.find("net").atoms[1]
+    number = L._parse_int(token[0].value) if token[0].kind == L.NUMBER else None
+    assert pcb._net_code(atom) == number, f"{spelling!r} is a {token[0].kind}"
 
 
 def _info_nets(board: Path) -> int:
     return int(pcb.get_board_info(str(board)).split("Nets: ")[1].splitlines()[0])
 
 
-@pytest.mark.parametrize(
-    "version",
-    [
-        pytest.param("k9", id="k9"),
-        pytest.param(
-            "k10",
-            id="k10",
-            marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_20),
-        ),
-    ],
-)
+@pytest.mark.parametrize("version", ["k9", "k10"])
 def test_board_info_counts_the_unconnected_net_as_pcbnew_does(tmp_path, version):
     """get_board_info's Nets counts the nets pcbnew holds, and pcbnew always holds the
     unconnected net, net 0, which its net list registers under the empty name when it is built
@@ -1200,11 +1143,6 @@ def test_board_info_counts_the_unconnected_net_as_pcbnew_does(tmp_path, version)
 # ---------------------------------------------------------------------------
 # bug 22: a pad whose net did not change keeps its bytes
 # ---------------------------------------------------------------------------
-
-_BUG_22 = (
-    "bug 22: the pad pass clears every matched pad's net and inserts it again after (layers ...),"
-    " so a pad whose net did not change moves; fixed by step 10"
-)
 
 #: The children format( PAD ) writes before a pad's (net ...), in its order
 #: (pcb_io_kicad_sexpr.cpp:1432-1613 at 9.0.8, 1635-1858 at 10.0.7; the last four before
@@ -1319,7 +1257,6 @@ _NET_NAMES = st.builds(
 )
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_22)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=_CHAMFERED, assignment=("/A", "/B", "/A", None), dialect="k9")
 @example(fp=_CHAMFERED, assignment=("/A", None, "/B", None), dialect="k10")
@@ -1352,7 +1289,6 @@ def test_unchanged_reimport_leaves_pads_byte_identical(fp, assignment, dialect):
     assert not moved, f"pads {moved} (by place) changed in an update with nothing to change"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_22)
 @settings(max_examples=sexpr_gen.budget(4))
 @example(fp=_CHAMFERED, dialect="k9", names=("/A", "/B"))
 @example(fp=_CHAMFERED, dialect="k10", names=("/A", "/B"))
@@ -1366,9 +1302,11 @@ def test_one_changed_net_changes_only_its_pads(fp, dialect, names):
     """Pads 1 and 2 of a footprint with at least three pads are on one net and pad 3 is on
     another; a netlist moves pad 2 to pad 3's net. Every net keeps a pad, so the table and
     every other pad are as they were, and the one change to the file is the (net ...) of pad
-    2: its two atoms (its number and its name) where the dialect has a number, its name
-    where it has none. Names are drawn without line ends, which the tools quote by hand
-    (bug 67). The pass moved every pad it touched."""
+    2: its two atoms (its number and its name) on a KiCad 9 board, its name on a KiCad 10
+    board. On a development-format board it loses its number and takes the name, as every
+    net the tools write above format 20241229 is written by name (the board's table and its
+    other pads keep the pair). Names are drawn without line ends, which the tools quote by
+    hand (bug 67). The pass moved every pad it touched."""
     assume(len(fp.pads) >= 3)
     a, b = names
     start = {"1": a, "2": a, "3": b}
@@ -1382,6 +1320,11 @@ def test_one_changed_net_changes_only_its_pads(fp, dialect, names):
     rows = {a: 1, b: 2} if a < b else {b: 1, a: 2}
     if dialect == "k10":
         expected = [("atom", want, 1, _quoted(a).encode(), _quoted(b).encode())]
+    elif dialect == "k10dev":
+        expected = [
+            ("delete", want, 1, str(rows[a]).encode(), None),
+            ("atom", want, 2, _quoted(a).encode(), _quoted(b).encode()),
+        ]
     else:
         expected = [
             ("atom", want, 1, str(rows[a]).encode(), str(rows[b]).encode()),
@@ -1411,7 +1354,6 @@ def _pad_records(data: bytes, ref: str) -> list[tuple[bytes, str | None]]:
 
 
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_22)
 def test_reimporting_a_demos_own_netlist_leaves_its_pads_byte_identical(tmp_path):
     """kicad-cli's netlist of a copy of KiCad's ecc83 demo, applied to that demo's own
     board: every pad of a footprint the update did not swap, whose net the update did not
@@ -1499,6 +1441,90 @@ def test_a_pad_whose_pin_left_the_netlist_loses_its_net(tmp_path, dialect):
 
 
 # ---------------------------------------------------------------------------
+# an item that holds no (net ...) child yet
+# ---------------------------------------------------------------------------
+
+
+def _without_net(item: str) -> str:
+    """``item`` without its (net ...) and (net_name ...) children, each on a line of its own."""
+    return "".join(
+        line
+        for line in item.splitlines(keepends=True)
+        if not line.lstrip().startswith(("(net ", "(net_name "))
+    )
+
+
+def _written_net_tokens(version: str, kind: str, net: int) -> tuple[list | None, list | None]:
+    """The tokens of the (net ...) and of the (net_name ...) child that KiCad's writer gives an
+    item of ``kind`` on net ``net`` (0, or /GND, number 1) on a board of ``version``, None for
+    a child it leaves out: the module docstring's rules, from pcb_io_kicad_sexpr.cpp (2436,
+    2452-2454 and 1027-1028 at 9.0.8; 2860-2861, 2872-2876 and 1117-1118 at 10.0.7)."""
+    if version == "k9":
+        if kind == "gr_poly" and net == 0:
+            return None, None
+        if kind == "zone":
+            return [str(net).encode()], [b'"/GND"' if net else b'""']
+        return [str(net).encode()], None
+    if net:
+        return [b'"/GND"'], None
+    return ([_NO_NET], None) if kind in ("segment", "via") else (None, None)
+
+
+@pytest.mark.parametrize("net", [0, 1], ids=["no net", "/GND"])
+@pytest.mark.parametrize("kind", ["segment", "via", "gr_poly", "zone"])
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_an_item_with_no_net_child_gets_one_where_kicad_writes_it(tmp_path, version, kind, net):
+    """A segment, a via, a copper polygon or a zone that carries no (net ...) child, put on
+    net 0 or on /GND by pcb._set_item_net: it gains the children KiCad's writer gives an item
+    of its kind on that net (_written_net_tokens), none where KiCad writes none, and nothing
+    else changes. The (net ...) goes straight before a track's or a shape's uuid and
+    straight after a zone's head, followed on KiCad 9 by the zone's (net_name ...), as
+    format( PCB_TRACK ), format( PCB_SHAPE ) and format( ZONE ) put them (pcb_io_kicad_sexpr.cpp:
+    2436-2438, 1027-1030 and 2452-2454 at 9.0.8; 2860-2863, 1117-1120 and 2872-2876 at 10.0.7)."""
+    rows = _ROWS if version == "k9" else None
+    items = {
+        "segment": _track("segment", _GND_SEGMENT, "/GND", version=version, rows=rows),
+        "via": _track("via", _SIG_TRACKS["via"], "/GND", version=version, rows=rows),
+        "gr_poly": _shape("/GND", version=version, rows=rows),
+        "zone": _zone("/GND", net_name=True, version=version, rows=rows),
+    }
+    board = _board(
+        tmp_path,
+        [_u1(_PAD_NETS, version=version, rows=rows), _without_net(items[kind])],
+        version=version,
+        rows=rows,
+    )
+    before = board.read_bytes()
+    tree = _cst.parse(before)
+    root = tree.lists[0]
+    pcb._set_item_net(root.find(kind), root, net)
+    board.write_bytes(_cst.serialize(tree))
+    after = board.read_bytes()
+
+    want_net, want_name = _written_net_tokens(version, kind, net)
+    if want_net is None:
+        assert after == before
+        return
+    heads = ["net"] if want_name is None else ["net", "net_name"]
+    assert [edit.path for edit in J.assert_inserted(before, after, heads=heads)] == [
+        _the(before, "kicad_pcb", kind)
+    ] * len(heads)
+    item = J.item_at(after, _the(after, "kicad_pcb", kind))
+    assert _net_tokens(item) == [want_net]
+    named = [
+        [token.raw for token in (child.items or ())[1:]]
+        for child in item.items or ()
+        if child.items is not None and child.head == "net_name"
+    ]
+    assert named == ([want_name] if want_name else [])
+    kids = _children(item)
+    if kind == "zone":
+        assert kids[: len(heads)] == heads
+    else:
+        assert kids[kids.index("net") + 1] == "uuid"
+
+
+# ---------------------------------------------------------------------------
 # N1: binding a pad reproduces the bytes of KiCad's own pads
 # ---------------------------------------------------------------------------
 
@@ -1582,7 +1608,6 @@ def _check_boards(boards: Sequence[tuple[str, Path]]) -> None:
     )
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_22)
 def test_pad_rebind_reproduces_kicads_own_pads():
     """N1. KiCad's own boards, the demos and templates its install ships up to the per-push
     size cap, are the judge of where a pad's (net ...) goes: for each pad that carries one, a
@@ -1601,7 +1626,6 @@ def test_pad_rebind_reproduces_kicads_own_pads():
 
 
 @pytest.mark.nightly
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_22)
 def test_nightly_pad_rebind_reproduces_kicads_own_pads():
     """N1 over every board the install ships, whatever its size (the per-push run keeps to
     those under the cap)."""
@@ -1756,22 +1780,7 @@ def harvest(tmp_path_factory):
 
 @pytest.mark.parametrize(
     "kind",
-    [
-        "segment",
-        "arc",
-        "via",
-        pytest.param(
-            "zone",
-            marks=pytest.mark.xfail(
-                "_on_kicad_9()", strict=True, raises=AssertionError, reason=_BUG_19
-            ),
-        ),
-        "rule area",
-        pytest.param(
-            "gr_poly",
-            marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_99),
-        ),
-    ],
+    ["segment", "arc", "via", "zone", "rule area", "gr_poly"],
 )
 def test_no_net_is_spelled_as_the_running_pcbnew_spells_it(harvest, kind):
     """The orphan pass sends each item of a net that left to no net spelled as the pcbnew of
