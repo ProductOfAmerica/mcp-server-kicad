@@ -734,9 +734,10 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   as it parses, so a number past the nets made so far finds none yet where the derived numbering, built
   over the whole board, finds one made later in the file; and a net a KiCad 9 zone's net_name makes is
   one a later bare number can find, where the rows alone give none. The update reads the numbers before
-  its pad pass, since moving the pads renumbers the nets of a board with no table. A pad that holds a
-  number alone has no reading: both parsers need a name after the number (5225 at 9.0.8, 6210 at 10.0.7)
-  and kicad-cli 9.0.8 refuses the board (measured 2026-10-17), so nothing asserts one.
+  it changes anything, since a swapped footprint (its library copy has no net on its pads) and the pads
+  it moves renumber the nets of a board with no table. A pad that holds a number alone has no reading:
+  both parsers need a name after the number (5225 at 9.0.8, 6210 at 10.0.7) and kicad-cli 9.0.8 refuses
+  the board (measured 2026-10-17), so nothing asserts one.
 
   What stays outside: a reference an earlier version wrote that names no net is not repaired (a KiCad 9
   board's reads on no net, and the row rule stops it being adopted; a KiCad 10 board's binds by load
@@ -750,5 +751,5 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   the Linux 10.0, macOS and Windows legs before the fix (pcbnew 10 wrote the no-net harvest of N8 without
   an API difference), and the fix commit passed there after. The review fixes after it are in the same
   state: the pcbnew 10 halves of their tests (the nets a kept footprint holds, a KiCad 10 board's bare
-  numbers read by load order, and the update's reading of one) are source reading until those legs run
-  them.
+  numbers read by load order, and the update's reading of one, with and without a swap) are source
+  reading until those legs run them.

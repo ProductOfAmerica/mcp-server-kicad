@@ -4623,6 +4623,13 @@ def _apply_netlist_cst(
     by_ref = _fp_by_reference(root)
     netlist_refs = {c["ref"] for c in components}
 
+    # What the bare numbers on the board's items bind to, read before anything changes: on
+    # a board with no table KiCad 10 numbers the nets in the order its pads and items make
+    # them (_bound_names), and both the swap below, which puts a library copy with no net
+    # on its pads in place of a footprint, and the pad pass renumber them.
+    version = _board_version(root)
+    bound = _bound_names(root)
+
     # --- Components, matched by reference (sorted: deterministic layout) ---
     layers = _board_flip_layers(root)
     k = 0
@@ -4678,12 +4685,6 @@ def _apply_netlist_cst(
     # --- Nets: declare-only, so existing numbers never move under live tracks ---
     summary["nets_added"] = _ensure_net_rows(root, [n["name"] for n in nets])
     numbers = {name: num for num, name in _net_table(root)}
-
-    # What the bare numbers on the board's items bind to, read before the pad pass: on a
-    # board with no table KiCad 10 numbers the nets in the order the pads and items make
-    # them (_bound_names), and the pass below changes the pads.
-    version = _board_version(root)
-    bound = _bound_names(root)
 
     # --- Pads, scoped to netlist-matched footprints, so board-only footprints
     # (mounting holes and the like) are never touched. A pad the netlist puts on a

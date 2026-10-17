@@ -19,10 +19,10 @@ board with no table; bug 22, a pad whose net did not change keeps its bytes; bug
 and prune passes see the copper shapes that carry a net; bug 100, a name a board with no table
 spells gets a row; bug 101, a new row never takes a number an item already refers to. Review
 fixes: a net a pad of a footprint that stays is on has not left the schematic, and a bare net
-number is bound as the KiCad that loads the board's format binds it. The judges are KiCad's
-own parser and writer, read at 9.0.8 and 10.0.7 and cited where each is used; pcbnew, where
-this machine has it; the lexer port in tests/kicad_ref for what a file holds; and the files
-KiCad ships.
+number is bound as the KiCad that loads the board's format binds it, read by the update before
+it swaps a footprint or moves a pad. The judges are KiCad's own parser and writer, read at
+9.0.8 and 10.0.7 and cited where each is used; pcbnew, where this machine has it; the lexer
+port in tests/kicad_ref for what a file holds; and the files KiCad ships.
 
 KiCad 9's rule, read at 9.0.8. A net reference is a number, and the parser maps every number
 through the board's table: getNetCode over the map parseNETINFO_ITEM fills, zeros in its gaps
@@ -348,6 +348,31 @@ def _on_sig(net: J.Item) -> bool:
     return items is not None and len(items) == 2 and items[1].value == b"/SIG"
 
 
+def _apply_netlist(
+    board: Path,
+    components: Sequence[E.NetComponent],
+    nets: Sequence[tuple[str, Sequence[tuple[str, str]]]],
+    *,
+    libraries: Sequence[Path] = (),
+    delete_stale: bool = False,
+    tool: str = "Eeschema 10.0.7",
+) -> dict:
+    """pcb._apply_netlist_cst on ``board`` with a netlist of ``components`` and ``nets`` (each
+    net's name and its (reference, pin) nodes), the footprints they name resolved in the
+    ``libraries`` (.pretty directories); returns the update's summary. A refusal fails the
+    test: KiCad's own writer has a spelling for every item on no net."""
+    netlist = board.parent / "netlist.xml"
+    netlist.write_text(E.netlist_text(list(components), nets, tool=tool), encoding="utf-8")
+    try:
+        return pcb._apply_netlist_cst(
+            str(netlist), str(board), [str(library) for library in libraries], delete_stale
+        )
+    except ToolError as exc:
+        raise AssertionError(f"the update was refused: {exc}") from exc
+    finally:
+        pcb._BOARD_CACHE.pop(str(board.resolve()), None)
+
+
 def _apply(
     board: Path,
     pad_nets: Mapping[str, str],
@@ -356,27 +381,16 @@ def _apply(
     delete_stale: bool = False,
     tool: str = "Eeschema 10.0.7",
 ) -> dict:
-    """pcb._apply_netlist_cst on ``board`` with a netlist of ``components`` (U1 on the footprint
-    it has, by default) in which U1's pads are on the nets ``pad_nets`` names, pad number to
-    net; returns the update's summary. A refusal fails the test: KiCad's own writer has a
-    spelling for every item on no net."""
-    netlist = board.parent / "netlist.xml"
-    netlist.write_text(
-        E.netlist_text(
-            list(components)
-            if components is not None
-            else [E.NetComponent("U1", "V", "Ladder:Syn")],
-            _nets_of(pad_nets),
-            tool=tool,
-        ),
-        encoding="utf-8",
+    """The update (_apply_netlist) of ``board`` from a netlist of ``components`` (U1 on the
+    footprint it has, by default) in which U1's pads are on the nets ``pad_nets`` names, pad
+    number to net."""
+    return _apply_netlist(
+        board,
+        components if components is not None else [E.NetComponent("U1", "V", "Ladder:Syn")],
+        _nets_of(pad_nets),
+        delete_stale=delete_stale,
+        tool=tool,
     )
-    try:
-        return pcb._apply_netlist_cst(str(netlist), str(board), [], delete_stale)
-    except ToolError as exc:
-        raise AssertionError(f"the update was refused: {exc}") from exc
-    finally:
-        pcb._BOARD_CACHE.pop(str(board.resolve()), None)
 
 
 def _nets_of(pad_nets: Mapping[str, str]) -> list[tuple[str, list[tuple[str, str]]]]:
@@ -1378,6 +1392,127 @@ def test_k10_update_sends_an_item_numbered_for_a_net_that_left_to_no_net(tmp_pat
     assert moved == [("atom", ("kicad_pcb", "segment", "net", "2"), b"2", _NO_NET)]
     if on_pcbnew_10:
         assert _pcbnew_nets(board)["items"][seg_uuid][1] == "", "pcbnew 10 reads it on a net"
+
+
+#: Where U2 sits, in nm: its pad 1 is at (79, 40) mm on the board, its pad 2 at (81, 40) mm.
+_U2_AT = (80 * MM, 40 * MM)
+
+
+def _swap_library(directory: Path) -> Path:
+    """The library NewLib, holding Syn2: edit_gen's two-pad footprint under another name. A
+    netlist that names NewLib:Syn2 for a footprint the board holds as Ladder:Syn changes its
+    footprint assignment, which the update answers with a swap, and the library's copy has no
+    net on its pads."""
+    return E.write_library(
+        directory / "lib", E.footprint_with_pad_at(0.0)._replace(name="Syn2"), library="NewLib"
+    )
+
+
+def _kicad10_nets_made(data: bytes) -> list[str]:
+    """The nets KiCad 10.0.7 holds, in the order it numbers them 1, 2, ..., once it has loaded
+    the board ``data``, which holds no table. It makes a net where it first meets a name, on
+    a pad's (net "NAME") or on an item's, in file order (parseNet and the pad's branch,
+    pcb_io_kicad_sexpr_parser.cpp:296-342 and 6233-6244), and numbers them as it makes them
+    (NETINFO_LIST::AppendNet and getFreeNetCode, pcbnew/netinfo_list.cpp:149-165 and
+    266-275). A bare (net N) is then the N-th of them, as getNetCode returns N unchanged with
+    no table (pcb_io_kicad_sexpr_parser.h:176-184): the silent rebind of ADR-2 guardrail 5.
+    A hand port for the boards of the tests below, read through the lexer port and not
+    through the code under test: a pad's net is (net "NAME"), an item's a name or a number.
+    The legs that have pcbnew 10 hold the tests' premises to pcbnew's own reading of the
+    segment."""
+    made: list[str] = []
+    for group in FJ.root(data).items:
+        if F.head(group) is None:
+            continue
+        holders = F.pad_groups(group) if F.head(group) == b"footprint" else [group]
+        for holder in holders:
+            net = F.child(holder, b"net")
+            if net is None or net.items[1].kind == L.NUMBER:
+                continue
+            name = net.items[1].value.decode()
+            if name and name not in made:
+                made.append(name)
+    return made
+
+
+def test_k10_update_through_a_swap_sends_an_item_numbered_for_a_net_that_left_to_no_net(tmp_path):
+    """The test above with U1 swapped for NewLib:Syn2, its pad 1 on /NEW and its pad 2 on /GND:
+    the segment written (net 2) is on /VCC, which left the schematic, so it goes to no net,
+    (net ""), and orphaned_tracks counts it, as it does without the swap. The swapped
+    footprint comes out of its library with no net on its pads, so a number read after the
+    swap named no net at all: the pass left the segment written (net 2), which the updated
+    board, whose second net is /GND, binds to /GND, a net it was never on. The update reads
+    the numbers before it swaps anything."""
+    library = _swap_library(tmp_path)
+    board = _board(
+        tmp_path, [_u1(_PAD_NETS), _track("segment", _STRAY_SEGMENT, "", number=2)], version="k10"
+    )
+    before = board.read_bytes()
+    if _kicad10_nets_made(before) != ["/GND", "/VCC"]:
+        raise RuntimeError("the premise fails: the board does not make /GND and /VCC in order")
+    seg_uuid = _uuid_of(J.item_at(before, _the(before, "kicad_pcb", "segment")))
+    on_pcbnew_10 = PJ.skip_reason() is None and PJ.major() >= 10
+    if on_pcbnew_10 and _pcbnew_nets(board)["items"][seg_uuid][1] != "/VCC":
+        raise RuntimeError("the premise fails: pcbnew 10 reads (net 2) on a net but /VCC")
+    summary = _apply_netlist(
+        board,
+        [E.NetComponent("U1", "V", "NewLib:Syn2")],
+        [("/NEW", [("U1", "1")]), ("/GND", [("U1", "2")])],
+        libraries=[library],
+    )
+    after = board.read_bytes()
+    if _kicad10_nets_made(after) != ["/NEW", "/GND"]:
+        raise RuntimeError("the premise fails: the updated board does not make /NEW, /GND")
+    assert summary["fpid_changed"] == ["U1"], summary
+    assert summary["orphaned_tracks"] == 1, summary
+    segment = [e for e in _edits(before, after) if e[1][:2] == ("kicad_pcb", "segment")]
+    assert segment == [("atom", ("kicad_pcb", "segment", "net", "2"), b"2", _NO_NET)]
+    if on_pcbnew_10:
+        assert _pcbnew_nets(board)["items"][seg_uuid][1] == "", "pcbnew 10 reads it on a net"
+
+
+def test_k10_update_through_a_swap_leaves_an_item_numbered_for_a_net_that_stays(tmp_path):
+    """A KiCad 10 board that holds no table: U1 with pad 1 on /A and pad 2 on /B, U2 with pad 1
+    on /B and pad 2 on /C, and a segment written (net 2), which KiCad 10 binds to /B, the
+    second net it makes. Updated from a netlist that swaps U1 for NewLib:Syn2 and keeps its
+    pads on /A and /B, with U2's on /B and /D, /B stays in the schematic and the segment stays
+    on it: orphaned_tracks is 0 and nothing about the segment changes, and the updated board,
+    whose second net is /B again, binds (net 2) to /B still. The swapped footprint comes out
+    of its library with no net on its pads, so a number read after the swap was read against
+    a board whose first nets were U2's, where (net 2) is /C, a net the netlist does not
+    have: the pass sent the segment to no net, cut off from a live net it had been on. The
+    update reads the numbers before it swaps anything."""
+    library = _swap_library(tmp_path)
+    board = _board(
+        tmp_path,
+        [
+            _footprint("U1", _U1_AT, {"1": "/A", "2": "/B"}),
+            _footprint("U2", _U2_AT, {"1": "/B", "2": "/C"}),
+            _track("segment", _STRAY_SEGMENT, "", number=2),
+        ],
+        version="k10",
+    )
+    before = board.read_bytes()
+    if _kicad10_nets_made(before) != ["/A", "/B", "/C"]:
+        raise RuntimeError("the premise fails: the board does not make /A, /B and /C in order")
+    seg_uuid = _uuid_of(J.item_at(before, _the(before, "kicad_pcb", "segment")))
+    on_pcbnew_10 = PJ.skip_reason() is None and PJ.major() >= 10
+    if on_pcbnew_10 and _pcbnew_nets(board)["items"][seg_uuid][1] != "/B":
+        raise RuntimeError("the premise fails: pcbnew 10 reads (net 2) on a net but /B")
+    summary = _apply_netlist(
+        board,
+        [E.NetComponent("U1", "V", "NewLib:Syn2"), E.NetComponent("U2", "V", "Ladder:Syn")],
+        [("/A", [("U1", "1")]), ("/B", [("U1", "2"), ("U2", "1")]), ("/D", [("U2", "2")])],
+        libraries=[library],
+    )
+    after = board.read_bytes()
+    assert summary["fpid_changed"] == ["U1"], summary
+    assert summary["orphaned_tracks"] == 0, summary
+    segment = [e for e in _edits(before, after) if e[1][:2] == ("kicad_pcb", "segment")]
+    assert segment == [], "the segment on a net that stays was changed"
+    assert _kicad10_nets_made(after)[1:2] == ["/B"], "(net 2) binds to another net now"
+    if on_pcbnew_10:
+        assert _pcbnew_nets(board)["items"][seg_uuid][1] == "/B", "pcbnew 10 reads it off /B"
 
 
 def _info_nets(board: Path) -> int:
