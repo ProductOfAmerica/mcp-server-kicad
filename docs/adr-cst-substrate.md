@@ -707,12 +707,12 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   when it needs no escape. The call is refused, naming the entry and with an existing
   table and the directory untouched, for an empty nickname, a nickname holding a character below
   U+0020, a backslash or a colon (LIB_ID's rule, common/lib_id.cpp:255-274 at 9.0.8), a repeated
-  nickname (the reader keeps the first row and reports the second), an empty URI, a double quote
-  in either, and a line end or NUL in a URI. A URI's backslashes are written as '/', as
-  LIB_TABLE_ROW::Format writes them. Judges: the port, kicad-cli's ERC on a project that uses the
-  table (`test_ladder_r3_lib_table.py`), and the cross-version reading rule of
-  `test_ladder_r1_helpers.py`. Gates: the ladder's tests for bugs 4, 28, 29, 59, 61, 64, 65, 66, 67
-  and 86, and the KiCad 10 legs of `kicad-suite.yml`, `macos-discovery.yml` and `windows.yml`.
+  nickname, an empty URI, a double quote in either, and a line end or NUL in a URI. A URI's
+  backslashes are written as '/', as LIB_TABLE_ROW::Format writes them. Judges: the port,
+  kicad-cli's ERC on a project that uses the table (`test_ladder_r3_lib_table.py`), and the
+  cross-version reading rule of `test_ladder_r1_helpers.py`. Gates: the ladder's tests for bugs 4,
+  28, 29, 59, 61, 64, 65, 66, 67 and 86, and the KiCad 10 legs of `kicad-suite.yml`,
+  `macos-discovery.yml` and `windows.yml`.
 
   The fp-lib-table reader takes a row's URI both ways the two majors read it. Atom.text is KiCad 9's
   reading, escapes decoded; KiCad 10 keeps the bytes between a table value's quotes

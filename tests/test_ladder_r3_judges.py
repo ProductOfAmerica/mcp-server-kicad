@@ -2066,8 +2066,8 @@ def test_shipped_lib_tables_are_found():
 
 
 def test_nickname_duplicates_follow_the_reader():
-    """The reader keeps the first row of a nickname and reports each later one; nicknames
-    that differ in case are two (its index is a std::map keyed on the wxString,
+    """KiCad 9's reader keeps the first row of a nickname and reports each later one;
+    nicknames that differ in case are two (its index is a std::map keyed on the wxString,
     include/lib_table_base.h:642 at 9.0.8)."""
     assert LT.duplicate_nicknames(["a", "b", "a", "a", "c", "b"]) == ["a", "a", "b"]
     assert LT.duplicate_nicknames(["a", "A"]) == []

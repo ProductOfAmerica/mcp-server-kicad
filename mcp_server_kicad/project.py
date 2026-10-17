@@ -266,8 +266,7 @@ def _lib_row_problem(name: str, uri: str) -> tuple[str, str] | None:
 def _lib_table_rows(entries: list[LibTableEntry]) -> list[tuple[str, str]]:
     """The (nickname, uri) row each entry becomes, or a ToolError naming the first entry the
     table cannot hold, before anything is written. A URI's backslashes become '/', as KiCad's
-    own writer stores them. A nickname an earlier entry has is refused too: KiCad's reader
-    keeps the first row of a nickname and reports the second as a duplicate."""
+    own writer stores them. A nickname an earlier entry has is refused too."""
     rows: list[tuple[str, str]] = []
     first_at: dict[str, int] = {}
     for index, entry in enumerate(entries):

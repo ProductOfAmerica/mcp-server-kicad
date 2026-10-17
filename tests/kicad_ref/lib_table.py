@@ -19,9 +19,9 @@ The nickname rule (LIB_ID::FindIllegalLibraryNameChar and isLegalLibraryNameChar
 common/lib_id.cpp:243-274 at 9.0.8, 237-268 at 10.0.7): a character is illegal below
 U+0020, as a backslash and as a colon. The symbol table dialog refuses an empty
 nickname and an illegal character (eeschema/dialogs/panel_sym_lib_table.cpp:425-494
-at 9.0.8) and two rows with one nickname (516-532), and the table reader keeps the
+at 9.0.8) and two rows with one nickname (516-532), and KiCad 9's table reader keeps the
 first of two rows with one nickname and reports the later one (SYMBOL_LIB_TABLE::Parse,
-eeschema/symbol_lib_table.cpp:271-296).
+eeschema/symbol_lib_table.cpp:271-296 at 9.0.8).
 
 Checked against pcbnew and the tables KiCad ships by tests/test_ladder_r3_judges.py.
 
@@ -85,7 +85,7 @@ def format_table(rows: list[tuple[str, str]]) -> bytes:
 
 
 def duplicate_nicknames(nicknames: list[str]) -> list[str]:
-    """The nicknames the reader reports as duplicates: each one an earlier row already
+    """The nicknames KiCad 9's reader reports as duplicates: each one an earlier row already
     holds (the first row is kept), in row order."""
     seen: set[str] = set()
     out = []

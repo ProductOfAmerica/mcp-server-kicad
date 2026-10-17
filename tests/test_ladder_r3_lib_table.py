@@ -156,9 +156,9 @@ def test_lib_table_refuses_nicknames_kicad_refuses(before, bad, after):
 )
 @example(names=["a"], where=0, gap=0)
 def test_lib_table_refuses_a_nickname_twice(names, where, gap):
-    """Two rows with one nickname: KiCad's reader keeps the first and reports the second
-    (SYMBOL_LIB_TABLE::Parse), the table dialog refuses the pair. Refused whatever stands
-    between them, naming the later row, with the existing table byte-identical."""
+    """Two rows with one nickname are refused whatever stands between them, naming the later
+    row, with the existing table byte-identical. KiCad 9's table dialog refuses the pair too
+    (panel_sym_lib_table.cpp:516-532 at 9.0.8)."""
     twice = names[where % len(names)]
     others = [n for n in names if n != twice]
     names = [twice] + others[:gap] + [twice]
@@ -322,7 +322,7 @@ def test_backslash_uri_resolves_in_kicad_cli(tmp_path, spelling):
 
 @requires_cli
 def test_lib_table_duplicate_is_refused_as_kicad_cli_reports_it(tmp_path):
-    """kicad-cli reports "Duplicate library nickname" for a table holding one nickname
+    """kicad-cli 9 reports "Duplicate library nickname" for a table holding one nickname
     twice, and keeps the first row (premise, measured here on a hand-written table: a RuntimeError
     when this kicad-cli does not); create_sym_lib_table refuses the same batch."""
     if _kicad_cli_major() != 9:
