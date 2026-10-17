@@ -595,23 +595,43 @@ def test_a_move_goes_ahead_where_the_rest_of_the_sheet_cannot_be_read(tmp_path, 
     assert result is not None and "Connections were not checked" in result, result
 
 
-#: Tokens written over a number in place of it, none of which KiCad's parser reads: a literal
-#: past a double's range, one that is in range but past what internal units count (times 10,000
-#: it is infinity), inf and nan, which are no NUMBER, and a word.
-_UNREADABLE_NUMBERS = (b"1e400", b"1e308", b"inf", b"nan", b"abc")
+#: Tokens written over a number in place of it. move_component must meet each with a result or a
+#: refusal, never with another exception. KiCad's parseDouble refuses four of them: a literal
+#: past a double's range (from_chars reports it out of range), inf and nan, which are no NUMBER,
+#: and a word. It reads the fifth, 1e308, which is in range: a coordinate or a size takes it
+#: clamped to INT_MAX * 0.7071 internal units (parseInternalUnits, sch_io_kicad_sexpr_parser.cpp:
+#: 618-638 at 9.0.8, 676-696 at 10.0.7), and kicad-cli loads a sheet that holds it as R1's x
+#: (test_ladder_r2_judges.py::test_number_token_refusals_match_kicad_cli). The tool cannot
+#: convert it: times 10,000 it is infinity, and _connectivity.iu does not clamp (bug 69).
+_HOSTILE_NUMBERS = (b"1e400", b"1e308", b"inf", b"nan", b"abc")
+
+
+@pytest.mark.parametrize("major", [9, 10])
+def test_kicad_refuses_four_hostile_numbers_and_reads_1e308_clamped(major):
+    """The comment above, judged by the parser port (kicad_ref.parse_units): of the hostile
+    tokens only 1e308 is read, and as a coordinate it is the clamp, INT_MAX * 0.7071 =
+    1518485686.79 internal units, rounded. The same on both majors."""
+    read = {}
+    for token in _HOSTILE_NUMBERS:
+        try:
+            read[token] = P.parse_sch_internal_units(token, major=major)
+        except P.ParseRefusal:
+            pass
+    assert read == {b"1e308": 1_518_485_687}
 
 
 @pytest.mark.kicad_placeholder("hand.kicad_sch")
 @pytest.mark.parametrize(
     "call", [(63.5, 63.5, None), (100.0, 100.0, 90)], ids=["move", "turn_in_place"]
 )
-def test_no_unreadable_number_makes_a_move_raise_anything_but_a_refusal(tmp_path, call):
+def test_no_hostile_number_makes_a_move_raise_anything_but_a_refusal(tmp_path, call):
     """Each number of the native fixture, as the lexer port finds them, written in turn as
-    each unreadable token above, then R1 moved or turned in place: the call returns, or
-    raises a ToolError and leaves the file byte for byte as it was. An exception of any other
-    type is what an MCP client is told only as "Error executing tool", and it is what one
-    OverflowError after another (a pin's coordinate, a wire's, an angle) once was. The sheet
-    KiCad cannot load is the subject, so the oracle skips it."""
+    each hostile token above, then R1 moved or turned in place: the call returns, or raises a
+    ToolError and leaves the file byte for byte as it was. An exception of any other type is
+    what an MCP client is told only as "Error executing tool", and it is what one
+    OverflowError after another (a pin's coordinate, a wire's, an angle) once was. For 1e308
+    as a coordinate the ToolError is the tool's own limit, since KiCad loads that sheet. The
+    sheets are hostile on purpose, so the oracle skips the one this test leaves."""
     data = _NATIVE.read_bytes()
     spans = [
         (item.start, item.end)
@@ -624,7 +644,7 @@ def test_no_unreadable_number_makes_a_move_raise_anything_but_a_refusal(tmp_path
     x, y, rotation = call
     escaped = []
     for start, end in spans:
-        for token in _UNREADABLE_NUMBERS:
+        for token in _HOSTILE_NUMBERS:
             hostile = data[:start] + token + data[end:]
             path.write_bytes(hostile)
             _, raised = _outcome(
@@ -635,9 +655,25 @@ def test_no_unreadable_number_makes_a_move_raise_anything_but_a_refusal(tmp_path
             refused = isinstance(raised, ToolError) and path.read_bytes() == hostile
             if raised is not None and not refused:
                 escaped.append(f"{data[start:end]!r} written {token!r}: {raised!r}")
-    assert not escaped, f"{len(escaped)} calls of {len(spans) * len(_UNREADABLE_NUMBERS)}: " + (
+    assert not escaped, f"{len(escaped)} calls of {len(spans) * len(_HOSTILE_NUMBERS)}: " + (
         "; ".join(escaped[:4])
     )
+
+
+def test_the_refusal_of_a_coordinate_kicad_clamps_does_not_blame_kicad(tmp_path):
+    """R1 placed at x = 1e308 and moved: the tool cannot read the coordinate and refuses it,
+    naming the token, with the file byte for byte as it was. KiCad reads it, clamped, and
+    loads the sheet (the comment over _HOSTILE_NUMBERS), so the message must not say that
+    KiCad cannot read it. The sheet is no placeholder, so the oracle loads it too."""
+    path = _hand_edited(tmp_path, _at(b"0", "1e308", "100"))
+    before = path.read_bytes()
+    result, raised = _outcome(
+        lambda: schematic.move_component("R1", 63.5, 63.5, schematic_path=str(path))
+    )
+    assert isinstance(raised, ToolError), f"returned {result!r}, raised {raised!r}"
+    assert "1e308" in str(raised), f"the refusal does not name the token: {raised}"
+    assert "KiCad" not in str(raised), f"the refusal blames KiCad for a token it reads: {raised}"
+    assert path.read_bytes() == before
 
 
 #: Places the 297 x 210 mm native sheet does not hold, each on the 0.01 mm grid KiCad writes.

@@ -705,6 +705,7 @@ _TOKEN_VARIANTS = [
     ("100", "100", "90.5"),  # read as 90
     ("100", "100", "-0.5"),  # read as 0
     ("200000", "100", "0"),  # past the clamp: clamped, loads
+    ("1e308", "100", "0"),  # in a double's range, infinite once scaled: clamped, loads
     ("100", "100", "-90"),  # static_cast<int> gives -90: not 0, 90, 180 or 270
     ("100", "100", "360"),
     ("100", "100", "0.9e2"),  # read as 90

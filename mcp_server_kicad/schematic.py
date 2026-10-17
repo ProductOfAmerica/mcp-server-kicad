@@ -2164,14 +2164,24 @@ def _is_here(x: float, y: float, here: Point) -> bool:
 
 
 def _sym_iu(text: str, reference: str) -> int:
-    """A coordinate atom of ``reference`` as KiCad reads it; a ToolError naming the token for
-    text that is no number KiCad reads, before anything is written."""
+    """A coordinate atom of ``reference`` in internal units; a ToolError naming the token when
+    this tool cannot read it as a position, before anything is written.
+
+    That is a limit of the tool's, not always of KiCad's. KiCad's parser refuses a word, inf,
+    nan and a number past a double's range (parseDouble), and cannot load the sheet. It reads
+    any other number, clamping a coordinate past INT_MAX * 0.7071 internal units (about
+    151849 mm) to that (parseInternalUnits, sch_io_kicad_sexpr_parser.cpp:618-638 at 9.0.8,
+    676-696 at 10.0.7), so it loads a sheet that holds 1e308 as a coordinate. ``iu`` does not
+    clamp (_shared.kiround): it raises on a number whose product with 10,000 is infinity (about
+    1.8e304 mm and up, 1e308 among them), and reads one between the clamp and that point as
+    written, not as KiCad does.
+    """
     try:
         return _connectivity.iu(text)
     except (ValueError, OverflowError):
         raise ToolError(
-            f"{reference} holds the coordinate {text!r}, which is not a number KiCad reads."
-            " The file was not changed."
+            f"{reference} holds the coordinate {text!r}, which this tool cannot read as a"
+            " position. The file was not changed."
         ) from None
 
 
