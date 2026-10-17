@@ -49,8 +49,10 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import board_item as B
 from kicad_ref import board_layers as BL
+from kicad_ref import dsn_lexer as L
 from kicad_ref import exchange as X
 from kicad_ref import footprint as F
+from kicad_ref import lib_table as LT
 from kicad_ref import parse_units as P
 from kicad_ref import pcb_text as T
 from kicad_ref import sch_line
@@ -1947,3 +1949,120 @@ def test_kicad_never_writes_a_junction_on_a_wire_interior(path):
 def test_nightly_kicad_never_writes_a_junction_on_a_wire_interior(path):
     """The same over every schematic the install holds."""
     _no_junction_inside_a_line(path)
+
+
+# ---------------------------------------------------------------------------------------------
+# Library tables: kicad_ref.lib_table, for the table tests
+# ---------------------------------------------------------------------------------------------
+
+#: Nicknames for the rule: legal and illegal, a quote and a space (legal), characters
+#: below U+0020, a delete byte, multibyte text. A NUL cannot cross to pcbnew (a C string),
+#: and the rule treats it as it treats every character below U+0020.
+_NICKNAMES = [
+    "",
+    "plain",
+    "my lib",
+    'my"lib',
+    "my:lib",
+    "my\\lib",
+    "tab\there",
+    "nl\n",
+    "cr\r",
+    "\x01a",
+    "end\x1f",
+    " ",
+    "é:",
+    "ω",
+    ":",
+    "\\",
+    "a\x7fb",
+    "x y",
+]
+
+
+def test_nickname_rule_matches_pcbnew():
+    """kicad_ref.lib_table.illegal_nickname_char is LIB_ID::FindIllegalLibraryNameChar, which
+    pcbnew exposes: the first illegal character's code, 0 for a nickname with none."""
+    reason = PJ.skip_reason()
+    if reason:
+        pytest.skip(reason)
+    script = (
+        "import pcbnew\n"
+        "result = {'codes': [pcbnew.LIB_ID.FindIllegalLibraryNameChar(pcbnew.UTF8(n))"
+        " for n in payload['names']]}\n"
+    )
+    codes = PJ.run(script, {"names": _NICKNAMES})["codes"]
+    assert len(codes) == len(_NICKNAMES)
+    for name, code in zip(_NICKNAMES, codes):
+        illegal = LT.illegal_nickname_char(name)
+        assert code == (ord(illegal) if illegal else 0), (name, code, illegal)
+        assert LT.legal_nickname(name) == (code == 0 and name != ""), name
+
+
+def _shipped_version_7_tables() -> list[tuple[str, Path]]:
+    """The library tables KiCad ships at version 7, the only version it writes
+    (LIB_TABLE::Save forces it), so the ones its writer made."""
+    return [
+        (name, path)
+        for name, path in K.shipped(suffixes=(), names=K.TABLE_NAMES)
+        if b"(version 7)" in path.read_bytes()
+    ]
+
+
+def _lexer_rows(data: bytes) -> list[bytes]:
+    """The (lib ...) rows of a table read with the lexer port, each formatted by
+    LT.format_row from the members it holds."""
+    (top,) = L.tree(data)
+    rows = []
+    for item in top.items[1:]:
+        head = item.items[0].value if item.kind == L.GROUP else None
+        if head == b"version":
+            continue
+        if head != b"lib":
+            raise RuntimeError(f"a shipped table holds ({head!r} ...) besides rows and a version")
+        values: dict[bytes, str] = {}
+        flags = set()
+        for member in item.items[1:]:
+            key = member.items[0].value
+            if len(member.items) > 1:
+                values[key] = member.items[1].value.decode("utf-8")
+            else:
+                flags.add(key)
+        rows.append(
+            LT.format_row(
+                values["name".encode()],
+                values["uri".encode()],
+                values["type".encode()],
+                values["options".encode()],
+                values["descr".encode()],
+                disabled=b"disabled" in flags,
+                hidden=b"hidden" in flags,
+            )
+        )
+    return rows
+
+
+@pytest.mark.parametrize("path", _per_file(_shipped_version_7_tables()))
+def test_lib_table_port_matches_shipped_tables(path):
+    """Every library table KiCad ships at version 7 is the port's table of its own rows,
+    line ends aside: the rows' members formatted again by LIB_TABLE_ROW::Format, inside the
+    frame of SYMBOL_LIB_TABLE::Format or FP_LIB_TABLE::Format."""
+    keyword = b"sym_lib_table" if path.name == "sym-lib-table" else b"fp_lib_table"
+    data = path.read_bytes().replace(b"\r\n", b"\n")
+    assert LT.format_rows(keyword, _lexer_rows(data)) == data
+
+
+def test_shipped_lib_tables_are_found():
+    """Wherever kicad-cli resolves, version 7 tables are collected, so the test above cannot
+    pass by collecting none."""
+    if not K.share_dirs():
+        pytest.skip(K.NO_INSTALL)
+    assert _shipped_version_7_tables(), "an install was found, but no version 7 library table"
+
+
+def test_nickname_duplicates_follow_the_reader():
+    """The reader keeps the first row of a nickname and reports each later one; nicknames
+    that differ in case are two (its index is a std::map keyed on the wxString,
+    include/lib_table_base.h:642 at 9.0.8)."""
+    assert LT.duplicate_nicknames(["a", "b", "a", "a", "c", "b"]) == ["a", "a", "b"]
+    assert LT.duplicate_nicknames(["a", "A"]) == []

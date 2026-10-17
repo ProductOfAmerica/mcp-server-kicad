@@ -20,6 +20,7 @@ and what a flip does to them), board_layers (a board's layer table, the layer pa
 a flip uses, the layers it treats as side specific and the layers a pad written on the
 board reads back on) and exchange (the footprint
 exchange the board update runs when a symbol's footprint changes, the uuids it carries
-and the footprint lock) and sch_line (a schematic line's point test and split),
+and the footprint lock), sch_line (a schematic line's point test and split) and
+lib_table (a library table's rows and frame, and the nickname rule),
 checked in test_ladder_r3_judges.py.
 """
