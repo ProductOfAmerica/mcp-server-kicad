@@ -17,24 +17,49 @@ identical, one goes. So a T loses its join and a crossing becomes a plain crossi
 
 The layout and its pin ends are test_ladder_r3_wires'; edits are judged by KiCad's lexer
 (sch_judge, edit_judge) and joins by kicad-cli's netlist.
+
+validate_hierarchy finds the junctions earlier versions of this package left inside wires and
+names the add_junctions or remove_junction call that leaves each as KiCad's editor holds it.
 """
 
 from __future__ import annotations
 
 import ast
+import math
 import os
 import shutil
 import tempfile
+import xml.etree.ElementTree as ET
+from collections import Counter
 from pathlib import Path
+from typing import NamedTuple
 
 import edit_judge as J
 import kicad_corpus as K
 import pytest
 import sch_judge as S
-from conftest import HAS_KICAD_CLI, _kicad_cli_major, _nightly_skip_reason, requires_cli
+from conftest import (
+    HAS_KICAD_CLI,
+    _cli_report,
+    _kicad_cli_major,
+    _nightly_skip_reason,
+    requires_cli,
+)
 from kicad_ref import dsn_lexer as L
+from kicad_ref import sch_line
 from mcp.server.mcpserver.exceptions import ToolError
-from routing_fixtures import junction, place, splice, wire
+from routing_fixtures import (
+    bus,
+    bus_entry,
+    fresh,
+    junction,
+    place,
+    project_file,
+    set_unit,
+    sheet,
+    splice,
+    wire,
+)
 from test_ladder_r3_wires import (
     R1_2,
     R2_1,
@@ -52,7 +77,7 @@ from test_ladder_r3_wires import (
     read,
 )
 
-from mcp_server_kicad import _connectivity, _cst, schematic
+from mcp_server_kicad import _connectivity, _cst, project, schematic
 from mcp_server_kicad._shared import _run_cli
 
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
@@ -591,3 +616,730 @@ def test_junction_rule_agrees_with_kicads_own_files(path):
 def test_nightly_junction_rule_agrees_with_kicads_own_files(path):
     """The same over every demo schematic at KiCad 9's format the install holds."""
     _junction_rule_holds_on(path)
+
+
+# ---------------------------------------------------------------------------------------------
+# validate_hierarchy: the junctions earlier versions left inside wires
+# ---------------------------------------------------------------------------------------------
+
+P2 = (111.76, 101.6)  # on the bar A-B, right of P
+E = (111.76, 110.49)  # R5:1
+R5_1 = ("R5", "1")
+#: The pin each part layout() places brings, and where its end is.
+_PINS = {"R1": (R1_2, A), "R2": (R2_1, B), "R3": (R3_1, C), "R4": (R4_2, D), "R5": (R5_1, E)}
+
+
+class _Damage(NamedTuple):
+    """A sheet as an earlier version of this package wrote it, which the tools now refuse to
+    write: the parts layout() places, raw wires ``lines`` drawn whole, each (start, end), and
+    junctions at ``dots``, each strictly inside a wire. ``kept`` holds the dots KiCad 9's
+    editor keeps when it loads the sheet (_editor_lines says which)."""
+
+    parts: tuple[str, ...]
+    lines: tuple
+    dots: tuple
+    kept: tuple
+
+    @property
+    def pins(self) -> set:
+        return {_PINS[ref][0] for ref in self.parts}
+
+
+_T = _Damage(("R1", "R2", "R3"), ((A, B), (C, P)), (P,), (P,))
+_DAMAGED = [
+    pytest.param(_T, id="t"),
+    pytest.param(_T._replace(lines=((B, A), (C, P))), id="t_bar_drawn_from_its_far_end"),
+    pytest.param(_Damage(("R1", "R2", "R3", "R4"), ((A, B), (C, D)), (P,), (P,)), id="crossing"),
+    pytest.param(
+        _Damage(("R1", "R2", "R3", "R5"), ((A, B), (C, P), (E, P2)), (P, P2), (P, P2)),
+        id="two_junctions_on_one_wire",
+    ),
+    pytest.param(_Damage(("R1", "R2"), ((A, B),), (P,), ()), id="stray_junction"),
+]
+
+
+def _sheet(tmp_path, name: str, case: _Damage, lines, dots) -> str:
+    """layout() with the case's parts, then raw wires and junctions exactly as given."""
+    p = layout(tmp_path, name, parts=case.parts)
+    for a, b in lines:
+        wire(p, *a, *b)
+    for q in dots:
+        junction(p, *q)
+    return p
+
+
+def _inside_mm(a, b, q) -> bool:
+    return sch_line.strictly_inside(S.iu_point(a), S.iu_point(b), S.iu_point(q))
+
+
+def _editor_lines(case: _Damage) -> list:
+    """The case's wires as KiCad 9's editor holds them once it has loaded the sheet.
+
+    Loading runs SCHEMATIC::CleanUp on every sheet (files-io.cpp:539, schematic.cpp:1307-1331
+    at 9.0.8). It splits every wire at every junction inside it, the schematic holder adding
+    each second half (1147, which calls BreakSegmentsOnJunctions at 1090-1113); it deletes
+    each junction where IsExplicitJunction fails, here where fewer than three directions meet
+    (1149-1158); and it merges collinear pieces that meet where no junction is left
+    (1212-1303). So each wire stays split at the junctions kept and whole across the rest."""
+    out = []
+    for a, b in case.lines:
+        cuts = sorted((q for q in case.kept if _inside_mm(a, b, q)), key=lambda q: math.dist(a, q))
+        stops = [a, *cuts, b]
+        out += list(zip(stops, stops[1:]))
+    return out
+
+
+def _junction_issues(path) -> list[dict]:
+    result = project.validate_hierarchy(schematic_path=str(path))
+    return [i for i in result.issues if i["type"] == "junction_inside_wire"]
+
+
+def _ends(stretch) -> tuple:
+    """A reported stretch's two ends, in internal units as KiCad reads the numbers."""
+    return S.iu_point((stretch["x1"], stretch["y1"])), S.iu_point((stretch["x2"], stretch["y2"]))
+
+
+def _repair_point(repair):
+    """The point a repair call names, as KiCad reads the numbers."""
+    args = repair["arguments"]
+    (spot,) = args["points"] if repair["tool"] == "add_junctions" else [args]
+    return S.iu_point((spot["x"], spot["y"]))
+
+
+def _repair(issue) -> None:
+    """Make the repair call the issue names, as a caller would."""
+    tool = issue["repair"]["tool"]
+    assert tool in ("add_junctions", "remove_junction"), tool
+    getattr(schematic, tool)(**issue["repair"]["arguments"])
+
+
+def _shape(data: bytes):
+    """A sheet's wires and buses (kind, start, end) and junctions, as KiCad reads them."""
+    return sorted((ln.kind, ln.start, ln.end) for ln in S.lines(data)), sorted(S.junctions(data))
+
+
+@pytest.mark.parametrize("case", _DAMAGED)
+def test_validate_hierarchy_reports_a_junction_inside_a_wire(tmp_path, case):
+    """A sheet an earlier version wrote, junctions inside wires that sch_judge finds:
+    validate_hierarchy names each such point and every wire it sits inside.
+
+    Per wire, kicad-cli 9 keeps the stretch from the wire's first point to the cut nearest it,
+    junctions and bus-entry ends cutting alike, and drops the rest: BreakSegment shortens the
+    wire and has no schematic holder to add the other half to (schematic.cpp:1055-1113 at
+    9.0.8). kicad-cli 9 is the judge: it reads the sheet exactly as it reads one holding only
+    the stretches reported kept, and puts the pin at each dropped end on a net of its own.
+
+    The editor's reading and the repair follow KiCad's source (_editor_lines), which the port
+    of AnalyzePoint agrees with: the editor keeps a junction where three or more directions
+    meet, and add_junctions there splits the wires as it does; it deletes the others, and so
+    does remove_junction. Made as named, the repair calls leave the sheet as KiCad 9's editor
+    holds it, and kicad-cli 9 then joins the pins as it joins that form."""
+    p = _sheet(tmp_path, "damaged", case, case.lines, case.dots)
+    data = read(p)
+    inside = S.junctions_on_interiors(data)
+    issues = _junction_issues(p)
+    assert sorted(S.iu_point((i["x"], i["y"])) for i in issues) == sorted({q for q, _ in inside})
+    model = _connectivity.Model(_cst.parse(data).lists[0])
+    kept: dict = {}
+    for issue in issues:
+        q = S.iu_point((issue["x"], issue["y"]))
+        assert issue["file"] == p
+        assert sorted((ln["kind"], *_ends(ln)) for ln in issue["lines"]) == sorted(
+            (ln.kind, ln.start, ln.end) for at, ln in inside if at == q
+        )
+        for ln in issue["lines"]:
+            start, end = _ends(ln)
+            (first, cut), (cut_again, last) = _ends(ln["kept"]), _ends(ln["dropped"])
+            assert (first, cut_again, last) == (start, cut, end), ln
+            assert sch_line.strictly_inside(start, end, cut), ln
+            assert kept.setdefault((start, end), cut) == cut, "two readings of one wire"
+        keeps = q in {S.iu_point(k) for k in case.kept}
+        if _connectivity.junction_info(model, q, break_crossings=True).explicit != keeps:
+            raise RuntimeError(f"premise: the AnalyzePoint port and KiCad's source part at {q}")
+        assert issue["editor"] == ("keeps_junction" if keeps else "deletes_junction")
+        assert issue["repair"]["tool"] == ("add_junctions" if keeps else "remove_junction")
+        assert issue["repair"]["arguments"]["schematic_path"] == p
+        assert _repair_point(issue["repair"]) == q
+
+    editor = _sheet(tmp_path, "editor", case, _editor_lines(case), case.kept)
+    if S.junctions_on_interiors(read(editor)):
+        raise RuntimeError("premise: the editor's form holds a junction inside a wire")
+    reading = None
+    if cli9():
+        reading = joins(p, case.pins)
+        stretches = []
+        for a, b in case.lines:
+            cut = kept.get((S.iu_point(a), S.iu_point(b)))
+            stretches.append((a, b) if cut is None else (a, (cut[0] / 10_000, cut[1] / 10_000)))
+        assert reading == joins(_sheet(tmp_path, "kept", case, stretches, ()), case.pins)
+        at = {S.iu_point(where): pin for pin, where in _PINS.values()}
+        for issue in issues:
+            for ln in issue["lines"]:
+                assert frozenset({at[_ends(ln["dropped"])[1]]}) in reading, (ln, reading)
+        if reading == joins(editor, case.pins):
+            raise RuntimeError("premise: kicad-cli 9 reads the damaged sheet as the editor does")
+
+    for issue in issues:
+        _repair(issue)
+    assert _junction_issues(p) == []
+    assert _shape(read(p)) == _shape(read(editor))
+    if reading is not None:
+        assert joins(p, case.pins) == joins(editor, case.pins)
+
+
+def _three_levels(tmp_path):
+    """A project whose root holds sheet Child; Child's file holds sheets Grand and Gone.
+    In Grand's file: a hierarchical label ORPHAN that no pin of Grand matches, a part R7
+    sharing its reference with one on the root, and a T as an earlier version wrote it (the
+    bar whole under the junction). Returns the four files: root, child, grand, gone."""
+    d = tmp_path / "proj"
+    project.create_project(directory=str(d), name="proj")
+    root, child, grand, gone = (d / f"{n}.kicad_sch" for n in ("proj", "child", "grand", "gone"))
+    for f in (child, grand, gone):
+        project.create_schematic(schematic_path=str(f))
+    project.add_hierarchical_sheet(
+        str(root), "Child", str(child), [{"name": "A", "direction": "input"}]
+    )
+    project.add_hierarchical_sheet(
+        str(child), "Grand", str(grand), [{"name": "A", "direction": "input"}]
+    )
+    project.add_hierarchical_sheet(str(child), "Gone", str(gone), [], x=101.6)
+    schematic.add_hierarchical_label("ORPHAN", "output", 50.8, 50.8, schematic_path=str(grand))
+    place(str(root), "R", "R7", 152.4, 152.4)
+    place(str(grand), "R", "R7", 152.4, 152.4)
+    wire(str(grand), *A, *B)
+    wire(str(grand), *C, *P)
+    junction(str(grand), *P)
+    return root, child, grand, gone
+
+
+def test_validate_hierarchy_checks_every_sheet_however_deep(tmp_path):
+    """Bug 77: validate_hierarchy stopped at the root's own sheets. Each issue of the
+    grandchild in _three_levels, and the missing file of the sheet beside it, is reported as
+    the same issue one level up is: the orphaned label, the reference the root shares, the
+    junction inside a wire, the missing file."""
+    root, _child, grand, gone = _three_levels(tmp_path)
+    gone.unlink()
+    try:
+        issues = project.validate_hierarchy(schematic_path=str(root)).issues
+    finally:  # the kicad-cli oracle refuses a hierarchy with a sheet file missing
+        project.create_schematic(schematic_path=str(gone))
+    assert {"type": "orphaned_label", "sheet_name": "Grand", "label": "ORPHAN"} in issues
+    assert {"type": "missing_file", "sheet_name": "Gone", "file_name": "gone.kicad_sch"} in issues
+    shared = {"type": "duplicate_ref", "reference": "R7", "sheets": [root.name, grand.name]}
+    assert shared in issues
+    (dot,) = [i for i in issues if i["type"] == "junction_inside_wire"]
+    assert (dot["file"], S.iu_point((dot["x"], dot["y"]))) == (str(grand), S.iu_point(P))
+
+
+def test_validate_hierarchy_changes_no_file(tmp_path):
+    """validate_hierarchy only reads: over _three_levels with a stray junction on the root as
+    well, two sheets it builds the connectivity model of, no byte of any file under the
+    project changes and no file appears or goes."""
+    root, *_ = _three_levels(tmp_path)
+    wire(str(root), 60.96, 101.6, 91.44, 101.6)
+    junction(str(root), 76.2, 101.6)
+
+    def files() -> dict:
+        return {f: f.read_bytes() for f in sorted(tmp_path.rglob("*")) if f.is_file()}
+
+    before = files()
+    issues = project.validate_hierarchy(schematic_path=str(root)).issues
+    assert files() == before
+    assert len([i for i in issues if i["type"] == "junction_inside_wire"]) == 2
+
+
+def test_validate_hierarchy_finds_a_sheet_file_beside_the_sheet_naming_it():
+    """KiCad opens a sheet's file beside the file holding the sheet: its loader makes a
+    relative name absolute against the directory of the file being loaded
+    (SCH_IO_KICAD_SEXPR::loadHierarchy, sch_io_kicad_sexpr.cpp:189-198 at 9.0.8, 201-211 at
+    10.0.7), and a file it cannot open is a missing sheet (243-258). sub/child.kicad_sch holds
+    sheet Near, whose grand.kicad_sch is in sub/, and sheet Far, whose far.kicad_sch exists
+    only beside the root: Near's file is checked, its orphaned label reported, and Far's
+    file is missing. Written outside the test's directory, since the kicad-cli oracle refuses
+    a hierarchy with a sheet file missing."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as work:
+        d = Path(work)
+        project.create_project(directory=str(d), name="proj")
+        (d / "sub").mkdir()
+        root, child, grand, far = (
+            d / "proj.kicad_sch",
+            d / "sub" / "child.kicad_sch",
+            d / "sub" / "grand.kicad_sch",
+            d / "far.kicad_sch",
+        )
+        for f in (child, grand, far):
+            project.create_schematic(schematic_path=str(f))
+        project.add_hierarchical_sheet(str(root), "Child", str(child), [])
+        project.add_hierarchical_sheet(str(child), "Near", str(grand), [])
+        project.add_hierarchical_sheet(str(child), "Far", str(far), [], x=101.6)
+        root_bytes = read(root)
+        if root_bytes.count(b'"child.kicad_sch"') != 1:
+            raise RuntimeError("premise: the root names its sheet file once")
+        root.write_bytes(root_bytes.replace(b'"child.kicad_sch"', b'"sub/child.kicad_sch"'))
+        schematic.add_hierarchical_label(
+            "NEAR_ONLY", "input", 50.8, 50.8, schematic_path=str(grand)
+        )
+        issues = project.validate_hierarchy(schematic_path=str(root)).issues
+    assert issues == [
+        {"type": "orphaned_label", "sheet_name": "Near", "label": "NEAR_ONLY"},
+        {"type": "missing_file", "sheet_name": "Far", "file_name": "far.kicad_sch"},
+    ]
+
+
+def test_validate_hierarchy_skips_a_sheet_that_contains_itself():
+    """Child's own sheet Back names the root's file, so the root contains itself: KiCad's
+    loader refuses that sheet ("already appears as a direct ancestor",
+    sch_io_kicad_sexpr.cpp:202-222 at 9.0.8). The walk skips it and refuses nothing: the root's
+    hierarchical label, which only Back's edge could orphan, goes unreported, and the call
+    ends. Written outside the test's directory, since the kicad-cli oracle refuses a sheet
+    that is its own ancestor."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as work:
+        d = Path(work)
+        project.create_project(directory=str(d), name="proj")
+        root, child = d / "proj.kicad_sch", d / "child.kicad_sch"
+        project.create_schematic(schematic_path=str(child))
+        project.add_hierarchical_sheet(
+            str(root), "Child", str(child), [{"name": "A", "direction": "input"}]
+        )
+        project.add_hierarchical_sheet(str(child), "Back", str(root), [], x=101.6)
+        schematic.add_hierarchical_label("STRAY", "input", 152.4, 152.4, schematic_path=str(root))
+        result = project.validate_hierarchy(schematic_path=str(root))
+    assert (result.status, result.issues) == ("ok", [])
+
+
+def test_validate_hierarchy_gives_no_kicad_9_reading_of_a_kicad_10_file():
+    """The T an earlier version wrote, in a file stamped with KiCad 10.0.7's format. The
+    junction is reported with its repair, since it is not KiCad's form in either major, but
+    without the stretches kicad-cli 9 keeps and drops or the KiCad 9 editor's reading: KiCad 9
+    loads no file stamped past 20250114 (SEXPR_SCHEMATIC_FILE_VERSION, sch_file_versions.h:117
+    at 9.0.8), and KiCad 10 reads it otherwise, splitting nothing on load (CleanUp,
+    schematic.cpp:1537-1585 at 10.0.7) and joining wires through a junction in its graph
+    (connection_graph.cpp:1418-1429). The repair call clears it. No kicad-cli is involved;
+    written outside the test's directory, since the local kicad-cli 9 cannot load it."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as work:
+        p = _sheet(Path(work), "k10", _T, _T.lines, _T.dots)
+        _as_kicad10(p)
+        before = read(p)
+        (issue,) = _junction_issues(p)
+        unchanged = read(p) == before
+        _repair(issue)
+        after = read(p)
+        left = _junction_issues(p)
+    assert unchanged
+    assert "editor" not in issue and issue["repair"]["tool"] == "add_junctions"
+    assert [sorted(ln) for ln in issue["lines"]] == [["kind", "x1", "x2", "y1", "y2"]]
+    assert left == [] and S.junctions_on_interiors(after, major=10) == []
+
+
+@pytest.mark.kicad_placeholder("t45/t45.kicad_sch")
+def test_validate_hierarchy_on_a_sheet_kicad_cannot_load(tmp_path):
+    """The T an earlier version wrote, on a sheet whose R2 is placed at 45 degrees, which
+    KiCad's parser refuses (it takes 0, 90, 180 or 270 only), so neither reader can load the
+    sheet. The junction is still reported, with the wires it sits inside, and in place of a
+    reading or a repair the reason the sheet cannot be judged; the call refuses nothing. The
+    unloadable sheet is the input, so the kicad-cli oracle leaves it out."""
+    p = _sheet(tmp_path, "t45", _T, _T.lines, _T.dots)
+    data = read(p)
+    if data.count(b"(at 127 101.6 90)") != 1:
+        raise RuntimeError("premise: R2 is placed once at (127, 101.6) turned 90 degrees")
+    Path(p).write_bytes(data.replace(b"(at 127 101.6 90)", b"(at 127 101.6 45)"))
+    (issue,) = _junction_issues(p)
+    assert S.iu_point((issue["x"], issue["y"])) == S.iu_point(P)
+    assert "repair" not in issue and "editor" not in issue
+    assert "angle 45" in issue["note"], issue
+    assert [sorted(ln) for ln in issue["lines"]] == [["kind", "x1", "x2", "y1", "y2"]]
+
+
+# ---------------------------------------------------------------------------------------------
+# validate_hierarchy: bus-entry ends inside wires, references per sheet instance, edge cases
+# ---------------------------------------------------------------------------------------------
+
+Q = (90.17, 101.6)  # on the bar A-B, between A and P
+
+
+class _Entries(NamedTuple):
+    """A sheet as an earlier version wrote it, with bus entries: the parts, raw wires, the
+    junctions, and bus entries ((x, y), (dx, dy)), each with a bus ending at its position and
+    its far end on a wire. ``ends`` are the entry ends lying inside a wire."""
+
+    parts: tuple[str, ...]
+    lines: tuple
+    dots: tuple
+    entries: tuple
+    ends: tuple
+
+    @property
+    def pins(self) -> set:
+        return {_PINS[ref][0] for ref in self.parts}
+
+
+_ENTRY_T = _Entries(
+    ("R1", "R2", "R3"), ((A, B), (C, P)), (P,), (((87.63, 99.06), (2.54, 2.54)),), (Q,)
+)
+_ENTRY_THROUGH = _Entries(("R1", "R2"), ((A, B),), (), (((99.06, 99.06), (2.54, 2.54)),), (P,))
+_ENTRY_CASES = [
+    pytest.param(_ENTRY_THROUGH, id="wire_through_an_entry_end"),
+    pytest.param(_ENTRY_T, id="t_and_an_entry_end_nearer_a"),
+]
+
+
+def _entry_sheet(tmp_path, name: str, case: _Entries, lines, dots) -> str:
+    p = layout(tmp_path, name, parts=case.parts)
+    for a, b in lines:
+        wire(p, *a, *b)
+    for q in dots:
+        junction(p, *q)
+    for (x, y), (dx, dy) in case.entries:
+        bus(p, x, y - 10.16, x, y)
+        bus_entry(p, x, y, dx, dy)
+    return p
+
+
+def _issues_of(path, kind: str) -> list[dict]:
+    result = project.validate_hierarchy(schematic_path=str(path))
+    return [i for i in result.issues if i["type"] == kind]
+
+
+def _spot(issue) -> tuple:
+    return S.iu_point((issue["x"], issue["y"]))
+
+
+@pytest.mark.parametrize("case", _ENTRY_CASES)
+def test_validate_hierarchy_reports_a_bus_entry_end_inside_a_wire(tmp_path, case):
+    """kicad-cli 9 cuts a line at both ends of every bus entry inside it as it cuts one at a
+    junction (BreakSegmentsOnJunctions, schematic.cpp:1096-1101 at 9.0.8), and earlier
+    versions drew wires through bus-entry ends without splitting them. validate_hierarchy
+    reports each such end as it reports a junction: the wire, the stretch kicad-cli 9 keeps
+    and the one it drops (judged by kicad-cli 9, which reads the sheet as one holding only the
+    stretches kept), the editor splitting the wire there, and add_junctions at the end, which
+    KiCad allows there (three wire directions and the entry's one bus direction,
+    IsExplicitJunctionAllowed, sch_screen.cpp:498-504 at 9.0.8; the port agrees). Made as
+    named, the repairs leave no cut point inside a line and the re-run clean, and kicad-cli 9
+    joins the pins as it joins the editor's form, every line split at every cut point."""
+    p = _entry_sheet(tmp_path, "damaged", case, case.lines, case.dots)
+    data = read(p)
+    dots = _issues_of(p, "junction_inside_wire")
+    ends = _issues_of(p, "bus_entry_inside_wire")
+    assert sorted(map(_spot, dots)) == sorted(map(S.iu_point, case.dots))
+    assert sorted(map(_spot, ends)) == sorted(map(S.iu_point, case.ends))
+    model = _connectivity.Model(_cst.parse(data).lists[0])
+    kept: dict = {}
+    for issue in dots + ends:
+        for ln in issue["lines"]:
+            start, end = _ends(ln)
+            (first, cut), (cut_again, last) = _ends(ln["kept"]), _ends(ln["dropped"])
+            assert (first, cut_again, last) == (start, cut, end), ln
+            assert kept.setdefault((start, end), cut) == cut, "two readings of one wire"
+    for issue in ends:
+        q = _spot(issue)
+        assert issue["file"] == p
+        assert [(ln["kind"], *_ends(ln)) for ln in issue["lines"]] == [
+            ("wire", S.iu_point(a), S.iu_point(b))
+            for a, b in case.lines
+            if sch_line.strictly_inside(S.iu_point(a), S.iu_point(b), q)
+        ]
+        if not _connectivity.junction_info(model, q, break_crossings=True).explicit:
+            raise RuntimeError(f"premise: KiCad allows no junction at the entry end {q}")
+        assert issue["editor"] == "splits_wire"
+        assert issue["repair"]["tool"] == "add_junctions"
+        assert _repair_point(issue["repair"]) == q
+
+    cuts = (*case.dots, *case.ends)
+    split = []
+    for a, b in case.lines:
+        inner = sorted((q for q in cuts if _inside_mm(a, b, q)), key=lambda q: math.dist(a, q))
+        stops = [a, *inner, b]
+        split += list(zip(stops, stops[1:]))
+    editor = _entry_sheet(tmp_path, "editor", case, split, case.dots)
+    reading = None
+    if cli9():
+        reading = joins(p, case.pins)
+        stretches = []
+        for a, b in case.lines:
+            cut = kept.get((S.iu_point(a), S.iu_point(b)))
+            stretches.append((a, b) if cut is None else (a, (cut[0] / 10_000, cut[1] / 10_000)))
+        assert reading == joins(_entry_sheet(tmp_path, "kept", case, stretches, ()), case.pins)
+        if reading == joins(editor, case.pins):
+            raise RuntimeError("premise: kicad-cli 9 reads the damaged sheet as the editor does")
+
+    for issue in dots + ends:
+        _repair(issue)
+    assert _issues_of(p, "junction_inside_wire") == _issues_of(p, "bus_entry_inside_wire") == []
+    assert not [
+        (ln.start, ln.end, q)
+        for ln in S.lines(read(p))
+        for q in map(S.iu_point, cuts)
+        if sch_line.strictly_inside(ln.start, ln.end, q)
+    ]
+    if reading is not None:
+        assert joins(p, case.pins) == joins(editor, case.pins) == one_net(*case.pins)
+
+
+def test_validate_hierarchy_names_no_repair_for_an_entry_end_no_junction_may_take():
+    """A bus drawn through the bus end of a bus entry: kicad-cli 9 cuts the bus there, and
+    KiCad allows no junction there (a bus entry meeting more than one bus direction,
+    IsExplicitJunctionAllowed, sch_screen.cpp:498-504 at 9.0.8), so no single call repairs
+    it: the issue carries a note saying so in place of a repair. Structural only; written
+    outside the test's directory, as a sheet holding nothing but a bus."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as work:
+        p = fresh(Path(work), "busy")
+        bus(p, *A, *B)
+        bus_entry(p, *P, 2.54, -2.54)
+        (issue,) = _issues_of(p, "bus_entry_inside_wire")
+    assert [ln["kind"] for ln in issue["lines"]] == ["bus"]
+    assert "repair" not in issue and issue["note"], issue
+
+
+def test_validate_hierarchy_reports_no_entry_end_on_a_kicad_10_file():
+    """In a KiCad 10 file a wire through a bus-entry end is read alike by every reader that
+    can load it: CleanUp breaks no line on load (schematic.cpp:1537-1728 at 10.0.7; its only
+    BreakSegmentsOnJunctions, sch_line_wire_bus_tool.cpp:1459, is never called), and the
+    graph joins items at their own connection points (connection_graph.cpp:1361-1392), a
+    wire's being its ends, and a wire inside it only under a label or a junction
+    (1393-1429); a bus entry end inside a wire joins nothing there, since off its own points
+    an entry joins only a bus (1438-1460 and 1523-1536). The wire stays whole, so there is
+    no cut to report. Written outside the test's directory, since the local kicad-cli 9
+    cannot load it."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as work:
+        case = _ENTRY_THROUGH
+        p = _entry_sheet(Path(work), "k10", case, case.lines, case.dots)
+        _as_kicad10(p)
+        issues = project.validate_hierarchy(schematic_path=p).issues
+    assert issues == []
+
+
+def _component_refs(root) -> tuple[Counter, bool]:
+    """kicad-cli 9's netlist export: how many components it lists under each reference, over
+    every sheet instance (it lists the units of a multi-unit part once), and whether it warns
+    that the schematic has annotation errors (SCH_REFERENCE_LIST::CheckAnnotation,
+    eeschema_jobs_handler.cpp:409-426 at 9.0.8)."""
+    result, xml = _cli_report(
+        ["sch", "export", "netlist", "--format", "kicadxml"], Path(root), "refs.xml"
+    )
+    if xml is None:
+        raise RuntimeError(f"premise: kicad-cli exports no netlist: {result.stderr.strip()}")
+    warned = "annotation errors" in result.stdout + result.stderr
+    return Counter(comp.get("ref") for comp in ET.fromstring(xml).iter("comp")), warned
+
+
+def _reused_shared(tmp_path) -> Path:
+    """add_hierarchical_sheet twice on one child holding R1, as the tools build it: R1 has no
+    instance entry for either sheet path, so both instances read R1."""
+    d = tmp_path / "shared"
+    project.create_project(directory=str(d), name="shared")
+    root, child, pro = d / "shared.kicad_sch", d / "child.kicad_sch", d / "shared.kicad_pro"
+    project.create_schematic(schematic_path=str(child))
+    schematic.place_component(
+        lib_id="Device:R",
+        reference="R1",
+        value="R1",
+        x=50.8,
+        y=50.8,
+        symbol_lib_path=str(Path(__file__).parent / "fixtures" / "routing.kicad_sym"),
+        schematic_path=str(child),
+        project_path=str(pro),
+    )
+    project.add_hierarchical_sheet(str(root), "S1", str(child), [], project_path=str(pro))
+    project.add_hierarchical_sheet(str(root), "S2", str(child), [], x=76.2, project_path=str(pro))
+    return root
+
+
+def _reused_apart(tmp_path) -> Path:
+    """One child used twice, its parts annotated R1 and R2 in one instance and R101 and R102
+    in the other, as KiCad annotates a reused sheet."""
+    root = Path(fresh(tmp_path, "apart"))
+    project_file(root.parent, "apart")
+    child = root.parent / "child.kicad_sch"
+    project.create_schematic(schematic_path=str(child))
+    for ref, x in (("R1", 50.8), ("R2", 76.2)):
+        place(str(child), "R", ref, x, 50.8)
+    sheet(str(root), str(child), "S1", 25.4, 25.4)
+    sheet(str(root), str(child), "S2", 76.2, 25.4, again={"R1": "R101", "R2": "R102"})
+    return root
+
+
+def _as_kicad6(root: Path, child: Path) -> None:
+    """Rewrite a root and its one child file, as the tools build them, in KiCad 6's form
+    (version 20211123): no symbol and no sheet carries (instances); each instance entry
+    becomes an entry of the root's (symbol_instances) table and each sheet's page one of its
+    (sheet_instances), every path written below the root, to which the parser puts the root's
+    uuid in front (sch_io_kicad_sexpr_parser.cpp:2445-2455 and 2543-2552 at 9.0.8)."""
+    files = {f: _cst.parse(read(f)) for f in (root, child)}
+    top = files[root].lists[0]
+    prefix = f"/{top.find('uuid').atoms[1].text}"
+    pages = ['(path "/" (page "1"))']
+    for k, block in enumerate(top.find_all("sheet")):
+        pages.append(f'(path "/{block.find("uuid").atoms[1].text}" (page "{k + 2}"))')
+        block.remove_child(block.find("instances"))
+    entries = []
+    for tree in files.values():
+        doc = tree.lists[0]
+        doc.find("version").atoms[1].set_text("20211123")
+        for sym in doc.find_all("symbol"):
+            fields = {
+                q.atoms[1].text: q.atoms[2].text
+                for q in sym.find_all("property")
+                if len(q.atoms) > 2
+            }
+            inst = sym.find("instances")
+            for path in (p for proj in inst.find_all("project") for p in proj.find_all("path")):
+                where = path.atoms[1].text
+                if not where.startswith(prefix):
+                    raise RuntimeError(f"premise: {where} is not an instance path of the root")
+                entries.append(
+                    f'(path "{where[len(prefix) :]}/{sym.find("uuid").atoms[1].text}"'
+                    f' (reference "{path.find("reference").atoms[1].text}")'
+                    f" (unit {path.find('unit').atoms[1].text})"
+                    f' (value "{fields["Value"]}") (footprint "{fields["Footprint"]}"))'
+                )
+            sym.remove_child(inst)
+    top.remove_child(top.find("sheet_instances"))
+    for table in (
+        f"(sheet_instances {' '.join(pages)})",
+        f"(symbol_instances {' '.join(entries)})",
+    ):
+        top.append_child(_cst.parse(table.encode()).lists[0], b"\n\t")
+    for f, tree in files.items():
+        f.write_bytes(_cst.serialize(tree))
+
+
+def _reused_apart_kicad6(tmp_path, root_part: str = "") -> Path:
+    """_reused_apart in KiCad 6's form (_as_kicad6), with a part *root_part* on the root when
+    given."""
+    root = _reused_apart(tmp_path)
+    if root_part:
+        place(str(root), "R", root_part, 152.4, 101.6)
+    _as_kicad6(root, root.parent / "child.kicad_sch")
+    return root
+
+
+def _units(tmp_path, child_unit: int) -> Path:
+    """RN1, an R_Network03_Split (three units), placed on the child as unit *child_unit* and on
+    the root as unit 1: two units of one part, or one unit placed twice."""
+    root = Path(fresh(tmp_path, f"units{child_unit}"))
+    project_file(root.parent, root.stem)
+    child = root.parent / "child.kicad_sch"
+    project.create_schematic(schematic_path=str(child))
+    place(str(child), "R_Network03_Split", "RN1", 101.6, 101.6, value="RN")
+    set_unit(str(child), "RN1", child_unit)
+    sheet(str(root), str(child), "S1", 25.4, 25.4)
+    place(str(root), "R_Network03_Split", "RN1", 101.6, 101.6, value="RN")
+    return root
+
+
+@requires_cli
+@pytest.mark.parametrize(
+    "build, exact",
+    [
+        pytest.param(_reused_shared, True, id="shared"),
+        pytest.param(_reused_apart, True, id="apart"),
+        pytest.param(_reused_apart_kicad6, True, id="apart_kicad6"),
+        pytest.param(
+            lambda t: _reused_apart_kicad6(t, root_part="R101"),
+            True,
+            id="apart_kicad6_with_a_root_part_sharing_one",
+        ),
+        pytest.param(lambda t: _units(t, 2), False, id="two_units_of_one_part"),
+        pytest.param(lambda t: _units(t, 1), False, id="one_unit_twice"),
+    ],
+)
+def test_validate_hierarchy_reads_references_per_sheet_instance(tmp_path, build, exact):
+    """A reused sheet's symbol has one reference per instance: the instance entry for that
+    sheet path, else its first entry, else its Reference property (SymRecord.at, after
+    sch_symbol.cpp GetRef at 9.0.8). On a root older than 20221002, KiCad 6's form, the
+    root's (symbol_instances) table gives it first: each instance takes the table's first
+    entry for its path (UpdateSymbolInstanceData, sch_sheet_path.cpp:1277-1318 at 9.0.8,
+    called from eeschema_helpers.cpp:180-181). kicad-cli 9 judges: validate_hierarchy reports
+    a duplicate wherever its netlist lists two components under one reference, and reports
+    one exactly when it warns of annotation errors. Both instances of the shared child read
+    R1; the child annotated apart has none, in either form, and shares R101 with a part on the
+    KiCad 6 root; two units of one part share a reference, and one unit placed twice is a
+    duplicate. The netlist lists a reference once per sheet instance (makeSymbols,
+    netlist_exporter_xml.cpp:245-300 at 9.0.8) and a part of several units once in all
+    (findNextSymbol, netlist_exporter_base.cpp:114-118). So where every part has one unit and
+    no reference repeats within one sheet instance, the first four, the duplicates are
+    exactly the references it lists twice."""
+    root = build(tmp_path)
+    counts, warned = _component_refs(root)
+    issues = project.validate_hierarchy(schematic_path=str(root)).issues
+    dups = {i["reference"] for i in issues if i["type"] == "duplicate_ref"}
+    listed_twice = {ref for ref, n in counts.items() if n > 1}
+    assert (dups == listed_twice) if exact else (dups >= listed_twice), (dups, listed_twice)
+    assert bool(dups) == warned, (dups, warned)
+
+
+def test_validate_hierarchy_notes_a_sheet_it_cannot_read():
+    """A grandchild cut off half way, which no reader can parse: the sheet gets a note naming
+    its file in place of its checks, and the rest of the hierarchy is still checked (the
+    junction in the sheet after it). Written outside the test's directory, since the
+    kicad-cli oracle refuses a hierarchy holding a sheet it cannot load."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as work:
+        d = Path(work)
+        project.create_project(directory=str(d), name="proj")
+        root, child, cut, good = (d / f"{n}.kicad_sch" for n in ("proj", "child", "cut", "good"))
+        for f in (child, cut, good):
+            project.create_schematic(schematic_path=str(f))
+        project.add_hierarchical_sheet(str(root), "Child", str(child), [])
+        project.add_hierarchical_sheet(str(child), "Cut", str(cut), [])
+        project.add_hierarchical_sheet(str(child), "Good", str(good), [], x=101.6)
+        wire(str(good), *A, *B)
+        junction(str(good), *P)
+        data = read(cut)
+        cut.write_bytes(data[: len(data) // 2])
+        issues = project.validate_hierarchy(schematic_path=str(root)).issues
+    (noted,) = [i for i in issues if i["type"] == "unreadable_file"]
+    assert (noted["sheet_name"], noted["file_name"]) == ("Cut", "cut.kicad_sch")
+    assert str(cut) in noted["note"], noted
+    assert [i["file"] for i in issues if i["type"] == "junction_inside_wire"] == [str(good)]
+
+
+def test_validate_hierarchy_bounds_the_instances_it_reads_references_at():
+    """Thirteen files, each using the next twice: 8191 sheet instances, past the 4096 the walk
+    reads references at, so reuse inside reuse cannot make the call run without end. The call
+    returns, and one note says the references were not all checked. Structural only; written
+    outside the test's directory, since the kicad-cli oracle would load every instance."""
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as work:
+        d = Path(work)
+        project.create_project(directory=str(d), name="deep")
+        files = [d / "deep.kicad_sch"] + [d / f"f{k}.kicad_sch" for k in range(1, 13)]
+        for f in files[1:]:
+            project.create_schematic(schematic_path=str(f))
+        for parent, child in zip(files, files[1:]):
+            for name, x in (("A", 25.4), ("B", 76.2)):
+                project.add_hierarchical_sheet(str(parent), name, str(child), [], x=x)
+        issues = project.validate_hierarchy(schematic_path=str(files[0])).issues
+    assert [i["type"] for i in issues] == ["references_unchecked"]
+
+
+def test_the_repair_named_for_a_junction_off_the_page_works(tmp_path):
+    """The T an earlier version wrote, on a sheet whose page now ends short of it. KiCad reads
+    items off the page as any other, and add_junctions at a junction already there places
+    nothing, it only splits, so the page border does not stop it: the repair named runs and
+    the re-run is clean."""
+    p = _sheet(tmp_path, "offpage", _T, _T.lines, _T.dots)
+    schematic.set_page_size("User", width=60, height=60, schematic_path=p)
+    (issue,) = _junction_issues(p)
+    _repair(issue)
+    assert _junction_issues(p) == []
+    if cli9():
+        assert joins(p, _T.pins) == one_net(*_T.pins)
+
+
+def test_the_repair_named_for_a_bus_entry_end_off_the_page_works(tmp_path):
+    """A wire drawn through a bus entry's wire end, on a sheet whose page now ends short of
+    them. KiCad allows a junction at that end (IsExplicitJunctionAllowed, sch_screen.cpp:
+    498-504 at 9.0.8) and reads items off the page as any other, so the add_junctions named
+    there places one, off the page, and splits the wire as BreakAt splits it: the re-run is
+    clean, and kicad-cli 9 joins the wire's two pins again."""
+    case = _ENTRY_THROUGH
+    p = _entry_sheet(tmp_path, "offpage_entry", case, case.lines, case.dots)
+    schematic.set_page_size("User", width=60, height=60, schematic_path=p)
+    (issue,) = _issues_of(p, "bus_entry_inside_wire")
+    before = read(p)
+    _repair(issue)
+    (split,) = S.assert_split_edit(before, read(p), heads=["wire", "junction"])
+    assert split.point == _spot(issue)
+    assert _issues_of(p, "bus_entry_inside_wire") == []
+    if cli9():
+        assert joins(p, case.pins) == one_net(*case.pins)

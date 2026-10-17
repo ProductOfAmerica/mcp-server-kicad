@@ -190,7 +190,8 @@ scan and a budget test.
 - Following sheet pins into child sheets, and bus support: refused for now; revisit on usage
   data.
 - Existing files where earlier versions of this repo wrote junctions that cut wires in kicad-cli
-  9: a separate read-only check plus a release note.
+  9: a separate read-only check plus a release note. (Closed: validate_hierarchy is that check,
+  status log, 2026-10-14, step 8b.)
 - add_label is unchecked. A separate issue. (add_wires and add_junctions writing junctions on
   unsplit wires, once recorded here too, is closed: status log, 2026-10-14.)
 - Files edited by earlier versions of this repo may hold no-connect flags and wires at the
@@ -320,3 +321,16 @@ Each slice appends an entry when it lands.
   crossing a junction on the wire alone is refused. The crossing ban still stands. The harness's
   smoke step 8 expects these readings, and its fixture builders call frozen copies of the old
   add_wires and connect_pins.
+
+- 2026-10-14, step 8b: validate_hierarchy walks every sheet of the hierarchy and reports each
+  junction strictly inside a wire or bus, and in a file kicad-cli 9 loads each bus entry end
+  strictly inside one, with the stretch of each line kicad-cli 9 keeps and the one it drops,
+  KiCad 9's editor reading, and the add_junctions or remove_junction call that leaves the line
+  split as that editor holds it (a note where no call can). KiCad 10 cuts no line at a bus
+  entry end (CleanUp, schematic.cpp:1537-1728 at 10.0.7, never calls BreakSegmentsOnJunctions),
+  and its graph reads a line through one whole, joining a wire there to nothing and a bus to the
+  entry, since GetBus finds a bus anywhere along it (connection_graph.cpp:1438-1460 and
+  1523-1536, sch_screen.h:451-455), so every KiCad 10 reader reads such a file alike and it is
+  not reported. That closes the out-of-scope item on existing files; the release note is the
+  pull request's. It reports none on the 36 demo projects KiCad 9.0.8 ships (measured
+  2026-10-15).

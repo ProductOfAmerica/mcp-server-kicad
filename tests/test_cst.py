@@ -228,13 +228,22 @@ class TestAddFamilyPreservation:
         assert sch.junctions[-1].position.X == pytest.approx(96.19)
 
     def test_junctions_all_validated_before_any_write(self, kicad_native_sch):
+        """A T, which alone would be written, and a point off the A4 page: the whole call is
+        refused and nothing is written. A junction already at a point off the page exempts
+        that point alone from the page check, so naming it beside another point off the page
+        is still refused, for the other point."""
+        p = str(kicad_native_sch)
+        _tee(kicad_native_sch, (50.8, 50.8), (-5.08, 0), (5.08, 0), (0, -5.08))
+        _tee(kicad_native_sch, (304.8, 50.8), (-5.08, 0), (5.08, 0), (0, -5.08))
+        RF.junction(p, 304.8, 50.8)
         before = kicad_native_sch.read_bytes()
-        with pytest.raises(ToolError, match="outside"):
-            schematic.add_junctions(
-                [{"x": 50, "y": 50}, {"x": 9999, "y": 50}],
-                schematic_path=str(kicad_native_sch),
-            )
-        assert kicad_native_sch.read_bytes() == before
+        for there in ((50.8, 50.8), (304.8, 50.8)):
+            with pytest.raises(ToolError, match="outside") as refused:
+                schematic.add_junctions(
+                    [{"x": there[0], "y": there[1]}, {"x": 9999, "y": 50}], schematic_path=p
+                )
+            assert "(9999, 50)" in str(refused.value)
+            assert kicad_native_sch.read_bytes() == before
 
 
 class TestRemoveFamilyPreservation:
