@@ -314,6 +314,25 @@ def symbol_transform(sym, ref: str) -> tuple[Point, Matrix]:
     return pos, t
 
 
+def _old_order_transform(sym, ref: str) -> tuple[Point, Matrix]:
+    """symbol_transform with the order reversed: each mirror applied before the rotation.
+
+    Deliberately the old, wrong order. Releases before 0.21.0 mirrored a pin before rotating
+    it, KiCad rotates first, so at rotation 90 or 270 with a mirror the point this gives is
+    the pin's end reflected through the symbol's origin. It exists only so validate_hierarchy
+    can find the flags and wires those releases left there (test_ladder_r3_mirrored_pins.py
+    measures 0.20.1 writing at it); nothing may place or read a pin through it."""
+    pos, _kicad = symbol_transform(sym, ref)  # refuses an angle KiCad cannot load
+    t = _ROT[0]
+    for ch in sym.lists:
+        if ch.head == "at":
+            ang = _angle(ch.atoms[3].text) if len(ch.atoms) > 3 else 0
+            t = _ROT[ang or 0]  # never None here: symbol_transform refused such an angle
+        elif ch.head == "mirror" and len(ch.atoms) > 1 and ch.atoms[1].text in _MIR:
+            t = _compose(_MIR[ch.atoms[1].text], t)  # the mirror first, then the rotation
+    return pos, t
+
+
 #: Outward direction in degrees as the float interface reports it: 0 right, 90 down (+Y),
 #: 180 left, 270 up.
 _OUT_DEG: dict[Point, int] = {(1, 0): 0, (0, 1): 90, (-1, 0): 180, (0, -1): 270}
