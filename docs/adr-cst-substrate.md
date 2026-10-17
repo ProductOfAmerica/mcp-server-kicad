@@ -698,9 +698,11 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   LIB_TABLE_ROW::Format rows, eeschema/symbol_lib_table.cpp:300-309 and common/lib_table_base.cpp:
   125-146 at 9.0.8; every version 7 table KiCad 9.0.8 ships matches the port in
   `tests/kicad_ref/lib_table.py`, and pcbnew 9.0.8 exposes no table writer to compare it with).
-  KiCad 10 writes version 7 in a layout of its own (common/libraries/library_table.cpp:197 and 354
-  at 10.0.7); its grammar takes the KiCad 9 layout, which the KiCad 10 legs put to kicad-cli.
-  KiCad 9 decodes escapes in a table value and KiCad 10 decodes none
+  KiCad 10 writes version 7 in a layout of its own, a tab indent and a space between the members
+  of a row (common/libraries/library_table.cpp:197 and 354 at 10.0.7; the templates it ships), and
+  the port skips those tables. Its reader takes the KiCad 9 layout: on the KiCad 10 legs of CI
+  (Linux, macOS and Windows, 2026-10-17) kicad-cli resolved libraries through tables written in
+  it (`test_ladder_r3_lib_table.py`). KiCad 9 decodes escapes in a table value and KiCad 10 decodes none
   (include/libraries/library_table_grammar.h:60 at 10.0.7), so a value reads alike in both only
   when it needs no escape. The call is refused, naming the entry and with an existing
   table and the directory untouched, for an empty nickname, a nickname holding a character below

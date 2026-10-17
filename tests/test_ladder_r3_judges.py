@@ -2001,7 +2001,7 @@ def test_nickname_rule_matches_pcbnew():
 
 def _shipped_version_7_tables() -> list[tuple[str, Path]]:
     """The library tables KiCad ships at version 7, the only version it writes
-    (LIB_TABLE::Save forces it), so the ones its writer made."""
+    (LIB_TABLE::Save forces it at 9.0.8), so the ones its writer made."""
     return [
         (name, path)
         for name, path in K.shipped(suffixes=(), names=K.TABLE_NAMES)
@@ -2044,11 +2044,16 @@ def _lexer_rows(data: bytes) -> list[bytes]:
 
 @pytest.mark.parametrize("path", _per_file(_shipped_version_7_tables()))
 def test_lib_table_port_matches_shipped_tables(path):
-    """Every library table KiCad ships at version 7 is the port's table of its own rows,
+    """Every library table KiCad 9 ships at version 7 is the port's table of its own rows,
     line ends aside: the rows' members formatted again by LIB_TABLE_ROW::Format, inside the
-    frame of SYMBOL_LIB_TABLE::Format or FP_LIB_TABLE::Format."""
+    frame of SYMBOL_LIB_TABLE::Format or FP_LIB_TABLE::Format. KiCad 10 writes version 7 in a
+    layout of its own, a tab indent and a space between the members of a row
+    (LIBRARY_TABLE::Format, common/libraries/library_table.cpp:197 and 354 at 10.0.7), which
+    the port does not model, so its tables are skipped."""
     keyword = b"sym_lib_table" if path.name == "sym-lib-table" else b"fp_lib_table"
     data = path.read_bytes().replace(b"\r\n", b"\n")
+    if b"\n\t(version 7)\n" in data:
+        pytest.skip("laid out as KiCad 10 lays out a table, which the port does not model")
     assert LT.format_rows(keyword, _lexer_rows(data)) == data
 
 

@@ -31,7 +31,7 @@ from pathlib import Path
 import edit_judge as J
 import pytest
 import sexpr_gen as G
-from conftest import netlist_fields, requires_cli
+from conftest import _kicad_cli_major, netlist_fields, requires_cli
 from hypothesis import event, example, given
 from hypothesis import strategies as st
 from kicad_ref import dsn_lexer as L
@@ -437,6 +437,11 @@ def test_cst_reads_hand_edited_tokens_as_kicad_cli(tmp_path, case):
     ):
         raise RuntimeError(f"premise: kicad-cli read the {case} edit as never measured: {kicad!r}")
     cst = _cst_r1_fields(data)
+    if _kicad_cli_major() >= 10:
+        # KiCad 10 reads a field whose value is exactly "~" as empty in a file older than
+        # 20250318 (sch_io_kicad_sexpr_parser.cpp:2329-2332 at 10.0.7; the fixture is
+        # 20250114), so its netlist prints the fixture's Datasheet empty: not the tokens' doing.
+        cst = {name: "" if value == "~" else value for name, value in cst.items()}
     assert cst == kicad, f"R1's fields: the CST reads {cst!r}, kicad-cli {kicad!r}"
 
 
