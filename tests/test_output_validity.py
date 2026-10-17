@@ -195,10 +195,11 @@ def _net_reference_problems(data: bytes) -> list[str]:
     no net and a negative number or a gap is net 0 (getNetCode and SetNetCode,
     pcb_io_kicad_sexpr_parser.h:156-162 and pcbnew/board_connected_item.cpp:87-115 at 9.0.8),
     so a number that is neither names no net. On a board above it that declares no table, a
-    numeric reference is a legacy code for a net no table names, and KiCad 10 writes its nets
-    by name (ADR-2 guardrail 5 of docs/adr-cst-substrate.md; the writer stopped writing codes
-    at format 20251028, pcb_io_kicad_sexpr.h:201 at 10.0.7): a number there is a mistake.
-    Empty when every reference is sound."""
+    numeric reference is a legacy code that KiCad 10 binds to the net it made that many-th
+    while loading, so it moves with the order of the pads and the tracks, and KiCad 10 writes
+    its nets by name (ADR-2 guardrail 5 of docs/adr-cst-substrate.md; the writer stopped
+    writing codes at format 20251028, pcb_io_kicad_sexpr.h:201 at 10.0.7): a number there is a
+    mistake, even one that finds the net meant. Empty when every reference is sound."""
     root = L.tree(data, knows_bar=L.knows_bar_of(data))[0]
     rows = {
         int(row.items[1].value)

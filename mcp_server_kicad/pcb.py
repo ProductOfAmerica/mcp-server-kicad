@@ -291,12 +291,45 @@ def _row_names(root) -> dict[int, str]:
     return _by_number(_net_rows(root))
 
 
-def _read_net_name(node, version: int, rows: Mapping[int, str]) -> str:
+def _bound_names(root) -> dict[int, str]:
+    """The name of the net each bare number of a (net N) binds to on this board; a
+    number that finds no net is absent.
+
+    The rows of the board's table bind them: KiCad reads a number through the map the
+    rows fill and finds no net for one they leave out (getNetCode and SetNetCode,
+    pcb_io_kicad_sexpr_parser.h:156-162 and pcbnew/board_connected_item.cpp:87-115 at
+    9.0.8).
+
+    A board with no rows is read by the KiCad that loads its format. KiCad 9 (format
+    20241229 and below) makes a net only from a row or from a zone's net_name, so no
+    number finds one there (pcb_io_kicad_sexpr_parser.cpp:2713-2720 and 7387-7412 at
+    9.0.8; a pad's name only checks the net its number finds, 5216-5243). KiCad 10
+    makes a net where it first meets a name, numbers the nets 1, 2, ... in the order it
+    makes them, and binds a number to the net with that number, the silent rebind of
+    ADR-2 guardrail 5 (parseNet and the pad's branch, pcb_io_kicad_sexpr_parser.cpp:
+    296-342 and 6185-6244; getNetCode, pcb_io_kicad_sexpr_parser.h:176-184;
+    NETINFO_LIST::AppendNet and getFreeNetCode, pcbnew/netinfo_list.cpp:149-165 and
+    266-275; all at 10.0.7). That order is the numbering _net_table derives from usage,
+    so there a number reads as the net the derived table gives it. Two cases are not
+    modelled: KiCad makes the nets as it parses, so a number past the nets made so far
+    finds none yet, where this table, built over the whole board, finds one made later
+    in the file; and a net a KiCad 9 zone's net_name makes is one a later bare number
+    can find, where the rows alone give none.
+    """
+    rows = _row_names(root)
+    if rows or _board_version(root) <= _NUMERIC_NET_VERSION_MAX:
+        return rows
+    return _by_number(_net_table(root))
+
+
+def _read_net_name(node, version: int, bound: Mapping[int, str]) -> str:
     """The name of the net an item's (net ...) puts it on, "" for no net.
 
-    A quoted or non-numeric atom is a name. A bare number is a row of ``rows``
-    (the board's table, which a board of KiCad 10's format does not have, so there
-    a number names nothing). A pad's (net N "NAME") is its name.
+    A quoted or non-numeric atom is a name. A bare number is the net ``bound`` gives
+    it (_bound_names). A pad's (net N "NAME") is its name. A pad that holds a number
+    alone is a board KiCad refuses to load (its parser needs a name after the number,
+    pcb_io_kicad_sexpr_parser.cpp:5225 at 9.0.8 and 6210 at 10.0.7), so it has no KiCad
+    reading, and here reads like any other item holding a number.
 
     A zone is read the way the KiCad that writes its format reads it. KiCad 9
     puts a copper zone on the net its net_name names and, with none or an empty
@@ -305,9 +338,8 @@ def _read_net_name(node, version: int, rows: Mapping[int, str]) -> str:
     otherwise reads the (net ...) child as for any item (8037-8041 and 8673-8697
     at 10.0.7).
 
-    ``version`` is the board's format, ``rows`` the board's numbered rows
-    (_row_names); a caller reading many items computes both once, since finding
-    either walks the whole board.
+    ``version`` is the board's format, ``bound`` the board's _bound_names; a caller
+    reading many items computes both once, since finding either walks the whole board.
     """
     if node.head == "zone":
         legacy = node.find("net_name")
@@ -322,14 +354,14 @@ def _read_net_name(node, version: int, rows: Mapping[int, str]) -> str:
         return net.atoms[1].text
     if len(net.atoms) > 2:
         return net.atoms[2].text
-    return rows.get(code, "")
+    return bound.get(code, "")
 
 
 def _net_name_of(root, node) -> str:
     """The name of the net an item's (net ...) puts it on, in either dialect
-    (_read_net_name). Callers reading many items use that with a version and rows
-    computed once."""
-    return _read_net_name(node, _board_version(root), _row_names(root))
+    (_read_net_name). Callers reading many items use that with a version and the
+    board's _bound_names computed once."""
+    return _read_net_name(node, _board_version(root), _bound_names(root))
 
 
 def _net_table(root) -> list[tuple[int, str]]:
@@ -2139,7 +2171,7 @@ def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _, root, _ = _open_pcb_cst(pcb_path)
-    version, rows = _board_version(root), _row_names(root)
+    version, bound = _board_version(root), _bound_names(root)
     items: list[ZoneItem] = []
     for z in root.find_all("zone"):
         ko = z.find("keepout")
@@ -2153,7 +2185,7 @@ def list_pcb_zones(pcb_path: str = PCB_PATH) -> list[ZoneItem]:
             ]
         # The net as the KiCad that wrote the zone's format reads it: KiCad 9 by the
         # net_name, KiCad 10 by the (net "NAME") a zone on a net carries.
-        zone_net = _read_net_name(z, version, rows)
+        zone_net = _read_net_name(z, version, bound)
         layers_node = z.find("layers") or z.find("layer")
         priority = z.find("priority")
         items.append(
@@ -2271,14 +2303,14 @@ def get_footprint_pads(reference: str, pcb_path: str = PCB_PATH) -> str:
     fp_x, fp_y = _xy(fp_at)
     fp_angle = float(fp_at.atoms[3].text) if len(fp_at.atoms) > 3 else 0
     major = _board_major(root)
-    version, rows = _board_version(root), _row_names(root)
+    version, bound = _board_version(root), _bound_names(root)
     lines = [
         f"{reference} pads "
         f"(footprint origin ({_numish(fp_x)}, {_numish(fp_y)}), "
         f"rotation {_numish(fp_angle)}, layer {_fp_layer(fp)}):"
     ]
     for pad in fp.find_all("pad"):
-        net_name = _read_net_name(pad, version, rows) or "none"
+        net_name = _read_net_name(pad, version, bound) or "none"
         at, size = pad.find("at"), pad.find("size")
         layers = pad.find("layers")
         local_x, local_y = _xy(at)
@@ -4647,11 +4679,16 @@ def _apply_netlist_cst(
     summary["nets_added"] = _ensure_net_rows(root, [n["name"] for n in nets])
     numbers = {name: num for num, name in _net_table(root)}
 
+    # What the bare numbers on the board's items bind to, read before the pad pass: on a
+    # board with no table KiCad 10 numbers the nets in the order the pads and items make
+    # them (_bound_names), and the pass below changes the pads.
+    version = _board_version(root)
+    bound = _bound_names(root)
+
     # --- Pads, scoped to netlist-matched footprints, so board-only footprints
     # (mounting holes and the like) are never touched. A pad the netlist puts on a
     # net is bound to it, which changes nothing when it is on it already; a pad it
     # leaves without a net loses its net, as KiCad's update sets it unconnected ---
-    version = _board_version(root)
     wanted: dict[tuple[str, str], tuple[int, str]] = {}
     for net in nets:
         name = net["name"]
@@ -4672,11 +4709,11 @@ def _apply_netlist_cst(
         if fp is None:
             continue
         for pad in fp.find_all("pad"):
-            bound = wanted.get((ref, pad.atoms[1].text))
-            if bound is None:
+            target = wanted.get((ref, pad.atoms[1].text))
+            if target is None:
                 _clear_pad_net(pad)
             else:
-                _bind_pad_net(root, pad, bound[0], bound[1], version)
+                _bind_pad_net(root, pad, target[0], target[1], version)
 
     # --- Stale footprints: always reported, removed only on request. KiCad's
     # update never deletes a footprint marked board only, whatever the option, nor
@@ -4698,16 +4735,15 @@ def _apply_netlist_cst(
     # 9.0.8, 2406-2416 and 2438 at 10.0.7; board_commit.cpp:399-400 and board.cpp:
     # 1328-1341 at 9.0.8). So this runs after the stale footprints are gone ---
     live = {n["name"] for n in nets}
-    rows = _row_names(root)
     kept = live | {
-        _read_net_name(pad, version, rows)
+        _read_net_name(pad, version, bound)
         for fp in root.find_all("footprint")
         for pad in fp.find_all("pad")
     }
     for item in root.lists:
         if item.head not in _NET_ITEMS:
             continue
-        name = _read_net_name(item, version, rows)
+        name = _read_net_name(item, version, bound)
         if not name or name in kept:
             continue
         _set_item_net(item, root, 0, version)
@@ -4727,7 +4763,7 @@ def _apply_netlist_cst(
     used = {name for name in kept if name}
     for item in root.lists:
         if item.head in _NET_ITEMS:
-            used.add(_read_net_name(item, version, rows))
+            used.add(_read_net_name(item, version, bound))
     summary["nets_removed"] = _prune_net_rows(root, used)
 
     if summary["skipped"]:

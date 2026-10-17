@@ -6,7 +6,7 @@ add_trace, add_via, add_thermal_vias and add_copper_zone; pcb._apply_netlist_cst
 update behind update_pcb_from_schematic, when a net leaves the schematic (its orphan pass sends
 each item on that net to no net, unless a pad of a footprint that stays is on it), when it adds
 one (_ensure_net_rows) and when it binds a pad (_bind_pad_net); and the read tools' reading of a
-net atom (_net_name_of and _net_table). The
+net atom (_net_name_of, _bound_names and _net_table). The
 update is driven with a netlist edit_gen.netlist_text builds in kicad-cli's form (rung 3's D11),
 with no schematic and no kicad-cli.
 
@@ -18,10 +18,11 @@ board is 0 or a row of its table; bug 19, a KiCad 9 zone is on the net its net_n
 board with no table; bug 22, a pad whose net did not change keeps its bytes; bug 99, the orphan
 and prune passes see the copper shapes that carry a net; bug 100, a name a board with no table
 spells gets a row; bug 101, a new row never takes a number an item already refers to. Review
-fix: a net a pad of a footprint that stays is on has not left the schematic. The judges are
-KiCad's own parser and writer, read at 9.0.8 and 10.0.7 and cited where each is used; pcbnew,
-where this machine has it; the lexer port in tests/kicad_ref for what a file holds; and the
-files KiCad ships.
+fixes: a net a pad of a footprint that stays is on has not left the schematic, and a bare net
+number is bound as the KiCad that loads the board's format binds it. The judges are KiCad's
+own parser and writer, read at 9.0.8 and 10.0.7 and cited where each is used; pcbnew, where
+this machine has it; the lexer port in tests/kicad_ref for what a file holds; and the files
+KiCad ships.
 
 KiCad 9's rule, read at 9.0.8. A net reference is a number, and the parser maps every number
 through the board's table: getNetCode over the map parseNETINFO_ITEM fills, zeros in its gaps
@@ -48,7 +49,13 @@ a via at 7609-7610 and a zone at 8033-8034), and FindNet of the empty name is ne
 it, NETINFO_LIST::OrphanedItem, net 0 (pcbnew/board_connected_item.cpp:44-46,
 pcbnew/netinfo.h:255-263); but a legacy (net_name ...) that is not empty wins over it and finds
 or creates a net of that name (pcb_io_kicad_sexpr_parser.cpp:8037-8041 and 8673-8697), so a
-zone sent to no net loses its net_name as well. pcb._set_item_net looked net 0 up among the
+zone sent to no net loses its net_name as well. It makes a net where it first meets a name
+(parseNet and a pad's branch, 321-339 and 6233-6244), numbers them 1, 2, ... in the order it
+makes them (NETINFO_LIST::AppendNet and getFreeNetCode, netinfo_list.cpp:149-165 and 266-275)
+and binds a bare number in a (net ...) to the net with that number, as it has no table to map
+it through (parseNet, 296-312, and getNetCode, pcb_io_kicad_sexpr_parser.h:176-184): the
+silent rebind of ADR-2 guardrail 5. A pad that holds a number alone it refuses, whatever the
+board (Expecting( "net name" ), 6185-6212). pcb._set_item_net looked net 0 up among the
 nets it numbers from 1 off a KiCad 10 board's references and refused it (bug 21): the update
 aborted when a net left the schematic, and the three tools refused net 0.
 
@@ -79,7 +86,7 @@ import pcbnew_judge as PJ
 import pcbnew_nets as PN
 import pytest
 import sexpr_gen
-from conftest import requires_cli
+from conftest import assert_kicad_pcb_parseable, requires_cli
 from hypothesis import assume, example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import dsn_lexer as L
@@ -1225,26 +1232,152 @@ _ATOM_SPELLINGS = st.one_of(
 @example(spelling=b"GND")
 @given(spelling=_ATOM_SPELLINGS)
 def test_net_code_matches_kicads_lexer(spelling):
-    """A pad's (net ...) on a KiCad 10 board that declares no table, spelled with any atom a
-    KiCad writer or a hand could put there, quoted or bare: the tools read it as the name
-    KiCad's parser gives it. KiCad's lexer (the port in tests/kicad_ref) says whether the atom
-    is a NUMBER, which parseNet takes for a legacy code naming no net on a board with no
-    table, or a STRING or SYMBOL, which it takes for a name. The number of a NUMBER is the
-    integer strtol takes from it (parseInt), which pcb._net_code agrees with, and it gives
-    none for a name. The tools took a quoted string of digits for a number, and a bare
-    decimal such as 1.5 for a name."""
+    """A pad's (net ...) on a KiCad 10 board, spelled with any atom a KiCad writer or a hand
+    could put there, quoted or bare. KiCad's lexer (the port in tests/kicad_ref) says whether
+    the atom is a NUMBER or a STRING or SYMBOL. KiCad 10 takes a STRING or SYMBOL for the net's
+    name (the pad's branch of the parser, pcb_io_kicad_sexpr_parser.cpp:6185-6241 at 10.0.7),
+    and the tools read it as that name. A NUMBER it takes for a legacy code and then requires a
+    name after (6210, Expecting( "net name" )), so a pad holding a number alone is a board it
+    refuses (test_kicad_refuses_a_pad_holding_a_net_number_alone): there is no reading for the
+    tools to agree with, and none is asserted. What is judged for a NUMBER is its number, the
+    integer strtol takes from it (parseInt), which pcb._net_code agrees with, as it gives none
+    for a name. The tools took a quoted string of digits for a number, and a bare decimal such
+    as 1.5 for a name."""
     item = _u1({"1": "PLACEHOLDER"})
-    text = E.layered_board_text([item.replace('(net "PLACEHOLDER")', f"(net {spelling.decode()})")])
+    text = E.layered_board_text(
+        [item.replace('(net "PLACEHOLDER")', f"(net {spelling.decode()})")], version="k10"
+    )
     data = text.encode()
     token = [t for t in L.tokens(spelling, knows_bar=True)]
     assert len(token) == 1
-    expected = "" if token[0].kind == L.NUMBER else token[0].value.decode()
     root = _cst.parse(data).lists[0]
     pad = root.find("footprint").find_all("pad")[0]
-    assert pcb._net_name_of(root, pad) == expected, f"{spelling!r} is a {token[0].kind}"
+    if token[0].kind != L.NUMBER:
+        assert pcb._net_name_of(root, pad) == token[0].value.decode(), (
+            f"{spelling!r} is a {token[0].kind}"
+        )
     atom = pad.find("net").atoms[1]
     number = L._parse_int(token[0].value) if token[0].kind == L.NUMBER else None
     assert pcb._net_code(atom) == number, f"{spelling!r} is a {token[0].kind}"
+
+
+@requires_cli
+@pytest.mark.kicad_placeholder("board.kicad_pcb")
+def test_kicad_refuses_a_pad_holding_a_net_number_alone(tmp_path):
+    """A pad whose (net ...) holds a bare number and nothing after it is a board KiCad does
+    not load: the pad's branch of the parser reads the number as a legacy code and then needs
+    a net name (NeedSYMBOLorNUMBER, pcb_io_kicad_sexpr_parser.cpp:5225 at 9.0.8;
+    Expecting( "net name" ), 6210 at 10.0.7), so kicad-cli answers "Failed to load board"
+    (measured 2026-10-17 on kicad-cli 9.0.8). That is why no reading of such a pad is
+    asserted anywhere in this file. The board is KiCad 9's, which the KiCad 10 legs load too."""
+    rows = {"/GND": 1, "/VCC": 2}
+    pad = _u1(_PAD_NETS, version="k9", rows=rows).replace('(net 1 "/GND")', "(net 5)")
+    board = _board(tmp_path, [pad], version="k9", rows=rows)
+    with pytest.raises(pytest.fail.Exception, match="kicad-cli cannot parse board.kicad_pcb"):
+        assert_kicad_pcb_parseable(board)
+
+
+# ---------------------------------------------------------------------------
+# a bare net number on a board that holds no table
+# ---------------------------------------------------------------------------
+
+#: The pads of the footprint the tests below put on nets: a KiCad that creates a net where it
+#: first meets its name creates /B, then /A (pad 3 is on /B again).
+_THREE_NETS = {"1": "/B", "2": "/A", "3": "/B"}
+#: The bare numbers the segments below are written with: 0 is net 0, 1 and 2 are the nets a
+#: loading KiCad 10 has created by the time it reaches them, 3 and 4 are past them.
+_BARE = (0, 1, 2, 3, 4)
+
+
+def _numbered_board(tmp_path: Path, version: str) -> Path:
+    """A board of ``version`` that holds no table: U1 with three pads on _THREE_NETS, a pad's
+    net written as the format writes it, and then one segment for each of _BARE, written
+    (net N), clear of every pad, and a copper zone written (net 2) with no net_name."""
+    text = E.board_footprint_text(_THREE_PADS, "U1", _U1_AT, 0.0, version=version, sheetname="/")
+    names = sorted(set(_THREE_NETS.values()))
+    pads = _with_pad_nets(text, _THREE_NETS, version, {name: n for n, name in enumerate(names, 1)})
+    segments = []
+    for k, number in enumerate(_BARE):
+        y = 10 + 2 * k
+        children = (f"(start 10 {y})", f"(end 20 {y})", "(width 0.25)", '(layer "F.Cu")')
+        segments.append(_track("segment", children, "", version=version, number=number))
+    zone = _zone("", net_name=False, version=version, number=2)
+    if version == "k10":
+        zone = zone.replace('(net "")', "(net 2)")
+    return _board(tmp_path, [pads, *segments, zone], version=version, rows=None, net_zero=False)
+
+
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_a_bare_net_number_binds_as_the_kicad_that_loads_the_format_binds_it(tmp_path, version):
+    """Segments written (net 0) to (net 4) and a zone written (net 2), on a board that holds no
+    table and whose pads name /B, /A and /B again. A bare number is read as the KiCad that
+    loads the board's format reads it. KiCad 9 makes a net only from a row of the table (and
+    from a zone's net_name): a pad's net name only checks the name of the net its number finds,
+    so on a board with no table, and no zone that names a net, every number but 0 finds none
+    (pcb_io_kicad_sexpr_parser.cpp:2713-2720, 5216-5243 and 7387-7412 at 9.0.8), which pcbnew
+    9.0.8 reads here (measured 2026-10-17). KiCad 10 makes a net where it first meets a name
+    (parseNet, 321-339, and a pad, 6233-6244, at 10.0.7) and numbers them from 1 in the order
+    it makes them (NETINFO_LIST::AppendNet and getFreeNetCode, pcbnew/netinfo_list.cpp:149-165
+    and 266-275). It reads a bare number as a legacy code and binds FindNet( code ), the code
+    unchanged when the board held no table (parseNet, 296-312, and getNetCode,
+    pcb_io_kicad_sexpr_parser.h:176-184): the net it made that many-th, none for a number past
+    them, net 0 for 0. That is the silent rebind of ADR-2 guardrail 5, and here /B is 1 and /A
+    is 2, so a segment written (net 2) is on /A. The pcbnew of the KiCad 10 legs reads these
+    boards that way, and only pcbnew 9 judges the KiCad 9 board, since pcbnew 10 loads it by its
+    own rules. The tools read every number on a KiCad 10 board as no net, KiCad 9's reading, so
+    for them the segment written (net 2) was on no net."""
+    board = _numbered_board(tmp_path, version)
+    data = board.read_bytes()
+    created = list(dict.fromkeys(_THREE_NETS.values()))
+    expected = [
+        created[n - 1] if version == "k10" and 1 <= n <= len(created) else "" for n in _BARE
+    ]
+    zone_expected = expected[_BARE.index(2)]
+    loads = PJ.skip_reason() is None and (PJ.major() == 9 if version == "k9" else PJ.major() >= 10)
+    if loads:
+        read = _pcbnew_nets(board)["items"]
+        segments = J.find_paths(data, lambda loc, item: item.head == "segment")
+        judged = [read[_uuid_of(J.item_at(data, loc))][1] for loc in segments]
+        zone = J.item_at(data, _the(data, "kicad_pcb", "zone"))
+        if judged != expected or read[_uuid_of(zone)][1] != zone_expected:
+            raise RuntimeError(f"the premise fails: pcbnew reads the segments on {judged}")
+    root = _cst.parse(data).lists[0]
+    assert [pcb._net_name_of(root, seg) for seg in root.find_all("segment")] == expected
+    assert [z.net_name for z in pcb.list_pcb_zones(str(board))] == [zone_expected]
+
+
+def test_k10_update_sends_an_item_numbered_for_a_net_that_left_to_no_net(tmp_path):
+    """A KiCad 10 board that holds no table, U1's pad 1 on /GND and pad 2 on /VCC, and a segment
+    written (net 2), which KiCad 10 binds to /VCC, the second net it makes (the test above).
+    Updated from a netlist that puts pad 1 on /NEW and pad 2 on /GND, /VCC left the schematic,
+    so the segment goes to no net, (net ""), and orphaned_tracks counts it. The number has to
+    be read against the board as it stands before the update moves any pad: read afterwards
+    it is /GND, the second net the updated board makes, which the netlist keeps, and the
+    segment would be left written (net 2) to bind to /GND, a net it was never on. The pass
+    read no net there, and left it."""
+    board = _board(
+        tmp_path,
+        [
+            _u1(_PAD_NETS),
+            _track("segment", _STRAY_SEGMENT, "", number=2),
+        ],
+        version="k10",
+    )
+    before = board.read_bytes()
+    seg_uuid = _uuid_of(J.item_at(before, _the(before, "kicad_pcb", "segment")))
+    on_pcbnew_10 = PJ.skip_reason() is None and PJ.major() >= 10
+    if on_pcbnew_10 and _pcbnew_nets(board)["items"][seg_uuid][1] != "/VCC":
+        raise RuntimeError("the premise fails: pcbnew 10 reads (net 2) on a net but /VCC")
+    summary = _apply(board, {"1": "/NEW", "2": "/GND"})
+    assert summary["orphaned_tracks"] == 1, summary
+    moved = [
+        edit
+        for edit in _edits(before, board.read_bytes())
+        if edit[1][:2] == ("kicad_pcb", "segment")
+    ]
+    assert moved == [("atom", ("kicad_pcb", "segment", "net", "2"), b"2", _NO_NET)]
+    if on_pcbnew_10:
+        assert _pcbnew_nets(board)["items"][seg_uuid][1] == "", "pcbnew 10 reads it on a net"
 
 
 def _info_nets(board: Path) -> int:

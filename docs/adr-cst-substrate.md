@@ -722,12 +722,33 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   delete_stale also keeps a footprint marked board only, as KiCad's update does
   (board_netlist_updater.cpp:1427-1428 at 9.0.8, 2334-2335 at 10.0.7; bug 90).
 
-  What stays outside: a reference an earlier version wrote that names no net is not repaired (KiCad reads
-  it on no net, and the row rule stops it being adopted); a KiCad 9 board with no table refuses a net
-  number other than 0, since KiCad binds none there; the pad net node is still quoted by hand (bug 67,
-  step 11). Gates: `tests/test_ladder_r3_nets.py`, `test_output_validity.py`, `test_netlist_import.py`
-  (N9 and N9b: an upgraded KiCad 10 board) and the swap file's board only and zone tests, on KiCad 9
-  locally and in CI on the Linux 9.0 and 10.0 legs, macOS and Windows. The KiCad 10 halves were source
-  reading until the legs ran: the tests commit ran on the Linux 10.0, macOS and Windows legs before the
-  fix (pcbnew 10 wrote the no-net harvest of N8 without an API difference), and the fix commit passed
-  there after.
+  A bare net number is read as the KiCad that loads the board's format binds it (`_bound_names`): through
+  the rows of the table when it has any (getNetCode and SetNetCode, as above); with none, as no net on a
+  board of KiCad 9's format, whose parser makes a net only from a row or a zone's net_name
+  (pcb_io_kicad_sexpr_parser.cpp:2713-2720, 5216-5243 and 7387-7412 at 9.0.8; pcbnew 9.0.8 reads such a
+  board's pads and segments on no net, measured 2026-10-17), and as the net KiCad 10 made that many-th on
+  a board of a newer one, whose parser makes a net where it first meets a name, numbers the nets from 1
+  in that order and binds a number to the net with it (parseNet and the pad's branch, 296-342 and
+  6185-6244; getNetCode, pcb_io_kicad_sexpr_parser.h:176-184; NETINFO_LIST::AppendNet and getFreeNetCode,
+  netinfo_list.cpp:149-165 and 266-275, all at 10.0.7). Two cases are not modelled: KiCad makes the nets
+  as it parses, so a number past the nets made so far finds none yet where the derived numbering, built
+  over the whole board, finds one made later in the file; and a net a KiCad 9 zone's net_name makes is
+  one a later bare number can find, where the rows alone give none. The update reads the numbers before
+  its pad pass, since moving the pads renumbers the nets of a board with no table. A pad that holds a
+  number alone has no reading: both parsers need a name after the number (5225 at 9.0.8, 6210 at 10.0.7)
+  and kicad-cli 9.0.8 refuses the board (measured 2026-10-17), so nothing asserts one.
+
+  What stays outside: a reference an earlier version wrote that names no net is not repaired (a KiCad 9
+  board's reads on no net, and the row rule stops it being adopted; a KiCad 10 board's binds by load
+  order, so an update that changes which nets the pads make can move it to another net, and the update
+  does not rewrite it); a KiCad 9 board with no table refuses a net number other than 0, since KiCad 9
+  binds none there (KiCad 10, which loads the same file, binds one by load order); the pad net node is
+  still quoted by hand (bug 67, step 11). Gates: `tests/test_ladder_r3_nets.py`,
+  `test_output_validity.py`, `test_netlist_import.py` (N9 and N9b: an upgraded KiCad 10 board) and the
+  swap file's board only and zone tests, on KiCad 9 locally and in CI on the Linux 9.0 and 10.0 legs,
+  macOS and Windows. The KiCad 10 halves were source reading until the legs ran: the tests commit ran on
+  the Linux 10.0, macOS and Windows legs before the fix (pcbnew 10 wrote the no-net harvest of N8 without
+  an API difference), and the fix commit passed there after. The review fixes after it are in the same
+  state: the pcbnew 10 halves of their tests (the nets a kept footprint holds, a KiCad 10 board's bare
+  numbers read by load order, and the update's reading of one) are source reading until those legs run
+  them.
