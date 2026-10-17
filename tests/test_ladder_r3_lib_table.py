@@ -38,15 +38,6 @@ from mcp_server_kicad._shared import _run_cli
 _FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
 _NICK = "StepElevenLib"
 
-_BUG_28 = (
-    "bug 28: create_sym_lib_table accepts a nickname KiCad refuses, or two rows with one;"
-    " fixed by step 11"
-)
-_BUG_4 = (
-    "bug 4: create_sym_lib_table writes names and URIs raw into quoted atoms and keeps a"
-    " backslash KiCad 9 reads as an escape and KiCad 10 as a backslash; fixed by step 11"
-)
-
 #: What an existing table holds, so that a refusal has something to leave alone.
 _EXISTING = T.format_table([("existing", "${KIPRJMOD}/existing.kicad_sym")])
 
@@ -125,7 +116,6 @@ def test_lib_table_row_is_kicads_row(rows):
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_28)
 @settings(max_examples=sexpr_gen.budget())
 @given(
     before=st.lists(_LEGAL, max_size=2, unique=True),
@@ -153,7 +143,6 @@ def test_lib_table_refuses_nicknames_kicad_refuses(before, bad, after):
     assert "Nothing was written" in str(refusal), str(refusal)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_28)
 @settings(max_examples=sexpr_gen.budget())
 @given(
     names=st.lists(_LEGAL, min_size=1, max_size=3, unique=True),
@@ -190,7 +179,6 @@ _NO_SPELLING = [
 ]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_4)
 @pytest.mark.parametrize("entry", _NO_SPELLING)
 def test_lib_table_refuses_values_no_spelling_carries_to_both_readers(tmp_path, entry):
     """Each of these is refused with a ToolError naming the entry (and its field), after
@@ -204,7 +192,6 @@ def test_lib_table_refuses_values_no_spelling_carries_to_both_readers(tmp_path, 
     assert "Nothing was written" in str(refusal), str(refusal)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_28)
 def test_a_refused_batch_leaves_the_table_and_the_directory_alone(tmp_path):
     """A batch whose third entry is refused changes no existing table, and creates no
     directory for a table it did not write."""
@@ -302,7 +289,6 @@ def test_a_nickname_with_a_space_and_non_ascii_resolves_in_kicad_cli(tmp_path):
 
 
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_4)
 @pytest.mark.parametrize("spelling", ["kiprjmod", "absolute"])
 def test_backslash_uri_resolves_in_kicad_cli(tmp_path, spelling):
     """A URI given with backslashes, ${KIPRJMOD}\\nick dir\\lib.kicad_sym or its absolute
@@ -330,7 +316,6 @@ def test_backslash_uri_resolves_in_kicad_cli(tmp_path, spelling):
 
 
 @requires_cli
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_28)
 def test_lib_table_duplicate_is_refused_as_kicad_cli_reports_it(tmp_path):
     """kicad-cli reports "Duplicate library nickname" for a table holding one nickname
     twice, and keeps the first row (premise, measured here on a hand-written table: a RuntimeError

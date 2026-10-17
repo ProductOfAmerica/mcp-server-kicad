@@ -772,12 +772,6 @@ def _row_values(row) -> dict[bytes, list]:
     }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="bug 4: create_sym_lib_table writes names and URIs raw into quoted atoms;"
-    " fixed by step 11",
-)
 @settings(max_examples=G.budget())
 @given(_entries)
 @example([{"name": 'my"lib', "uri": "${KIPRJMOD}/my.kicad_sym"}])

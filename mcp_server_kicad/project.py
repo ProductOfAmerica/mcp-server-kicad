@@ -227,30 +227,101 @@ def create_symbol_library(symbol_lib_path: str) -> str:
     return f"Created symbol library at {p}"
 
 
+# A sym-lib-table as KiCad 9 writes it, with one row (SYMBOL_LIB_TABLE::Format,
+# eeschema/symbol_lib_table.cpp:300-309 at 9.0.8). Names and URIs go in through set_text, which
+# quotes as KiCad's Quotew does.
+_SYM_LIB_TABLE_TPL = (
+    b"(sym_lib_table\n  (version 7)\n"
+    b'  (lib (name "x")(type "KiCad")(uri "x")(options "")(descr ""))\n)\n'
+)
+
+#: What a table value cannot hold. KiCad 9 decodes escapes in a table value and KiCad 10
+#: decodes none (library_table_grammar.h:60 at 10.0.7), so a value that needs an escape reads
+#: differently in the two: a double quote, a line end, and a NUL, which KiCad 9 takes as the
+#: end of a value.
+_TABLE_UNSPELLABLE = '"\n\r\x00'
+
+
+def _lib_row_problem(name: str, uri: str) -> tuple[str, str] | None:
+    """The (field, reason) of the first thing a table row cannot hold, or None. ``uri`` is
+    the text as written, its backslashes already turned into '/'. A nickname is not empty
+    and holds no character below U+0020, no backslash and no colon (LIB_ID's rule); a URI is
+    not empty; neither holds a character of _TABLE_UNSPELLABLE."""
+    if not name:
+        return "name", "a library nickname cannot be empty"
+    illegal = next((c for c in name if ord(c) < 0x20 or c in "\\:"), None)
+    if illegal is not None:
+        return "name", f"{name!r} holds {illegal!r}, which a library nickname cannot hold"
+    if not uri:
+        return "uri", "a library path cannot be empty"
+    for field, text in (("name", name), ("uri", uri)):
+        bad = next((c for c in text if c in _TABLE_UNSPELLABLE), None)
+        if bad is not None:
+            return field, (
+                f"{text!r} holds {bad!r}, which KiCad 9 and KiCad 10 do not read alike in a table"
+            )
+    return None
+
+
+def _lib_table_rows(entries: list[LibTableEntry]) -> list[tuple[str, str]]:
+    """The (nickname, uri) row each entry becomes, or a ToolError naming the first entry the
+    table cannot hold, before anything is written. A URI's backslashes become '/', as KiCad's
+    own writer stores them. A nickname an earlier entry has is refused too: KiCad's reader
+    keeps the first row of a nickname and reports the second as a duplicate."""
+    rows: list[tuple[str, str]] = []
+    first_at: dict[str, int] = {}
+    for index, entry in enumerate(entries):
+        name = entry["name"]
+        uri = entry["uri"].replace("\\", "/")
+        problem = _lib_row_problem(name, uri)
+        if problem is None and name in first_at:
+            problem = "name", f"{name!r} is also the nickname of entries[{first_at[name]}]"
+        if problem is not None:
+            field, reason = problem
+            raise ToolError(
+                f"entries[{index}] {field}: {reason}. Nothing was written; a sym-lib-table"
+                " already in the directory is unchanged."
+            )
+        first_at[name] = index
+        rows.append((name, uri))
+    return rows
+
+
 @mcp.tool(annotations=_DESTRUCTIVE)
 def create_sym_lib_table(directory: str, entries: list[LibTableEntry]) -> str:
     """Create a sym-lib-table file in the given directory.
 
-    Each entry dict needs 'name' and 'uri' keys.
-    Overwrites existing sym-lib-table if present.
+    Each entry dict needs 'name' (the library nickname) and 'uri' (its path, usually
+    "${KIPRJMOD}/..."). Overwrites existing sym-lib-table if present. A backslash in a uri
+    is written as '/', as KiCad stores it.
+
+    The whole list is checked first. An entry that cannot be written as given refuses the
+    call, names the entry, and leaves any existing table as it was: an empty name; a name
+    holding a character below U+0020, a backslash or a colon (a library nickname cannot);
+    a name an earlier entry has; an empty uri; a double quote in a name or uri, or a line
+    end or NUL in a uri (KiCad 9 and KiCad 10 read these differently in a table).
 
     Args:
         directory: Directory to write sym-lib-table in
         entries: List of dicts with 'name' and 'uri' keys
     """
+    rows = _lib_table_rows(entries)
+    tree = _cst.parse(_SYM_LIB_TABLE_TPL)
+    table = tree.lists[0]
+    row_tpl = table.find("lib")
+    table.remove_child(row_tpl)
+    anchor = table.find("version")
+    for name, uri in rows:
+        row = row_tpl.copy()
+        row.find("name").atoms[1].set_text(name)
+        row.find("uri").atoms[1].set_text(uri)
+        table.insert_after(anchor, row)
+        anchor = row
+    data = _cst.serialize(tree)
+
     d = _ensure_dir(directory, "directory")
-
-    lines = ["(sym_lib_table", "  (version 7)"]
-    for entry in entries:
-        name = entry["name"]
-        uri = entry["uri"]
-        lines.append(f'  (lib (name "{name}")(type "KiCad")(uri "{uri}")(options "")(descr ""))')
-    lines.append(")")
-
     table_path = d / "sym-lib-table"
-    # .encode() is UTF-8, where write_text was the platform default. KiCad reads
-    # these as UTF-8, so a non-ASCII library path was already wrong on Windows.
-    _atomic_write(table_path, ("\n".join(lines) + "\n").encode())
+    _atomic_write(table_path, data)
     return f"Created sym-lib-table with {len(entries)} entries at {table_path}"
 
 
