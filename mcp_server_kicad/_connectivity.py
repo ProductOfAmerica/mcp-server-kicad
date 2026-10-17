@@ -869,16 +869,25 @@ _MAX_INSTANCES = 4096
 _PROJECT_LEVELS = 3
 
 
+#: Whitespace as _cst reads it between two atoms: space, TAB, CR, LF and NUL, and after a line
+#: break a comment line, a '#' first on its line with the rest of the line.
+_WS = rb"(?:[ \t\r\n\x00]|\n[ \t\r\x00]*#[^\n]*(?=\n|\Z))*"
+#: A string with an escape in it. _cst decodes \x41 and \101 and the other escapes KiCad's
+#: lexer does, so such a string may spell any text; matching it costs a parse at most.
+_ESCAPED = rb'"[^"\\\n]*\\[^\n](?:[^"\\\n]|\\[^\n])*"'
+
+
 def _atom(text: bytes) -> bytes:
-    """A regex for one s-expression atom with this text, quoted or bare, the way _cst.TOKEN
-    reads it: a bare atom runs to whitespace, a parenthesis, a quote or the end."""
+    """A regex for one s-expression atom with this text, the way _cst reads it: quoted, or
+    bare and running to whitespace, a parenthesis or the end; or any string spelled with
+    escapes, which may decode to it."""
     e = re.escape(text)
-    return rb'(?:"' + e + rb'"|' + e + rb'(?=[\s()"]|\Z))'
+    return rb'(?:"' + e + rb'"|' + e + rb"(?=[ \t\r\n\x00()]|\Z)|" + _ESCAPED + rb")"
 
 
 def _head(*words: bytes) -> bytes:
     """A regex for the start of a list whose leading atoms are *words*, any whitespace between."""
-    return rb"\(\s*" + rb"\s*".join(_atom(w) for w in words)
+    return rb"\(" + _WS + _WS.join(_atom(w) for w in words)
 
 
 #: A sheet block or a KiCad 6 instance table somewhere in the bytes. A match inside a quoted
@@ -901,13 +910,7 @@ def refs_pattern(refs) -> re.Pattern | None:
         return None
     ref = b"(?:" + b"|".join(_atom(t) for t in texts) + b")"
     return re.compile(
-        _head(b"reference")
-        + rb"\s*"
-        + ref
-        + b"|"
-        + _head(b"property", b"Reference")
-        + rb"\s*"
-        + ref
+        _head(b"reference") + _WS + ref + b"|" + _head(b"property", b"Reference") + _WS + ref
     )
 
 

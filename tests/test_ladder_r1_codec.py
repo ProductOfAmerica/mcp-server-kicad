@@ -41,7 +41,7 @@ import edit_judge as J
 import pytest
 import sexpr_gen as G
 from conftest import _kicad_cli_major, netlist_fields, requires_cli
-from hypothesis import assume, example, given, settings
+from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import dsn_lexer as L
 from kicad_ref.richio import quotes
@@ -53,14 +53,6 @@ FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
 #: The majors whose reading a written value must survive (see the module docstring).
 MAJORS = (9, 10)
 
-_BUG29 = "bug 29: Atom.text lacks KiCad's \\a \\b \\f \\v, hex and octal escapes; fixed by step 11"
-_BUG59 = (
-    "bug 59: set_text leaves '|' and NUL unquoted in a bare atom, and a '#' first on its"
-    " line; fixed by step 11"
-)
-_BUG_59_NUL = (
-    "bug 59: set_text writes a NUL inside quotes, where KiCad 9 ends the value; fixed by step 11"
-)
 _BUG_67 = (
     "bug 67: pcb._pad_net_bytes, _ensure_net_rows and _set_fp_path quote by hand, not"
     " as Quotew does (LF and CR raw, the path not escaped at all); fixed by step 11"
@@ -273,7 +265,6 @@ def test_agreed_escapes_decode_as_kicads_lexer(body):
     _assert_text_is_kicads(body)
 
 
-@_xfail(_BUG29)
 @given(G.kicad_only_escape_body())
 @example(b"A\\x42C")
 @example(b"A\\102C")
@@ -302,7 +293,6 @@ def test_kicad_reads_back_quoted_set_text(target, value):
     _assert_kicad_reads_back(target, value, {L.STRING})
 
 
-@_xfail(_BUG_59_NUL)
 @given(_targets("quoted"), _TEXT_WITH_NUL)
 @example((b'(a "q")', (0, 1)), "A\x00B")
 def test_quoted_set_text_refuses_nul(target, value):
@@ -313,39 +303,20 @@ def test_quoted_set_text_refuses_nul(target, value):
     _assert_kicad_reads_back(target, value, {L.STRING})
 
 
-@_xfail(_BUG59)
 @given(_targets("bare"), _ANY_TEXT)
 @example((b"(a z b)", (0, 1)), "a|b")
 @example((b"(a z b)", (0, 1)), "a\x00b")
 @example((b"(a\n\tz b)", (0, 1)), "#x")
+@example((b"(a z b)", (0, 1)), "#x")
+@example((b"(a z b)", (0, 1)), "")
+@example((b"(a z b)", (0, 1)), "two words")
+@example((b"(a z b)", (0, 1)), "(paren)")
+@example((b"(a z b)", (0, 1)), '"x')
 def test_kicad_reads_back_bare_set_text(target, value):
     """The same for a bare atom, with the bar known as every current KiCad file has it:
     a bar splits a bare token (dsnlexer.cpp:611-633 at 9.0.8), a NUL is whitespace
     (452-470), and a line whose first non-blank byte is '#' is a comment (575-598). A
     value holding a NUL can only be refused, as for a quoted atom."""
-    _assert_kicad_reads_back(target, value, L.ATOM_KINDS)
-
-
-def _starts_its_line(doc: bytes, path: tuple[int, ...]) -> bool:
-    """Whether the item at ``path`` is the first thing on its line but blanks, the bytes
-    DSNLEXER skips before its comment test (isSpace, dsnlexer.cpp:452-470 at 9.0.8)."""
-    start = _lexed(doc, premise=True)[path].start
-    return not doc[doc.rfind(b"\n", 0, start) + 1 : start].strip(b" \t\r\x00")
-
-
-@given(_targets("bare"), _ANY_TEXT.filter(lambda value: "|" not in value and "\x00" not in value))
-@example((b"(a z b)", (0, 1)), "")
-@example((b"(a z b)", (0, 1)), "two words")
-@example((b"(a z b)", (0, 1)), "(paren)")
-@example((b"(a z b)", (0, 1)), '"x')
-@example((b"(a z b)", (0, 1)), "#x")
-def test_kicad_reads_back_bare_set_text_outside_bug_59(target, value):
-    """The same property over every bare value bug 59 does not cover: no bar, no NUL, and
-    no '#' when the atom starts its line. The split follows the bug's own scope, never
-    where the code passes, so the rest of the bare codec stays judged while bug 59's
-    xfail stands."""
-    doc, path = target
-    assume(not (value.startswith("#") and _starts_its_line(doc, path)))
     _assert_kicad_reads_back(target, value, L.ATOM_KINDS)
 
 
@@ -361,7 +332,6 @@ def test_retext_keeps_kicads_reading(target):
     _assert_retext_keeps_reading(target)
 
 
-@_xfail(_BUG29)
 @given(_string_in_context(G.kicad_only_escape_body()))
 @example((b'(a "A\\x42C")', (0, 1)))
 @example((b'(a "A\\102C")', (0, 1)))
@@ -479,30 +449,11 @@ _NUL_CLASSES = [
 ]
 _CLASS_GROUPS = {"escapes": _ESCAPE_CLASSES, "nul": _NUL_CLASSES}
 
-#: The bytes after a backslash that only KiCad's lexer decodes: \a \b \f \v, \x, and the
-#: octal digits (dsnlexer.cpp:661-712 at 9.0.8, 664-715 at 10.0.7). Atom.text decodes the
-#: rest of the table as KiCad does, so a class is bug 29's exactly when its raw holds one.
-_KICAD_ONLY_ESCAPE = frozenset(b"abfvx01234567")
-
-
-def _holds_kicad_only_escape(raw: bytes) -> bool:
-    body = raw[1:-1]
-    i = 0
-    while i < len(body):
-        if body[i] != 0x5C:
-            i += 1
-        elif i + 1 < len(body) and body[i + 1] in _KICAD_ONLY_ESCAPE:
-            return True
-        else:
-            i += 2
-    return False
-
 
 def _class_params():
     for group, classes in _CLASS_GROUPS.items():
         for name, raw in classes:
-            marks = [_xfail(_BUG29)] if _holds_kicad_only_escape(raw) else []
-            yield pytest.param(group, name, raw, marks=marks, id=name)
+            yield pytest.param(group, name, raw, id=name)
 
 
 @pytest.fixture(scope="module")
@@ -579,22 +530,16 @@ def test_kicad_cli_reads_back_quoted_set_text(tmp_path):
 @pytest.mark.parametrize(
     ("value", "line_start"),
     [
-        pytest.param("a|b", False, marks=_xfail(_BUG59), id="bar"),
-        pytest.param("a\x00b", False, marks=_xfail(_BUG59), id="nul"),
-        pytest.param("#x", True, marks=_xfail(_BUG59), id="hash-first-on-its-line"),
+        pytest.param("a|b", False, id="bar"),
+        pytest.param("a\x00b", False, id="nul"),
+        pytest.param("#x", True, id="hash-first-on-its-line"),
         pytest.param("plain", False, id="plain"),
     ],
 )
 def test_kicad_cli_reads_back_bare_set_text(tmp_path, value, line_start):
     """set_text into a bare property value: kicad-cli loads the file and reads the value,
-    or set_text refuses. Measured on kicad-cli 9.0.8 (2026-10-10): the three bug-59
-    values make it answer "Failed to load schematic".
-
-    Each xfailed parameter leaves that unloadable file in tmp_path, which the autouse
-    kicad-cli oracle has to leave alone because the call phase xfailed: this is that
-    rule's end-to-end check, since a teardown error here would mean the oracle judged an
-    xfailed call.
-    """
+    or set_text refuses. Measured on kicad-cli 9.0.8 (2026-10-10): a bare bar, a bare NUL
+    and a '#' first on its line make it answer "Failed to load schematic"."""
     tree = _cst.parse(_schematic_with_fields([("P", b"placeholder", line_start)]))
     atom = _field_atom(tree, "P")
     raw = atom.raw
@@ -611,7 +556,6 @@ def test_kicad_cli_reads_back_bare_set_text(tmp_path, value, line_start):
 
 
 @requires_cli
-@_xfail(_BUG_59_NUL)
 def test_kicad_cli_reads_back_quoted_nul(tmp_path):
     """set_text("A<NUL>B") on a quoted property value: kicad-cli reads A<NUL>B, or
     set_text refuses. Measured on kicad-cli 9.0.8 (2026-10-10): it reads A."""
@@ -812,7 +756,6 @@ def test_nightly_escapes_match_kicad_cli(bodies):
 
 @pytest.mark.nightly
 @requires_cli
-@_xfail(_BUG29)
 @_NIGHTLY
 @given(_batch(G.kicad_only_escape_body().filter(_body_prints_verbatim)))
 @example([b"A\\x42C", b"A\\102C", b"A\\xgC", b"x\\ay", b"\\x4"])
@@ -840,7 +783,6 @@ _BARE_VALUE = _ANY_TEXT.filter(
 
 @pytest.mark.nightly
 @requires_cli
-@_xfail(_BUG59)
 @_NIGHTLY
 @given(_batch(_BARE_VALUE))
 @example(["plain", "a|b"])

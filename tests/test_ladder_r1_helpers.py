@@ -572,15 +572,15 @@ def test_oracle_refuses_a_lib_table_the_two_readers_disagree_on(tmp_path):
         "glued quote": (_DEMO_TABLE.replace(name, b'(name ab"cd")'), "double quote"),
         # A value whose escape is its first byte: KiCad 9 reads a TAB, KiCad 10 "\t".
         "escape first": (_DEMO_TABLE.replace(b'(descr "")', b'(descr "\\tx")'), "backslash"),
-        # Quotes that end bare values: both KiCads read ab" and x" (a bare token runs to a
-        # separator, library_table_grammar.h:58 at 10.0.7), where the CST reads ab and a
-        # string, and still balances the parens.
+        # Quotes that end bare values: both KiCads and the CST read ab" and x" (a bare token
+        # runs to a separator, library_table_grammar.h:58 at 10.0.7), so the parens balance
+        # and the double quote is what the rule refuses.
         "quotes ending bare values": (
             _DEMO_TABLE.replace(name + b'(type "KiCad")', b'(name ab")(type x")'),
             "double quote",
         ),
-        "lone bare quote": (_DEMO_TABLE.replace(name, b'(name my"lib)'), "the CST refuses"),
-        "bug 4's quote": (_DEMO_TABLE.replace(name, b'(name "my"lib")'), "the CST refuses"),
+        "lone bare quote": (_DEMO_TABLE.replace(name, b'(name my"lib)'), "double quote"),
+        "bug 4's quote": (_DEMO_TABLE.replace(name, b'(name "my"lib")'), "double quote"),
         "bare bar": (_DEMO_TABLE.replace(name, b"(name a|b)"), "bare '|'"),
         "unbalanced": (_DEMO_TABLE[:-3], "lexer refuses"),
         "unterminated": (_DEMO_TABLE.replace(b'(descr "")', b'(descr ")'), "lexer refuses"),
