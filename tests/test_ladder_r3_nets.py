@@ -4,8 +4,9 @@ references are, how a tool writes one, and how the board update binds them, judg
 Code under test: pcb._set_item_net (the one writer of an item's net reference) through
 add_trace, add_via, add_thermal_vias and add_copper_zone; pcb._apply_netlist_cst, the board
 update behind update_pcb_from_schematic, when a net leaves the schematic (its orphan pass sends
-each item on that net to no net), when it adds one (_ensure_net_rows) and when it binds a pad
-(_bind_pad_net); and the read tools' reading of a net atom (_net_name_of and _net_table). The
+each item on that net to no net, unless a pad of a footprint that stays is on it), when it adds
+one (_ensure_net_rows) and when it binds a pad (_bind_pad_net); and the read tools' reading of a
+net atom (_net_name_of and _net_table). The
 update is driven with a netlist edit_gen.netlist_text builds in kicad-cli's form (rung 3's D11),
 with no schematic and no kicad-cli.
 
@@ -16,10 +17,11 @@ board is 0 or a row of its table; bug 19, a KiCad 9 zone is on the net its net_n
 20, a quoted net atom is a name even when it is digits, and get_board_info counts net 0 on a
 board with no table; bug 22, a pad whose net did not change keeps its bytes; bug 99, the orphan
 and prune passes see the copper shapes that carry a net; bug 100, a name a board with no table
-spells gets a row; bug 101, a new row never takes a number an item already refers to. The
-judges are KiCad's own parser and writer, read at 9.0.8 and 10.0.7 and cited where each is
-used; pcbnew, where this machine has it; the lexer port in tests/kicad_ref for what a file
-holds; and the files KiCad ships.
+spells gets a row; bug 101, a new row never takes a number an item already refers to. Review
+fix: a net a pad of a footprint that stays is on has not left the schematic. The judges are
+KiCad's own parser and writer, read at 9.0.8 and 10.0.7 and cited where each is used; pcbnew,
+where this machine has it; the lexer port in tests/kicad_ref for what a file holds; and the
+files KiCad ships.
 
 KiCad 9's rule, read at 9.0.8. A net reference is a number, and the parser maps every number
 through the board's table: getNetCode over the map parseNETINFO_ITEM fills, zeros in its gaps
@@ -160,19 +162,24 @@ def _net_child(name: str, version: str, rows: Mapping[str, int] | None) -> str:
     return f"(net {_number(name, rows)})"
 
 
-def _u1(
-    pad_nets: dict[str, str], *, version: str = "k10", rows: Mapping[str, int] | None = None
+def _footprint(
+    ref: str,
+    at: tuple[int, int],
+    pad_nets: dict[str, str],
+    *,
+    version: str = "k10",
+    rows: Mapping[str, int] | None = None,
 ) -> str:
-    """U1, edit_gen's two-pad footprint as KiCad holds it at _U1_AT, linked to its symbol as
-    the update links one with no symbol uuid (sheetname "/"), each pad of ``pad_nets`` on its
-    net, written as the board's format writes a pad's net, straight after an smd rect pad's
-    (layers ...): KiCad 10's (net "NAME") (format( PAD ), pcb_io_kicad_sexpr.cpp:1791-1858 at
-    10.0.7), KiCad 9's (net N "NAME") with N the net's number in ``rows`` (1432-1613 at
-    9.0.8). A pad on no net carries none."""
+    """Footprint ``ref``, edit_gen's two-pad footprint as KiCad holds it at ``at`` (nm), linked
+    to its symbol as the update links one with no symbol uuid (sheetname "/"), each pad of
+    ``pad_nets`` on its net, written as the board's format writes a pad's net, straight after
+    an smd rect pad's (layers ...): KiCad 10's (net "NAME") (format( PAD ),
+    pcb_io_kicad_sexpr.cpp:1791-1858 at 10.0.7), KiCad 9's (net N "NAME") with N the net's
+    number in ``rows`` (1432-1613 at 9.0.8). A pad on no net carries none."""
     if version == "k9" and pad_nets and rows is None:
         raise ValueError("a KiCad 9 pad's net needs the board's rows")
     text = E.board_footprint_text(
-        E.footprint_with_pad_at(0.0), "U1", _U1_AT, 0.0, version=version, sheetname="/"
+        E.footprint_with_pad_at(0.0), ref, at, 0.0, version=version, sheetname="/"
     )
     out: list[str] = []
     pad: str | None = None
@@ -193,6 +200,13 @@ def _u1(
     if placed != set(pad_nets):
         raise RuntimeError(f"edit_gen's footprint holds no pad {sorted(set(pad_nets) - placed)}")
     return "".join(out)
+
+
+def _u1(
+    pad_nets: dict[str, str], *, version: str = "k10", rows: Mapping[str, int] | None = None
+) -> str:
+    """U1 at _U1_AT, the footprint of the netlist the update tests apply (_footprint)."""
+    return _footprint("U1", _U1_AT, pad_nets, version=version, rows=rows)
 
 
 def _track(
@@ -990,6 +1004,125 @@ def test_every_net_the_import_binds_has_a_row(tmp_path):
     if PJ.skip_reason() is None:
         read = _pcbnew_nets(board)["pads"]["U1"]
         assert {pad: net[1] for pad, net in read.items()} == {"1": "GND", "2": "SIG"}, read
+
+
+# ---------------------------------------------------------------------------
+# a net a footprint that stays is on has not left
+# ---------------------------------------------------------------------------
+
+#: Where R5 sits, in nm: its pad 1 is at (79, 40) mm on the board, where the segment on /X ends.
+_R5_AT = (80 * MM, 40 * MM)
+#: The table of a KiCad 9 board below: U1's nets, R5's /X, and /Y, which no pad is on.
+_KEPT_ROWS = {"/GND": 1, "/VCC": 2, "/X": 3, "/Y": 4}
+#: A segment on /X from R5's pad 1 to (70, 40).
+_X_SEGMENT = ("(start 79 40)", "(end 70 40)", "(width 0.25)", '(layer "F.Cu")')
+
+#: How R5, which the netlist leaves out, stays on the board: (the update's delete_stale, the
+#: lock edit_gen.with_lock spells or None, the (attr ...) list that replaces (attr smd) or
+#: None). KiCad's update removes none of them (board_netlist_updater.cpp:1427-1454 at 9.0.8).
+_STAYS = {
+    "stale": (False, None, None),
+    "locked": (True, "(locked yes)", None),
+    "board only": (True, None, "attr smd board_only"),
+}
+
+
+def _kept_board(tmp_path: Path, version: str, *, lock: str | None, attr: str | None) -> Path:
+    """A board of ``version`` holding U1 (pads on /GND and /VCC) and R5 (pad 1 on /X, with the
+    lock and the (attr ...) that make it stay), and on /X a segment ending on R5's pad 1, a
+    via, a copper zone and a copper polygon, and on /Y, which no pad is on, a segment."""
+    rows = _KEPT_ROWS if version == "k9" else None
+    r5 = _footprint("R5", _R5_AT, {"1": "/X"}, version=version, rows=rows)
+    if lock is not None:
+        r5 = E.with_lock(r5, lock)
+    if attr is not None:
+        if r5.count("\t\t(attr smd)\n") != 1:
+            raise RuntimeError("edit_gen's footprint no longer holds one (attr smd)")
+        r5 = r5.replace("\t\t(attr smd)\n", f"\t\t({attr})\n")
+    items = [
+        _u1(_PAD_NETS, version=version, rows=rows),
+        r5,
+        _track("segment", _X_SEGMENT, "/X", version=version, rows=rows),
+        _track("via", _SIG_TRACKS["via"], "/X", version=version, rows=rows),
+        _zone("/X", net_name=False, version=version, rows=rows),
+        _shape("/X", version=version, rows=rows),
+        _track("segment", _STRAY_SEGMENT, "/Y", version=version, rows=rows),
+    ]
+    return _board(tmp_path, items, version=version, rows=rows)
+
+
+def _pcbnew_item_nets(board: Path, version: str) -> list[str] | None:
+    """The sorted net names pcbnew reads on the items (tracks, zones, shapes) of ``board``, or
+    None when this machine's pcbnew cannot load a board of ``version``."""
+    if PJ.skip_reason() is not None or PJ.major() < (10 if version == "k10" else 9):
+        return None
+    return sorted(name for _, name in _pcbnew_nets(board)["items"].values())
+
+
+@pytest.mark.parametrize("stays", list(_STAYS))
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_a_net_a_footprint_that_stays_is_on_stays_whole(tmp_path, version, stays):
+    """The board of _kept_board, updated from a netlist that names U1 alone, so /X left the
+    schematic and R5 is stale; R5 stays, unlocked under the default delete_stale, locked or
+    marked board only under delete_stale (KiCad's update removes neither of those,
+    board_netlist_updater.cpp:1427-1454 at 9.0.8, 2334-2387 at 10.0.7). Its pad is on /X, so
+    /X is not an unused net: the update marks the net of every pad of every footprint it keeps
+    current before it removes the nets that are not (the loop at board_netlist_updater.cpp:
+    1475-1485 and RemoveUnusedNets at 1506, 9.0.8; 2406-2416 and 2438, 10.0.7), and only the
+    removal of a net, which BOARD::Remove does through the commit, sends the items on it to net
+    0 (board_commit.cpp:399-400 and board.cpp:1328-1341 at 9.0.8). So /X keeps its row, R5's
+    pad, and the segment, via, zone and polygon on it, and the one change to the file is the
+    segment on /Y, a net no pad is on, going to no net with its row on a KiCad 9 board. The
+    pass sent all four items on /X to no net while R5's pad stayed on it (measured 2026-10-17:
+    pcbnew 9.0.8 read the pad on /X, and the polygon on no net)."""
+    delete_stale, lock, attr = _STAYS[stays]
+    board = _kept_board(tmp_path, version, lock=lock, attr=attr)
+    before = board.read_bytes()
+    held = _pcbnew_item_nets(board, version)
+    if held is not None and held != ["/X"] * 4 + ["/Y"]:
+        raise RuntimeError(f"the premise fails: pcbnew reads the items on {held}")
+    summary = _apply(board, _PAD_NETS, delete_stale=delete_stale)
+    assert summary["stale_footprints"] == ["R5"] and summary["stale_removed"] == [], summary
+    assert summary["orphaned_tracks"] == 1 and summary["orphaned_zones"] == 0, summary
+    assert summary["warnings"] == [], summary
+    stray = ("kicad_pcb", "segment", "net")
+    expected: list[tuple] = (
+        [
+            ("atom", (*stray, "4"), b"4", b"0"),
+            ("delete", ("kicad_pcb", "net"), b'(net 4 "/Y")', None),
+        ]
+        if version == "k9"
+        else [("atom", (*stray, "/Y"), b'"/Y"', _NO_NET)]
+    )
+    assert _edits(before, board.read_bytes()) == sorted(expected)
+    assert summary["nets_removed"] == (1 if version == "k9" else 0), summary
+    if held is not None:
+        after = _pcbnew_item_nets(board, version)
+        assert after == ["", *["/X"] * 4], f"pcbnew reads the items on {after} after the update"
+        assert _pcbnew_nets(board)["pads"]["R5"]["1"][1] == "/X"
+
+
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_a_net_no_pad_that_stays_is_on_goes_to_no_net_with_all_on_it(tmp_path, version):
+    """The passing sibling of the test above: the same board with R5 removed under delete_stale
+    (unlocked, not board only), so no pad that stays is on /X or /Y. Everything on them goes to
+    no net, written as the board's format writes none: the segments and the via are counted in
+    orphaned_tracks, the zone in orphaned_zones and the polygon named in warnings, and a KiCad
+    9 board loses both rows."""
+    board = _kept_board(tmp_path, version, lock=None, attr=None)
+    summary = _apply(board, _PAD_NETS, delete_stale=True)
+    assert summary["stale_removed"] == ["R5"], summary
+    assert summary["orphaned_tracks"] == 3 and summary["orphaned_zones"] == 1, summary
+    assert len(summary["warnings"]) == 1 and "gr_poly" in summary["warnings"][0], summary
+    assert summary["nets_removed"] == (2 if version == "k9" else 0), summary
+    written = _net_tokens_by_kind(board.read_bytes())
+    no_track = [b"(net 0)"] if version == "k9" else [b'(net "")']
+    assert written["segment"] == [no_track] * 2 and written["via"] == [no_track]
+    assert written["zone"] == ([[b"(net 0)", b'(net_name "")']] if version == "k9" else [[]])
+    assert written["gr_poly"] == [[]]
+    read = _pcbnew_item_nets(board, version)
+    if read is not None:
+        assert read == [""] * 5, f"pcbnew reads the items on {read} after the update"
 
 
 # ---------------------------------------------------------------------------

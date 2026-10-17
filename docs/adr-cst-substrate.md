@@ -678,12 +678,18 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   atom's raw bytes, replacing five tests on decoded text, and agrees with the lexer port on generated
   atoms. get_board_info now counts the unconnected net, as pcbnew does.
 
-  The orphan and prune passes walk the copper shapes that carry a net as well as tracks and zones
-  (bug 99; KiCad ships such shapes, four gr_poly in RoyalBlue54L-NFC-Antenna): KiCad's update drops an
-  unused net through its commit, whose BOARD::Remove sends every connected item of it, drawings
-  included, to net 0 (board_commit.cpp:399-400 and board.cpp:1328-1341 and 2898-2921 at 9.0.8;
-  board_commit.cpp:490-491, board.cpp:1501-1514 and 3542-3574 at 10.0.7). A shape the pass left on a
-  pruned row kept a number no row had, and a later update that added a net gave that number to a new
+  The orphan and prune passes walk the copper shapes that carry a net as well as tracks and zones (bug
+  99; KiCad ships such shapes, four gr_poly in RoyalBlue54L-NFC-Antenna): KiCad's update drops an unused
+  net through its commit, whose BOARD::Remove sends every connected item of it, drawings included, to net
+  0 (board_commit.cpp:399-400 and board.cpp:1328-1341 and 2898-2921 at 9.0.8; board_commit.cpp:490-491,
+  board.cpp:1501-1514 and 3542-3574 at 10.0.7). A net is unused only when no pad of a footprint that
+  stays is on it: the update marks the net of every pad of every footprint it does not delete current
+  before it removes the rest (board_netlist_updater.cpp:1475-1485 and 1506 at 9.0.8, 2406-2416 and 2438
+  at 10.0.7), so a stale footprint kept by the default delete_stale, a locked one and one marked board
+  only keep their nets whole, with everything on them. The orphan pass ran before the stale footprints
+  were settled and sent everything on such a net to no net while the pad stayed on it; the stale pass now
+  runs first, and the orphan pass and the prune leave a net a remaining pad is on. A shape the pass left
+  on a pruned row kept a number no row had, and a later update that added a net gave that number to a new
   row, which put the shape on it. A new row is now numbered one above the largest number a row, pad,
   track, zone or copper shape uses (bug 101), and a board with no table at all declares every name the
   netlist uses, including one only a zone's net_name spells (bug 100). The result has no field for a

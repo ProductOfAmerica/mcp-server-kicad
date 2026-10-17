@@ -3418,12 +3418,15 @@ def update_pcb_from_schematic(
     fill_zones afterward. Net names arrive exactly as KiCad's F8 produces them
     (local labels sheet-prefixed, e.g. "/SIG"); read them with list_pcb_nets.
     A pad whose net did not change is left as it is, and one that gains a net
-    gets it where KiCad's writer puts it. Everything on a net that left the
-    schematic goes to no net, written as the board's format writes no net:
-    segments, arcs and vias are counted in orphaned_tracks, zones in
-    orphaned_zones, and copper shapes are named in warnings. That includes a via
-    or a zone on a net that was renamed, which KiCad's own update reconnects to
-    the new name and this one does not.
+    gets it where KiCad's writer puts it. A net that left the schematic goes to
+    no net with everything on it, written as the board's format writes no net,
+    unless a pad of a footprint that stays on the board is still on it (a stale
+    footprint that is kept: delete_stale off, or locked, or board only). KiCad's
+    own update keeps such a net, and what is on it, as it is, and so does this
+    one. Segments, arcs and vias sent to no net are counted in orphaned_tracks,
+    zones in orphaned_zones, and copper shapes are named in warnings. That
+    includes a via or a zone on a net that was renamed, which KiCad's own update
+    reconnects to the new name and this one does not.
 
     What KiCad's own update copies from the symbol follows it here, with
     two exceptions named below. The Value. Every other symbol field, as hidden
@@ -4551,19 +4554,21 @@ def _apply_netlist_cst(
 
     The passes, in order: match by reference, add or swap footprints, declare the
     schematic's nets (a KiCad 9 format board's table, _ensure_net_rows), bind pads,
-    send what is on a net that left the schematic to no net, report or remove stale
-    footprints, prune the rows nothing uses.
+    report or remove stale footprints, send what is on a net that left the schematic
+    to no net, prune the rows nothing uses.
 
     A pad is bound only where its net changes (_bind_pad_net), so one the update has
     nothing to change is not touched, and a pad of a matched footprint that the
     netlist leaves without a net loses its (net ...). Every segment, arc, via, zone
-    and copper shape on a net that is not in the netlist is put on no net, spelled
-    as the board's format spells it (_set_item_net); segments, arcs and vias are
-    counted in orphaned_tracks, zones in orphaned_zones, and a shape, which has no
-    field, is named in warnings. This differs from KiCad's own update, which
+    and copper shape on a net that is neither in the netlist nor under a pad of a
+    footprint that stays (a stale one kept: not removed, locked or board only) is put
+    on no net, spelled as the board's format spells it (_set_item_net); segments, arcs
+    and vias are counted in orphaned_tracks, zones in orphaned_zones, and a shape,
+    which has no field, is named in warnings. A net a pad that stays is on keeps its
+    row and everything on it, as KiCad's own update keeps it. That update also
     reconnects a via or a copper zone on a net that was renamed to the new name
     (updateCopperZoneNets, pcbnew/netlist_reader/board_netlist_updater.cpp:1005-1221
-    at 9.0.8) where this one orphans them.
+    at 9.0.8), where this one orphans them.
     """
     components, nets = _parse_netlist(netlist_path)
     summary = _new_summary()
@@ -4673,14 +4678,37 @@ def _apply_netlist_cst(
             else:
                 _bind_pad_net(root, pad, bound[0], bound[1], version)
 
-    # --- Items on nets whose name left the schematic go to no net ---
+    # --- Stale footprints: always reported, removed only on request. KiCad's
+    # update never deletes a footprint marked board only, whatever the option, nor
+    # does this one; a locked one is kept too ---
+    for fp in list(root.find_all("footprint")):
+        ref = _fp_prop_cst(fp, "Reference")
+        if ref in netlist_refs:
+            continue
+        summary["stale_footprints"].append(ref)
+        if delete_stale and not _fp_locked(fp) and not _fp_board_only(fp):
+            root.remove_child(fp)
+            by_ref.pop(ref, None)
+            summary["stale_removed"].append(ref)
+
+    # --- Items on nets that left the schematic go to no net. A net is kept while a pad
+    # of a footprint that stays is on it: KiCad's update marks the net of every pad of
+    # every footprint it keeps current, and only a net no pad is on is removed, which
+    # sends everything on it to net 0 (board_netlist_updater.cpp:1475-1485 and 1506 at
+    # 9.0.8, 2406-2416 and 2438 at 10.0.7; board_commit.cpp:399-400 and board.cpp:
+    # 1328-1341 at 9.0.8). So this runs after the stale footprints are gone ---
     live = {n["name"] for n in nets}
     rows = _row_names(root)
+    kept = live | {
+        _read_net_name(pad, version, rows)
+        for fp in root.find_all("footprint")
+        for pad in fp.find_all("pad")
+    }
     for item in root.lists:
         if item.head not in _NET_ITEMS:
             continue
         name = _read_net_name(item, version, rows)
-        if not name or name in live:
+        if not name or name in kept:
             continue
         _set_item_net(item, root, 0, version)
         if item.head == "zone":
@@ -4695,26 +4723,10 @@ def _apply_netlist_cst(
                 " it is on no net now"
             )
 
-    # --- Stale footprints: always reported, removed only on request. KiCad's
-    # update never deletes a footprint marked board only, whatever the option, nor
-    # does this one; a locked one is kept too ---
-    for fp in list(root.find_all("footprint")):
-        ref = _fp_prop_cst(fp, "Reference")
-        if ref in netlist_refs:
-            continue
-        summary["stale_footprints"].append(ref)
-        if delete_stale and not _fp_locked(fp) and not _fp_board_only(fp):
-            root.remove_child(fp)
-            by_ref.pop(ref, None)
-            summary["stale_removed"].append(ref)
-
     # --- Prune declared nets nothing references any more ---
-    used = {live_name for live_name in live if live_name}
+    used = {name for name in kept if name}
     for item in root.lists:
-        if item.head == "footprint":
-            for pad in item.find_all("pad"):
-                used.add(_read_net_name(pad, version, rows))
-        elif item.head in _NET_ITEMS:
+        if item.head in _NET_ITEMS:
             used.add(_read_net_name(item, version, rows))
     summary["nets_removed"] = _prune_net_rows(root, used)
 
