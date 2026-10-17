@@ -644,3 +644,84 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   the kicad-cli 9 netlist anchors locally and on the Linux 9.0 leg (kicad-cli 10 joins a wire through
   a junction, so it cannot see the cut), and the KiCad 10 group twin on the 10.0 leg, macOS and
   Windows.
+- 2026-10-17: board net references name the net KiCad binds (step 10, #113, bugs 3, 19, 20, 22, 90, 99,
+  100 and 101). Guardrail 5 kept the two dialects apart and said nothing about whether a number names a
+  net, so add_trace and add_via wrote `(net 999)` on a KiCad 9 board behind a success message. KiCad 9
+  binds a number only through a row of the root table (getNetCode over the map parseNETINFO_ITEM fills,
+  zeros in its gaps, pcb_io_kicad_sexpr_parser.h:156-162 and pcb_io_kicad_sexpr_parser.cpp:183-192 and
+  2693-2721 at 9.0.8): a number past the table finds no net ("Invalid net ID"), a negative one or one in
+  a gap lands on net 0 (pcbnew/board_connected_item.cpp:87-115). kicad-cli 9.0.8 loads a segment on net
+  99, on net -7 and on a gap number without complaint (measured 2026-10-17), so the autouse oracle cannot
+  see this class and `test_output_validity.py` gained its own judge: every numeric net reference of a
+  board a tool wrote is 0 or a row of its table, and none is a number on a board above 20241229 that
+  declares no table. The premise holds for KiCad's own files: the 38 demo and template boards of
+  KiCad 9.0.8 the lexer port reads hold 64,758 numeric net references (42,635 on segments, 13,497 on
+  pads, 6,089 on vias, 2,020 on arcs, 513 on zones, 4 on copper shapes) and each is 0 or a row (counted
+  2026-10-17), and KiCad 10.0.7's boards satisfy it on the CI legs. KiCad's own writer numbers the nets
+  in use consecutively from 0 (NETINFO_MAPPING::Update, netinfo_list.cpp:292-329), so a board it wrote has
+  no gap and every reference is a row. So `_set_item_net` now refuses, before the first change, a net
+  number that is neither 0 nor one of the board's nets: a row of the table on a KiCad 9 format board, a
+  number list_pcb_nets reports on any other. It is also the one place that spells no net, as KiCad's
+  writer does per item kind: `(net 0)` or `(net "")` on a segment, arc or via, `(net 0)` with
+  `(net_name "")` on a KiCad 9 zone, no token on a KiCad 10 zone or on a copper shape
+  (pcb_io_kicad_sexpr.cpp:2436, 2452-2454 and 1027-1028 at 9.0.8; 2860-2861, 2872-2876 and 1117-1118 at
+  10.0.7). add_copper_zone, add_keepout_zone and the autoroute keepout promotion go through it, and
+  `_set_promoted_zone_net` is gone. A zone is read the way the KiCad that writes its format reads it:
+  KiCad 9 puts a copper zone on the net its net_name names and, with none or an empty one, on no net
+  whatever its number says (pcb_io_kicad_sexpr_parser.cpp:7387-7412 at 9.0.8), so the orphan pass had left
+  a zone it sent to `(net 0)` on a /SIG that KiCad then recreated from the net_name it kept (bug 19);
+  KiCad 10 does the same only for a non-empty legacy net_name (8037-8041 and 8673-8697 at 10.0.7). A
+  quoted net atom is a name even when it is all digits: KiCad's lexer reads a quoted token as a string and
+  a bare one as a number only when all of it is one (isNumber, common/dsnlexer.cpp:495-542 at 9.0.8 and
+  491-538 at 10.0.7; a quoted token, 643-725 at 10.0.7), and KiCad 10 quotes every net name (bug 20).
+  `_net_code` decides on the
+  atom's raw bytes, replacing five tests on decoded text, and agrees with the lexer port on generated
+  atoms. get_board_info now counts the unconnected net, as pcbnew does.
+
+  The orphan and prune passes walk the copper shapes that carry a net as well as tracks and zones
+  (bug 99; KiCad ships such shapes, four gr_poly in RoyalBlue54L-NFC-Antenna): KiCad's update drops an
+  unused net through its commit, whose BOARD::Remove sends every connected item of it, drawings
+  included, to net 0 (board_commit.cpp:399-400 and board.cpp:1328-1341 and 2898-2921 at 9.0.8;
+  board_commit.cpp:490-491, board.cpp:1501-1514 and 3542-3574 at 10.0.7). A shape the pass left on a
+  pruned row kept a number no row had, and a later update that added a net gave that number to a new
+  row, which put the shape on it. A new row is now numbered one above the largest number a row, pad,
+  track, zone or copper shape uses (bug 101), and a board with no table at all declares every name the
+  netlist uses, including one only a zone's net_name spells (bug 100). The result has no field for a
+  shape, so each is named in warnings. This is not KiCad's whole update: it also reconnects a via or a
+  copper zone on a renamed net to the new name (updateCopperZoneNets, board_netlist_updater.cpp:
+  1005-1221 at 9.0.8), where this pass orphans them; whether to follow that is a product decision left
+  open. KiCad 10's AllConnectedItems also visits footprint-level zones and graphics, which the pass does
+  not; how often KiCad 10 writes such an item on a net is unmeasured.
+
+  The pad pass binds a pad only where its net changes (bug 22). It cleared every pad of a matched
+  footprint and bound them again, which moved the (net ...) of all 21 pads of ecc83's footprints that the
+  update did not swap and whose net had not changed (measured 2026-10-17), and it put a new one after
+  `(layers ...)`, which parted 7,282 of the 13,497 pads of the shipped boards from KiCad's bytes (N1,
+  counted 2026-10-17). KiCad's writer puts it right after the last of the children format( PAD ) writes
+  before it (at, size, rect_delta, drill, backdrill, tertiary_drill, front_post_machining,
+  back_post_machining, property, layers, remove_unused_layers, keep_end_layers, zone_layer_connections,
+  roundrect_rratio, chamfer_ratio, chamfer; pcb_io_kicad_sexpr.cpp:1432-1613 at 9.0.8, 1635-1858 at
+  10.0.7): all 13,497 pads of KiCad 9.0.8's demos and templates that carry a net sit there, 6,215 right
+  after `(layers ...)`, 4,141 after remove_unused_layers and 3,141 after roundrect_rratio (counted
+  2026-10-17). That supersedes the 2026-08-15 entry's "binding inserts one after `(layers ...)`", which
+  holds for under half of them, and its remark that the structure mirrors the retired apply() pass for
+  pass. A pad that gains a net gets it there, a pad of a matched footprint the netlist leaves without a
+  net loses its token, as KiCad sets such a pad unconnected (board_netlist_updater.cpp:837-871 at 9.0.8,
+  1105-1139 at 10.0.7), and a pad already holding the pair KiCad 10's development formats (20241230 to
+  20251027) write is left alone, though a pad that changes net there is written by name like every net
+  the tools write above 20241229. Binding a pad to its own net leaves its bytes, and removing a pad's net
+  and binding it again gives back KiCad's, for every pad of the shipped boards the lexer port reads (N1,
+  per push up to the size cap and nightly over all of them): token for token where KiCad 7's writer wrapped
+  the line, which the Linux 9.0 leg meets because it installs KiCad 7.0.9's templates from Ubuntu.
+  delete_stale also keeps a footprint marked board only, as KiCad's update does
+  (board_netlist_updater.cpp:1427-1428 at 9.0.8, 2334-2335 at 10.0.7; bug 90).
+
+  What stays outside: a reference an earlier version wrote that names no net is not repaired (KiCad reads
+  it on no net, and the row rule stops it being adopted); a KiCad 9 board with no table refuses a net
+  number other than 0, since KiCad binds none there; the pad net node is still quoted by hand (bug 67,
+  step 11). Gates: `tests/test_ladder_r3_nets.py`, `test_output_validity.py`, `test_netlist_import.py`
+  (N9 and N9b: an upgraded KiCad 10 board) and the swap file's board only and zone tests, on KiCad 9
+  locally and in CI on the Linux 9.0 and 10.0 legs, macOS and Windows. The KiCad 10 halves were source
+  reading until the legs ran: the tests commit ran on the Linux 10.0, macOS and Windows legs before the
+  fix (pcbnew 10 wrote the no-net harvest of N8 without an API difference), and the fix commit passed
+  there after.
