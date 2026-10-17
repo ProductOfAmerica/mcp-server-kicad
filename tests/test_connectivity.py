@@ -1366,6 +1366,109 @@ def test_a_pin_not_where_connect_pins_would_take_it_is_refused(tmp_path):
     assert why is not None and why.codes == ("resolve",), why
 
 
+def _overlapped_nets(tmp_path, b_name: str = "B"):
+    """R1:1 on A and R2:1 on *b_name*, each by wires of its own that never meet, except that B's
+    horizontal wire lies collinearly over A's between x 76.2 and 88.9. The possible view joins
+    the two wires there, as the GUI does on load; the narrow view, like kicad-cli 9, keeps them
+    apart. R1:1 is at (50.8, 97.79) and R2:1 at (127, 97.79), a clear straight route apart."""
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 50.8, 101.6)
+    place(p, "R", "R2", 127, 101.6)
+    wire(p, 50.8, 97.79, 50.8, 76.2)
+    wire(p, 50.8, 76.2, 88.9, 76.2)
+    label(p, "A", 88.9, 76.2)
+    wire(p, 127, 97.79, 127, 76.2)
+    wire(p, 127, 76.2, 76.2, 76.2)
+    label(p, b_name, 127, 76.2)
+    return p, (508000, 977900), (1270000, 977900)
+
+
+def test_two_named_nets_a_reader_keeps_apart_are_not_joined_either(tmp_path):
+    """The pins sit in one possible component, so the rule between components does not fire, yet
+    that component carries two names and the narrow view does not join the pins: for a reader
+    that does not merge the overlapped wires (kicad-cli 9) the call would join A and B. It is
+    refused for them."""
+    p, at1, at2 = _overlapped_nets(tmp_path)
+    m = C.Model(_root(p), p)
+    a, b = m.pads[("R1", "1")][0], m.pads[("R2", "1")][0]
+    cm = m.coarse()
+    # the premise: one possible component holding both names, two narrow components
+    assert cm.uf.find(a.id) == cm.uf.find(b.id)
+    assert {name for _it, name in cm.names_of(a)} == {"A", "B"}
+    assert m._C.find(a.id) != m._C.find(b.id)
+    why = C.check_connect_pins(m, "R1", "1", at1, "R2", "1", at2)
+    assert why is not None and why.codes == ("names",), why
+    assert "'A'" in why.text and "'B'" in why.text, why.text
+
+
+def test_nets_that_share_a_name_are_not_refused_for_it(tmp_path):
+    """The same layout with one name on both: same-text names are one net in every reader, so
+    the call joins nothing the readers keep apart."""
+    p, at1, at2 = _overlapped_nets(tmp_path, b_name="A")
+    assert C.check_connect_pins(C.Model(_root(p), p), "R1", "1", at1, "R2", "1", at2) is None
+
+
+# ---------------------------------------------------------------------------------------------
+# A model kept in step with an edited copy of its sheet (Model.retake)
+# ---------------------------------------------------------------------------------------------
+
+
+def _view(m: C.Model) -> list:
+    """A model's items, in order, as the rules read them."""
+    return [
+        (it.id, it.kind, it.x, it.y, it.x2, it.y2, it.sub, it.text, it.name, it.ref, it.num)
+        for it in m.items
+    ]
+
+
+def _nets(m: C.Model) -> list:
+    """The possible view's components, as the ids of their items."""
+    cm = m.coarse()
+    parts: dict[int, list[int]] = {}
+    for it in m.items:
+        parts.setdefault(cm.uf.find(it.id), []).append(it.id)
+    return sorted(parts.values())
+
+
+def test_a_retaken_model_is_the_model_built_from_the_edited_copy(tmp_path):
+    """connect_pins and wire_pins_to_net, made on a copy of the sheet in memory, write wires, a
+    junction that splits a wire, a label and a stub. The model built before the edits and
+    retaken after holds what a model built from the edited copy does: the same items in the
+    same order with the same ids, and the same possible nets. A wire across the route's turn
+    makes the junction and the split."""
+    from mcp_server_kicad import schematic
+
+    p, _at1, _at2 = _two_resistors(tmp_path, 127)
+    wire(p, 127, 100, 127, 110)  # across the turn (127, 105.41) of R1:2 to R2:1
+    copy = _root(p).copy()
+    kept = C.Model(copy, p)
+    before = _view(kept)
+    schematic._connect_pins_edit(copy, "R1", "2", "R2", "1", kept)
+    plan = C.plan_wire_pins(copy, [{"reference": "R2", "pin": "2"}], "N", "auto", 2.54, p)
+    assert not plan.refused, plan.lines
+    schematic._splice_plan(copy, plan, "N")
+    kept.retake(copy)
+    built = C.Model(copy, p)
+    assert _view(kept) == _view(built)
+    assert _nets(kept) == _nets(built)
+    # the premise, so that the equality above is not between two untouched models: the crossing
+    # wire in two pieces, the route's two legs and the stub; the junction; Net-(R1-2) and N
+    kinds = [row[1] for row in _view(built)]
+    assert (kinds.count("wire"), kinds.count("junction"), kinds.count("label")) == (5, 1, 2)
+    assert len(before) < len(kinds)
+
+
+def test_a_model_is_not_retaken_from_another_parse(tmp_path):
+    """The pins a model keeps belong to the symbol nodes it was built from, so another parse of
+    the same file is refused, with the model as it was."""
+    p, _at1, _at2 = _two_resistors(tmp_path)
+    kept = C.Model(_root(p))
+    before = _view(kept)
+    with pytest.raises(ValueError):
+        kept.retake(_root(p))
+    assert _view(kept) == before
+
+
 # ---------------------------------------------------------------------------------------------
 # The byte pre-filter: which sheets a reference check must parse
 # ---------------------------------------------------------------------------------------------

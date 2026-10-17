@@ -387,3 +387,48 @@ Each slice appends an entry when it lands.
   horizontal leg from Q3:3, Q9:2 and Q12:3 runs over the part's own Q3:2, Q9:3 and Q12:2, so
   those three repairs name the anchor's pin first; the sheet's repairs are otherwise those of the
   entry above.
+
+- 2026-10-17, step 8c review 2: the repairs of one report were each checked on the sheet as it
+  stands, and are made one after another. validate_hierarchy names a repair for every stray wire
+  end and the verification skill has the agent make each as given, so a call that is clear alone
+  could run through what an earlier one writes: connect_pins turns at a corner of its own and
+  writes a junction wherever a wire passes through it, which joins the two nets. With Q1:1 routed
+  to R1:1 on the global label GA and Q2:1 to R2:1 on GB, the first repair draws a leg along y
+  96.52 and the call named for Q2:1 turned at (60.96, 96.52), on it: made in the report's order,
+  kicad-cli 9.0.8 read one net, GA with GB, and validate_hierarchy then returned ok. The contract
+  ("nothing else changes", two named nets never joined) held per call and not for the set. Two
+  more routes to the same harm, measured the same day: Q1:1 and Q2:1 on one net, with routes to
+  R1:1 on YY and R2:1 on ZZ (one net holding both names), and a wire_pins_to_net stub the first
+  repair writes under the corner of the next call's route (Q3:1 on the net of Q2:1 and R2:1).
+  The report now checks the repairs of a file in its order, each on the sheet as the ones above it
+  leave it. They are made on a copy of the parsed sheet in memory, by the tools' own code
+  (`_connect_pins_edit`, `_splice_plan`), with the connectivity model kept in step by
+  `Model.retake`, as wire_pins_to_net already adds each planned item to its model before the next
+  pin (H-C15); the file is never written. On the first sheet the second repair is therefore
+  connect_pins with R2:1 first, which turns at (20.32, 71.12) and is clear after the first. Where
+  no call is clear after the repairs above it but one is alone, the issue carries a note that says
+  so, and that validate_hierarchy run again judges it on the sheet it then finds; so does a
+  wire_pins_to_net plan the earlier repairs make impossible, for instance by a name they put on
+  its net (the tool would refuse it at its own call and write nothing, but the report had named
+  it as checked). A name the first repair writes counts, connect_pins' Net-(REF-PIN) label
+  included, as it does when the second call is checked on the real sheet; kicad-cli reads no harm
+  from that label alone (measured 2026-10-17), so for that case the report follows the existing
+  rule and no netlist judges it.
+
+  Generated layouts (`_dense_layout` in test_ladder_r3_mirrored_pins.py: two to four mirrored
+  transistors with strays, some pins tied together) found one more way for repairs to join two
+  named nets, which a repair alone shares: two stray routes laid collinearly over each other are
+  one net in the GUI's reading and two in kicad-cli 9's, so the possible view puts the pin and
+  the pin it is tied to in one component and the rule between components never fired.
+  check_connect_pins now also refuses a pair in one possible component that holds two names
+  when the narrow view does not join them. Over seeds 0 to 1599, 1,166 of which held two
+  repairs or more at the commit before, the report made in its order joined two named nets in 9
+  of them and named a call the tool then refused in 25; now in none, and the report run again
+  after each real repair names the same calls (measured 2026-10-17). Seven pinned seeds, four of
+  them judged by kicad-cli, and a small generated set run on every push; a larger generated set,
+  judged by kicad-cli, runs nightly.
+  The report is right made in its order; made out of it, or after a call that failed, it must be
+  run again, which the verification skill and the tool's description now say. A repair the ones
+  above it make unnecessary is still named, harmlessly, and the report run again drops it. The
+  check costs a copy of the edit and a model update per repair: 90 stray routes take 3.7 s where
+  they took 1.3 s, 180 take 14.3 s where they took 4.2 s (measured 2026-10-17).

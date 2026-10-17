@@ -1357,6 +1357,76 @@ def _cuts_inside_lines(root, path: str) -> list[dict]:
     return issues
 
 
+class _Repairs:
+    """The repairs one sheet's report names, made as they are named on a copy of the sheet in
+    memory, so that each is checked on the sheet as the ones before it leave it. The file is
+    never written.
+
+    A call that is clear on the sheet alone can run through what an earlier call of the report
+    writes: connect_pins turns at a corner of its own, writes a junction there if a wire passes
+    through it (_join_points), which joins two nets, and checks nothing itself. wire_pins_to_net
+    avoids this inside one call by adding each planned item to its model before the next pin
+    (H-C15); this does the same across the calls of a report."""
+
+    def __init__(self, source, path: str):
+        self.source = source  # the sheet as parsed from the file, never edited
+        self.path = path
+        self.made = 0  # repairs made on the copy so far
+        self._root = None
+        self._model: _connectivity.Model | None = None
+        self._alone: _connectivity.Model | None = None
+
+    @property
+    def root(self):
+        """The sheet as the repairs made so far leave it: a copy of the parsed sheet, taken when
+        first asked for."""
+        if self._root is None:
+            self._root = self.source.copy()
+        return self._root
+
+    def model(self) -> _connectivity.Model:
+        """The model of that sheet with its project's hierarchy, which the checks of the
+        connect_pins repairs ask. Built once and kept in step with the copy, since building it
+        is most of what a check costs (_connectivity.Model.retake)."""
+        if self._model is None:
+            self._model = _connectivity.Model(self.root, self.path)
+        return self._model
+
+    def plan_waits(self, pins: list[dict], text: str) -> bool:
+        """Whether wire_pins_to_net's plan, refused on the copy, is refused only because of the
+        repairs made on it: it is clear on the sheet as parsed."""
+        if not self.made:
+            return False
+        plan = _connectivity.plan_wire_pins(self.source, pins, text, "auto", 2.54, self.path)
+        return not plan.refused
+
+    def calls_wait(self, calls, through: frozenset) -> bool:
+        """The same for connect_pins calls, ((ref1, pin1, at1), (ref2, pin2, at2)) each, all
+        refused on the copy: whether one is clear on the sheet as parsed."""
+        if not self.made:
+            return False
+        if self._alone is None:
+            self._alone = _connectivity.Model(self.source, self.path)
+        return any(
+            _connectivity.check_connect_pins(self._alone, r1, p1, at1, r2, p2, at2, through) is None
+            for (r1, p1, at1), (r2, p2, at2) in calls
+        )
+
+    def make(self, repair: dict, plan: _connectivity.WirePlan | None = None) -> None:
+        """Make a repair on the copy, as the tool it names makes it on the file. *plan* is the
+        plan of a wire_pins_to_net repair, drawn on the copy."""
+        args = repair["arguments"]
+        if repair["tool"] == "connect_pins":
+            ref1, pin1, ref2, pin2 = args["ref1"], args["pin1"], args["ref2"], args["pin2"]
+            _connect_pins_edit(self.root, ref1, pin1, ref2, pin2, self.model())
+        else:
+            assert plan is not None
+            _splice_plan(self.root, plan, args["label_text"])
+        if self._model is not None:
+            self._model.retake(self.root)
+        self.made += 1
+
+
 def _off_pin_items(root, path: str) -> list[dict]:
     """validate_hierarchy's issues for the no-connect flags (no_connect_off_pin) and wire ends
     (wire_end_off_pin) that releases before 0.21.0 left on one parsed sheet where they put a
@@ -1384,7 +1454,13 @@ def _off_pin_items(root, path: str) -> list[dict]:
     it ends at, if it finds both pins where KiCad draws them and
     _connectivity.check_connect_pins finds nothing against the call: connect_pins asks none of
     what wire_pins_to_net asks, so the report asks it. Else a note giving the reason. A sheet
-    the model refuses gets nothing: KiCad cannot load it either."""
+    the model refuses gets nothing: KiCad cannot load it either.
+
+    The repairs are checked in the order of the report, each on the sheet as the ones before it
+    leave it (_Repairs): a call that is clear alone can run through what an earlier one writes,
+    and connect_pins turns where it likes and joins whatever passes through its corner. The
+    report is right made in its order, with validate_hierarchy run again before any call made
+    out of it."""
     if not any(_connectivity.effective_mirror(s) for s in root.find_all("symbol")):
         return []
     try:
@@ -1393,16 +1469,7 @@ def _off_pin_items(root, path: str) -> list[dict]:
         return []
     model.ensure()
     drawn = {(it.x, it.y) for it in model.items if it.kind == "pin"}
-    held: list[_connectivity.Model] = []
-
-    def with_hierarchy() -> _connectivity.Model:
-        """The sheet's model with its project's hierarchy, which the checks of the connect_pins
-        repairs ask, built for the first and kept for the rest (building it is most of their
-        cost)."""
-        if not held:
-            held.append(_connectivity.Model(root, path))
-        return held[0]
-
+    repairs = _Repairs(root, path)
     issues = []
     for s in model.syms:
         if s.lib is None or s.derived or _connectivity.effective_mirror(s.node) is None:
@@ -1417,11 +1484,11 @@ def _off_pin_items(root, path: str) -> list[dict]:
                 end = _connectivity.pin_end(pos, t, pin, s.ref)[:2]
                 at = _connectivity.pin_end(old_pos, old_t, pin, s.ref)[:2]
                 if at != end and at not in drawn:
-                    issues += _left_at(model, root, s, pin, at, end, path, with_hierarchy)
+                    issues += _left_at(model, root, s, pin, at, end, path, repairs)
     return issues
 
 
-def _left_at(model, root, s, pin, at: Point, end: Point, path: str, with_hierarchy) -> list[dict]:
+def _left_at(model, root, s, pin, at: Point, end: Point, path: str, repairs) -> list[dict]:
     """_off_pin_items' issues for one pin of placed symbol s: what lies at the point at, where
     KiCad draws no pin, for the pin KiCad draws at end."""
     num = _connectivity._child_text(pin, "number")
@@ -1486,7 +1553,7 @@ def _left_at(model, root, s, pin, at: Point, end: Point, path: str, with_hierarc
         if others or joined(w):
             continue
         issue = {"type": "wire_end_off_pin", **base, "wire": _stretch((w.x, w.y), (w.x2, w.y2))}
-        repair, why = _join_repair(model, root, s.ref, num, w, at, end, path, with_hierarchy)
+        repair, why = _join_repair(model, root, s.ref, num, w, at, end, path, repairs)
         if repair is not None:
             issue["repair"] = repair
         else:
@@ -1508,11 +1575,10 @@ def _get_pin_or_none(root, reference: str, pin_name: str) -> Point | None:
     return _req_point(x, y)
 
 
-def _join_repair(
-    model, root, ref: str, num: str, w, at: Point, end: Point, path: str, with_hierarchy
-):
+def _join_repair(model, root, ref: str, num: str, w, at: Point, end: Point, path: str, repairs):
     """(repair, None) joining pin num of ref to the net of wire w, whose end at misses it; or
-    (None, why not). See _off_pin_items."""
+    (None, why not). A repair returned has been made on *repairs*' copy of the sheet, where the
+    next is checked. See _off_pin_items."""
     labels = (
         it
         for its in model.narrow_names(w).values()
@@ -1531,18 +1597,25 @@ def _join_repair(
     if len(usable) == 1:
         (text,) = usable.values()
         pins = [{"reference": ref, "pin": num}]
-        plan = _connectivity.plan_wire_pins(root, pins, text, "auto", 2.54, path)
+        plan = _connectivity.plan_wire_pins(repairs.root, pins, text, "auto", 2.54, path)
         if not plan.refused:
             arguments = {"pins": pins, "label_text": text, "schematic_path": path}
-            return {"tool": "wire_pins_to_net", "arguments": arguments}, None
+            repair = {"tool": "wire_pins_to_net", "arguments": arguments}
+            repairs.make(repair, plan)
+            return repair, None
         # The plan's refusal is the answer. This used to go on to connect_pins, which asks
         # none of what the plan just asked: with Q1:1 on M and the wire on N it joined the two
         # nets, and validate_hierarchy then reported ok.
-        return None, (
-            f"wire_pins_to_net would put the pin on {text!r}, the wire's net, but refuses: "
-            + "; ".join(plan.lines)
-            + f" Act on that, or wire the pin as meant; {remove}"
-        )
+        head = f"wire_pins_to_net would put the pin on {text!r}, the wire's net"
+        lines = "; ".join(plan.lines)
+        if repairs.plan_waits(pins, text):
+            return None, (
+                f"{head}. On the sheet as it stands it would not refuse, but on the sheet the"
+                f" repairs above it in this report leave it does: {lines}"
+                f" Make those repairs, then run validate_hierarchy again, or wire the pin as"
+                f" meant; {remove}"
+            )
+        return None, f"{head}, but refuses: {lines} Act on that, or wire the pin as meant; {remove}"
     far, run = _run_end(model, w, at)
     if far is None or not (far.ref and far.num):
         named = "several local label names, not one" if usable else "no local label"
@@ -1566,17 +1639,26 @@ def _join_repair(
     calls = [(here, there)] if straight else [(here, there), (there, here)]
     refusals = []
     for (r1, p1, at1), (r2, p2, at2) in calls:
-        why = _connectivity.check_connect_pins(with_hierarchy(), r1, p1, at1, r2, p2, at2, through)
+        why = _connectivity.check_connect_pins(repairs.model(), r1, p1, at1, r2, p2, at2, through)
         if why is None:
             arguments = {"ref1": r1, "pin1": p1, "ref2": r2, "pin2": p2, "schematic_path": path}
-            return {"tool": "connect_pins", "arguments": arguments}, None
+            repair = {"tool": "connect_pins", "arguments": arguments}
+            repairs.make(repair)
+            return repair, None
         refusals.append(why)
         if not set(why.codes) <= {"touch", "netclass"}:
             break  # only the route differs between the two calls; this refusal is not about it
     reasons = " ".join(f"{_connectivity.tags(r.codes)} {r.text}" for r in refusals)
+    head = f"connect_pins would join the pin to {far.ref}:{far.num}, the pin its wires run to, but"
+    if repairs.calls_wait(calls, through):
+        return None, (
+            f"{head} it checks nothing itself. Checked on the sheet as it stands the call is"
+            " clear, but not on the sheet the repairs above it in this report leave, where it is"
+            f" refused: {reasons} Make those repairs, then run validate_hierarchy again, or wire"
+            f" the pin as meant; {remove}"
+        )
     return None, (
-        f"connect_pins would join the pin to {far.ref}:{far.num}, the pin its wires run to, but"
-        f" it checks nothing itself, and checked here the call is refused: {reasons}"
+        f"{head} it checks nothing itself, and checked here the call is refused: {reasons}"
         f" Act on that, or wire the pin as meant; {remove}"
     )
 
@@ -2845,6 +2927,13 @@ def _wire_pins(
         raise _WireRefused(plan)
     if not plan.wires and not plan.labels:
         return plan
+    _splice_plan(root, plan, label_text)
+    _atomic_write(schematic_path, _cst.serialize(tree))
+    return plan
+
+
+def _splice_plan(root, plan: _connectivity.WirePlan, label_text: str) -> None:
+    """The wires and labels of wire_pins_to_net's plan, spliced onto a parsed sheet."""
     for a, b in plan.wires:
         node = _WIRE_TPL.copy()
         for xy, (x, y) in zip(node.find("pts").find_all("xy"), (a, b)):
@@ -2861,8 +2950,6 @@ def _wire_pins(
         at.atoms[3].set_text(str(rot))
         node.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(root, "label", node)
-    _atomic_write(schematic_path, _cst.serialize(tree))
-    return plan
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -2890,6 +2977,21 @@ def connect_pins(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
+    result = _connect_pins_edit(root, ref1, pin1, ref2, pin2)
+    _atomic_write(schematic_path, _cst.serialize(tree))
+    return result
+
+
+def _connect_pins_edit(
+    root, ref1: str, pin1: str, ref2: str, pin2: str, kept: _connectivity.Model | None = None
+) -> str:
+    """connect_pins' edit of a parsed sheet, without the file: the route, its junctions and
+    splits, and the Net-(REF-PIN) label where the net has none. Returns the result text.
+
+    *kept* is a model of the sheet that the caller keeps in step with *root*, a copy it edits in
+    memory (_Repairs): the route's wires are added to it here, where the call otherwise builds a
+    model of the sheet for itself, which is most of what a call costs on a large sheet. The
+    caller brings it up to date with the rest of the edit."""
     x1, y1, _ = _get_pin_pos_cst(root, ref1, pin1)
     x2, y2, _ = _get_pin_pos_cst(root, ref2, pin2)
     if x1 == x2 or y1 == y2:
@@ -2905,8 +3007,13 @@ def connect_pins(
     new_points = [(x1, y1), (x2, y2)]
     if x1 != x2 and y1 != y2:
         new_points.append((x2, y1))  # L-shape corner
-    m = _model(root)
     legs = [(_req_point(s[0], s[1]), _req_point(s[2], s[3])) for s in segments]
+    if kept is None:
+        m = _model(root)
+    else:
+        m = kept
+        for a, b in legs:
+            m.add(_connectivity.Item("wire", *a, *b))
     # A junction or a bus entry end already on a leg is a point the leg is split at too: KiCad
     # 9's cleanup splits every wire through a junction and through both ends of every bus entry
     # (SCHEMATIC::BreakSegmentsOnJunctions, schematic.cpp:1090-1113 at 9.0.8), which kicad-cli
@@ -2966,8 +3073,6 @@ def connect_pins(
         _fill_at(node, round(x1, 4), round(y1, 4), 0)
         node.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(root, "label", node)
-
-    _atomic_write(schematic_path, _cst.serialize(tree))
 
     n = len(segments)
     lines = [f"Connected {ref1}:{pin1} -> {ref2}:{pin2} via {n} wire segment{'s' if n > 1 else ''}"]

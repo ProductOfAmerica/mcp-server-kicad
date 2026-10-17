@@ -156,8 +156,12 @@ what the wire reaches, and leaves the old wire where it is (if that
 wire then dangles, `run_erc` lists it and `remove_wire` removes it).
 `validate_hierarchy` checked that call before naming it; `connect_pins`
 checks nothing itself, so for it the report asks what `wire_pins_to_net`
-asks of a pin. A flag always carries a `note` (below), since no tool
-removes a flag by its position.
+asks of a pin. The report checked each repair on the sheet as the ones
+above it leave it, because a call that is clear alone can run through
+what an earlier one writes and join two nets: make them in the order
+the report lists them. If you skip one, make one out of order, or one
+fails, run `validate_hierarchy` again before the next. A flag always
+carries a `note` (below), since no tool removes a flag by its position.
 
 **If an issue carries a `note` and no `repair`:** no tool call fixes it,
 and the note says why. Do not work around it with other tools (removing,
@@ -183,7 +187,11 @@ the user and wait, as in stuck escalation below:
   touch another part). Do not make the refused call, or `connect_pins`
   or `add_wires` in its place: they skip the check that refused it, and
   a join they make can short two named nets with `validate_hierarchy`
-  then reporting ok. The user decides how the pin is wired.
+  then reporting ok. The user decides how the pin is wired. The one
+  exception is a note that says the call is clear on the sheet as it
+  stands and refused after "the repairs above it in this report": make
+  those repairs, run `validate_hierarchy` again, and act on what it then
+  says of this issue: a repair to make, or a plain refusal for the user.
 After the user acts, re-run `validate_hierarchy`.
 
 **Debug cross-sheet nets:** Use `trace_hierarchical_net` to follow a net

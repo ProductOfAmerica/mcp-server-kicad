@@ -78,8 +78,8 @@ about how the plan was created. Read the plan, execute the plan.
     for orphaned labels, direction mismatches, duplicate refs,
     junctions and bus entry ends left inside wires, and flags and wire
     ends left off the pins of mirrored, rotated parts; for each issue
-    with a `repair`, make that call (one with a `note` instead: see
-    the verification skill).
+    with a `repair`, make that call, in the order listed (one with a
+    `note` instead: see the verification skill).
 12. Run ERC
 
 ### Modification Mode (existing schematics)

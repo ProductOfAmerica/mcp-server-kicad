@@ -1247,6 +1247,30 @@ class Model:
         self._dirty = True
         return it
 
+    def retake(self, root) -> None:
+        """Read *root* again for everything but its symbols: lines, junctions, flags, labels,
+        bus entries, sheets and rule areas. *root* is the one this model was built from, edited
+        in place since; the model then holds what Model(root, path) would, the same items in the
+        same order, for a fraction of the cost, since the symbols are most of it. A caller that
+        makes calls on a copy of a sheet in memory keeps its model in step with the copy this
+        way (schematic._Repairs)."""
+        pins: dict[int, list[Item]] = {}
+        for it in self.items:
+            if it.kind == "pin" and it.sym is not None:
+                pins.setdefault(id(it.sym.node), []).append(it)
+        if not pins.keys() <= {id(ch) for ch in root.lists if ch.head == "symbol"}:
+            raise ValueError("retake: root is not the root this model was built from")
+        self.items = []
+        self.areas = []
+        for ch in root.lists:
+            if ch.head == "symbol":
+                for it in pins.get(id(ch), ()):
+                    it.id = len(self.items)
+                    self.items.append(it)
+            else:
+                self._take(ch)
+        self._dirty = True
+
     def _take(self, ch) -> None:
         h = ch.head
         if h in ("wire", "bus", "polyline"):
@@ -2580,7 +2604,9 @@ def check_connect_pins(
     """Why connect_pins(ref1, pin1, ref2, pin2) must not be made on the sheet *m* models, or
     None. Writes nothing, and adds nothing to *m*, so a caller with several calls to check
     builds it once. *m* is Model(root, path): given the file's path it reads the project's other
-    sheets, so a reference another sheet shares is found.
+    sheets, so a reference another sheet shares is found. It models the sheet as the call will
+    find it: for validate_hierarchy's report, a copy with the repairs above this one made
+    (schematic._Repairs), since a call clear alone can run through what an earlier one writes.
 
     connect_pins asks none of the questions wire_pins_to_net asks. It draws its route, one
     straight wire when the pins share an x or a y and else a horizontal leg from pin 1 and a
@@ -2590,7 +2616,8 @@ def check_connect_pins(
     all known; each pin is one pad drawn once, at the point given, which a duplicate reference
     in the hierarchy and a unit that differs per instance rule out; neither is a no-connect
     type or flagged, and neither net reaches what this model does not follow; the two nets do
-    not both carry a name, since joining them would join two named nets; and the route
+    not both carry a name, since joining them would join two named nets, nor does one possible
+    net that the narrow view does not join carry two names; and the route
     touches only the two pins' own points and joins nets of one net class set, as a stub of
     wire_pins_to_net must. *at1* and *at2* are the points connect_pins finds the pins at.
 
@@ -2618,6 +2645,22 @@ def check_connect_pins(
             f"{ta} is possibly on {_names_text(names_a)} and {tb} on {_names_text(names_b)};"
             " connecting them could merge those nets, and two named nets are never joined here."
             " Remedy: decide which net the pin belongs on; otherwise stop and report.",
+        )
+    # One possible component can hold two nets that a reader keeps apart (wires laid collinearly
+    # over each other, which the GUI merges on load and kicad-cli 9 does not), each with a name.
+    # The rule above never sees them, being between components; where the narrow view does not
+    # join the pins, the call would join those names for a reader that keeps the nets apart.
+    if (
+        cm.uf.find(a.id) == cm.uf.find(b.id)
+        and len({name for _it, name in names_a}) > 1
+        and m._C.find(a.id) != m._C.find(b.id)
+    ):
+        return Refusal(
+            "names",
+            f"{ta} and {tb} are possibly on one net that carries {_names_text(names_a)}, which"
+            " not every reader joins; connecting them joins those names for a reader that does"
+            " not, and two named nets are never joined here. Remedy: decide which net the pin"
+            " belongs on; otherwise stop and report.",
         )
     corner = (at2[0], at1[1])
     straight = at1[0] == at2[0] or at1[1] == at2[1]

@@ -188,8 +188,8 @@ These are the ONLY kicad MCP tools you should use during planning
   annotation state. If it reports `duplicate_ref` or `unannotated_ref`,
   the plan should include an annotation step; for `junction_inside_wire`,
   `bus_entry_inside_wire` and `wire_end_off_pin`, the repair call each one
-  names (an issue with a `note` instead, such as every `no_connect_off_pin`,
-  needs the user: see the verification skill).
+  names, in the order listed (an issue with a `note` instead, such as every
+  `no_connect_off_pin`, needs the user: see the verification skill).
 - `list_cross_sheet_nets` — list all nets crossing sheet boundaries
 - `get_symbol_instances` — list symbol instances from root schematic
 - `trace_hierarchical_net` — trace a net across the hierarchy to understand

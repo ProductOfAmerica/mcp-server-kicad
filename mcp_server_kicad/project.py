@@ -859,8 +859,15 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     nothing the model does not follow on either net, a reference no other part answers to, a
     route that touches only the two pins (tried with either pin first), one net class set. A
     refusal is the answer: the issue carries a "note" that gives it, never the other call in its
-    place, and a "note" also where what the wire was meant to join is not known. Nothing is
-    written.
+    place, and a "note" also where what the wire was meant to join is not known.
+
+    The repairs of a file are checked in the order of the report, each on the sheet as the ones
+    above it leave it: a call that is clear alone can run through what an earlier one writes, and
+    connect_pins joins whatever passes through the corner of its route. So make them in the order
+    listed, and run this again before any call made out of it or after one that failed. A "note"
+    that says its call is clear on the sheet as it stands but refused once the repairs above it
+    are made is the exception to a note being final: make those, then run this again, which
+    judges the wire on the sheet it then finds. Nothing is written.
 
     Args:
         schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.

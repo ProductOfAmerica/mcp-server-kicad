@@ -24,12 +24,17 @@ kicad-cli 9's netlist of a copy stripped to its symbols, with a label at each po
 question, which names the pins KiCad draws there (_pins_kicad_draws_at); kicad-cli's reading
 of each pin after its repair; for a repair that joins two pins, kicad-cli's verdict on what the
 connect_pins call the report used to name does (_HAZARDS) and geom_judge's on whether a route
-runs over another pin end; and the demo sheets KiCad ships.
+runs over another pin end; for the repairs of one report made in its order, kicad-cli's netlist
+after them, and for the copy of the sheet the report checks them on, the tools' own writes on
+the file (the report run again between real repairs; the wires and junctions the calls leave on
+the file against those on the copy, read with KiCad's lexer) and their own refusals; and the demo
+sheets KiCad ships.
 """
 
 from __future__ import annotations
 
 import os
+import random
 import shutil
 import tempfile
 import uuid
@@ -64,7 +69,8 @@ from routing_fixtures import (
     wire,
 )
 
-from mcp_server_kicad import project, schematic
+from mcp_server_kicad import _connectivity as C
+from mcp_server_kicad import _cst, project, schematic
 
 FIXTURE = Path(__file__).parent / "fixtures" / "mirrored_0_20_1.kicad_sch"
 NEW = ("no_connect_off_pin", "wire_end_off_pin")
@@ -1070,6 +1076,581 @@ def test_a_pin_connect_pins_would_take_for_another_is_a_note(tmp_path):
     wire(p, 45.72, 81.28, 45.72, 96.52)
     (issue,) = _new_issues(p)
     assert "repair" not in issue and "connect_pins would not find Q1:1 and U1:1" in issue["note"]
+
+
+# ---------------------------------------------------------------------------------------------
+# The repairs of one report are made in its order
+# ---------------------------------------------------------------------------------------------
+
+
+def _stray_route(
+    p: str, q: str, q_at: Pt, state: tuple[int, str], r: str, r_at: Pt, r_rot: int = 0
+) -> tuple[Pt, Pt, Pt]:
+    """Q_NPN_BCE *q* in *state* at *q_at*, R *r* (rotated *r_rot*) at *r_at*, and the route
+    0.20.1's connect_pins(q, 1, r, 1) wrote: from the point it gave Q:1, horizontal first, to
+    R:1. Returns, in mm, that old point, KiCad's end of Q:1 and R:1's end."""
+    place(p, "Q_NPN_BCE", q, *q_at, rot=state[0], mirror=state[1])
+    place(p, "R", r, *r_at, rot=r_rot)
+    dx, dy = OLD["Q_NPN_BCE"][state][0]
+    ex, ey, _out = ORIENTED["Q_NPN_BCE"][state][0]
+    fx, fy, _out = ORIENTED["R"][(r_rot, "")][0]
+    old = (q_at[0] + dx, q_at[1] + dy)
+    end = (q_at[0] + ex, q_at[1] + ey)
+    far = (r_at[0] + fx, r_at[1] + fy)
+    if old[0] != far[0]:
+        wire(p, *old, far[0], old[1])
+    wire(p, far[0], old[1], *far)
+    return old, end, far
+
+
+class _Routes(NamedTuple):
+    """The path of _two_routes' sheet and its points in mm: for Q1 and Q2, the old point of pin 1,
+    KiCad's end of it, and the end of the pin of R1 or R2 its route runs to."""
+
+    path: str
+    old1: Pt
+    end1: Pt
+    far1: Pt
+    old2: Pt
+    end2: Pt
+    far2: Pt
+
+
+def _two_routes(tmp_path, name: str, labelled: bool = False) -> _Routes:
+    """Two routes 0.20.1 wrote, each to a pin on a global label of its own. Q1 (Q_NPN_BCE at 90
+    with mirror x) at (101.6, 101.6) to R1:1, on GA; Q2 (at 90 with mirror y) at (20.32, 91.44)
+    to R2:1, on GB, R2 rotated 180. Q1's issue comes first. connect_pins(Q1, 1, R1, 1) turns at
+    (40.64, 96.52) and runs along y 96.52 from x 101.6, and connect_pins(Q2, 1, R2, 1) turns at
+    (60.96, 96.52), on that leg. *labelled* adds the Net-(REF-PIN) label 0.20.1's connect_pins
+    put at each old point."""
+    p = fresh(tmp_path, name)
+    old1, end1, far1 = _stray_route(p, "Q1", (101.6, 101.6), (90, "x"), "R1", (40.64, 120.65))
+    old2, end2, far2 = _stray_route(p, "Q2", (20.32, 91.44), (90, "y"), "R2", (60.96, 67.31), 180)
+    if labelled:
+        label(p, "Net-(Q1-1)", *old1)
+        label(p, "Net-(Q2-1)", *old2)
+    wire(p, *far1, far1[0] - 2.54, far1[1])
+    label(p, "GA", far1[0] - 2.54, far1[1], rot=180, kind="global_label")
+    wire(p, *far2, far2[0] + 2.54, far2[1])
+    label(p, "GB", far2[0] + 2.54, far2[1], rot=0, kind="global_label")
+    return _Routes(p, old1, end1, far1, old2, end2, far2)
+
+
+_PAIRS = [{("Q1", "1"), ("R1", "1")}, {("Q2", "1"), ("R2", "1")}]
+
+
+def _make(issue: dict) -> None:
+    """Make the repair an issue names, as given."""
+    getattr(schematic, issue["repair"]["tool"])(**issue["repair"]["arguments"])
+
+
+def _call(issue: dict) -> tuple:
+    """The call a repair names, without the path: (tool, its other arguments in order)."""
+    args = {k: v for k, v in issue["repair"]["arguments"].items() if k != "schematic_path"}
+    return issue["repair"]["tool"], tuple(args.values())
+
+
+@requires_cli
+def test_the_repairs_of_a_report_made_in_its_order_join_nothing_else(tmp_path):
+    """Two stray routes whose repairs meet. Each call is clear on the sheet alone, but the
+    first draws a leg along y 96.52 and the call named for Q2:1 turned at (60.96, 96.52), on
+    that leg, where connect_pins writes a junction: made in the report's order, kicad-cli 9.0.8
+    read GA and GB as one net and validate_hierarchy then returned ok (measured 2026-10-17).
+    The report checks each repair on the sheet as the ones before it leave it, so made in its
+    order they deliver both joins and nothing else."""
+    p = _two_routes(tmp_path, "order").path
+    before = nets(p)
+    issues = _new_issues(p)
+    assert [i["type"] for i in issues] == ["wire_end_off_pin"] * 2, issues
+    assert all("repair" in i for i in issues), issues
+    for issue in issues:
+        _make(issue)
+    verdict = judge(before, nets(p), _PAIRS)
+    assert verdict.delivered and not verdict.wrong, verdict.problems()
+    assert _new_issues(p) == []
+
+
+@requires_cli
+def test_a_route_the_first_repair_blocks_is_left_for_the_user(tmp_path):
+    """The same routes with a Net-(REF-PIN) label at each old point, where 0.20.1's connect_pins
+    wrote one when the net had no label. Q2:1's label lies on the vertical leg of the call with
+    R2:1 first, so once the first repair is made neither call for Q2:1 is clear. The report
+    names the first repair and a note for the second; made, the sheet joins Q1:1 to R1:1 and
+    nothing else, where the call the report used to name for Q2:1 joined GA and GB."""
+    p = _two_routes(tmp_path, "held", labelled=True).path
+    before = nets(p)
+    first, second = _new_issues(p)
+    assert "repair" in first and "repair" not in second, (first, second)
+    _make(first)
+    verdict = judge(before, nets(p), _PAIRS[:1])
+    assert verdict.delivered and not verdict.wrong, verdict.problems()
+
+
+def test_the_second_repair_is_the_call_that_is_clear_once_the_first_is_made(tmp_path):
+    """The call with Q2:1 first is clear on the sheet as it stands and refused once the first
+    repair is made, since its route turns on that repair's leg. The report names the other
+    call, with R2:1 first, which turns at (20.32, 71.12) and is clear after the first."""
+    r = _two_routes(tmp_path, "second")
+    p = r.path
+    corner = (r.far2[0], r.old2[1])
+    run = [(r.old2, corner), (corner, r.far2)]  # Q2:1's stray wires, which the call runs over
+    through = frozenset((S.iu_point(a), S.iu_point(b)) for a, b in run)
+    first, second = _new_issues(p)
+    assert _call(first) == ("connect_pins", ("Q1", "1", "R1", "1"))
+    assert _call(second) == ("connect_pins", ("R2", "1", "Q2", "1"))
+
+    def q2_first() -> C.Refusal | None:
+        root = _cst.parse(Path(p).read_bytes()).lists[0]
+        model = C.Model(root, p)
+        at1, at2 = S.iu_point(r.end2), S.iu_point(r.far2)
+        return C.check_connect_pins(model, "Q2", "1", at1, "R2", "1", at2, through)
+
+    assert q2_first() is None
+    _make(first)
+    refused = q2_first()
+    assert refused is not None and refused.codes == ("touch",), refused
+    assert "(101.6, 96.52)" in refused.text, refused.text  # the first repair's leg
+
+
+def test_a_repair_only_the_earlier_ones_refuse_is_a_note_that_says_so(tmp_path):
+    """R3's pin 1 sits at (20.32, 71.12), where the call with R2:1 first would turn, so once
+    the first repair is made neither call for Q2:1 is clear; alone the call with Q2:1 first is.
+    The note says that it is the repairs above that refuse, and to run the report again. Run
+    again after the first repair, the note is the plain refusal."""
+    r = _two_routes(tmp_path, "later")
+    p = r.path
+    place(p, "R", "R3", r.end2[0], r.far2[1] + 3.81)
+    first, second = _new_issues(p)
+    assert "repair" in first and "repair" not in second, (first, second)
+    assert second["note"].count("[touch]") == 2, second["note"]
+    assert "the repairs above it in this report" in second["note"], second["note"]
+    _make(first)
+    (again,) = _new_issues(p)
+    assert "repair" not in again and again["note"].count("[touch]") == 2, again
+    assert "the repairs above it in this report" not in again["note"], again["note"]
+
+
+def test_the_repairs_of_a_sub_sheet_are_checked_in_order_too(tmp_path):
+    """The routes of _two_routes on a sub-sheet of a project: the issues are on its own file, the
+    second repair is the call with R2:1 first as on a root, and both repairs, which name the
+    sub-sheet's file, clear the report from the root."""
+    d = tmp_path / "proj"
+    project.create_project(directory=str(d), name="proj")
+    child = d / "sub.kicad_sch"
+    shutil.copyfile(_two_routes(tmp_path, "sub").path, child)
+    project.add_hierarchical_sheet(str(d / "proj.kicad_sch"), "Sub", str(child), [])
+    first, second = _new_issues(d / "proj.kicad_sch")
+    assert {first["file"], second["file"]} == {str(child)}
+    assert _call(first) == ("connect_pins", ("Q1", "1", "R1", "1"))
+    assert _call(second) == ("connect_pins", ("R2", "1", "Q2", "1"))
+    assert first["repair"]["arguments"]["schematic_path"] == str(child)
+    for issue in (first, second):
+        _make(issue)
+    assert _new_issues(d / "proj.kicad_sch") == []
+
+
+def _groups_apart(netlist, groups) -> list:
+    """The nets of a netlist that hold nodes of two of the groups."""
+    return [name for _c, name, _k, nodes, *_ in netlist if sum(bool(nodes & g) for g in groups) > 1]
+
+
+def _stub_on_a_corner(tmp_path, name: str) -> tuple[str, set, set]:
+    """Q3 (Q_NPN_BCE at 90 with mirror x) with the stub 0.20.1's wire_pins_to_net(Q3, 1, N) left
+    from the old point toward the origin, labelled N, and Q2's route to R2:1 on GB as in
+    _two_routes. Q3 comes first and puts the end of its pin 1, outward up, 1.27 mm below the
+    turn of connect_pins(Q2, 1, R2, 1) at (60.96, 96.52): the repair for Q3:1 is wire_pins_to_net
+    with N, whose new stub runs up from that end through the turn. Returns the path and the
+    joins asked for."""
+    ex, ey, _out = ORIENTED["Q_NPN_BCE"][(90, "x")][0]
+    dx, dy = OLD["Q_NPN_BCE"][(90, "x")][0]
+    origin3 = (60.96 - ex, 96.52 + 1.27 - ey)
+    old3 = (origin3[0] + dx, origin3[1] + dy)
+    p = fresh(tmp_path, name)
+    place(p, "Q_NPN_BCE", "Q3", *origin3, rot=90, mirror="x")
+    stub(p, *old3, 0, -2.54, "N")
+    _old2, _end2, far2 = _stray_route(p, "Q2", (20.32, 91.44), (90, "y"), "R2", (60.96, 67.31), 180)
+    wire(p, *far2, far2[0] + 2.54, far2[1])
+    label(p, "GB", far2[0] + 2.54, far2[1], rot=0, kind="global_label")
+    return p, {("Q3", "1")}, {("Q2", "1"), ("R2", "1")}
+
+
+@requires_cli
+def test_a_stub_the_first_repair_writes_is_seen_by_the_next(tmp_path):
+    """The first repair is wire_pins_to_net for Q3:1, N: its stub runs up from the pin's end
+    (60.96, 97.79) to (60.96, 95.25). The call named for Q2:1 turned at (60.96, 96.52), inside
+    that stub, where connect_pins writes a junction and splits the stub: made in the report's
+    order, kicad-cli 9.0.8 read Q3:1 on the net of Q2:1 and R2:1 (measured 2026-10-17). The
+    report names the call that does not turn there, and made in order the joins stay apart."""
+    p, only3, pair2 = _stub_on_a_corner(tmp_path, "mixed")
+    before = nets(p)
+    first, second = _new_issues(p)
+    assert first["repair"]["tool"] == "wire_pins_to_net", first
+    assert _call(second) == ("connect_pins", ("R2", "1", "Q2", "1")), second
+    for issue in (first, second):
+        _make(issue)
+    after = nets(p)
+    verdict = judge(before, after, [only3, pair2])
+    assert verdict.delivered and not verdict.wrong, verdict.problems()
+    assert _groups_apart(after, [only3, pair2]) == []
+    assert _new_issues(p) == []
+
+
+def _one_net_two_routes(tmp_path, name: str, first_named: bool) -> str:
+    """Q1 and Q2 (Q_NPN_BCE at 90 with mirror x) at (50.8, 101.6) and (101.6, 101.6), their pins 1
+    wired together at the ends KiCad draws, so one net, X. Each has the route 0.20.1 wrote from its
+    old point: Q1:1's to R1:1 at (38.1, 127), Q2:1's to R2:1 at (114.3, 127). R2:1 is on the
+    global label ZZ and, with *first_named*, R1:1 on YY. Alone, each repair joins X to a net
+    with one name at most; both made, X joins the two."""
+    p = fresh(tmp_path, name)
+    _old1, end1, far1 = _stray_route(p, "Q1", (50.8, 101.6), (90, "x"), "R1", (38.1, 127))
+    _old2, end2, far2 = _stray_route(p, "Q2", (101.6, 101.6), (90, "x"), "R2", (114.3, 127))
+    wire(p, *end1, *end2)
+    if first_named:
+        wire(p, *far1, far1[0] - 2.54, far1[1])
+        label(p, "YY", far1[0] - 2.54, far1[1], rot=180, kind="global_label")
+    wire(p, *far2, far2[0] + 2.54, far2[1])
+    label(p, "ZZ", far2[0] + 2.54, far2[1], rot=0, kind="global_label")
+    return p
+
+
+@requires_cli
+def test_a_name_the_first_repair_puts_on_the_net_counts_for_the_next(tmp_path):
+    """Q1:1 and Q2:1 are one net, and the routes 0.20.1 wrote from them lead to R1:1 on YY and
+    R2:1 on ZZ. Each repair joins that net to one name, and made together they join YY and ZZ:
+    kicad-cli 9.0.8 read one net holding both names (measured 2026-10-17). The report names the
+    first repair, and a note for the second that gives the [names] refusal it meets once the
+    first is made."""
+    p = _one_net_two_routes(tmp_path, "names", first_named=True)
+    before = nets(p)
+    first, second = _new_issues(p)
+    assert _call(first) == ("connect_pins", ("Q1", "1", "R1", "1")), first
+    assert "repair" not in second and second["note"].count("[names]") == 1, second
+    assert "the repairs above it in this report" in second["note"], second["note"]
+    _make(first)
+    verdict = judge(before, nets(p), [{("Q1", "1"), ("R1", "1"), ("Q2", "1")}])
+    assert not verdict.wrong, verdict.problems()
+
+
+def test_the_label_the_first_repair_writes_counts_as_a_name_for_the_next(tmp_path):
+    """The same net with no name on R1:1: connect_pins writes Net-(Q1-1), as 0.20.1's did, and
+    the report counts it a name, as it does when the second call is checked on the real sheet,
+    so the second repair, which would join X to ZZ, is refused ([names]) once the first is made.
+    kicad-cli reads no harm from that label alone (measured 2026-10-17): what is judged is that
+    the report and the real sheet agree."""
+    p = _one_net_two_routes(tmp_path, "label", first_named=False)
+    first, second = _new_issues(p)
+    assert "repair" in first and "repair" not in second, (first, second)
+    assert second["note"].count("[names]") == 1 and "Net-(Q1-1)" in second["note"], second
+    _make(first)
+    (again,) = _new_issues(p)
+    assert "repair" not in again and "Net-(Q1-1)" in again["note"], again
+    assert "the repairs above it in this report" not in again["note"], again["note"]
+
+
+def _route_and_stub_on_one_net(tmp_path, name: str) -> str:
+    """Q1 and Q2 (Q_NPN_BCE at 90 with mirror x) at (50.8, 101.6) and (101.6, 101.6), their pins 1
+    wired together at the ends KiCad draws, so one net, X. Q1:1 has the route 0.20.1 wrote to
+    R1:1 at (38.1, 127), on the global label M; Q2:1 has the stub its wire_pins_to_net(Q2, 1, N)
+    left, up from the old point (101.6, 106.68) and labelled N. Alone, the repair for Q2:1 puts X
+    on N; once the first repair has put X on M, it cannot."""
+    p = fresh(tmp_path, name)
+    _old1, end1, far1 = _stray_route(p, "Q1", (50.8, 101.6), (90, "x"), "R1", (38.1, 127))
+    place(p, "Q_NPN_BCE", "Q2", 101.6, 101.6, rot=90, mirror="x")
+    dx, dy = OLD["Q_NPN_BCE"][(90, "x")][0]
+    ex, ey, _out = ORIENTED["Q_NPN_BCE"][(90, "x")][0]
+    wire(p, *end1, 101.6 + ex, 101.6 + ey)
+    wire(p, *far1, far1[0] - 2.54, far1[1])
+    label(p, "M", far1[0] - 2.54, far1[1], rot=180, kind="global_label")
+    stub(p, 101.6 + dx, 101.6 + dy, 0, -2.54, "N")
+    return p
+
+
+def test_a_wire_pins_to_net_the_first_repair_makes_impossible_is_a_note(tmp_path):
+    """The first repair puts X on M, so the call that would put Q2:1 on N (its stub's label) is
+    one the tool itself refuses ([names]) once the first is made, and writes nothing. The report
+    does not name it, and its note says so; run again after the first repair, the note is the
+    plain refusal."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    p = _route_and_stub_on_one_net(tmp_path, "later_net")
+    first, second = _new_issues(p)
+    assert _call(first) == ("connect_pins", ("Q1", "1", "R1", "1")), first
+    assert "repair" not in second, second
+    assert second["note"].count("[names]") == 1, second["note"]
+    assert "the repairs above it in this report" in second["note"], second["note"]
+    _make(first)
+    before = Path(p).read_bytes()
+    with pytest.raises(ToolError, match=r"\[names\]"):
+        schematic.wire_pins_to_net([{"reference": "Q2", "pin": "1"}], "N", schematic_path=p)
+    assert Path(p).read_bytes() == before
+    (again,) = _new_issues(p)
+    assert "repair" not in again and again["note"].count("[names]") == 1, again
+    assert "the repairs above it in this report" not in again["note"], again["note"]
+
+
+def _repairs_of(path) -> list[dict]:
+    """The wire-end issues of the report on *path* that carry a repair."""
+    return [i for i in _new_issues(path) if i["type"] == "wire_end_off_pin" and "repair" in i]
+
+
+def _report_matches_real_repairs(path) -> int:
+    """Make the repairs of the report on *path* one at a time with the report run again between,
+    each as the first report named it. The issue of the pin the next repair is for, in the report
+    run again, is then the very one the first report gave, or is gone because the repairs made
+    have joined its wire to its pin (a repair the ones above it make unnecessary is still named,
+    and harmless); and at the end none is left. A tool that refuses one of them raises. Returns
+    how many the first report named."""
+    named = _repairs_of(path)
+    for issue in named:
+        now = {
+            (i["reference"], i["pin"]): i
+            for i in _new_issues(path)
+            if i["type"] == "wire_end_off_pin"
+        }
+        again = now.get((issue["reference"], issue["pin"]))
+        if again is None:
+            continue
+        assert again == issue, (again, issue)
+        _make(issue)
+    assert _repairs_of(path) == []
+    return len(named)
+
+
+def _fixture_sheet(tmp_path) -> str:
+    return _copy_fixture(tmp_path)
+
+
+def _first_layout(tmp_path) -> str:
+    return _two_routes(tmp_path, "rerun").path
+
+
+def _labelled_layout(tmp_path) -> str:
+    return _two_routes(tmp_path, "rerun", True).path
+
+
+def _blocked_layout(tmp_path) -> str:
+    r = _two_routes(tmp_path, "rerun")
+    place(r.path, "R", "R3", r.end2[0], r.far2[1] + 3.81)
+    return r.path
+
+
+def _mixed_layout(tmp_path) -> str:
+    return _stub_on_a_corner(tmp_path, "rerun")[0]
+
+
+def _named_layout(tmp_path) -> str:
+    return _one_net_two_routes(tmp_path, "rerun", first_named=True)
+
+
+def _label_layout(tmp_path) -> str:
+    return _one_net_two_routes(tmp_path, "rerun", first_named=False)
+
+
+def _stub_layout(tmp_path) -> str:
+    return _route_and_stub_on_one_net(tmp_path, "rerun")
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(_fixture_sheet, id="the_sheet_0_20_1_wrote"),
+        pytest.param(_first_layout, id="routes_that_meet"),
+        pytest.param(_labelled_layout, id="routes_that_meet_with_labels"),
+        pytest.param(_blocked_layout, id="one_repair_refused_after_the_first"),
+        pytest.param(_mixed_layout, id="a_stub_then_a_route"),
+        pytest.param(_named_layout, id="a_name_joined_by_the_first"),
+        pytest.param(_label_layout, id="a_label_written_by_the_first"),
+        pytest.param(_stub_layout, id="a_stub_call_refused_after_the_first"),
+    ],
+)
+def test_running_the_report_again_after_each_repair_names_the_next_one_it_did(tmp_path, build):
+    """The report checks each repair on a copy of the sheet with the ones before it made, in
+    memory. Made for real instead, one at a time with the report run again between, the first
+    repair left is the very one the first report named next, so the copy is the sheet the
+    tools leave."""
+    assert _report_matches_real_repairs(build(tmp_path)), "premise: the layout has a repair"
+
+
+def _drawn(data: bytes) -> tuple:
+    """A sheet's wires and buses, junctions and Net-(...) labels, as KiCad's lexer reads the
+    first two and the bytes show the third."""
+    wires = sorted((line.kind, line.start, line.end) for line in S.lines(data))
+    return wires, sorted(S.junctions(data)), data.count(b'(label "Net-(')
+
+
+@pytest.mark.parametrize(
+    "build",
+    [
+        pytest.param(_fixture_sheet, id="the_sheet_0_20_1_wrote"),
+        pytest.param(_first_layout, id="routes_that_meet"),
+        pytest.param(_named_layout, id="a_name_joined_by_the_first"),
+    ],
+)
+def test_the_copy_the_report_checks_on_is_the_sheet_the_tools_leave(tmp_path, build):
+    """The connect_pins repairs of a report, made on the copy it holds in memory, leave the wires,
+    junctions and Net-(...) labels (the splits a junction makes included) that the same calls
+    leave on the file. The wires and junctions are read with KiCad's lexer, not the CST."""
+    p = build(tmp_path)
+    calls = [i for i in _new_issues(p) if "repair" in i and i["repair"]["tool"] == "connect_pins"]
+    assert calls, "premise: the layout has a connect_pins repair"
+    repairs = schematic._Repairs(_cst.parse(Path(p).read_bytes()).lists[0], p)
+    for issue in calls:
+        repairs.make(issue["repair"])
+    in_memory = _drawn(_cst.serialize(repairs.root))
+    for issue in calls:
+        _make(issue)
+    assert in_memory == _drawn(Path(p).read_bytes())
+    assert in_memory[1], "premise: the calls wrote a junction"
+
+
+# ---------------------------------------------------------------------------------------------
+# Generated layouts, where the repairs of a report meet
+# ---------------------------------------------------------------------------------------------
+
+
+class _Seeded:
+    """random.Random(seed) cut down to random(), which Python promises to keep, so that a seed
+    names the same layout on every interpreter of the CI matrix (choice and randrange are not
+    promised)."""
+
+    def __init__(self, seed: int):
+        self._random = random.Random(seed).random
+
+    def below(self, n: int) -> int:
+        return int(self._random() * n)
+
+    def pick(self, options):
+        return options[self.below(len(options))]
+
+    def chance(self, p: float) -> bool:
+        return self._random() < p
+
+
+def _dense_layout(path: str, seed: int) -> None:
+    """The layout *seed* names: two to four Q_NPN_BCE at 90 or 270 with a mirror, on a coarse
+    grid so that routes meet, each with the stray 0.20.1 left at the old point of one of its
+    pins. Either its connect_pins route to pin 1 of an R (rotated any way), whose net a global
+    label, a local label or nothing names, or its wire_pins_to_net stub with a local label. Some
+    pairs of the transistors' pins are wired together at the ends KiCad draws, so nets are
+    shared. Changing this changes what a seed names."""
+    rnd = _Seeded(seed)
+    parts, taken = [], []
+    for i in range(rnd.pick([2, 3, 3, 4])):
+        for _ in range(60):  # a place clear of the parts before it, else the last try
+            q_at = (round(25.4 * (1 + rnd.below(5)), 4), round(50.8 + 25.4 * rnd.below(3), 4))
+            r_at = (round(25.4 + 12.7 * rnd.below(9), 4), round(38.1 + 12.7 * rnd.below(8), 4))
+            if all(abs(q_at[0] - t[0]) > 10 or abs(q_at[1] - t[1]) > 15 for t in taken) and all(
+                abs(r_at[0] - t[0]) > 7 or abs(r_at[1] - t[1]) > 10 for t in taken
+            ):
+                break
+        taken += [q_at, r_at]
+        state, pin, r_rot = rnd.pick(_MIRRORED), rnd.below(3), rnd.pick([0, 90, 180, 270])
+        stray = rnd.pick(["route", "route", "route", "stub"])
+        net = rnd.pick(["global", "global", "local", "none"])
+        parts.append((i + 1, q_at, r_at, state, pin, r_rot, stray, net))
+    for n, q_at, r_at, state, _pin, r_rot, _stray, _net in parts:
+        place(path, "Q_NPN_BCE", f"Q{n}", *q_at, rot=state[0], mirror=state[1])
+        place(path, "R", f"R{n}", *r_at, rot=r_rot)
+    ends = []
+    for n, q_at, r_at, state, pin, r_rot, stray, net in parts:
+        ex, ey, _out = ORIENTED["Q_NPN_BCE"][state][pin]
+        ends.append((round(q_at[0] + ex, 4), round(q_at[1] + ey, 4)))
+        dx, dy = OLD["Q_NPN_BCE"][state][pin]
+        old = (round(q_at[0] + dx, 4), round(q_at[1] + dy, 4))
+        fx, fy, (ox, oy) = ORIENTED["R"][(r_rot, "")][0]
+        far = (round(r_at[0] + fx, 4), round(r_at[1] + fy, 4))
+        if stray == "stub":  # toward the symbol's origin, one axis, as 0.20.1 drew it
+            sx = 2.54 * ((q_at[0] > old[0]) - (q_at[0] < old[0]))
+            sy = 0 if sx else 2.54 * ((q_at[1] > old[1]) - (q_at[1] < old[1]))
+            stub(path, *old, sx, sy, f"S{n}")
+            continue
+        if old[0] != far[0] and old[1] != far[1]:
+            wire(path, *old, far[0], old[1])
+            wire(path, far[0], old[1], *far)
+        else:
+            wire(path, *old, *far)
+        if net != "none":
+            wire(path, *far, far[0] + 2.54 * ox, far[1] + 2.54 * oy)
+            kind = "global_label" if net == "global" else "label"
+            label(path, f"{net[0].upper()}Q{n}", far[0] + 2.54 * ox, far[1] + 2.54 * oy, kind=kind)
+    for a in range(len(ends)):
+        for b in range(a + 1, len(ends)):
+            if rnd.chance(0.3) and (ends[a][0] == ends[b][0] or ends[a][1] == ends[b][1]):
+                wire(path, *ends[a], *ends[b])
+
+
+def _joins_of(issues: list[dict]) -> list[set]:
+    """The pins each repair asks to join: the two of a connect_pins, the one of a stub's."""
+    out = []
+    for issue in issues:
+        args = issue["repair"]["arguments"]
+        if issue["repair"]["tool"] == "connect_pins":
+            out.append({(args["ref1"], args["pin1"]), (args["ref2"], args["pin2"])})
+        else:
+            out.append({(pin["reference"], pin["pin"]) for pin in args["pins"]})
+    return out
+
+
+def _named_nets_joined(path) -> list:
+    """Make the repairs of the report on *path*, in its order, and return what kicad-cli reads as
+    two nets that carried a name each joined into one."""
+    before = nets(path)
+    issues = _repairs_of(path)
+    for issue in issues:
+        _make(issue)
+    return judge(before, nets(path), _joins_of(issues)).named_merge
+
+
+#: Seeds whose layouts the report named wrongly before the repairs were checked in order, as the
+#: commit before measured them (2026-10-17): 126, 241, 52 and 75 joined two named nets when made in
+#: the report's order (52 and 75 also needed the names rule for two nets one possible component
+#: holds, test_connectivity.py), 19 and 265 named a call the tool then refused ([names]), and 111
+#: named a repair that another made unnecessary.
+_PINNED = (126, 241, 52, 75, 19, 265, 111)
+
+
+@pytest.mark.parametrize("seed", _PINNED)
+def test_pinned_layouts_report_the_repairs_the_tools_then_leave(tmp_path, seed):
+    """Each pinned layout holds two stray wire ends or more, and the report names the same calls
+    the report run again between real repairs does, none of which a tool refuses."""
+    p = fresh(tmp_path, "pinned")
+    _dense_layout(p, seed)
+    assert len([i for i in _new_issues(p) if i["type"] == "wire_end_off_pin"]) >= 2
+    _report_matches_real_repairs(p)
+
+
+@requires_cli
+@pytest.mark.parametrize("seed", [126, 241, 52, 75])
+def test_pinned_layouts_repaired_in_order_join_no_two_named_nets(tmp_path, seed):
+    """The four pinned layouts that joined two named nets, judged by kicad-cli: the repairs made
+    in the report's order join no two named nets now."""
+    p = fresh(tmp_path, "pinned")
+    _dense_layout(p, seed)
+    assert _named_nets_joined(p) == []
+
+
+@settings(max_examples=sexpr_gen.budget(25))
+@given(seed=st.integers(0, 10**6))
+def test_generated_layouts_report_the_repairs_the_tools_then_leave(seed):
+    """Any layout of _dense_layout: the report names the same calls the report run again between
+    real repairs does, and no tool refuses one."""
+    with tempfile.TemporaryDirectory() as work:
+        p = fresh(Path(work), "gen")
+        _dense_layout(p, seed)
+        _report_matches_real_repairs(p)
+
+
+@pytest.mark.nightly
+@requires_cli
+@settings(max_examples=sexpr_gen.budget(25))
+@given(seed=st.integers(0, 10**6))
+def test_nightly_generated_layouts_repaired_in_order_join_no_two_named_nets(seed):
+    """The generated layouts judged by kicad-cli (the pinned ones above are its sibling on every
+    push)."""
+    with tempfile.TemporaryDirectory() as work:
+        p = fresh(Path(work), "gen")
+        _dense_layout(p, seed)
+        assert _named_nets_joined(p) == []
 
 
 def test_a_wire_end_on_the_pins_net_is_not_reported(tmp_path):
