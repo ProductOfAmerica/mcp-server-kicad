@@ -1902,13 +1902,18 @@ class Model:
         )
 
     # -- the touch rule -------------------------------------------------------------------
-    def _point_entries(self):
+    # *ignore* in the rules below holds ids of items they do not see: the wires a route is
+    # drawn over that its own net already holds, which validate_hierarchy's connect_pins repair
+    # leaves in place (check_connect_pins).
+    def _point_entries(self, ignore=frozenset()):
         for it in self.items:
+            if it.id in ignore:
+                continue
             for x, y in _conn_points(it):
                 yield x, y, it
 
-    def _lines(self, kinds=_LINES):
-        return (it for it in self.items if it.kind in kinds)
+    def _lines(self, kinds=_LINES, ignore=frozenset()):
+        return (it for it in self.items if it.kind in kinds and it.id not in ignore)
 
     def rule1(
         self,
@@ -1916,6 +1921,7 @@ class Model:
         tgt: Item,
         at_p=("wire", "junction", "label", "sheetpin"),
         ends=("wire", "gline"),
+        ignore=frozenset(),
     ) -> str | None:
         """Nothing but the target's own connections at or near its pin end P.
 
@@ -1923,7 +1929,7 @@ class Model:
         *at_p*; a line may end exactly at P only if its kind is in *ends*. Anything else within
         the margin, or any line passing through, blocks it.
         """
-        for x, y, it in self._point_entries():
+        for x, y, it in self._point_entries(ignore):
             dd = _d2(x, y, *P)
             if dd > TOL2 or it is tgt:
                 continue
@@ -1931,7 +1937,7 @@ class Model:
                 continue
             where = "at" if dd == 0 else "within 0.05 mm of"
             return f"{_pdesc(x, y, it)} {where} the pin end {pt(P)}"
-        for ln in self._lines(_SEGS):
+        for ln in self._lines(_SEGS, ignore):
             if not _within(P[0], P[1], ln.x, ln.y, ln.x2, ln.y2, TOL2):
                 continue
             if ln.kind in ends and P in ((ln.x, ln.y), (ln.x2, ln.y2)):
@@ -1939,18 +1945,18 @@ class Model:
             return f"{_desc(ln)} passes through or within 0.05 mm of the pin end {pt(P)}"
         return None
 
-    def rule2(self, E: Point) -> str | None:
+    def rule2(self, E: Point, ignore=frozenset()) -> str | None:
         """Nothing at or near a new endpoint that is not a pin end: no point item, and no line
         of any kind, a bus entry's body included, since the possible view joins all of them."""
-        for x, y, it in self._point_entries():
+        for x, y, it in self._point_entries(ignore):
             if _d2(x, y, *E) <= TOL2:
                 return f"{_pdesc(x, y, it)} at or within 0.05 mm of {pt(E)}"
-        for ln in self._lines(_SEGS):
+        for ln in self._lines(_SEGS, ignore):
             if _within(E[0], E[1], ln.x, ln.y, ln.x2, ln.y2, TOL2):
                 return f"{_desc(ln)} passes at or within 0.05 mm of {pt(E)}"
         return None
 
-    def rule3(self, A: Point, B: Point, pin_ends: set) -> str | None:
+    def rule3(self, A: Point, B: Point, pin_ends: set, ignore=frozenset()) -> str | None:
         """A new wire's interior meets nothing: no point item near it, a graphic line's ends
         included (the possible view joins them, though they are not connection points), and no
         crossing of any line.
@@ -1959,14 +1965,14 @@ class Model:
         one on the other: an existing line's end on the new wire is a point item caught below,
         and a new end on an existing line is caught by rules 1 and 2, which run first."""
         ends = {A, B} & pin_ends
-        for x, y, it in self._point_entries():
+        for x, y, it in self._point_entries(ignore):
             if (x, y) in ends:
                 continue  # exact coincidence at the pin end was judged by rule 1
             if _within(x, y, A[0], A[1], B[0], B[1], TOL2):
                 return (
                     f"{_pdesc(x, y, it)} lies on or within 0.05 mm of the new wire {pt(A)}-{pt(B)}"
                 )
-        for ln in self._lines(("gline",)):
+        for ln in self._lines(("gline",), ignore):
             for x, y in ((ln.x, ln.y), (ln.x2, ln.y2)):
                 if (x, y) not in ends and _within(x, y, A[0], A[1], B[0], B[1], TOL2):
                     return (
@@ -1975,7 +1981,7 @@ class Model:
                     )
         # The crossing ban: no reader joins a plain crossing, but a later label, junction or
         # wire end put on it by another tool joins both lines (docs/adr-routing-safety.md).
-        for ln in self._lines(_SEGS):
+        for ln in self._lines(_SEGS, ignore):
             if (
                 _side(ln.x, ln.y, ln.x2, ln.y2, *A) * _side(ln.x, ln.y, ln.x2, ln.y2, *B) < 0
                 and _side(*A, *B, ln.x, ln.y) * _side(*A, *B, ln.x2, ln.y2) < 0
@@ -1984,21 +1990,25 @@ class Model:
         return None
 
     def touch(
-        self, pins: list[tuple[Point, Item]], free: list[Point], segments: list[tuple[Point, Point]]
+        self,
+        pins: list[tuple[Point, Item]],
+        free: list[Point],
+        segments: list[tuple[Point, Point]],
+        ignore=frozenset(),
     ) -> str | None:
         """None when the new geometry touches only the target pins' own points, else the
-        first obstacle."""
+        first obstacle. The items whose ids are in *ignore* are not looked at."""
         for P, tgt in pins:
-            why = self.rule1(P, tgt)
+            why = self.rule1(P, tgt, ignore=ignore)
             if why:
                 return why
         for E in free:
-            why = self.rule2(E)
+            why = self.rule2(E, ignore)
             if why:
                 return why
         pin_ends = {P for P, _ in pins}
         for A, B in segments:
-            why = self.rule3(A, B, pin_ends)
+            why = self.rule3(A, B, pin_ends, ignore)
             if why:
                 return why
         return None
@@ -2527,3 +2537,109 @@ def plan_wire_pins(
             f" every instance: {', '.join(f'{r}:{n}' for r, n in refs)}."
         )
     return plan
+
+
+# ---------------------------------------------------------------------------------------------
+# connect_pins: what its call would join
+# ---------------------------------------------------------------------------------------------
+
+
+def _placed_once(m: Model, ref: str, label: str, at: Point) -> Item:
+    """The one copy of pad *label* of *ref* that this sheet draws, which must be at *at*, the
+    point connect_pins finds the pin at. Raises Refusal when it is anything else."""
+    pads = m.resolve(ref, label)
+    if len(pads) != 1 or len(pads[0][1]) != 1:
+        where = ", ".join(pt((c.x, c.y)) for _n, cs in pads for c in cs)
+        raise Refusal(
+            "copies",
+            f"{ref}:{label} is not one pad drawn once on this sheet (drawn at {where}), and"
+            " connect_pins wires one of the copies. Remedy: use wire_pins_to_net, which wires"
+            " every copy.",
+        )
+    (c,) = pads[0][1]
+    if (c.x, c.y) != at:
+        raise Refusal(
+            "resolve",
+            f"{ref}:{label} is drawn at {pt((c.x, c.y))} here, not at {pt(at)}, where"
+            " connect_pins would take it. Remedy: wire the pin as meant; otherwise stop and"
+            " report.",
+        )
+    return c
+
+
+def check_connect_pins(
+    m: Model,
+    ref1: str,
+    pin1: str,
+    at1: Point,
+    ref2: str,
+    pin2: str,
+    at2: Point,
+    through: frozenset[tuple[Point, Point]] = frozenset(),
+) -> Refusal | None:
+    """Why connect_pins(ref1, pin1, ref2, pin2) must not be made on the sheet *m* models, or
+    None. Writes nothing, and adds nothing to *m*, so a caller with several calls to check
+    builds it once. *m* is Model(root, path): given the file's path it reads the project's other
+    sheets, so a reference another sheet shares is found.
+
+    connect_pins asks none of the questions wire_pins_to_net asks. It draws its route, one
+    straight wire when the pins share an x or a y and else a horizontal leg from pin 1 and a
+    vertical one to pin 2, joins what that route reaches, and reports success. So a caller that
+    offers the call (validate_hierarchy's repair of a wire end) asks them here, with the
+    rules ADR-R4 gives its checked form (docs/adr-routing-safety.md): the sheet's symbols are
+    all known; each pin is one pad drawn once, at the point given, which a duplicate reference
+    in the hierarchy and a unit that differs per instance rule out; neither is a no-connect
+    type or flagged, and neither net reaches what this model does not follow; the two nets do
+    not both carry a name, since joining them would join two named nets; and the route
+    touches only the two pins' own points and joins nets of one net class set, as a stub of
+    wire_pins_to_net must. *at1* and *at2* are the points connect_pins finds the pins at.
+
+    *through* holds wires, as their two ends in either order, that the route may run over: a
+    run of wires that meets nothing along it but each other (schematic._run_end), which the call
+    leaves where it is. KiCad's editor merges the stretch the route covers into one wire, which
+    can leave the run dangling and joins or disconnects nothing else.
+    """
+    ta, tb = f"{ref1}:{pin1}", f"{ref2}:{pin2}"
+    try:
+        m.check_loadable()
+        a = _placed_once(m, ref1, pin1, at1)
+        b = _placed_once(m, ref2, pin2, at2)
+    except Refusal as e:
+        return e
+    for tag, c in ((ta, a), (tb, b)):
+        why = _pad_conflict(m, [c])
+        if why is not None:
+            return Refusal(why.codes, f"{tag}: {why.text}")
+    cm = m.coarse()
+    names_a, names_b = cm.names_of(a), cm.names_of(b)
+    if cm.uf.find(a.id) != cm.uf.find(b.id) and names_a and names_b:
+        return Refusal(
+            "names",
+            f"{ta} is possibly on {_names_text(names_a)} and {tb} on {_names_text(names_b)};"
+            " connecting them could merge those nets, and two named nets are never joined here."
+            " Remedy: decide which net the pin belongs on; otherwise stop and report.",
+        )
+    corner = (at2[0], at1[1])
+    straight = at1[0] == at2[0] or at1[1] == at2[1]
+    free = [] if straight else [corner]
+    legs = [(at1, at2)] if straight else [(at1, corner), (corner, at2)]
+    skip = frozenset(
+        it.id
+        for it in m.items
+        if it.kind == "wire"
+        and (((it.x, it.y), (it.x2, it.y2)) in through or ((it.x2, it.y2), (it.x, it.y)) in through)
+    )
+    route = " -> ".join(pt(q) for q in [at1, *free, at2])
+    blocked = m.touch([(at1, a), (at2, b)], free, legs, skip)
+    if blocked is not None:
+        return Refusal(
+            "touch",
+            f"the route {route} touches something else: {blocked}. Remedy: move the part or the"
+            " obstacle; otherwise stop and report.",
+        )
+    # The net argument names a net the join must also reach; there is none, and "\n" is a
+    # name no label can have (netname drops line breaks).
+    classes = m.class_block([a, b], free, legs, "\n")
+    if classes is not None:
+        return Refusal("netclass", f"the route {route}: {classes}.")
+    return None

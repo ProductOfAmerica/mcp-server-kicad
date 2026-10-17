@@ -852,9 +852,15 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     Net-(<ref>-<pin>) label connect_pins wrote there; neither is where any reader may join it
     to the pin already. A flag carries a note: no tool removes one by its position, so delete
     it in KiCad's editor, then no_connect_pin flags the pin. A wire end's "repair" joins the pin
-    to what the wire reaches, wire_pins_to_net with its net's local label name or
-    connect_pins to the pin its wires run to, each checked first; a note where neither
-    applies. Nothing is written.
+    to what the wire reaches: wire_pins_to_net with the one local label name on its net, or,
+    where there is no one such name, connect_pins to the pin its wires run to. Each is checked
+    before it is named, and connect_pins, which checks nothing itself, is asked what
+    wire_pins_to_net asks: no two named nets joined, neither pin a no-connect type or flagged,
+    nothing the model does not follow on either net, a reference no other part answers to, a
+    route that touches only the two pins (tried with either pin first), one net class set. A
+    refusal is the answer: the issue carries a "note" that gives it, never the other call in its
+    place, and a "note" also where what the wire was meant to join is not known. Nothing is
+    written.
 
     Args:
         schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.

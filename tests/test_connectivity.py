@@ -164,6 +164,38 @@ def test_the_touch_rule(tmp_path, obstacle, expect):
     assert _outcome(_plan(p, [("R1", "1")])) == expect
 
 
+@pytest.mark.parametrize(
+    "obstacle",
+    [
+        pytest.param(lambda p: wire(p, 95, 97.79, 110, 97.79), id="rule1_line_through_the_pin"),
+        pytest.param(lambda p: label(p, "X", 101.63, 97.79), id="rule1_point_near_the_pin"),
+        pytest.param(lambda p: wire(p, 95, 95.25, 110, 95.25), id="rule2_line_through_the_end"),
+        pytest.param(lambda p: label(p, "X", 101.6, 96.52), id="rule3_point_on_the_stub"),
+        pytest.param(lambda p: polyline(p, 101.6, 96.52, 110, 96.52), id="rule3_line_end_on_it"),
+        pytest.param(lambda p: wire(p, 95, 96.52, 110, 96.52), id="rule3_crossing"),
+    ],
+)
+def test_the_touch_rule_looks_past_exactly_the_items_it_is_told_to_ignore(tmp_path, obstacle):
+    """check_connect_pins draws its route over the wires of the net it joins, which the call
+    leaves in place, so touch takes the ids of items the three rules do not see. One obstacle
+    per rule branch: it blocks the stub; ignored, it no longer does; and ignoring another
+    item changes nothing."""
+    p = _r1(tmp_path)
+    obstacle(p)
+    m = C.Model(_root(p))
+    pin = next(it for it in m.items if it.kind == "pin" and it.num == "1")
+    elsewhere = next(it for it in m.items if it.kind == "pin" and it.num == "2")
+    (blocker,) = [it for it in m.items if it.kind != "pin"]
+    ends = (pin.x, pin.y), (pin.x, pin.y - 25400)
+
+    def touch(ignore):
+        return m.touch([(ends[0], pin)], [ends[1]], [ends], ignore)
+
+    assert touch(frozenset()) is not None
+    assert touch(frozenset({blocker.id})) is None
+    assert touch(frozenset({elsewhere.id})) is not None
+
+
 def test_a_junction_at_the_pin_end_keeps_the_stub_but_not_a_label_on_it(tmp_path):
     p = _r1(tmp_path)
     junction(p, 101.6, 97.79)
@@ -1278,6 +1310,60 @@ def test_a_netclass_field_on_any_label_is_a_carrier(tmp_path):
         ' (property "Netclass" "HV" (at 88.87 97.79 0) (effects (font (size 1.27 1.27)))))',
     )
     assert set(_plan(p, [("R1", "1")], net="A").codes) == {"netclass"}
+
+
+# ---------------------------------------------------------------------------------------------
+# connect_pins: what its call would join (check_connect_pins). The ladder file
+# test_ladder_r3_mirrored_pins.py judges each refusal with kicad-cli through validate_hierarchy;
+# these call it directly for what that file does not reach: the order of the pins, a pad drawn
+# twice, and a pin not where connect_pins would take it.
+# ---------------------------------------------------------------------------------------------
+
+
+def _two_resistors(tmp_path, x2=101.6):
+    """R1 at (101.6, 101.6), R2 at (x2, 127): R1:2 at (101.6, 105.41), R2:1 at (x2, 123.19)."""
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    place(p, "R", "R2", x2, 127)
+    return p, (1016000, 1054100), (C.kiround(x2 * 1e4), 1231900)
+
+
+def _connect(path, ref1, pin1, at1, ref2, pin2, at2):
+    return C.check_connect_pins(C.Model(_root(path), path), ref1, pin1, at1, ref2, pin2, at2)
+
+
+def test_a_clear_straight_route_between_two_pins_passes(tmp_path):
+    p, at1, at2 = _two_resistors(tmp_path)
+    assert _connect(p, "R1", "2", at1, "R2", "1", at2) is None
+
+
+def test_an_l_route_passes_or_fails_with_the_first_pin(tmp_path):
+    """R2 is 25.4 mm to the right: with R1:2 first the route turns at (127, 105.41), with R2:1
+    first at (101.6, 123.19). A third resistor's pin 1 at the first turn blocks that call and
+    leaves the other."""
+    p, at1, at2 = _two_resistors(tmp_path, 127)
+    place(p, "R", "R3", 127, 109.22)  # R3:1 at (127, 105.41)
+    blocked = _connect(p, "R1", "2", at1, "R2", "1", at2)
+    assert blocked is not None and blocked.codes == ("touch",)
+    assert "R3:1 pin end at (127, 105.41)" in blocked.text
+    assert _connect(p, "R2", "1", at2, "R1", "2", at1) is None
+
+
+def test_a_pad_drawn_twice_is_refused(tmp_path):
+    """U1's pin 5 is common to both placed units, so this sheet draws it at (100, 107.62) and
+    at (150, 107.62), and connect_pins wires one of them."""
+    from conftest import make_dual_unit_sch
+
+    p = make_dual_unit_sch(tmp_path)
+    place(p, "R", "R1", 50.8, 101.6)
+    why = _connect(p, "U1", "5", (1000000, 1076200), "R1", "1", (508000, 977900))
+    assert why is not None and why.codes == ("copies",), why
+
+
+def test_a_pin_not_where_connect_pins_would_take_it_is_refused(tmp_path):
+    p, at1, at2 = _two_resistors(tmp_path)
+    why = _connect(p, "R1", "2", at2, "R2", "1", at1)  # each pin given the other's point
+    assert why is not None and why.codes == ("resolve",), why
 
 
 # ---------------------------------------------------------------------------------------------

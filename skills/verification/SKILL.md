@@ -153,9 +153,11 @@ rotated 90 or 270 degrees and mirrored, and KiCad draws that pin at
 `pin_x`, `pin_y`, so the flag or the wire misses it. For a wire end
 with a `repair`, make that call exactly as given: it joins the pin to
 what the wire reaches, and leaves the old wire where it is (if that
-wire then dangles, `run_erc` lists it and `remove_wire` removes it). A
-flag always carries a `note` (below), since no tool removes a flag by
-its position.
+wire then dangles, `run_erc` lists it and `remove_wire` removes it).
+`validate_hierarchy` checked that call before naming it; `connect_pins`
+checks nothing itself, so for it the report asks what `wire_pins_to_net`
+asks of a pin. A flag always carries a `note` (below), since no tool
+removes a flag by its position.
 
 **If an issue carries a `note` and no `repair`:** no tool call fixes it,
 and the note says why. Do not work around it with other tools (removing,
@@ -174,9 +176,14 @@ the user and wait, as in stuck escalation below:
 - `no_connect_off_pin`: the user deletes the flag at `x`, `y` in
   KiCad's editor. After that, make the `no_connect_pin` call the note
   names, if it names one.
-- `wire_end_off_pin` with a note: the call that would join the pin
-  refuses, or what the wire was meant to join is unknown; the note
-  says which. The user decides how the pin is wired.
+- `wire_end_off_pin` with a note: the call that would join the pin is
+  refused, or what the wire was meant to join is unknown; the note
+  says which, and a refusal names its reason (the pin and the wire's
+  net carry two names, the pin has a no-connect flag, the route would
+  touch another part). Do not make the refused call, or `connect_pins`
+  or `add_wires` in its place: they skip the check that refused it, and
+  a join they make can short two named nets with `validate_hierarchy`
+  then reporting ok. The user decides how the pin is wired.
 After the user acts, re-run `validate_hierarchy`.
 
 **Debug cross-sheet nets:** Use `trace_hierarchical_net` to follow a net

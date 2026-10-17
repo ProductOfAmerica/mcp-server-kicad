@@ -22,7 +22,9 @@ Judges, none of them the code under test: OLD, the measured points; routing_fixt
 KiCad's pin ends (measured, and checked against the transform port by test_ladder_r2_judges);
 kicad-cli 9's netlist of a copy stripped to its symbols, with a label at each point in
 question, which names the pins KiCad draws there (_pins_kicad_draws_at); kicad-cli's reading
-of each pin after its repair; and the demo sheets KiCad ships.
+of each pin after its repair; for a repair that joins two pins, kicad-cli's verdict on what the
+connect_pins call the report used to name does (_HAZARDS) and geom_judge's on whether a route
+runs over another pin end; and the demo sheets KiCad ships.
 """
 
 from __future__ import annotations
@@ -35,17 +37,32 @@ from pathlib import Path
 from typing import NamedTuple
 
 import geom_gen as G
+import geom_judge as GJ
 import kicad_corpus as K
 import pytest
 import sch_judge as S
 import sexpr_gen
-from conftest import _nightly_skip_reason, netlist_nodes, requires_cli
+from conftest import _nightly_skip_reason, netlist_nodes, requires_cli, run_erc
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import dsn_lexer as L
 from kicad_ref import transform as T
 from netlist_oracle import bare_name, judge, nets
-from routing_fixtures import ORIENTED, fresh, label, no_connect, place, wire
+from routing_fixtures import (
+    ORIENTED,
+    bus,
+    fresh,
+    label,
+    netclass_flag,
+    no_connect,
+    place,
+    project_file,
+    rename_ref,
+    set_lib_name,
+    sheet,
+    stub,
+    wire,
+)
 
 from mcp_server_kicad import project, schematic
 
@@ -263,6 +280,35 @@ _FIXTURE = _fixture_calls()
 _STRAYED = [c for c in _FIXTURE if c.symbol == "Q_NPN_BCE" and c.state in _MIRRORED]
 
 
+#: The y of the anchor resistors the connect_pins calls ran to, per anchor prefix, each at the
+#: x of its part less 7.62 (_fixture_calls).
+_ANCHOR_Y = {"RA": 88.9, "RB": 152.4, "RC": 203.2}
+
+
+def _fixture_pin_ends() -> dict[tuple[str, str], tuple[int, int]]:
+    """{(reference, pin): KiCad's end of it} for every part the calls placed, from ORIENTED."""
+    ends = {}
+    for c in _FIXTURE:
+        for k, (x, y, _out) in enumerate(ORIENTED[c.symbol][c.state]):
+            ends[(c.ref, str(k + 1))] = _at(c.origin, (x, y))
+        if c.anchor:
+            origin = (c.origin[0] - 7.62, _ANCHOR_Y[c.anchor[:2]])
+            for k, (x, y, _out) in enumerate(ORIENTED["R"][(0, "")]):
+                ends[(c.anchor, str(k + 1))] = _at(origin, (x, y))
+    return ends
+
+
+def _route_is_clear(first, second, ends) -> bool:
+    """Whether connect_pins(first, second) writes a route that runs over no other pin end:
+    straight when the pins share an x or a y, else horizontal from the first pin's end to the
+    second's x and then vertical (its documented route). *first* and *second* are (reference,
+    pin); *ends* is _fixture_pin_ends."""
+    a, b = ends[first], ends[second]
+    turns = [a, b] if a[0] == b[0] or a[1] == b[1] else [a, (b[0], a[1]), b]
+    others = [q for node, q in ends.items() if node not in (first, second)]
+    return not any(GJ.on_segment(q, s, e) for q in others for s, e in zip(turns, turns[1:]))
+
+
 def _copy_fixture(tmp_path) -> str:
     folder = tmp_path / "old"
     folder.mkdir()
@@ -316,13 +362,21 @@ def test_the_report_names_each_wire_and_how_to_join_its_pin(tmp_path):
                 },
             }
         else:
+            # Either pin may come first: the route runs horizontally from the first, and the
+            # report names the order whose route crosses no other pin end. From three of the
+            # transistors' pins it is the anchor's first, since the part's other pin lies on the
+            # horizontal leg from the pin (Q3:2 on the leg from Q3:3, say).
+            ends = _fixture_pin_ends()
+            pin, anchor = (call.ref, call.pin), (call.anchor, "1")
+            first, second = (pin, anchor) if _route_is_clear(pin, anchor, ends) else (anchor, pin)
+            assert _route_is_clear(first, second, ends), call  # premise: one order is clear
             want = {
                 "tool": "connect_pins",
                 "arguments": {
-                    "ref1": call.ref,
-                    "pin1": call.pin,
-                    "ref2": call.anchor,
-                    "pin2": "1",
+                    "ref1": first[0],
+                    "pin1": first[1],
+                    "ref2": second[0],
+                    "pin2": second[1],
                     "schematic_path": p,
                 },
             }
@@ -732,6 +786,290 @@ def test_a_repair_the_tool_would_refuse_is_a_note_with_its_refusal(tmp_path):
     with pytest.raises(ToolError, match=r"\[names\]"):
         schematic.wire_pins_to_net([{"reference": "Q1", "pin": "1"}], "N", schematic_path=p)
     assert Path(p).read_bytes() == before
+
+
+# ---------------------------------------------------------------------------------------------
+# A repair is made only where the call it names is safe
+# ---------------------------------------------------------------------------------------------
+
+Pt = tuple[float, float]
+_ROUTE_Q: Pt = (101.6, 76.2)
+_ROUTE_R: Pt = (50.8, 96.52)
+
+
+def _routed(tmp_path, name: str, r_at: Pt = _ROUTE_R) -> tuple[str, Pt, Pt, Pt]:
+    """Q1 (Q_NPN_BCE at 90 with mirror x) at _ROUTE_Q, R1 at *r_at* and the route 0.20.1's
+    connect_pins(Q1, 1, R1, 1) wrote: from the point it gave Q1:1, horizontal first, to R1:1
+    (one wire when they share an x). Returns the path and, in mm, Q1:1's old point, KiCad's end
+    of Q1:1 and R1:1's end."""
+    p = fresh(tmp_path, name)
+    place(p, "Q_NPN_BCE", "Q1", *_ROUTE_Q, rot=90, mirror="x")
+    place(p, "R", "R1", *r_at)
+    dx, dy = OLD["Q_NPN_BCE"][(90, "x")][0]
+    ex, ey, _out = ORIENTED["Q_NPN_BCE"][(90, "x")][0]
+    fx, fy, _out = ORIENTED["R"][(0, "")][0]
+    old = (_ROUTE_Q[0] + dx, _ROUTE_Q[1] + dy)
+    end = (_ROUTE_Q[0] + ex, _ROUTE_Q[1] + ey)
+    far = (r_at[0] + fx, r_at[1] + fy)
+    if old[0] != far[0]:
+        wire(p, *old, far[0], old[1])
+    wire(p, far[0], old[1], *far)
+    return p, old, end, far
+
+
+def _local_name(p: str, old: Pt, end: Pt, far: Pt) -> None:
+    """R1:1 on N by a local label, Q1:1 on M: joining the pins would join two named nets."""
+    stub(p, *far, -2.54, 0, "N")
+    stub(p, *end, 0, -2.54, "M")
+
+
+def _global_name(p: str, old: Pt, end: Pt, far: Pt) -> None:
+    """The same with R1:1 on G by a global label, which wire_pins_to_net cannot put a pin on."""
+    wire(p, *far, far[0] - 2.54, far[1])
+    label(p, "G", far[0] - 2.54, far[1], rot=180, kind="global_label")
+    stub(p, *end, 0, -2.54, "M")
+
+
+def _flagged(p: str, old: Pt, end: Pt, far: Pt) -> None:
+    """Q1:1 carries a no-connect flag at KiCad's end of the pin."""
+    no_connect(p, *end)
+
+
+def _corner_pin(p: str, old: Pt, end: Pt, far: Pt) -> None:
+    """Pin 1 of R2 sits where the route turns with Q1:1 first, at (R1:1's x, Q1:1's y), and pin 1
+    of R3 where it turns with R1:1 first, at (Q1:1's x, R1:1's y): neither call has a clear
+    route."""
+    place(p, "R", "R2", far[0], end[1] + 3.81)
+    place(p, "R", "R3", end[0], far[1] + 3.81)
+
+
+def _classed(p: str, old: Pt, end: Pt, far: Pt) -> None:
+    """Q1:1 is on net class HV by a directive at the end of its stub; R1:1 is on none."""
+    project_file(Path(p).parent, Path(p).stem, classes=("HV",))
+    wire(p, *end, end[0], end[1] - 2.54)
+    netclass_flag(p, "HV", end[0], end[1] - 2.54)
+
+
+def _on_a_bus(p: str, old: Pt, end: Pt, far: Pt) -> None:
+    """A bus ends on a stub of Q1:1, which wire_pins_to_net and connect_pins cannot judge."""
+    wire(p, *end, end[0], end[1] - 2.54)
+    bus(p, end[0], end[1] - 2.54, end[0] + 5.08, end[1] - 2.54)
+
+
+def _unloadable(p: str, old: Pt, end: Pt, far: Pt) -> None:
+    """R2, elsewhere on the sheet, names a library symbol the file does not hold: KiCad stacks
+    its pins at its origin, so the geometry of the sheet is not known."""
+    place(p, "R", "R2", 152.4, 76.2)
+    set_lib_name(p, "R2", "Gone")
+
+
+def _shared_reference(p: str, old: Pt, end: Pt, far: Pt) -> None:
+    """R2, elsewhere, answers to R1 too: KiCad's netlist joins the pads of both."""
+    place(p, "R", "R2", 152.4, 76.2)
+    rename_ref(p, "R2", "R1")
+
+
+def _shared_with_a_sheet(p: str, old: Pt, end: Pt, far: Pt) -> None:
+    """A child sheet holds a resistor annotated R1 too, which KiCad's netlist joins to this one."""
+    project_file(Path(p).parent, Path(p).stem)
+    child = str(Path(p).parent / "c.kicad_sch")
+    project.create_schematic(schematic_path=child)
+    place(child, "R", "R1", 101.6, 101.6)
+    sheet(p, child, "C", 152.4, 25.4)
+
+
+#: hazard: (builder, the code the note carries, the kicad-cli reading of connect_pins' call
+#: as the verdict's problem it shows, or None where the check is for what is not judged)
+_HAZARDS = {
+    "local_name": (_local_name, "names", "named_merge"),
+    "global_name": (_global_name, "names", "named_merge"),
+    "no_connect_flag": (_flagged, "nc_flag", "no_connect_connected"),
+    "pin_at_the_corner": (_corner_pin, "touch", "bad_merges"),
+    "net_class": (_classed, "netclass", "class_changes"),
+    "bus": (_on_a_bus, "bus", None),
+    "unloadable_symbol": (_unloadable, "derived", None),
+    "shared_reference": (_shared_reference, "dup_ref", None),
+    "reference_on_a_sheet": (_shared_with_a_sheet, "dup_ref", None),
+}
+
+
+#: The sheet with a symbol that names no library entry is one kicad-cli's ERC crashes on
+#: (exit 0xC0000005, measured; test_routing_safety's PI-17), so the output oracle leaves it out.
+_UNLOADABLE = pytest.mark.kicad_placeholder("unloadable_symbol/unloadable_symbol.kicad_sch")
+
+
+@pytest.mark.parametrize(
+    "hazard",
+    [pytest.param(h, marks=_UNLOADABLE if h == "unloadable_symbol" else ()) for h in _HAZARDS],
+)
+def test_a_route_that_joins_what_it_should_not_is_a_note_not_a_repair(tmp_path, hazard):
+    """Q1:1's route to R1:1, with one thing present that makes the join unsafe (_HAZARDS):
+    connect_pins checks none of it, so the report may not name that call. The issue carries
+    no repair and a note that gives the reason, as wire_pins_to_net's refusal is given."""
+    build, code, _problem = _HAZARDS[hazard]
+    p, *where = _routed(tmp_path, hazard)
+    build(p, *where)
+    (issue,) = _new_issues(p)
+    assert issue["type"] == "wire_end_off_pin"
+    assert "repair" not in issue, issue
+    # One refusal for each call tried: both orders where the route is what is refused, else the
+    # first call's alone, since the second would be refused for the same reason.
+    assert issue["note"].count(f"[{code}]") == (2 if code in ("touch", "netclass") else 1), issue
+
+
+@requires_cli
+@pytest.mark.parametrize("hazard", [h for h, (_b, _c, problem) in _HAZARDS.items() if problem])
+def test_kicad_reads_the_call_the_report_used_to_name_as_harm(tmp_path, hazard):
+    """The judge of the test above, for the hazards kicad-cli can show: the connect_pins call
+    the report used to name, made on a copy, merges two named nets (a local name and a global
+    one), connects a pin its no-connect flag says is open (ERC's no_connect_connected), joins
+    the pin of another part, or changes a net class."""
+    build, _code, problem = _HAZARDS[hazard]
+    p, *where = _routed(tmp_path, hazard)
+    build(p, *where)
+    before = nets(p)
+    scratch = Path(p).with_name("applied.kicad_sch")
+    shutil.copyfile(p, scratch)
+    schematic.connect_pins("Q1", "1", "R1", "1", schematic_path=str(scratch))
+    if problem == "no_connect_connected":
+        found = {v["type"] for s in run_erc(scratch)["sheets"] for v in s["violations"]}
+        assert problem in found, found
+    else:
+        verdict = judge(before, nets(scratch), [{("Q1", "1"), ("R1", "1")}])
+        assert getattr(verdict, problem), verdict.problems()
+
+
+@pytest.mark.parametrize(
+    "oracle", [pytest.param(False, id="model"), pytest.param(True, id="kicad", marks=requires_cli)]
+)
+def test_a_blocked_route_is_tried_with_the_other_pin_first(tmp_path, oracle):
+    """Pin 1 of R2 sits where connect_pins(Q1, 1, R1, 1) turns, so that call would join R2:1
+    too. The call with R1:1 first turns elsewhere, and is the repair; made, kicad-cli puts
+    Q1:1 and R1:1 on one net and joins nothing else."""
+    p, old, end, far = _routed(tmp_path, "other")
+    place(p, "R", "R2", far[0], end[1] + 3.81)
+    (issue,) = _new_issues(p)
+    assert issue["repair"] == {
+        "tool": "connect_pins",
+        "arguments": {"ref1": "R1", "pin1": "1", "ref2": "Q1", "pin2": "1", "schematic_path": p},
+    }, issue
+    if oracle:
+        before = nets(p)
+        schematic.connect_pins(**issue["repair"]["arguments"])
+        verdict = judge(before, nets(p), [{("Q1", "1"), ("R1", "1")}])
+        assert verdict.delivered and not verdict.wrong, verdict.problems()
+
+
+#: R1 straight below Q1: the route 0.20.1 wrote and the one the repair would draw are both one
+#: vertical wire, and the two calls (either pin first) draw the same one.
+_BELOW = (_ROUTE_Q[0], 96.52)
+
+
+@pytest.mark.parametrize(
+    "oracle", [pytest.param(False, id="model"), pytest.param(True, id="kicad", marks=requires_cli)]
+)
+def test_a_straight_route_has_one_call_the_parts_pin_first(tmp_path, oracle):
+    """Q1:1 and R1:1 share an x: connect_pins draws one wire, so there is one call, the part's
+    pin first. Made, kicad-cli puts the two pins on one net and joins nothing else."""
+    p, old, end, far = _routed(tmp_path, "straight", _BELOW)
+    assert old[0] == far[0] == end[0]
+    (issue,) = _new_issues(p)
+    assert issue["repair"] == {
+        "tool": "connect_pins",
+        "arguments": {"ref1": "Q1", "pin1": "1", "ref2": "R1", "pin2": "1", "schematic_path": p},
+    }, issue
+    if oracle:
+        before = nets(p)
+        schematic.connect_pins(**issue["repair"]["arguments"])
+        verdict = judge(before, nets(p), [{("Q1", "1"), ("R1", "1")}])
+        assert verdict.delivered and not verdict.wrong, verdict.problems()
+
+
+def test_a_straight_route_across_another_wire_is_one_refusal(tmp_path):
+    """A wire of no net crosses the straight route between the old point and Q1:1's end, which
+    ADR-R2's crossing ban refuses. Both calls draw that one wire, so the note gives the
+    refusal once."""
+    p, old, end, far = _routed(tmp_path, "crossed", _BELOW)
+    wire(p, end[0] - 2.54, end[1] + 5.08, end[0] + 2.54, end[1] + 5.08)
+    (issue,) = _new_issues(p)
+    assert "repair" not in issue and issue["note"].count("[touch]") == 1, issue
+
+
+def test_the_refusal_of_wire_pins_to_net_is_the_note_not_a_second_try(tmp_path):
+    """R1:1 is on N by a local label and Q1:1 on M. wire_pins_to_net would put the pin on N and
+    refuses ([names]), and the note says that; it does not go on to the other call. The tool
+    confirms the refusal and writes nothing."""
+    from mcp.server.mcpserver.exceptions import ToolError
+
+    p, old, end, far = _routed(tmp_path, "second")
+    _local_name(p, old, end, far)
+    (issue,) = _new_issues(p)
+    assert "repair" not in issue and "wire_pins_to_net would put the pin on 'N'" in issue["note"]
+    before = Path(p).read_bytes()
+    with pytest.raises(ToolError, match=r"\[names\]"):
+        schematic.wire_pins_to_net([{"reference": "Q1", "pin": "1"}], "N", schematic_path=p)
+    assert Path(p).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "oracle", [pytest.param(False, id="model"), pytest.param(True, id="kicad", marks=requires_cli)]
+)
+def test_a_route_to_a_net_named_by_a_global_label_is_still_repaired(tmp_path, oracle):
+    """Guards against over-refusal: R1:1 is on G by a global label, wire_pins_to_net cannot
+    name that net, and Q1:1 is on none. The repair is connect_pins to R1:1, and made it puts
+    Q1:1 on G with nothing else changed in kicad-cli's netlist."""
+    p, old, end, far = _routed(tmp_path, "global")
+    wire(p, *far, far[0] - 2.54, far[1])
+    label(p, "G", far[0] - 2.54, far[1], rot=180, kind="global_label")
+    (issue,) = _new_issues(p)
+    assert issue["repair"] == {
+        "tool": "connect_pins",
+        "arguments": {"ref1": "Q1", "pin1": "1", "ref2": "R1", "pin2": "1", "schematic_path": p},
+    }, issue
+    if oracle:
+        before = nets(p)
+        schematic.connect_pins(**issue["repair"]["arguments"])
+        verdict = judge(before, nets(p), [{("Q1", "1"), ("R1", "1")}])
+        assert verdict.delivered and not verdict.wrong, verdict.problems()
+        assert any(
+            bare_name(name) == "G" and nodes == {("Q1", "1"), ("R1", "1")}
+            for _c, name, _k, nodes in nets(p)
+        )
+
+
+def test_a_route_to_a_net_with_one_local_name_is_repaired_by_that_name(tmp_path):
+    """Guards against over-refusal: R1:1 is on N by a local label and Q1:1 on none: the repair
+    is wire_pins_to_net with N, which plans clean, and not connect_pins."""
+    p, old, end, far = _routed(tmp_path, "local")
+    stub(p, *far, -2.54, 0, "N")
+    (issue,) = _new_issues(p)
+    assert issue["repair"] == {
+        "tool": "wire_pins_to_net",
+        "arguments": {
+            "pins": [{"reference": "Q1", "pin": "1"}],
+            "label_text": "N",
+            "schematic_path": p,
+        },
+    }, issue
+
+
+def test_a_pin_connect_pins_would_take_for_another_is_a_note(tmp_path):
+    """connect_pins takes the first pin, in file order, whose name or number is the one given;
+    the model takes the exact pad number (PI-14). U1 draws the pin named 1 (number 2) before the
+    pin numbered 1, so connect_pins(Q1, 1, U1, 1) would wire the pin numbered 2, not the one the
+    route reaches. The report does not name that call."""
+    from routing_fixtures import custom_lib, place_custom
+
+    p = fresh(tmp_path, "taken")
+    place(p, "Q_NPN_BCE", "Q1", *_ROUTE_Q, rot=90, mirror="x")
+    pins = [("2", "1", "passive", 5.08, 0, 180, False), ("1", "2", "passive", -5.08, 0, 0, False)]
+    place_custom(p, custom_lib(tmp_path, "SWAP", pins), "SWAP", "U1", 50.8, 96.52)
+    wire(
+        p, 101.6, 81.28, 45.72, 81.28
+    )  # Q1:1's old point to U1's pin numbered 1, at (45.72, 96.52)
+    wire(p, 45.72, 81.28, 45.72, 96.52)
+    (issue,) = _new_issues(p)
+    assert "repair" not in issue and "connect_pins would not find Q1:1 and U1:1" in issue["note"]
 
 
 def test_a_wire_end_on_the_pins_net_is_not_reported(tmp_path):

@@ -1379,9 +1379,12 @@ def _off_pin_items(root, path: str) -> list[dict]:
 
     A flag carries a note, since no tool removes a flag by its position. A wire end's repair
     joins the pin to what the wire reaches: wire_pins_to_net with the one local label name on
-    the wire's net, if planning that call refuses nothing; else connect_pins to the one pin a
-    run of wires from it ends at, if connect_pins finds both pins where KiCad draws them;
-    else a note. A sheet the model refuses gets nothing: KiCad cannot load it either."""
+    the wire's net, if planning that call refuses nothing, and a note giving the refusal if it
+    does. Where the net has no one such name, connect_pins to the one pin a run of wires from
+    it ends at, if it finds both pins where KiCad draws them and
+    _connectivity.check_connect_pins finds nothing against the call: connect_pins asks none of
+    what wire_pins_to_net asks, so the report asks it. Else a note giving the reason. A sheet
+    the model refuses gets nothing: KiCad cannot load it either."""
     if not any(_connectivity.effective_mirror(s) for s in root.find_all("symbol")):
         return []
     try:
@@ -1390,6 +1393,16 @@ def _off_pin_items(root, path: str) -> list[dict]:
         return []
     model.ensure()
     drawn = {(it.x, it.y) for it in model.items if it.kind == "pin"}
+    held: list[_connectivity.Model] = []
+
+    def with_hierarchy() -> _connectivity.Model:
+        """The sheet's model with its project's hierarchy, which the checks of the connect_pins
+        repairs ask, built for the first and kept for the rest (building it is most of their
+        cost)."""
+        if not held:
+            held.append(_connectivity.Model(root, path))
+        return held[0]
+
     issues = []
     for s in model.syms:
         if s.lib is None or s.derived or _connectivity.effective_mirror(s.node) is None:
@@ -1404,11 +1417,11 @@ def _off_pin_items(root, path: str) -> list[dict]:
                 end = _connectivity.pin_end(pos, t, pin, s.ref)[:2]
                 at = _connectivity.pin_end(old_pos, old_t, pin, s.ref)[:2]
                 if at != end and at not in drawn:
-                    issues += _left_at(model, root, s, pin, at, end, path)
+                    issues += _left_at(model, root, s, pin, at, end, path, with_hierarchy)
     return issues
 
 
-def _left_at(model, root, s, pin, at: Point, end: Point, path: str) -> list[dict]:
+def _left_at(model, root, s, pin, at: Point, end: Point, path: str, with_hierarchy) -> list[dict]:
     """_off_pin_items' issues for one pin of placed symbol s: what lies at the point at, where
     KiCad draws no pin, for the pin KiCad draws at end."""
     num = _connectivity._child_text(pin, "number")
@@ -1473,7 +1486,7 @@ def _left_at(model, root, s, pin, at: Point, end: Point, path: str) -> list[dict
         if others or joined(w):
             continue
         issue = {"type": "wire_end_off_pin", **base, "wire": _stretch((w.x, w.y), (w.x2, w.y2))}
-        repair, why = _join_repair(model, root, s.ref, num, w, at, end, path)
+        repair, why = _join_repair(model, root, s.ref, num, w, at, end, path, with_hierarchy)
         if repair is not None:
             issue["repair"] = repair
         else:
@@ -1495,7 +1508,9 @@ def _get_pin_or_none(root, reference: str, pin_name: str) -> Point | None:
     return _req_point(x, y)
 
 
-def _join_repair(model, root, ref: str, num: str, w, at: Point, end: Point, path: str):
+def _join_repair(
+    model, root, ref: str, num: str, w, at: Point, end: Point, path: str, with_hierarchy
+):
     """(repair, None) joining pin num of ref to the net of wire w, whose end at misses it; or
     (None, why not). See _off_pin_items."""
     labels = (
@@ -1513,7 +1528,6 @@ def _join_repair(model, root, ref: str, num: str, w, at: Point, end: Point, path
         usable.setdefault(_connectivity.netname(text), text)
     mm = _connectivity.mm
     remove = f"remove_wire({mm(w.x)}, {mm(w.y)}, {mm(w.x2)}, {mm(w.y2)}) removes this wire."
-    refused = ""
     if len(usable) == 1:
         (text,) = usable.values()
         pins = [{"reference": ref, "pin": num}]
@@ -1521,43 +1535,70 @@ def _join_repair(model, root, ref: str, num: str, w, at: Point, end: Point, path
         if not plan.refused:
             arguments = {"pins": pins, "label_text": text, "schematic_path": path}
             return {"tool": "wire_pins_to_net", "arguments": arguments}, None
-        refused = (
+        # The plan's refusal is the answer. This used to go on to connect_pins, which asks
+        # none of what the plan just asked: with Q1:1 on M and the wire on N it joined the two
+        # nets, and validate_hierarchy then reported ok.
+        return None, (
             f"wire_pins_to_net would put the pin on {text!r}, the wire's net, but refuses: "
             + "; ".join(plan.lines)
+            + f" Act on that, or wire the pin as meant; {remove}"
         )
-    far = _run_end(model, w, at)
-    if far is not None and far.ref and far.num:
-        here = _get_pin_or_none(root, ref, num) == end
-        there = _get_pin_or_none(root, far.ref, far.num) == (far.x, far.y)
-        if here and there:
-            arguments = {"ref1": ref, "pin1": num, "ref2": far.ref, "pin2": far.num}
-            return {
-                "tool": "connect_pins",
-                "arguments": {**arguments, "schematic_path": path},
-            }, None
-    if refused:
-        return None, f"{refused} Act on that, or wire the pin as meant; {remove}"
+    far, run = _run_end(model, w, at)
+    if far is None or not (far.ref and far.num):
+        named = "several local label names, not one" if usable else "no local label"
+        return None, (
+            f"Its net carries {named} to put the pin on, and its wires run to no single pin,"
+            f" so what it was meant to join is not known here: wire the pin as meant; {remove}"
+        )
+    to = (far.x, far.y)
+    if _get_pin_or_none(root, ref, num) != end or _get_pin_or_none(root, far.ref, far.num) != to:
+        return None, (
+            f"Its wires run to {far.ref}:{far.num}, but connect_pins would not find {ref}:{num}"
+            f" and {far.ref}:{far.num} where KiCad draws them, so its call would join other"
+            f" pins: wire the pin as meant; {remove}"
+        )
+    through = frozenset(((r.x, r.y), (r.x2, r.y2)) for r in run)
+    # connect_pins routes horizontally from its first pin, so unless the pins share an x or a y
+    # the call has two routes, one with either pin first. Both join the same two pins; the first
+    # that passes is the repair.
+    here, there = (ref, num, end), (far.ref, far.num, to)
+    straight = end[0] == to[0] or end[1] == to[1]
+    calls = [(here, there)] if straight else [(here, there), (there, here)]
+    refusals = []
+    for (r1, p1, at1), (r2, p2, at2) in calls:
+        why = _connectivity.check_connect_pins(with_hierarchy(), r1, p1, at1, r2, p2, at2, through)
+        if why is None:
+            arguments = {"ref1": r1, "pin1": p1, "ref2": r2, "pin2": p2, "schematic_path": path}
+            return {"tool": "connect_pins", "arguments": arguments}, None
+        refusals.append(why)
+        if not set(why.codes) <= {"touch", "netclass"}:
+            break  # only the route differs between the two calls; this refusal is not about it
+    reasons = " ".join(f"{_connectivity.tags(r.codes)} {r.text}" for r in refusals)
     return None, (
-        "Its net carries no local label to put the pin on, and its wires run to no single"
-        f" pin, so what it was meant to join is not known here: wire the pin as meant; {remove}"
+        f"connect_pins would join the pin to {far.ref}:{far.num}, the pin its wires run to, but"
+        f" it checks nothing itself, and checked here the call is refused: {reasons}"
+        f" Act on that, or wire the pin as meant; {remove}"
     )
 
 
 def _run_end(model, w, at: Point):
-    """The one pin a run of wires from wire w ends at: from w's end that is not at, along the
-    one other wire ending at each point where nothing else does, to a point holding pins.
-    None where the run branches, meets anything else, or ends at no pin or at two."""
+    """(the one pin a run of wires from wire w ends at, the wires of the run): from w's end that
+    is not at, along the one other wire ending at each point where nothing else does, to a point
+    holding pins. The pin is None where the run branches, meets anything else, or ends at no
+    pin or at two."""
+    run = [w]
     seen = {w.id}
     q = (w.x2, w.y2) if (w.x, w.y) == at else (w.x, w.y)
     while True:
         here = [it for it in model._pts.get(q, ()) if it.id not in seen]
         pins = [it for it in here if it.kind == "pin"]
         if pins:
-            return pins[0] if len(pins) == 1 else None
+            return (pins[0] if len(pins) == 1 else None), run
         if len(here) != 1 or here[0].kind != "wire":
-            return None
+            return None, run
         w = here[0]
         seen.add(w.id)
+        run.append(w)
         q = (w.x2, w.y2) if (w.x, w.y) == q else (w.x, w.y)
 
 

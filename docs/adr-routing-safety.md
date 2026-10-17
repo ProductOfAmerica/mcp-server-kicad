@@ -359,10 +359,31 @@ Each slice appends an entry when it lands.
   passing through the point meets the junction they added there, so it is not listed either;
   that junction is, as junction_inside_wire. A flag carries a note, since no tool removes one by
   its position. A wire end's repair is wire_pins_to_net with its net's local label name, planned
-  first, else connect_pins to the pin its wires run to. On the sheet 0.20.1 wrote
-  (tests/fixtures/mirrored_0_20_1.kicad_sch), those repairs, and for each flag a deletion as in
-  KiCad's editor followed by the no_connect_pin its note names, leave every transistor pin as
-  the calls meant it in kicad-cli 9.0.8's netlist, nothing else changed. kicad-cli's ERC on that
-  sheet reports the four stray flags as no_connect_dangling and the four stubs' first ends as
-  unconnected_wire_endpoint; of the four stray routes it reports only their labels, as
-  label_dangling, as it does every label there whose net holds fewer than two pins.
+  first, else connect_pins to the pin its wires run to, checked as the review entry below says.
+  On the sheet 0.20.1 wrote (tests/fixtures/mirrored_0_20_1.kicad_sch), those repairs, and for
+  each flag a deletion as in KiCad's editor followed by the no_connect_pin its note names, leave
+  every transistor pin as the calls meant it in kicad-cli 9.0.8's netlist, nothing else changed.
+  kicad-cli's ERC on that sheet reports the four stray flags as no_connect_dangling and the four
+  stubs' first ends as unconnected_wire_endpoint; of the four stray routes it reports only their
+  labels, as label_dangling, as it does every label there whose net holds fewer than two pins.
+
+- 2026-10-17, step 8c review: the wire end's repair named connect_pins unchecked. connect_pins in
+  this tree has none of the checks ADR-R4 gives its slice 2 (names, no-connect, touch), yet the
+  first version offered it after wire_pins_to_net's plan had refused, and wherever the wire's net
+  had no local label name to plan with. With Q1:1 put on M and a 0.20.1 route to R1:1 on N,
+  kicad-cli 9.0.8 read the offered call as one net M with N gone, and validate_hierarchy then
+  returned ok; with R1:1 on a global label G, which wire_pins_to_net cannot name, the same
+  (measured 2026-10-17). A plan's refusal is now the note, and connect_pins is named only when
+  `_connectivity.check_connect_pins` passes it, with the questions wire_pins_to_net asks of a
+  pin: the sheet's symbols all known; each pin one pad drawn once, a reference the hierarchy
+  shares with no other part; neither a no-connect type or flagged, nor its net reaching a bus, a
+  sheet pin or anything else the model does not follow; not both nets named; and the route
+  touching only the two pins and joining nets of one class set. The stray wires the route runs
+  over are the net's own and left in place, so the touch rule does not see them. connect_pins
+  routes horizontally from its first pin, so the call is tried with either pin first (a straight
+  route has one), and the first that passes is named. kicad-cli 9.0.8 shows what each check
+  prevents: a merge of two named nets, ERC's no_connect_connected on a flagged pin, the pin of
+  another part joined at the route's turn, a net class changed. On the sheet 0.20.1 wrote, the
+  horizontal leg from Q3:3, Q9:2 and Q12:3 runs over the part's own Q3:2, Q9:3 and Q12:2, so
+  those three repairs name the anchor's pin first; the sheet's repairs are otherwise those of the
+  entry above.
