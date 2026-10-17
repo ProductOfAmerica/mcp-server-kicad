@@ -9,6 +9,7 @@ import os
 import re
 import sys
 import tempfile
+from collections.abc import Callable
 from pathlib import Path
 from typing import Literal, NamedTuple
 
@@ -858,6 +859,31 @@ def _expand_lib_uri(
         return None
 
 
+def _uri_readings(atom: _cst.Atom) -> list[str]:
+    """The ways the two KiCad majors read a table value, KiCad 9's first.
+
+    KiCad 9 decodes the escapes its lexer decodes inside quotes (Atom.text); KiCad 10 keeps
+    the bytes between the quotes as they stand (library_table_grammar.h:60 at 10.0.7). A
+    hand-written ${KIPRJMOD}\\footprints\\X.pretty therefore names a different path in each.
+    One reading when they agree.
+    """
+    raw = atom.raw
+    as_written = (raw[1:-1] if raw[:1] == b'"' else raw).decode("utf-8", "surrogateescape")
+    return list(dict.fromkeys((atom.text, as_written)))
+
+
+def _existing_target(
+    atom: _cst.Atom, exists: Callable[[Path], bool], project_dir: Path | None, configured: dict
+) -> str | None:
+    """The expanded URI of *atom*, under the first of its readings that *exists* says is
+    there, or None."""
+    for reading in _uri_readings(atom):
+        target = _expand_lib_uri(reading, project_dir, configured)
+        if target is not None and exists(Path(target)):
+            return target
+    return None
+
+
 def _read_fp_lib_table(
     path: Path,
     project_dir: Path | None,
@@ -869,10 +895,11 @@ def _read_fp_lib_table(
     """nickname -> .pretty directory for the rows of one fp-lib-table.
 
     Only rows this package can serve are returned: type KiCad with a directory
-    that exists, after ${VAR} expansion. Disabled rows, rows of the plugin types
-    KiCad reads through code this package has no counterpart for (Eagle,
-    Altium, GitHub), rows naming an undefined variable and rows whose directory
-    is missing are left out, so a nickname absent here falls through to the
+    that exists, after ${VAR} expansion, under the URI as either KiCad major
+    reads it (_uri_readings). Disabled rows, rows of the plugin types KiCad
+    reads through code this package has no counterpart for (Eagle, Altium,
+    GitHub), rows naming an undefined variable and rows whose directory is
+    missing are left out, so a nickname absent here falls through to the
     directory search the caller does next and the refusal names what was
     tried. A (type "Table") row is followed into the table it names, which is
     how KiCad 10's global table reaches the stock libraries. An unreadable or
@@ -902,11 +929,14 @@ def _read_fp_lib_table(
         if row.find("disabled") is not None:
             continue
         plugin = kind.atoms[1].text.lower() if kind is not None and len(kind.atoms) > 1 else "kicad"
-        target = _expand_lib_uri(uri.atoms[1].text, project_dir, configured)
+        if plugin not in ("kicad", "table"):
+            continue
+        exists = Path.is_file if plugin == "table" else Path.is_dir
+        target = _existing_target(uri.atoms[1], exists, project_dir, configured)
         if target is None:
             continue
         if plugin == "table":
-            if depth > 0 and Path(target).is_file():
+            if depth > 0:
                 # A nested table is parsed once per depth in this traversal.
                 # Unmemoised, a table naming itself in N rows was parsed
                 # 1+N+N^2+N^3 times (400 for seven rows). The key is the file
@@ -930,7 +960,7 @@ def _read_fp_lib_table(
                 nested = _memo[key]
                 for nick, pretty in nested.items():
                     table.setdefault(nick, pretty)
-        elif plugin == "kicad" and Path(target).is_dir():
+        else:
             table.setdefault(name.atoms[1].text, str(Path(target)))
     return table
 

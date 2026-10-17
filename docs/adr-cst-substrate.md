@@ -713,3 +713,13 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   table (`test_ladder_r3_lib_table.py`), and the cross-version reading rule of
   `test_ladder_r1_helpers.py`. Gates: the ladder's tests for bugs 4, 28, 29, 59, 61, 64, 65, 66, 67
   and 86, and the KiCad 10 legs of `kicad-suite.yml`, `macos-discovery.yml` and `windows.yml`.
+
+  The fp-lib-table reader takes a row's URI both ways the two majors read it. Atom.text is KiCad 9's
+  reading, escapes decoded; KiCad 10 keeps the bytes between a table value's quotes
+  (library_table_grammar.h:60 and library_table_parser.cpp:96-104 at 10.0.7). A hand-written
+  `${KIPRJMOD}\footprints\X.pretty` is therefore a path through a form feed to KiCad 9 and the
+  path as written to KiCad 10, and a row dropped for the first reading lets place_footprint copy the
+  footprint of a same-named library further down the resolution order. `pcb._read_fp_lib_table`
+  serves a row by the decoded URI when that names a directory (a file, for a nested table) and by
+  the URI as written when it does not (`_uri_readings`). Judges: the lexer port for KiCad 9's
+  reading and the bytes as written for KiCad 10's, in `test_ladder_r3_lib_table.py`.

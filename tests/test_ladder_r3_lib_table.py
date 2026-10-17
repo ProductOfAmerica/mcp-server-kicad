@@ -1,5 +1,5 @@
 """Rung 3, library tables: create_sym_lib_table writes KiCad's table and refuses what KiCad
-refuses.
+refuses, and the fp-lib-table reader serves a row by the URI as either KiCad reads it.
 
 Judges, none of them the code under test:
 
@@ -10,7 +10,11 @@ Judges, none of them the code under test:
   symbol library was found. The project is the native schematic fixture with its symbol's
   library renamed to a nickname no global table carries (KiCad falls back to the global
   table for a nickname it also holds, which hides a project table it could not read), and a
-  library made by this package's own tools.
+  library made by this package's own tools;
+- for the reader, the two ways a table value is read: KiCad 9's lexer (tests/kicad_ref/
+  dsn_lexer.py, then FromUTF8), and KiCad 10's grammar, whose QUOTED_TEXT keeps the bytes
+  between the quotes as they stand (include/libraries/library_table_grammar.h:60 and
+  common/libraries/library_table_parser.cpp:96-104 at 10.0.7).
 
 Rung 1 holds the cross-version reading rule (test_create_sym_lib_table_output_reads_alike_
 in_kicad_9_and_10); this file adds KiCad's verdict, the row's shape and the refusals.
@@ -23,6 +27,7 @@ import json
 import tempfile
 from pathlib import Path
 
+import edit_gen as E
 import pytest
 import sexpr_gen
 from conftest import _kicad_cli_major, requires_cli
@@ -32,7 +37,7 @@ from kicad_ref import dsn_lexer as L
 from kicad_ref import lib_table as T
 from mcp.server.mcpserver.exceptions import ToolError
 
-from mcp_server_kicad import project, symbol
+from mcp_server_kicad import _cst, pcb, project, symbol
 from mcp_server_kicad._shared import _run_cli
 
 _FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
@@ -341,3 +346,139 @@ def test_lib_table_duplicate_is_refused_as_kicad_cli_reports_it(tmp_path):
         raise RuntimeError(f"premise: kicad-cli did not keep the first row: {dict(types)}")
     refusal = _refusal(tmp_path / "tool", entries)
     assert "entries[1]" in str(refusal), str(refusal)
+
+
+# ---------------------------------------------------------------------------
+# the fp-lib-table reader: a row's URI as either KiCad reads it
+# ---------------------------------------------------------------------------
+
+
+def _hand_written_fp_table(uri: str, name: str = "Lib") -> bytes:
+    """A one-row table as a user or a script writes it: the URI's bytes exactly as given,
+    where KiCad's own writer turns each backslash into '/'."""
+    return (
+        b'(fp_lib_table\n  (version 7)\n  (lib (name "%s")(type "KiCad")(uri "%s")'
+        b'(options "")(descr ""))\n)\n' % (name.encode(), uri.encode())
+    )
+
+
+def _readings(table: bytes) -> tuple[str, str]:
+    """(KiCad 9's, KiCad 10's) reading of the URI of the table's one row. KiCad 9 lexes the
+    value and decodes its escapes (the lexer port, then FromUTF8); KiCad 10 keeps the bytes
+    between the quotes as they stand."""
+    tokens = L.tokens(table)
+    for key, value in zip(tokens, tokens[1:]):
+        if key.kind == L.SYMBOL and key.value == b"uri" and value.kind == L.STRING:
+            as_written = table[value.start + 1 : value.end - 1].decode("utf-8")
+            return L.wx_from_utf8(value.value, major=9), as_written
+    raise RuntimeError("premise: the table holds no quoted uri")
+
+
+def _path_of(reading: str, project_dir: Path) -> Path:
+    """Where a reading of a URI points once ${KIPRJMOD} is the project directory."""
+    return Path(reading.replace("${KIPRJMOD}", str(project_dir)))
+
+
+def _names_a_directory(reading: str, project_dir: Path) -> bool:
+    """Whether a reading of a URI names an existing directory. The empty reading, which is
+    what KiCad 9 holds for a value whose bytes are not UTF-8, names none."""
+    return bool(reading) and _path_of(reading, project_dir).is_dir()
+
+
+#: A directory name after a backslash in a hand-written Windows path, by the escape its
+#: first byte starts in KiCad 9's lexer: \f, \b, \a, \v, one to three octal digits, \x with no
+#: hex digit after it, and \n, \r and \t.
+_ESCAPED_DIRECTORIES = [
+    pytest.param("footprints", id="form feed"),
+    pytest.param("boards", id="backspace"),
+    pytest.param("assets", id="bell"),
+    pytest.param("vendor", id="vertical tab"),
+    pytest.param("2026", id="octal"),
+    pytest.param("xyz", id="x without digits"),
+    pytest.param("new", id="line feed"),
+    pytest.param("run", id="carriage return"),
+    pytest.param("tmp", id="tab"),
+]
+
+
+@pytest.mark.kicad_placeholder("proj/fp-lib-table")  # a value the two majors read differently
+@pytest.mark.parametrize("directory", _ESCAPED_DIRECTORIES)
+def test_fp_lib_table_row_is_served_by_its_uri_as_written(tmp_path, directory):
+    """A project row written by hand with backslashes, ${KIPRJMOD}\\<directory>\\Lib.pretty,
+    names the directory KiCad 10 finds (it keeps the bytes as written) and not the one KiCad 9
+    reads out of the escapes, so the library is served and its nickname does not fall through
+    to another library of the same name."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    uri = f"${{KIPRJMOD}}\\{directory}\\Lib.pretty"
+    table = proj / "fp-lib-table"
+    table.write_bytes(_hand_written_fp_table(uri))
+    kicad9, kicad10 = _readings(table.read_bytes())
+    if kicad10 != uri or kicad9 == uri or _names_a_directory(kicad9, proj):
+        raise RuntimeError(f"premise: KiCad 9 reads {kicad9!r} and KiCad 10 {kicad10!r}")
+    library = _path_of(kicad10, proj)
+    library.mkdir(parents=True)
+    assert pcb._read_fp_lib_table(table, proj) == {"Lib": str(library)}
+
+
+@pytest.mark.kicad_placeholder("proj/fp-lib-table")  # a value the two majors read differently
+@pytest.mark.parametrize("also_as_written", [False, True])
+@pytest.mark.parametrize(
+    "uri",
+    [
+        pytest.param("${KIPRJMOD}/libs/\\x41.pretty", id="hex"),
+        pytest.param("${KIPRJMOD}/libs/\\101.pretty", id="octal"),
+        pytest.param("${KIPRJMOD}\\\\libs\\\\A.pretty", id="doubled backslashes"),
+    ],
+)
+def test_fp_lib_table_row_is_served_by_kicad_9s_reading_first(tmp_path, uri, also_as_written):
+    """A row whose escapes KiCad 9 decodes into a directory that exists is served by that
+    directory, whether or not the bytes as written name another one too."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    table = proj / "fp-lib-table"
+    table.write_bytes(_hand_written_fp_table(uri))
+    kicad9, kicad10 = _readings(table.read_bytes())
+    if kicad10 != uri or kicad9 in ("", uri):
+        raise RuntimeError(f"premise: KiCad 9 reads {kicad9!r} and KiCad 10 {kicad10!r}")
+    library = _path_of(kicad9, proj)
+    library.mkdir(parents=True)
+    if also_as_written:
+        _path_of(kicad10, proj).mkdir(parents=True, exist_ok=True)
+    assert pcb._read_fp_lib_table(table, proj) == {"Lib": str(library)}
+
+
+@pytest.mark.kicad_placeholder("proj/fp-lib-table")  # a value the two majors read differently
+def test_place_footprint_takes_the_project_row_written_with_backslashes(tmp_path):
+    """The footprint placed comes from the library a project row names by a hand-written
+    ${KIPRJMOD}\\footprints\\Resistor_SMD.pretty, not from the library of the same name beside
+    the board, which the nickname reaches when the row is dropped from the table. The two hold
+    R_X with different pad numbers, so the board says which one was copied."""
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    texts = E.footprint_with_pad_at(0.0).texts
+
+    def write_library(directory: Path, first: str, second: str) -> None:
+        pads = (E.SynPad(first, (-E.MM, 0), 0.0), E.SynPad(second, (E.MM, 0), 0.0))
+        directory.mkdir(parents=True)
+        text = E.library_text(E.SynFootprint("R_X", pads, texts))
+        (directory / "R_X.kicad_mod").write_text(text, encoding="utf-8", newline="\n")
+
+    uri = "${KIPRJMOD}\\footprints\\Resistor_SMD.pretty"
+    table = proj / "fp-lib-table"
+    table.write_bytes(_hand_written_fp_table(uri, "Resistor_SMD"))
+    kicad9, kicad10 = _readings(table.read_bytes())
+    if kicad10 != uri or _names_a_directory(kicad9, proj):
+        raise RuntimeError(f"premise: KiCad 9 reads {kicad9!r} and KiCad 10 {kicad10!r}")
+    write_library(_path_of(kicad10, proj), "11", "22")
+    write_library(proj / "Resistor_SMD.pretty", "1", "2")
+    board = proj / "b.kicad_pcb"
+    board.write_bytes(pcb._EMPTY_PCB_TPL)
+    try:
+        pcb.place_footprint(
+            "R1", "10K", 50, 50, library="Resistor_SMD", footprint="R_X", pcb_path=str(board)
+        )
+    finally:
+        pcb._BOARD_CACHE.pop(str(board.resolve()), None)
+    (footprint,) = _cst.parse(board.read_bytes()).lists[0].find_all("footprint")
+    assert [pad.atoms[1].text for pad in footprint.find_all("pad")] == ["11", "22"]
