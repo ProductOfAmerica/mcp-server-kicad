@@ -281,10 +281,17 @@ def _apply(t: Matrix, x: int, y: int) -> Point:
 
 def _angle(text: str) -> int | None:
     """An orientation atom as KiCad's parser reads it (truncated to an int), if it is one of
-    the four KiCad can load."""
+    the four KiCad can load.
+
+    None as well for a token KiCad's parser refuses that float() still reads and int() cannot
+    truncate: nan and inf are no NUMBER, so NeedNUMBER refuses them, and 1e400 is a literal
+    from_chars reports out of range (include/dsnlexer.h:531-535 and common/dsnlexer.cpp:859-916
+    at 9.0.8). int() of an infinity raises OverflowError, which reaches an MCP client as a bare
+    "Error executing tool".
+    """
     try:
         a = int(float(text))
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
     return a if a in _ROT else None
 

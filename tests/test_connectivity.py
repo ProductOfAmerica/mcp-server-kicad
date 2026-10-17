@@ -11,6 +11,7 @@ import random
 from pathlib import Path
 
 import pytest
+from kicad_ref import parse_units as P
 from kicad_ref import transform as T
 from routing_fixtures import ORIENTED, fresh, junction, label, place, polyline, wire
 
@@ -75,6 +76,31 @@ def test_an_angle_kicad_truncates_is_read_the_same_way():
     assert e.value.codes == ("unloadable",)
 
 
+#: Orientation atoms KiCad's parser refuses (kicad_ref.parse_units) and Python's float() reads:
+#: nan and inf are no NUMBER, so NeedNUMBER stops at them, and 1e400 is a literal from_chars
+#: reports out of range. int() of an infinity raises OverflowError, which _angle once let out.
+_REFUSED_ANGLES = [
+    "nan",
+    "inf",
+    "-inf",
+    "infinity",
+    "-Infinity",
+    "1e400",
+    "-1e400",
+    "9e99999999999",
+]
+
+
+@pytest.mark.parametrize("atom", _REFUSED_ANGLES)
+def test_a_token_int_cannot_truncate_is_no_angle(atom):
+    """The parser port refuses the atom, so no angle is the angle _angle returns for it, not
+    an exception. (A leading '+', 9_0, digits outside ASCII and an underflow are refused by
+    KiCad and read by float() without an exception: bug 70, test_ladder_r2_transform.py.)"""
+    with pytest.raises(P.ParseRefusal):
+        T.parse_symbol_transform([("at", atom.encode())])
+    assert C._angle(atom) is None
+
+
 @pytest.mark.no_kicad_validation
 def test_an_unloadable_angle_refuses_the_whole_call(tmp_path):
     """The file is unloadable on purpose (that is the subject), so kicad-cli cannot check it."""
@@ -85,6 +111,22 @@ def test_an_unloadable_angle_refuses_the_whole_call(tmp_path):
     plan = _plan(p, [("R1", "1")])
     assert plan.codes == ["unloadable"]
     assert "angle 45" in plan.refusal()
+
+
+@pytest.mark.no_kicad_validation
+@pytest.mark.parametrize("angle", ["inf", "1e400"])
+def test_an_angle_that_raised_in_int_refuses_the_whole_call(tmp_path, angle):
+    """The same for the angles that raised inside float()'s int(): the plan is refused as
+    unloadable and names the angle, where it escaped as an OverflowError."""
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    data = (
+        Path(p).read_bytes().replace(b"(at 101.6 101.6 0)", f"(at 101.6 101.6 {angle})".encode(), 1)
+    )
+    Path(p).write_bytes(data)
+    plan = _plan(p, [("R1", "1")])
+    assert plan.codes == ["unloadable"]
+    assert f"angle {angle}" in plan.refusal()
 
 
 def test_ints_format_exactly():

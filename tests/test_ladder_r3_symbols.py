@@ -26,6 +26,10 @@ The sheets are edit_gen's, in KiCad 9's form, from KiCad's stock Device:R.
 Bug 1: move_component rewrites the symbol's (at) and leaves every property where it was.
 Bug 12: the 1.27 mm grid snap runs even when the call names the symbol's own position, so
 turning an off-grid symbol in place also moves it.
+
+The last section judges what a move does with a symbol KiCad cannot load, by the same
+parser (an angle it refuses, or none: bugs 97 and 98 reached by other spellings), and with
+a symbol KiCad loads off the page.
 """
 
 from __future__ import annotations
@@ -41,11 +45,21 @@ import pytest
 import sch_judge
 import sexpr_gen
 import svg_judge as SVG
-from conftest import requires_cli
+from conftest import HAS_KICAD_CLI, assert_kicad_parseable, requires_cli, run_erc
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
+from kicad_ref import dsn_lexer as L
+from kicad_ref import parse_units as P
 from kicad_ref import sch_field as SF
 from kicad_ref import transform as T
+from mcp.server.mcpserver.exceptions import ToolError
+from test_ladder_r2_pins import (
+    lexed_root,
+    placed_symbols,
+    read_iu,
+    reference_property,
+    symbol_placement,
+)
 
 from mcp_server_kicad import schematic
 
@@ -361,3 +375,332 @@ def test_nightly_fields_follow_the_symbol_where_kicad_draws_them(case):
         move_all(before, after, moves)
         problems = rigid_problems(before, after, moves)
     assert not problems, f"{len(problems)} fields off:\n" + "\n".join(problems[:20])
+
+
+# ---------------------------------------------------------------------------
+# a symbol KiCad cannot load, and one it loads off the page
+# ---------------------------------------------------------------------------
+
+#: tests/fixtures/kicad_native.kicad_sch, written by KiCad: an A4 sheet (297 x 210 mm) with R1
+#: at (100, 100), angle 0.
+_NATIVE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
+_R1_AT = b"(at 100 100 0) (unit 1)"
+
+#: R1's (at) angle as a hand edit or another generator leaves it, each spelling one KiCad's
+#: parser refuses: the angle atom (empty for none), and the words a result must use for it.
+#: NeedNUMBER meets the closing paren where the angle is missing and takes inf and nan for no
+#: NUMBER; 1e400 is a NUMBER that from_chars reports out of range; 45 is a number that is no
+#: quarter turn (sch_io_kicad_sexpr_parser.cpp:3071-3085 at 9.0.8, 3188-3202 at 10.0.7;
+#: include/dsnlexer.h:531-535 at 9.0.8, 536-540 at 10.0.7; kicad_ref.parse_units).
+_UNREADABLE = [
+    pytest.param(b"", "no angle", id="none"),
+    pytest.param(b"45", "angle 45", id="45"),
+    pytest.param(b"inf", "angle inf", id="inf"),
+    pytest.param(b"1e400", "angle 1e400", id="1e400"),
+    pytest.param(b"nan", "angle nan", id="nan"),
+]
+
+
+def _at(angle: bytes, x: str = "100", y: str = "100") -> bytes:
+    """An (at x y angle) list as bytes; the angle atom is left out where ``angle`` is empty."""
+    return b"(at " + x.encode() + b" " + y.encode() + (b" " + angle if angle else b"") + b")"
+
+
+def _hand_edited(tmp_path: Path, at: bytes, name: str = "hand.kicad_sch") -> Path:
+    """The native fixture with R1's placement written ``at`` (one or more (at) lists)."""
+    data = _NATIVE.read_bytes()
+    if data.count(_R1_AT) != 1:
+        raise RuntimeError(f"the fixture holds {_R1_AT!r} {data.count(_R1_AT)} times, not once")
+    path = tmp_path / name
+    path.write_bytes(data.replace(_R1_AT, at + b" (unit 1)"))
+    return path
+
+
+def _refused_by_kicad(data: bytes, reference: str) -> bool:
+    """Whether KiCad's parser, as kicad_ref ports it, refuses the placement of the placed
+    symbol ``reference`` (an angle it cannot read, or none)."""
+    (symbol,) = [s for s in placed_symbols(lexed_root(data)) if reference_property(s) == reference]
+    try:
+        symbol_placement(symbol)
+    except P.ParseRefusal:
+        return True
+    return False
+
+
+def _premise_cli_refuses(path: Path) -> None:
+    """The premise of a test about a sheet KiCad cannot load, where kicad-cli is installed:
+    it writes no ERC report for the sheet (conftest.run_erc raises). RuntimeError when it
+    loads it, so a broken premise never passes for the defect."""
+    if not HAS_KICAD_CLI:
+        return
+    try:
+        run_erc(path)
+    except RuntimeError:
+        return
+    raise RuntimeError(f"the premise is a schematic kicad-cli refuses, and it loads {path.name}")
+
+
+def _premise_unloadable(path: Path, reference: str = "R1") -> None:
+    """The premise of a test about a symbol KiCad cannot load: the parser port refuses the
+    placement of ``reference``, and kicad-cli, where installed, refuses the sheet."""
+    if not _refused_by_kicad(path.read_bytes(), reference):
+        raise RuntimeError(f"the premise is a placement KiCad refuses; it reads {path.name}")
+    _premise_cli_refuses(path)
+
+
+def _outcome(call):
+    """(result, None) when ``call()`` returns, (None, exception) when it raises."""
+    try:
+        return call(), None
+    except Exception as exc:  # the type of what escapes is the subject
+        return None, exc
+
+
+def _written_fields(data: bytes) -> dict[str, tuple[tuple[int, int], float]]:
+    """{name: ((x, y), text angle)} of R1's properties: each last (at) as KiCad reads its
+    numbers, whatever angle the symbol itself is placed at (the lexer port, no transform)."""
+    (r1,) = [s for s in placed_symbols(lexed_root(data)) if reference_property(s) == "R1"]
+    out = {}
+    for prop in r1.items:
+        if prop.kind == L.GROUP and prop.items and prop.items[0].value == b"property":
+            (*_, at) = [c for c in prop.items if c.kind == L.GROUP and c.items[0].value == b"at"]
+            xy = (read_iu(at.items[1]), read_iu(at.items[2]))
+            out[SF.property_name(prop)] = (xy, P.parse_double(at.items[3].value))
+    return out
+
+
+@pytest.mark.kicad_placeholder("hand.kicad_sch")
+@pytest.mark.parametrize(("angle", "named"), _UNREADABLE)
+def test_a_symbol_kicad_cannot_load_is_moved_only_with_a_rotation(tmp_path, angle, named):
+    """R1 placed at an angle KiCad's parser refuses, or with none, moved with no rotation:
+    a ToolError that names the rotation as the repair, and the file byte for byte as it was.
+    Moving it and reporting success would leave a sheet KiCad still cannot open, and a raw
+    exception reaches an MCP client as a bare "Error executing tool". The unloadable input is
+    this test's subject, so the oracle skips it."""
+    path = _hand_edited(tmp_path, _at(angle))
+    _premise_unloadable(path)
+    before = path.read_bytes()
+    result, raised = _outcome(
+        lambda: schematic.move_component("R1", 63.5, 63.5, schematic_path=str(path))
+    )
+    assert isinstance(raised, ToolError), (
+        f"returned {result!r}, raised {raised!r}, on a sheet kicad-cli cannot load"
+    )
+    assert "rotation" in str(raised), f"the refusal names no repair: {raised}"
+    assert path.read_bytes() == before
+
+
+@pytest.mark.parametrize(("angle", "named"), _UNREADABLE)
+def test_a_symbol_kicad_cannot_load_is_repaired_by_a_rotation(tmp_path, angle, named):
+    """R1 moved to (63.5, 63.5) at rotation 90 from a placement KiCad cannot load: KiCad
+    reads R1 there at 90, and every field moved by R1's own displacement and was not turned,
+    since an orientation KiCad cannot read gives the old one no meaning; the result says how
+    R1 was placed. The oracle then checks that kicad-cli loads the repaired file."""
+    path = _hand_edited(tmp_path, _at(angle))
+    _premise_unloadable(path)
+    written = _written_fields(path.read_bytes())
+    result, raised = _outcome(
+        lambda: schematic.move_component("R1", 63.5, 63.5, rotation=90, schematic_path=str(path))
+    )
+    assert raised is None, f"raised {raised!r} on a placement a rotation repairs"
+    _, new = sch_judge.placed_symbol(path.read_bytes(), "R1")
+    assert (new.position, new.transform) == ((635_000, 635_000), turned((0, ""), 90))
+    dx, dy = 635_000 - 1_000_000, 635_000 - 1_000_000
+    moved = {name: ((x + dx, y + dy), text) for name, ((x, y), text) in written.items()}
+    assert {n: (f.written, f.angle) for n, f in new.fields.items()} == moved, (
+        "the fields did not move with the repaired symbol"
+    )
+    assert named in str(result), f"the result does not say R1 had {named}: {result!r}"
+
+
+@pytest.mark.kicad_placeholder("hand.kicad_sch")
+@pytest.mark.parametrize(("angle", "named"), _UNREADABLE)
+def test_an_earlier_at_kicad_cannot_load_is_refused(tmp_path, angle, named):
+    """R1 written with two (at) lists, the first one KiCad's parser refuses: it reads the
+    first before the last, so no edit of the last one makes the sheet load. A move with a
+    rotation is refused with a ToolError and the file byte for byte as it was."""
+    path = _hand_edited(tmp_path, _at(angle) + b" " + _at(b"0", "127", "127"))
+    _premise_unloadable(path)
+    before = path.read_bytes()
+    result, raised = _outcome(
+        lambda: schematic.move_component("R1", 63.5, 63.5, rotation=90, schematic_path=str(path))
+    )
+    assert isinstance(raised, ToolError), (
+        f"returned {result!r}, raised {raised!r}, on a sheet kicad-cli cannot load"
+    )
+    assert path.read_bytes() == before
+
+
+def _wire_with_x(tmp_path: Path, x: bytes) -> Path:
+    """The native fixture with the x of its wire's second end written ``x``, a token KiCad's
+    parser refuses as a coordinate."""
+    data = _NATIVE.read_bytes()
+    old = b"(xy 50 100) (xy 80 100)"
+    if data.count(old) != 1:
+        raise RuntimeError(f"the fixture holds {old!r} {data.count(old)} times, not once")
+    try:
+        P.parse_sch_internal_units(x, major=9)
+    except P.ParseRefusal:
+        pass
+    else:
+        raise RuntimeError(f"the premise is a coordinate KiCad's parser refuses; it reads {x!r}")
+    path = tmp_path / "hand.kicad_sch"
+    path.write_bytes(data.replace(old, b"(xy 50 100) (xy " + x + b" 100)"))
+    _premise_cli_refuses(path)
+    return path
+
+
+def _second_symbol_at_1e400(tmp_path: Path) -> Path:
+    """A sheet of two resistors, R1 and R2, with the angle of R2's own (at) written 1e400."""
+    r1 = symbol((1_016_000, 1_016_000), (0, ""), _SPECS)
+    r2 = symbol((1_905_000, 1_016_000), (0, ""), _SPECS, reference="R2")
+    path = E.write_symbol_sheet(tmp_path / "hand.kicad_sch", [r1, r2])
+    x, y = G.sch_mm(1_905_000), G.sch_mm(1_016_000)
+    written = f"(at {x} {y} 0)".encode()
+    head, opener, block = path.read_bytes().rpartition(b"\t(symbol\n\t\t(lib_id")
+    if not opener or written not in block:
+        raise RuntimeError("R2's own (at) is not where the builder writes it")
+    path.write_bytes(head + opener + block.replace(written, _at(b"1e400", x, y), 1))
+    _premise_unloadable(path, "R2")
+    return path
+
+
+_ELSEWHERE = [
+    pytest.param(lambda d: _wire_with_x(d, b"1e400"), id="wire_1e400"),
+    pytest.param(lambda d: _wire_with_x(d, b"abc"), id="wire_text"),
+    pytest.param(_second_symbol_at_1e400, id="other_symbol_1e400"),
+]
+
+
+@pytest.mark.kicad_placeholder("hand.kicad_sch")
+@pytest.mark.parametrize("build", _ELSEWHERE)
+def test_a_move_goes_ahead_where_the_rest_of_the_sheet_cannot_be_read(tmp_path, build):
+    """A plain move of R1 on a sheet that holds, elsewhere, something KiCad's parser refuses
+    (a coordinate or a placement) goes ahead: KiCad reads R1 at the target and every field at
+    the offset it had, and the result says its connections were not checked. The edit does not
+    depend on that report, so a failure to read the sheet must not stop the move; an exception
+    reaches an MCP client as a bare "Error executing tool". The unloadable sheet is the
+    subject, so the oracle skips it."""
+    path = build(tmp_path)
+    _, old = sch_judge.placed_symbol(path.read_bytes(), "R1")
+    result, raised = _outcome(
+        lambda: schematic.move_component("R1", 63.5, 63.5, schematic_path=str(path))
+    )
+    assert raised is None, f"raised {raised!r} instead of moving R1"
+    _, new = sch_judge.placed_symbol(path.read_bytes(), "R1")
+    assert new.position == (635_000, 635_000), f"returned {result!r}, R1 is at {new.position}"
+    assert {n: f.offset for n, f in new.fields.items()} == {
+        n: f.offset for n, f in old.fields.items()
+    }, "the symbol moved and its fields did not keep their place on it"
+    assert result is not None and "Connections were not checked" in result, result
+
+
+#: Tokens written over a number in place of it, none of which KiCad's parser reads: a literal
+#: past a double's range, one that is in range but past what internal units count (times 10,000
+#: it is infinity), inf and nan, which are no NUMBER, and a word.
+_UNREADABLE_NUMBERS = (b"1e400", b"1e308", b"inf", b"nan", b"abc")
+
+
+@pytest.mark.kicad_placeholder("hand.kicad_sch")
+@pytest.mark.parametrize(
+    "call", [(63.5, 63.5, None), (100.0, 100.0, 90)], ids=["move", "turn_in_place"]
+)
+def test_no_unreadable_number_makes_a_move_raise_anything_but_a_refusal(tmp_path, call):
+    """Each number of the native fixture, as the lexer port finds them, written in turn as
+    each unreadable token above, then R1 moved or turned in place: the call returns, or
+    raises a ToolError and leaves the file byte for byte as it was. An exception of any other
+    type is what an MCP client is told only as "Error executing tool", and it is what one
+    OverflowError after another (a pin's coordinate, a wire's, an angle) once was. The sheet
+    KiCad cannot load is the subject, so the oracle skips it."""
+    data = _NATIVE.read_bytes()
+    spans = [
+        (item.start, item.end)
+        for _, item in J.walk(data)
+        if item.items is None and item.kind == L.NUMBER
+    ]
+    if len(spans) < 50:
+        raise RuntimeError(f"the premise is a sheet of many numbers, and it holds {len(spans)}")
+    path = tmp_path / "hand.kicad_sch"
+    x, y, rotation = call
+    escaped = []
+    for start, end in spans:
+        for token in _UNREADABLE_NUMBERS:
+            hostile = data[:start] + token + data[end:]
+            path.write_bytes(hostile)
+            _, raised = _outcome(
+                lambda: schematic.move_component(
+                    "R1", x, y, rotation=rotation, schematic_path=str(path)
+                )
+            )
+            refused = isinstance(raised, ToolError) and path.read_bytes() == hostile
+            if raised is not None and not refused:
+                escaped.append(f"{data[start:end]!r} written {token!r}: {raised!r}")
+    assert not escaped, f"{len(escaped)} calls of {len(spans) * len(_UNREADABLE_NUMBERS)}: " + (
+        "; ".join(escaped[:4])
+    )
+
+
+#: Places the 297 x 210 mm native sheet does not hold, each on the 0.01 mm grid KiCad writes.
+_OFF_THE_PAGE = [
+    pytest.param(-10.16, 50.8, id="left"),
+    pytest.param(304.8, 50.8, id="right"),
+    pytest.param(100.33, -2.54, id="above"),
+    pytest.param(100.33, 215.9, id="below"),
+]
+
+
+@pytest.mark.parametrize(("x", "y"), _OFF_THE_PAGE)
+def test_a_symbol_off_the_page_is_turned_in_place(tmp_path, x, y):
+    """R1 placed off the page, which kicad-cli loads, called at its own position: it turns in
+    place, KiCad reading it at the same anchor with the new angle and every field at the
+    offset it had. KiCad's editor turns a symbol about its own position wherever it is
+    (sch_edit_tool.cpp:814 at 9.0.8, 1009 at 10.0.7), and a call that names that position
+    moves nothing, so the page cannot bound it. With no rotation it changes nothing and
+    writes nothing."""
+    path = _hand_edited(tmp_path, _at(b"0", str(x), str(y)))
+    if HAS_KICAD_CLI:
+        run_erc(path)  # the premise: kicad-cli loads a symbol placed off the page
+    _, old = sch_judge.placed_symbol(path.read_bytes(), "R1")
+    result = schematic.move_component("R1", x, y, rotation=90, schematic_path=str(path))
+    turned_bytes = path.read_bytes()
+    _, new = sch_judge.placed_symbol(turned_bytes, "R1")
+    assert (new.position, new.transform) == (old.position, turned((0, ""), 90)), result
+    assert {n: f.offset for n, f in new.fields.items()} == {
+        n: f.offset for n, f in old.fields.items()
+    }, "the symbol turned and its fields did not keep their place on it"
+    schematic.move_component("R1", x, y, schematic_path=str(path))
+    assert path.read_bytes() == turned_bytes
+
+
+@pytest.mark.parametrize(
+    ("x", "y"), [(-10.16, 50.8), (304.8, 50.8)], ids=["left_of_the_page", "right_of_the_page"]
+)
+def test_the_remedy_a_pin_read_names_can_be_followed_off_the_page(tmp_path, x, y):
+    """A pin read of R1 placed off the page at an angle KiCad cannot load refuses and names
+    move_component at the symbol's own position with a rotation as the repair, since KiCad
+    cannot open the sheet to repair it there. Following it leaves a file kicad-cli loads, and
+    the pin read then answers."""
+    path = _hand_edited(tmp_path, _at(b"45", str(x), str(y)))
+    _premise_unloadable(path)
+    with pytest.raises(ToolError) as refused:
+        schematic.get_pin_positions("R1", schematic_path=str(path))
+    assert "move_component" in str(refused.value), (
+        f"the remedy names no repair that works: {refused.value}"
+    )
+    schematic.move_component("R1", x, y, rotation=0, schematic_path=str(path))
+    if HAS_KICAD_CLI:
+        assert_kicad_parseable(path)
+    schematic.get_pin_positions("R1", schematic_path=str(path))
+
+
+def test_a_symbol_off_the_page_is_not_moved_to_another_place_off_it(tmp_path):
+    """The page still bounds a symbol that moves: R1 placed off the page is refused a move to
+    another place off it, with the file byte for byte as it was, and may move back onto it."""
+    path = _hand_edited(tmp_path, _at(b"0", "-10.16", "50.8"))
+    before = path.read_bytes()
+    with pytest.raises(ToolError, match="outside the sheet boundary"):
+        schematic.move_component("R1", -20.32, 50.8, schematic_path=str(path))
+    assert path.read_bytes() == before
+    schematic.move_component("R1", 63.5, 63.5, schematic_path=str(path))
+    _, new = sch_judge.placed_symbol(path.read_bytes(), "R1")
+    assert new.position == (635_000, 635_000)

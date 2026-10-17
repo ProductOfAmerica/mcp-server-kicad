@@ -344,4 +344,8 @@ Each slice appends an entry when it lands.
   junction. Re-measured against kicad-cli 9.0.8 on 2026-10-15
   (test_new_sch_tools.py::TestMoveComponent): in all seven netlist scenarios the pins named are
   exactly those whose net changed, and ERC confirms a no-connect flag the report says was left.
-  The model itself did not change.
+  The report only advises, so a sheet the model cannot read, by a refusal or by an exception from
+  a coordinate no reader takes, gets "Connections were not checked" and the move goes ahead. The
+  model's one change is that `_angle` no longer raises on `inf` and `1e400`: a symbol at either is
+  `[unloadable]`, as one at 45 is. Its other readings of what KiCad refuses (a missing angle read
+  as 0, a leading `+`) are bug 70's, step 12b.

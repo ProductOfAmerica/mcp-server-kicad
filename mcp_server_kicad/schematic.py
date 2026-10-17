@@ -2002,20 +2002,21 @@ def move_component(
     Move. The result lists every pin whose connections changed (what it left, what it now
     meets); reconnect those with wire_pins_to_net or connect_pins.
 
-    x and y snap to the 1.27 mm grid when the symbol moves. Passing the symbol's own position
-    (as list_schematic_components reports it) turns it in place without snapping. Nothing is
-    written when nothing would change.
+    x and y snap to the 1.27 mm grid when the symbol moves, and must lie on the page.
+    Passing the symbol's own position (as list_schematic_components reports it) turns it in
+    place without snapping, wherever it stands, off the page included. Nothing is written when
+    nothing would change.
 
     Args:
         reference: Reference designator (e.g. "R1")
         x: New X position
         y: New Y position
         rotation: The absolute angle in degrees (None = keep current); a mirrored symbol keeps
-            its mirror. Also repairs a symbol placed at an angle KiCad cannot load.
+            its mirror. Also repairs a symbol placed at an angle KiCad cannot load, or with
+            none, which a call without it refuses.
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
-    _bounds_check(x, y, page_w, page_h, page_name)
     sym = _find_sym_cst(root, reference)
     if sym is None:
         raise ToolError(f"Component {reference} not found." + _SEE_PLACED)
@@ -2033,54 +2034,59 @@ def move_component(
         for atom in at.atoms[1:3]:
             _sym_iu(atom.text, reference)
     for at in ats[:-1]:
-        if len(at.atoms) > 3 and _connectivity._angle(at.atoms[3].text) is None:
+        text, read = _placed_angle(at)
+        if read is None:
             raise ToolError(
-                f"{reference} carries more than one (at), and an earlier one is at angle"
-                f" {at.atoms[3].text}, which KiCad cannot load. This tool edits the last (at),"
-                " the one KiCad keeps, so the sheet would still not load. Remedy: delete the"
-                " extra (at) by hand, then move it again. The file was not changed."
+                f"{reference} carries more than one (at), and an earlier one is placed"
+                f" {_angle_words(text)}, which KiCad cannot load. This tool edits"
+                " the last (at), the one KiCad keeps, so the sheet would still not load."
+                " Remedy: delete the extra (at) by hand, then move it again. The file was not"
+                " changed."
             )
     last = ats[-1]
     s0 = (_sym_iu(last.atoms[1].text, reference), _sym_iu(last.atoms[2].text, reference))
-    angle_atom = last.atoms[3] if len(last.atoms) > 3 else None
-    bad_angle = angle_atom is not None and _connectivity._angle(angle_atom.text) is None
-    old_angle = angle_atom.text if angle_atom is not None else None
+    # KiCad reads a symbol's angle unconditionally, so an (at) with none is as unloadable as one
+    # at 45 (sch_io_kicad_sexpr_parser.cpp:3074 at 9.0.8, 3191 at 10.0.7): its old orientation
+    # then means nothing, and only a rotation says what the repaired symbol is.
+    old_angle, read = _placed_angle(last)
+    bad_angle = read is None
     if bad_angle and rotation is None:
         raise ToolError(
-            f"{reference} is placed at angle {old_angle}, which KiCad cannot load (0, 90,"
-            " 180 or 270 only), so KiCad cannot open this sheet. Pass rotation=0, 90, 180 or"
-            " 270 to repair it; its fields then keep the places the file gives them. The file"
-            " was not changed."
+            f"{reference} is placed {_angle_words(old_angle)}, which KiCad cannot"
+            " load (0, 90, 180 or 270 only), so KiCad cannot open this sheet. Pass rotation=0,"
+            " 90, 180 or 270 to repair it; its fields then keep the places the file gives"
+            " them. The file was not changed."
         )
     # In place when the call names the symbol's own position as KiCad reads it: KiCad turns a
     # single symbol about its own position (sch_edit_tool.cpp:814 at 9.0.8, 1009 at 10.0.7).
-    if (_mm_iu(x), _mm_iu(y)) == s0:
+    # Nothing then moves, so the page does not bound the call, and a symbol KiCad loads off the
+    # page can still be turned, or have its angle repaired.
+    if _is_here(x, y, s0):
         s1 = s0
     else:
+        _bounds_check(x, y, page_w, page_h, page_name)
         s1 = (_mm_iu(_snap_grid(x)), _mm_iu(_snap_grid(y)))
-    if rotation is None:
-        turn = False
-    elif angle_atom is None or bad_angle:
-        turn = True
-    else:
-        turn = _connectivity._angle(angle_atom.text) != rotation
+    turn = rotation is not None and (bad_angle or read != rotation)
     where = f"({_connectivity.mm(s1[0])}, {_connectivity.mm(s1[1])})"
     if s1 == s0 and not turn:
         return f"{reference} is already at {where} at that angle: nothing changed, nothing written."
 
     model, reason = None, None
     if bad_angle:
-        reason = f"its old angle {old_angle} gives its pins no position to compare against"
+        reason = "a placement KiCad cannot load gives its pins no position to compare against"
     else:
         try:
             model = _connectivity.Model(root)
             model.check_loadable()
         except _connectivity.Refusal as e:
             model, reason = None, e.text
-        except (AttributeError, IndexError, KeyError, ValueError):
+        except Exception:
+            # The report only advises and the edit does not depend on it, so whatever a sheet
+            # holds that the model cannot read (a text where a number goes, one past a double's
+            # range) must not stop the move.
             model, reason = None, "an item on this sheet could not be read"
-    if bad_angle and angle_atom is not None and rotation is not None:
-        angle_atom.set_text(str(int(rotation)))  # the repair: the old angle has no meaning
+    if bad_angle and rotation is not None:
+        _write_angle(last, rotation)  # the repair: the old orientation has no meaning
     try:
         before = _connectivity.symbol_frames(sym, reference)
     except _connectivity.Refusal as e:
@@ -2089,13 +2095,7 @@ def move_component(
         if _connectivity.iu(atom.text) != value:
             atom.set_text(_connectivity.mm(value))
     if turn and not bad_angle and rotation is not None:
-        if angle_atom is None:
-            angle = last.atoms[2].copy()
-            angle.sep = b" "
-            angle.set_text(str(int(rotation)))
-            last.children.append(angle)
-        else:
-            angle_atom.set_text(str(int(rotation)))
+        _write_angle(last, rotation)
     after = _connectivity.symbol_frames(sym, reference)
     frame_before = {id(ch): f for ch, f in before}
     frame_after = {id(ch): f for ch, f in after}
@@ -2117,9 +2117,9 @@ def move_component(
     if bad_angle:
         how = f"moved it to {where}" if s1 != s0 else f"kept it at {where}"
         lines = [
-            f"{reference} was placed at angle {old_angle}, which KiCad cannot load; set it to"
-            f" {rotation} and {how}. Its fields keep the places the file gives them, moved only"
-            " with the symbol."
+            f"{reference} was placed {_angle_words(old_angle)}, which KiCad cannot"
+            f" load; set it to {rotation} and {how}. Its fields keep the places the file gives"
+            " them, moved only with the symbol."
         ]
     elif s1 != s0:
         lines = [f"Moved {reference} to {where}" + (f", rotated to {rotation}" if turn else "")]
@@ -2154,6 +2154,15 @@ def _mm_iu(value: float) -> int:
     return _connectivity.kiround(value * _connectivity.IU_PER_MM)
 
 
+def _is_here(x: float, y: float, here: Point) -> bool:
+    """Whether (x, y) in mm is the internal-unit position ``here`` as KiCad reads the text.
+    False for a value no position holds: nan, or one past what internal units can count."""
+    try:
+        return (_mm_iu(x), _mm_iu(y)) == here
+    except (ValueError, OverflowError):
+        return False
+
+
 def _sym_iu(text: str, reference: str) -> int:
     """A coordinate atom of ``reference`` as KiCad reads it; a ToolError naming the token for
     text that is no number KiCad reads, before anything is written."""
@@ -2164,6 +2173,37 @@ def _sym_iu(text: str, reference: str) -> int:
             f"{reference} holds the coordinate {text!r}, which is not a number KiCad reads."
             " The file was not changed."
         ) from None
+
+
+def _placed_angle(at) -> tuple[str | None, int | None]:
+    """The angle atom of a placed symbol's ``(at)`` as written, None where it gives none, and
+    as KiCad reads it, None where KiCad refuses it.
+
+    KiCad reads the angle unconditionally: NeedNUMBER meets the closing paren of an
+    ``(at x y)`` and refuses the sheet (sch_io_kicad_sexpr_parser.cpp:3074 at 9.0.8, 3191 at
+    10.0.7), so a placement with none is as unloadable as one at 45. The shared readers
+    (``symbol_frames``) still read a missing angle as 0, a known failure that
+    test_ladder_r2_transform.py holds as an expected one. This tool does not guess it: a call
+    without a rotation is refused, and the rotation it is given is the repair.
+    """
+    text = at.atoms[3].text if len(at.atoms) > 3 else None
+    return text, None if text is None else _connectivity._angle(text)
+
+
+def _angle_words(text: str | None) -> str:
+    """How a message places a symbol whose ``(at)`` angle is ``text``, None for none: "at
+    angle 45", or "with no angle"."""
+    return "with no angle" if text is None else f"at angle {text}"
+
+
+def _write_angle(at, rotation: int) -> None:
+    """Make the ``(at)`` list ``at`` read ``rotation`` as its angle: the angle atom it has is
+    retexted, and one it lacks is appended after y with the single space KiCad writes there."""
+    text = str(int(rotation))
+    if len(at.atoms) > 3:
+        at.atoms[3].set_text(text)
+    else:
+        at.children.append(_cst.Atom(text.encode(), b" "))
 
 
 @mcp.tool(annotations=_ADDITIVE)
