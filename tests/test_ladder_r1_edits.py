@@ -684,6 +684,8 @@ def _gaps(data: bytes, group) -> list[bytes]:
 
 
 _FINITE = st.floats(allow_nan=False, allow_infinity=False)
+#: Millimetres within what KiCad's int coordinates reach, so KiROUND does not clamp.
+_COORDINATE_MM = st.floats(-2147.0, 2147.0, allow_nan=False, allow_infinity=False)
 
 
 @given(case=_holder_doc(), x=_FINITE, y=_FINITE, angle=st.one_of(st.none(), _FINITE))
@@ -733,6 +735,45 @@ def test_fill_at_rewrites_only_its_at_node(case, x, y, angle):
 
     _cst._fill_at(_cst_at(tree, holder_path), *args)
     assert _cst.serialize(tree) == after, "a second identical _fill_at changed the bytes"
+
+
+@given(
+    case=_holder_doc(),
+    x=_COORDINATE_MM,
+    y=_COORDINATE_MM,
+    angle=st.one_of(st.none(), st.floats(-1e4, 1e4, allow_nan=False, allow_subnormal=False)),
+    scale=st.sampled_from((U.SCH_IU_PER_MM, U.PCB_IU_PER_MM)),
+)
+@example(
+    case=(b"(root (symbol (at 1 2)))", (0, 1), 1),
+    x=100.123456,
+    y=1e-07,
+    angle=0.1 + 0.2,
+    scale=10_000,
+)
+def test_fill_at_with_a_scale_writes_kicads_text_and_changes_only_its_at_node(
+    case, x, y, angle, scale
+):
+    """_fill_at(node, x, y, angle, scale) is _fill_at with each position written as the text
+    KiCad writes for the units it holds (KiROUND( v * scale ), FormatInternalUnits) and the
+    angle as FormatAngle writes it, an angle KiCad would write "-0" for written 0; every byte
+    outside the node's first (at ...) is where it was."""
+    doc, holder_path, at_index = case
+    holder = _port_at(_premise(doc), holder_path)
+    tree = _cst.parse(doc)
+    _cst._fill_at(_cst_at(tree, holder_path), x, y, angle, scale)
+    after = _cst.serialize(tree)
+
+    location = ((0, "root"), (holder_path[1], holder.items[0].value.decode()), (at_index, "at"))
+    if after != doc:
+        J.assert_confined(doc, after, location, knows_bar=True)
+    toks = _port_at(_result(after), holder_path + (at_index,)).items
+    want = [U.format_internal_units(U.kiround(v * scale, major=9), scale) for v in (x, y)]
+    if angle is not None:
+        text = U.format_angle(angle)
+        want.append("0" if text == "-0" else text)
+    got = [after[t.start : t.end].decode() for t in toks[1:]]
+    assert got[: len(want)] == want, (got, want)
 
 
 @given(case=_holder_doc(numbers=_NUMBER), doc=G.kicad_doc())

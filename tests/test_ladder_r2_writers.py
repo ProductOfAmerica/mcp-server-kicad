@@ -49,11 +49,6 @@ SCH = U.SCH_IU_PER_MM
 PCB = U.PCB_IU_PER_MM
 MM = PCB
 
-_BUG_61 = (
-    "bug 61: the writer spells a number through _cst._num, with digits below the file's"
-    " resolution, float noise or an exponent, which KiCad never writes; fixed by step 11"
-)
-
 #: Positions (x, y), then the second coordinate of the heads that hold a pair.
 _COORDINATE_HEADS = (b"at", b"xy", b"start", b"end", b"mid", b"center")
 _DISTANCE_HEADS = (
@@ -393,7 +388,7 @@ _case(
         SCH,
         _hierarchy,
         lambda c: project.modify_hierarchical_sheet(
-            c["uuid"], c["sch"], width=25.4 + 0.00000001, height=10.1 + 0.2
+            c["uuid"], c["sch"], width=30.123456, height=10.1 + 0.2
         ),
         _pairs_and_keyed,
     ),
@@ -578,7 +573,7 @@ for _version in ("k9", "k10"):
             PCB,
             _board(_version, _R1),
             lambda c: pcb.add_thermal_vias(
-                "R1", "1", 2, 2, 0.1 + 0.2, 0.8 + 0.0000001, 0.1 + 0.2, pcb_path=c["pcb"]
+                "R1", "1", 3, 3, 0.1 + 0.2, 0.8 + 0.0000001, 0.1 + 0.2, pcb_path=c["pcb"]
             ),
             lambda result: [result.center["x"], result.center["y"]],
         ),
@@ -616,49 +611,8 @@ for _version in ("k9", "k10"):
         ),
     )
 
-#: The writers bug 61 reaches on the code as it stands: the others already round a
-#: request before they write it (or only copy numbers KiCad wrote), and are kept as guards.
-_BUG_61_WRITERS = frozenset(
-    {
-        "add_text",
-        "modify_hierarchical_label",
-        "modify_hierarchical_sheet",
-        "add_sheet_pin",
-        "move_hierarchical_sheet",
-        "flatten_hierarchy",
-        "add_symbol",
-    }
-    | {
-        f"{name}[{version}]"
-        for name in (
-            "place_footprint",
-            "move_footprint",
-            "add_trace",
-            "add_via",
-            "add_pcb_text",
-            "add_pcb_line",
-            "add_copper_zone",
-            "add_keepout_zone",
-            "set_trace_width",
-            "add_thermal_vias",
-            "update_pcb_from_schematic",
-        )
-        for version in ("k9", "k10")
-    }
-)
 
-
-def _params():
-    for name, case in _CASES.items():
-        marks = (
-            [pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_61)]
-            if name in _BUG_61_WRITERS
-            else []
-        )
-        yield pytest.param(name, case, id=name, marks=marks)
-
-
-@pytest.mark.parametrize(("name", "case"), list(_params()))
+@pytest.mark.parametrize(("name", "case"), list(_CASES.items()), ids=list(_CASES))
 def test_writers_spell_numbers_as_kicad_does(tmp_path, name, case):
     """One call of one writer: every coordinate, distance and angle it adds or changes is a
     fixed point of KiCad's read then write at the file's scale, and every number the result

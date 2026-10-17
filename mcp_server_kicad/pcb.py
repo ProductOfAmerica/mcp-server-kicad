@@ -16,7 +16,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 import mcp_server_kicad._cst as _cst
-from mcp_server_kicad._cst import _fill_at, _num, _numish
+from mcp_server_kicad._cst import PCB_IU_PER_MM, _angle_text, _fill_at, _num, _numish, _snap
 from mcp_server_kicad._freerouting import (
     check_java as _check_java,
 )
@@ -1207,7 +1207,7 @@ def _sync_fp_fields(fp, fields: dict) -> bool:
         node.find("uuid").atoms[1].set_text(_gen_uuid())
         angle = _fp_rotation(fp) % 360
         if angle:
-            node.find("at").atoms[3].set_text(_num(angle))
+            node.find("at").atoms[3].set_text(_angle_text(angle))
         if _fp_layer(fp).startswith("B."):
             # KiCad's StyleFromSettings mirrors a text on a back layer, so the
             # field reads from the back like the library's own texts do after a
@@ -1387,13 +1387,6 @@ def _copy_lib_footprint_cst(lib_path: str, name: str, fpid: str):
 # fp_text's (at x y T) holds its absolute angle, always written (1992-1994). Every
 # position in them is footprint-relative, so turning a footprint rewrites angle
 # atoms and nothing else of its pads, texts and graphics.
-
-
-def _angle_text(degrees: float) -> str:
-    """An angle as KiCad writes it: FormatAngle, fmt's ``{:.10g}``
-    (common/eda_units.cpp:162-167 at 9.0.8, 186-191 at 10.0.7), which Python's
-    ``.10g`` matches. Adding 0.0 turns -0.0 into 0, so no angle is written "-0"."""
-    return format(degrees + 0.0, ".10g")
 
 
 #: A token KiCad's lexer reads as a NUMBER (DSNLEXER's isNumber,
@@ -1849,13 +1842,13 @@ def _fill_zone_polygon(node, corners: list[PointSpec]) -> None:
     """Fill the template's single (xy) with corner 0 and clone the rest inline."""
     pts = node.find("polygon").find("pts")
     first = pts.find("xy")
-    first.atoms[1].set_text(_num(corners[0]["x"]))
-    first.atoms[2].set_text(_num(corners[0]["y"]))
+    first.atoms[1].set_text(_num(corners[0]["x"], PCB_IU_PER_MM))
+    first.atoms[2].set_text(_num(corners[0]["y"], PCB_IU_PER_MM))
     anchor = first
     for c in corners[1:]:
         xy = first.copy()
-        xy.atoms[1].set_text(_num(c["x"]))
-        xy.atoms[2].set_text(_num(c["y"]))
+        xy.atoms[1].set_text(_num(c["x"], PCB_IU_PER_MM))
+        xy.atoms[2].set_text(_num(c["y"], PCB_IU_PER_MM))
         pts.insert_after(anchor, xy, sep=b" ")
         anchor = xy
 
@@ -2213,6 +2206,7 @@ def place_footprint(
             " or neither for a pad-less marker."
         )
     _require_finite_rotation(rotation)
+    x, y = _snap(x, PCB_IU_PER_MM), _snap(y, PCB_IU_PER_MM)
     tree, root, key = _open_pcb_cst(pcb_path)
     # Every check before the cache pop, so a refusal leaves the cached tree valid.
     _resolve_layer_cst(root, layer, copper_only=True)
@@ -2244,7 +2238,7 @@ def place_footprint(
     _BOARD_CACHE.pop(key, None)
     _set_fp_property(node, "Reference", reference)
     _set_fp_property(node, "Value", value)
-    _fp_translate(node, _num(x), _num(y), layers.major)
+    _fp_translate(node, _num(x, PCB_IU_PER_MM), _num(y, PCB_IU_PER_MM), layers.major)
     if flipping:
         _fp_flip(node, layers)
     _fp_rotate_to(node, rotation, layers.major)
@@ -2748,6 +2742,7 @@ def move_footprint(
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     _require_finite_rotation(rotation)
+    x, y = _snap(x, PCB_IU_PER_MM), _snap(y, PCB_IU_PER_MM)
     tree, root, key = _open_pcb_cst(pcb_path)
     # Every check before the cache pop, so a refusal leaves the cached tree valid.
     if layer:
@@ -2762,7 +2757,7 @@ def move_footprint(
             f"{reference} carries {reason}. Nothing was changed; move it in KiCad instead."
         )
     _BOARD_CACHE.pop(key, None)
-    _fp_translate(fp, _num(x), _num(y), layers.major)
+    _fp_translate(fp, _num(x, PCB_IU_PER_MM), _num(y, PCB_IU_PER_MM), layers.major)
     if flipping:
         # The flip before the angle: the flip rewrites the footprint's own angle
         # from the one it had, and the rotation names the angle it ends at.
@@ -2880,16 +2875,17 @@ def add_trace(
             (pcb_io_kicad_sexpr.cpp:2860-2861 at 10.0.7).
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
+    x1, y1, x2, y2, width = (_snap(v, PCB_IU_PER_MM) for v in (x1, y1, x2, y2, width))
     tree, root, key = _open_pcb_cst(pcb_path)
     _resolve_layer_cst(root, layer, copper_only=True)
     _BOARD_CACHE.pop(key, None)
     node = _SEGMENT_TPL.copy()
     start, end = node.find("start"), node.find("end")
-    start.atoms[1].set_text(_num(x1))
-    start.atoms[2].set_text(_num(y1))
-    end.atoms[1].set_text(_num(x2))
-    end.atoms[2].set_text(_num(y2))
-    node.find("width").atoms[1].set_text(_num(width))
+    start.atoms[1].set_text(_num(x1, PCB_IU_PER_MM))
+    start.atoms[2].set_text(_num(y1, PCB_IU_PER_MM))
+    end.atoms[1].set_text(_num(x2, PCB_IU_PER_MM))
+    end.atoms[2].set_text(_num(y2, PCB_IU_PER_MM))
+    node.find("width").atoms[1].set_text(_num(width, PCB_IU_PER_MM))
     node.find("layer").atoms[1].set_text(layer)
     _set_item_net(node, root, net)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
@@ -2920,6 +2916,7 @@ def add_via(
         layers: Via layers (default: ["F.Cu", "B.Cu"])
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
+    x, y, size, drill = (_snap(v, PCB_IU_PER_MM) for v in (x, y, size, drill))
     tree, root, key = _open_pcb_cst(pcb_path)
     via_layers = layers or ["F.Cu", "B.Cu"]
     for name in via_layers:
@@ -2927,10 +2924,10 @@ def add_via(
     _BOARD_CACHE.pop(key, None)
     node = _VIA_TPL.copy()
     at = node.find("at")
-    at.atoms[1].set_text(_num(x))
-    at.atoms[2].set_text(_num(y))
-    node.find("size").atoms[1].set_text(_num(size))
-    node.find("drill").atoms[1].set_text(_num(drill))
+    at.atoms[1].set_text(_num(x, PCB_IU_PER_MM))
+    at.atoms[2].set_text(_num(y, PCB_IU_PER_MM))
+    node.find("size").atoms[1].set_text(_num(size, PCB_IU_PER_MM))
+    node.find("drill").atoms[1].set_text(_num(drill, PCB_IU_PER_MM))
     layers_node = node.find("layers")
     tpl_atom = layers_node.atoms[1]
     del layers_node.children[1:]
@@ -2965,12 +2962,13 @@ def add_pcb_text(
         rotation: Rotation in degrees
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
+    x, y = _snap(x, PCB_IU_PER_MM), _snap(y, PCB_IU_PER_MM)
     tree, root, key = _open_pcb_cst(pcb_path)
     _resolve_layer_cst(root, layer)
     _BOARD_CACHE.pop(key, None)
     node = _GR_TEXT_TPL.copy()
     node.atoms[1].set_text(text)
-    _fill_at(node, x, y, rotation)
+    _fill_at(node, x, y, rotation, PCB_IU_PER_MM)
     node.find("layer").atoms[1].set_text(layer)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_after(root, node, _GRAPHIC_HEADS, _TRACE_AND_TAIL_HEADS)
@@ -2999,16 +2997,17 @@ def add_pcb_line(
         width: Line width in mm
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
+    x1, y1, x2, y2 = (_snap(v, PCB_IU_PER_MM) for v in (x1, y1, x2, y2))
     tree, root, key = _open_pcb_cst(pcb_path)
     _resolve_layer_cst(root, layer)
     _BOARD_CACHE.pop(key, None)
     node = _GR_LINE_TPL.copy()
     start, end = node.find("start"), node.find("end")
-    start.atoms[1].set_text(_num(x1))
-    start.atoms[2].set_text(_num(y1))
-    end.atoms[1].set_text(_num(x2))
-    end.atoms[2].set_text(_num(y2))
-    node.find("stroke").find("width").atoms[1].set_text(_num(width))
+    start.atoms[1].set_text(_num(x1, PCB_IU_PER_MM))
+    start.atoms[2].set_text(_num(y1, PCB_IU_PER_MM))
+    end.atoms[1].set_text(_num(x2, PCB_IU_PER_MM))
+    end.atoms[2].set_text(_num(y2, PCB_IU_PER_MM))
+    node.find("stroke").find("width").atoms[1].set_text(_num(width, PCB_IU_PER_MM))
     node.find("layer").atoms[1].set_text(layer)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_after(root, node, _GRAPHIC_HEADS, _TRACE_AND_TAIL_HEADS)
@@ -3046,6 +3045,10 @@ def add_copper_zone(
     """
     if len(corners) < 3:
         raise ToolError("At least 3 corners required for a zone polygon.")
+    clearance, min_thickness, thermal_gap, thermal_bridge_width = (
+        _snap(v, PCB_IU_PER_MM)
+        for v in (clearance, min_thickness, thermal_gap, thermal_bridge_width)
+    )
     tree, root, key = _open_pcb_cst(pcb_path)
     _resolve_layer_cst(root, layer, copper_only=True)
     _BOARD_CACHE.pop(key, None)
@@ -3055,16 +3058,16 @@ def add_copper_zone(
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     node.find("priority").atoms[1].set_text(str(priority))
     cp = node.find("connect_pads")
-    cp.find("clearance").atoms[1].set_text(_num(clearance))
+    cp.find("clearance").atoms[1].set_text(_num(clearance, PCB_IU_PER_MM))
     if not thermal_relief:
         solid = cp.children[0].copy()
         solid.sep = b" "
         solid.set_text("yes")
         cp.children.insert(1, solid)
-    node.find("min_thickness").atoms[1].set_text(_num(min_thickness))
+    node.find("min_thickness").atoms[1].set_text(_num(min_thickness, PCB_IU_PER_MM))
     fill = node.find("fill")
-    fill.find("thermal_gap").atoms[1].set_text(_num(thermal_gap))
-    fill.find("thermal_bridge_width").atoms[1].set_text(_num(thermal_bridge_width))
+    fill.find("thermal_gap").atoms[1].set_text(_num(thermal_gap, PCB_IU_PER_MM))
+    fill.find("thermal_bridge_width").atoms[1].set_text(_num(thermal_bridge_width, PCB_IU_PER_MM))
     _fill_zone_polygon(node, corners)
     if _board_version(root) <= _NUMERIC_NET_VERSION_MAX:
         node.find("net").atoms[1].set_text(str(net_num))
@@ -3368,11 +3371,12 @@ def set_trace_width(
         y_max: Bottom edge of bounding box filter (mm)
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
+    width = _snap(width, PCB_IU_PER_MM)
     tree, root, key = _open_pcb_cst(pcb_path)
     _BOARD_CACHE.pop(key, None)
     segments = _filter_segments_cst(root, net_name, layer, x_min, y_min, x_max, y_max)
     for seg in segments:
-        seg.find("width").atoms[1].set_text(_num(width))
+        seg.find("width").atoms[1].set_text(_num(width, PCB_IU_PER_MM))
     _atomic_write(key, _cst.serialize(tree))
     return TraceWidthResult(traces_modified=len(segments), net=net_name, new_width_mm=width)
 
@@ -3505,10 +3509,10 @@ def add_thermal_vias(
             vy = pad_y + (r - (rows - 1) / 2) * spacing
             node = _VIA_TPL.copy()
             via_at = node.find("at")
-            via_at.atoms[1].set_text(_num(round(vx, 4)))
-            via_at.atoms[2].set_text(_num(round(vy, 4)))
-            node.find("size").atoms[1].set_text(_num(via_size))
-            node.find("drill").atoms[1].set_text(_num(via_drill))
+            via_at.atoms[1].set_text(_num(vx, PCB_IU_PER_MM))
+            via_at.atoms[2].set_text(_num(vy, PCB_IU_PER_MM))
+            node.find("size").atoms[1].set_text(_num(via_size, PCB_IU_PER_MM))
+            node.find("drill").atoms[1].set_text(_num(via_drill, PCB_IU_PER_MM))
             _set_item_net(node, root, via_net)
             node.find("uuid").atoms[1].set_text(_gen_uuid())
             _splice_pcb_node(root, node)
@@ -3520,7 +3524,7 @@ def add_thermal_vias(
         reference=reference,
         pad=pad.atoms[1].text,
         net=net_name or _pad_net_name(pad.find("net"), ""),
-        center={"x": round(pad_x, 4), "y": round(pad_y, 4)},
+        center={"x": _snap(pad_x, PCB_IU_PER_MM), "y": _snap(pad_y, PCB_IU_PER_MM)},
     )
 
 
@@ -4335,7 +4339,7 @@ def _apply_netlist_cst(
         # angle, as KiCad's writer leaves one of 0 out.
         x, y = _grid_slot(k, ax, ay, 10.0)
         k += 1
-        _fp_translate(node, _num(x), _num(y), layers.major)
+        _fp_translate(node, _num(x, PCB_IU_PER_MM), _num(y, PCB_IU_PER_MM), layers.major)
         _sync_fp_from_component(node, comp)
         _splice_after(root, node, ("footprint",), _PCB_TAIL_HEADS)
         by_ref[ref] = node
@@ -4994,7 +4998,8 @@ def _fix_displaced_fp_text(pcb_path: str) -> int:
             if math.hypot(*_xy(at)) <= _FP_TEXT_DISPLACEMENT_THRESHOLD_MM:
                 continue
             kind = text.atoms[1].text.lower()
-            _fill_at(text, *_FP_TEXT_DEFAULT_OFFSETS.get(kind, (0, 0)))
+            offset_x, offset_y = _FP_TEXT_DEFAULT_OFFSETS.get(kind, (0, 0))
+            _fill_at(text, offset_x, offset_y, iu=PCB_IU_PER_MM)
             fixed += 1
     if fixed > 0:
         _atomic_write(pcb_path, _cst.serialize(tree))

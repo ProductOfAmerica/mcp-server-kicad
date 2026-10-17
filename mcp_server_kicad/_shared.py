@@ -21,6 +21,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 import mcp_server_kicad._cst as _cst
+from mcp_server_kicad._cst import kiround
 
 # ---------------------------------------------------------------------------
 # Server construction
@@ -1562,29 +1563,9 @@ def _point_in_polygon(x: float, y: float, polygon: list[tuple[float, float]]) ->
 # KiCad's integer board geometry. Here rather than in pcb.py because
 # _transform_local_to_board below needs it, and here rather than in
 # _connectivity.py because _connectivity imports this module: _shared imports
-# neither of them, so both can import from it without a cycle.
-
-
-def kiround(v: float) -> int:
-    """KiCad 9's KiROUND to int, half away from zero
-    (libs/kimath/include/math/util.h:99-142 at 9.0.8): ``v < 0 ? v - 0.5 : v + 0.5``
-    in floating point, then truncated.
-
-    KiCad 10 rounds with std::llround instead (kiround10). Inside int the two
-    agree on every double but +-0.49999999999999994, the one just below a half,
-    where KiCad 9's added 0.5 rounds up: KiCad 9 gives +-1, KiCad 10 gives 0.
-    RotatePoint lands there where a turned coordinate is exactly that, as for a
-    point 1 nm off the centre along an axis at 30 or 150 degrees, so a board
-    position goes through _kiround_for and the KiCad whose format the board
-    carries. This form also serves the readers that are given no board version:
-    the schematic readers in _connectivity, and pcb._numish_text, which negates a
-    footprint's local coordinates for the flip. Coordinates as KiCad writes them
-    are whole units of its grid (100 nm in a schematic, 1 nm on a board), where
-    the two never part; only a hand-written coordinate a hair below half a unit
-    would read differently. Neither clamp is modelled: coordinates stay far
-    inside int.
-    """
-    return int(v + 0.5) if v >= 0 else int(v - 0.5)
+# neither of them, so both can import from it without a cycle. KiCad 9's KiROUND is
+# _cst.kiround, imported at the top: the number writers in _cst need it, and _cst imports
+# nothing from this package.
 
 
 def kiround10(v: float) -> int:

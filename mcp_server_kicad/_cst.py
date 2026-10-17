@@ -32,6 +32,7 @@ class, and parse-time interning dedups the highly repetitive separator and
 token bytes of large boards.
 """
 
+import math
 import re
 
 _BLANK = rb"[ \t\r\x00]"  # KiCad's whitespace but LF
@@ -313,8 +314,68 @@ def serialize(node: Node) -> bytes:
     return b"".join(out)
 
 
-def _num(v: float) -> str:
-    return str(int(v)) if v == int(v) else str(v)
+#: Internal units per millimetre, the grid KiCad holds a distance on: 100 nm in a schematic and
+#: a symbol library, 1 nm on a board and in a footprint (include/base_units.h:70 and 72 at
+#: 9.0.8, the same at 10.0.7).
+SCH_IU_PER_MM = 10_000
+PCB_IU_PER_MM = 1_000_000
+
+
+def kiround(v: float) -> int:
+    """KiCad 9's KiROUND to int, half away from zero
+    (libs/kimath/include/math/util.h:99-142 at 9.0.8): ``v < 0 ? v - 0.5 : v + 0.5`` in
+    floating point, then truncated.
+
+    KiCad 10 rounds with std::llround instead (_shared.kiround10). Inside int the two agree on
+    every double but +-0.49999999999999994, the one just below a half, where KiCad 9's added 0.5
+    rounds up: KiCad 9 gives +-1, KiCad 10 gives 0. RotatePoint lands there where a turned
+    coordinate is exactly that, as for a point 1 nm off the centre along an axis at 30 or 150
+    degrees, so a board position goes through _shared._kiround_for and the KiCad whose format the
+    board carries. This form also serves the readers that are given no board version: the
+    schematic readers in _connectivity, pcb._numish_text, which negates a footprint's local
+    coordinates for the flip, and _snap. Coordinates as KiCad writes them are whole units of its
+    grid (100 nm in a schematic, 1 nm on a board), where the two never part; only a hand-written
+    coordinate a hair below half a unit would read differently. Neither clamp is modelled:
+    coordinates stay far inside int.
+    """
+    return int(v + 0.5) if v >= 0 else int(v - 0.5)
+
+
+def _snap(v: float, iu: int) -> float:
+    """The millimetres KiCad holds for ``v`` in a file of ``iu`` internal units per
+    millimetre: KiROUND( v * iu ) / iu. A ``v`` already on that grid comes back as itself, so
+    an int or a float that needs no rounding keeps its type and a message that echoes it
+    reads as the request did. Raises ValueError for NaN and OverflowError for infinity."""
+    held = kiround(v * iu) / iu
+    return v if held == v else held
+
+
+def _num(v: float, iu: int | None = None) -> str:
+    """The text of a number in a file.
+
+    With ``iu``, the file's internal units per millimetre (SCH_IU_PER_MM or PCB_IU_PER_MM), v is
+    first snapped to the position KiCad holds (_snap), so the text is the one KiCad writes for
+    it. Without it the text reads back as exactly v: KiCad's own, FormatInternalUnits
+    (common/eda_units.cpp:170-200 at 9.0.8), when that reads back as v, and the shortest text that
+    does when it does not. A whole number is an integer, never "-0" or "5.0"; the rest is
+    ``{:.10f}`` stripped of its trailing zeros up to 0.0001 and ``{:.10g}`` above.
+    """
+    if iu is not None:
+        v = _snap(v, iu)
+    if v == int(v):
+        return str(int(v))
+    text = f"{v:.10f}".rstrip("0") if abs(v) <= 0.0001 else f"{v:.10g}"
+    return text if float(text) == v else repr(v)
+
+
+def _angle_text(degrees: float) -> str:
+    """An angle as KiCad writes it: FormatAngle, fmt's ``{:.10g}``
+    (common/eda_units.cpp:162-167 at 9.0.8, 186-191 at 10.0.7), which Python's ``.10g``
+    matches. Adding 0.0 turns -0.0 into 0, so no angle is written "-0". An angle that is not
+    finite is refused with ValueError: KiCad's parser takes an angle only as a number."""
+    if not math.isfinite(degrees):
+        raise ValueError(f"an angle must be finite, not {degrees}")
+    return format(degrees + 0.0, ".10g")
 
 
 def _numish(s: str | float) -> float | int:
@@ -332,17 +393,24 @@ def _node_xy(node) -> tuple[float, float]:
     return float(at.atoms[1].text), float(at.atoms[2].text)
 
 
-def _fill_at(node, x: float, y: float, rotation: float | None = None) -> None:
+def _fill_at(
+    node, x: float, y: float, rotation: float | None = None, iu: int | None = None
+) -> None:
+    """Set the position of ``node``'s first (at ...), and its angle when ``rotation`` is given
+    (an atom is appended after y when the list has none). With ``iu``, the file's internal
+    units per millimetre, x and y are written as _num writes them for that file and the angle
+    as _angle_text does; without it every value is written exactly."""
     at = node.find("at")
-    at.atoms[1].set_text(_num(x))
-    at.atoms[2].set_text(_num(y))
+    at.atoms[1].set_text(_num(x, iu))
+    at.atoms[2].set_text(_num(y, iu))
     if rotation is not None:
+        text = _num(rotation) if iu is None else _angle_text(rotation)
         if len(at.atoms) > 3:
-            at.atoms[3].set_text(_num(rotation))
+            at.atoms[3].set_text(text)
         else:
             rot = at.atoms[2].copy()
             rot.sep = b" "
-            rot.set_text(_num(rotation))
+            rot.set_text(text)
             at.children.append(rot)
 
 
@@ -407,6 +475,15 @@ def demo():
     t_at = parse(b"(x\n\t(at 1 2)\n)")
     _fill_at(t_at.lists[0], 3, 4, 90)
     assert serialize(t_at) == b"(x\n\t(at 3 4 90)\n)", serialize(t_at)
+
+    # Number text: exact without a scale, the position KiCad holds with one, and an angle as
+    # FormatAngle writes it.
+    assert _num(4.5e-05) == "0.000045" and _num(0.1 + 0.2) == "0.30000000000000004"
+    assert _num(100.123456, SCH_IU_PER_MM) == "100.1235" and _num(50, PCB_IU_PER_MM) == "50"
+    assert _snap(50, SCH_IU_PER_MM) == 50 and isinstance(_snap(50, SCH_IU_PER_MM), int)
+    assert _angle_text(0.1 + 0.2) == "0.3" and _angle_text(-0.0) == "0"
+    _fill_at(t_at.lists[0], 1.00004, 2.5e-07, 0.1 + 0.2, PCB_IU_PER_MM)
+    assert serialize(t_at) == b"(x\n\t(at 1.00004 0 0.3)\n)", serialize(t_at)
 
     # insert_before mirrors insert_after; remove_child inverts both;
     # append_child grows a list with an explicit separator.
