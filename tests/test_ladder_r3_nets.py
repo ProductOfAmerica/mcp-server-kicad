@@ -62,6 +62,7 @@ so the tests of such numbers read the file with the lexer port and pcbnew.
 from __future__ import annotations
 
 import itertools
+import re
 import shutil
 import tempfile
 from collections.abc import Callable, Mapping, Sequence
@@ -887,7 +888,7 @@ def test_a_copper_shape_on_a_net_that_left_reads_on_no_net_in_pcbnew(tmp_path):
     the update (the premise, RuntimeError otherwise) and on no net after it, with no /SIG net
     in the board. Skipped on pcbnew 10, as the zone's test is. It reads on no net today too, by
     accident: the shape keeps (net 3) after the row is pruned, a number past the table, which
-    pcbnew logs as an invalid net ID and reads on none (measured 2026-10-11 and 2026-10-17),
+    pcbnew logs as an invalid net ID and reads on none (measured 2026-10-17),
     so this guards the reading the fix must keep and the test above judges the number."""
     _need_pcbnew()
     if PJ.major() >= 10:
@@ -1123,9 +1124,9 @@ def test_board_info_counts_the_unconnected_net_as_pcbnew_does(tmp_path, version)
     unconnected net, net 0, which its net list registers under the empty name when it is built
     (NETINFO_LIST::NETINFO_LIST, pcbnew/netinfo_list.cpp:37-43 at 9.0.8, 40-46 at 10.0.7): a
     board with two named nets has three. A KiCad 9 table lists net 0 as its row 0, so the tool
-    counted it there; a KiCad 10 board has no table and the tool counted two (the 2026-10-11
-    comment on issue 113 inferred this from the source). When pcbnew can load the board the
-    count is pcbnew's own (RuntimeError, as a premise, when it differs)."""
+    counted it there; a KiCad 10 board has no table and the tool counted two. When pcbnew
+    can load the board the count is pcbnew's own (RuntimeError, as a premise, when it
+    differs)."""
     named = 2
     if version == "k9":
         rows = {"/GND": 1, "/VCC": 2}
@@ -1361,7 +1362,7 @@ def test_reimporting_a_demos_own_netlist_leaves_its_pads_byte_identical(tmp_path
     byte for byte; and pcbnew reads each such pad on the net it read before. The update swaps
     footprints whose library nickname differs from the symbol's, which replaces them by
     design, and those are left out. The pass moved the (net ...) of all 21 pads of the other
-    footprints in the demo (measured 2026-10-11 on KiCad 9.0.8's ecc83-pp)."""
+    footprints in the demo (measured 2026-10-17 on KiCad 9.0.8's ecc83-pp)."""
     folder, schematic, board_name, project = _demo_board("ecc83")
     work = tmp_path / folder.name
     shutil.copytree(folder, work)
@@ -1540,6 +1541,10 @@ _DEVELOPMENT_FORMATS = range(20241230, 20251028)
 #: thirteen thousand pads.
 _SHOWN = 12
 
+#: A token of an s-expression with the whitespace left out: a quoted string, a paren or a
+#: bare word.
+_TOKEN = re.compile(rb'"(?:[^"\\]|\\.)*"|[()]|[^\s()"]+')
+
 
 def _binding_report(path: Path) -> tuple[int, int, list[str]]:
     """(pads with a net, pads whose (net ...) does not directly follow (layers ...), the ways
@@ -1548,10 +1553,14 @@ def _binding_report(path: Path) -> tuple[int, int, list[str]]:
     For each pad of the board that carries one net, in a copy of it: binding the pad to the net
     it is already on must leave its bytes as KiCad wrote them, and (except in the development
     formats, _DEVELOPMENT_FORMATS) removing the net and binding it again must give KiCad's
-    bytes back. The board's format version is pinned, which _bind_pad_net would otherwise look
-    up per pad by scanning every item of the board (a probe over KiCad 9.0.8's boards did not
-    finish in 600 s unpinned, 2026-10-11; pinned, all 39 boards take 20 s, 2026-10-17). A board
-    the CST refuses (bug 54) is left out."""
+    bytes back. Where KiCad wrapped the line before the net, as KiCad 7's writer does at a
+    width limit (the Ubuntu package of KiCad 7.0.9's templates that the Linux 9.0 leg installs
+    has 510 such pads), the net's separator is not its predecessor's and no tool could know it,
+    so only the tokens must come back, in KiCad's order. The board's format version is pinned,
+    which _bind_pad_net would otherwise look
+    up per pad by scanning every item of the board (pinned, all 39 boards of KiCad 9.0.8's
+    demos and templates take 20 s, measured 2026-10-17). A board the CST refuses (bug 54) is
+    left out."""
     try:
         root = _cst.parse(path.read_bytes()).lists[0]
     except SyntaxError:
@@ -1581,9 +1590,17 @@ def _binding_report(path: Path) -> tuple[int, int, list[str]]:
                 if version in _DEVELOPMENT_FORMATS:
                     continue
                 work = pad.copy()
-                work.remove_child(work.find("net"))
+                held = work.find("net")
+                wrapped = held.sep != work.children[work.children.index(held) - 1].sep
+                work.remove_child(held)
                 pcb._bind_pad_net(root, work, number, name)
-                if _cst.serialize(work) != original:
+                rebuilt = _cst.serialize(work)
+                same = (
+                    _TOKEN.findall(rebuilt) == _TOKEN.findall(original)
+                    if wrapped
+                    else (rebuilt == original)
+                )
+                if not same:
                     problems.append(f"{where}: its net, removed and bound again, is not KiCad's")
     return pads, offset, problems
 
@@ -1612,7 +1629,8 @@ def test_pad_rebind_reproduces_kicads_own_pads():
     """N1. KiCad's own boards, the demos and templates its install ships up to the per-push
     size cap, are the judge of where a pad's (net ...) goes: for each pad that carries one, a
     copy of the pad bound to the net it is on is as KiCad wrote it, and the pad with its net
-    taken off and bound again is as KiCad wrote it. KiCad writes the net right after the last
+    taken off and bound again is as KiCad wrote it (_binding_report says how far a line KiCad
+    wrapped is held to its bytes). KiCad writes the net right after the last
     child format( PAD ) puts before it (_BEFORE_NET), which is after (layers ...) on 6,215 of
     the 13,497 pads of KiCad 9.0.8's boards and after remove_unused_layers or roundrect_rratio
     on the other 7,282 (counted 2026-10-17). _bind_pad_net put it after (layers ...) always, so
@@ -1639,9 +1657,10 @@ def test_nightly_pad_rebind_reproduces_kicads_own_pads():
 #: Runs under pcbnew's Python: two boards of the same six items, board B with each on the net
 #: /SIG and board A with each on no net, both saved by pcbnew's own writer, so A shows how
 #: the running pcbnew spells no net for each kind. The kinds, in this order: a segment, an
-#: arc, a via, a copper zone, a rule area and a copper polygon. (The calls are the ones
-#: this module's probe of 2026-10-11 made on pcbnew 9.0.8; a call whose shape changed on a
-#: later pcbnew raises, which pcbnew_judge reports as a RuntimeError, never as a pass.)
+#: arc, a via, a copper zone, a rule area and a copper polygon. (The calls ran on pcbnew
+#: 9.0.8 here and on pcbnew 10 on the Linux 10.0, macOS and Windows legs, 2026-10-17; a call
+#: whose shape changed on a later pcbnew raises, which pcbnew_judge reports as a
+#: RuntimeError, never as a pass.)
 _HARVEST = r"""
 import os
 import sys
