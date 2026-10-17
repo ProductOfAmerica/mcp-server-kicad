@@ -18,11 +18,13 @@ board is 0 or a row of its table; bug 19, a KiCad 9 zone is on the net its net_n
 board with no table; bug 22, a pad whose net did not change keeps its bytes; bug 99, the orphan
 and prune passes see the copper shapes that carry a net; bug 100, a name a board with no table
 spells gets a row; bug 101, a new row never takes a number an item already refers to. Review
-fixes: a net a pad of a footprint that stays is on has not left the schematic, and a bare net
-number is bound as the KiCad that loads the board's format binds it, read by the update before
-it swaps a footprint or moves a pad. The judges are KiCad's own parser and writer, read at
-9.0.8 and 10.0.7 and cited where each is used; pcbnew, where this machine has it; the lexer
-port in tests/kicad_ref for what a file holds; and the files KiCad ships.
+fixes: a net a pad of a footprint that stays is on has not left the schematic (a via or a zone
+on such a net that was renamed stays where it is, where KiCad's own update moves it, pinned as
+the tool's description states it); and a bare net number is bound as the KiCad that loads the
+board's format binds it, read by the update before it swaps a footprint or moves a pad. The
+judges are KiCad's own parser and writer, read at 9.0.8 and 10.0.7 and cited where each is
+used; pcbnew, where this machine has it; the lexer port in tests/kicad_ref for what a file
+holds; and the files KiCad ships.
 
 KiCad 9's rule, read at 9.0.8. A net reference is a number, and the parser maps every number
 through the board's table: getNetCode over the map parseNETINFO_ITEM fills, zeros in its gaps
@@ -1095,7 +1097,9 @@ def test_a_net_a_footprint_that_stays_is_on_stays_whole(tmp_path, version, stays
     pad, and the segment, via, zone and polygon on it, and the one change to the file is the
     segment on /Y, a net no pad is on, going to no net with its row on a KiCad 9 board. The
     pass sent all four items on /X to no net while R5's pad stayed on it (measured 2026-10-17:
-    pcbnew 9.0.8 read the pad on /X, and the polygon on no net)."""
+    pcbnew 9.0.8 read the pad on /X, and the polygon on no net). No pad of a footprint the
+    netlist names leaves /X here, so KiCad's reconnection of the vias and zones of a renamed
+    net has nothing to move; the test below is the board where a pad does leave."""
     delete_stale, lock, attr = _STAYS[stays]
     board = _kept_board(tmp_path, version, lock=lock, attr=attr)
     before = board.read_bytes()
@@ -1144,6 +1148,64 @@ def test_a_net_no_pad_that_stays_is_on_goes_to_no_net_with_all_on_it(tmp_path, v
     read = _pcbnew_item_nets(board, version)
     if read is not None:
         assert read == [""] * 5, f"pcbnew reads the items on {read} after the update"
+
+
+@pytest.mark.parametrize("version", ["k9", "k10"])
+def test_a_renamed_net_a_footprint_that_stays_is_on_keeps_what_is_on_it(tmp_path, version):
+    """Where this update parts from KiCad's own, pinned as the tool's description states it.
+    U1's pad 2 and the pad of R5, which the netlist leaves out and which stays under the
+    default delete_stale, are on /X, and a segment, a via, a copper zone and a copper polygon
+    are on /X. The netlist names U1 alone and puts its pad 2 on /Y: /X is renamed. KiCad's
+    update records the pair when it moves the pad (m_oldToNewNets, board_netlist_updater.cpp:
+    932 at 9.0.8, 1202 at 10.0.7), and updateCopperZoneNets, which runs before the stale
+    footprints are settled, moves the via and the zone to /Y whether or not a pad that stays
+    holds /X (1005-1221 and the call at 1417, 9.0.8; 1676-1892 and 2323, 10.0.7); /X stays
+    current through R5's pad and keeps the segment and the polygon. Neither kicad-cli nor
+    pcbnew's API runs the updater, so that half rests on the source. This update reconnects
+    nothing: its one change is U1's pad 2 on /Y (with a row for /Y on a KiCad 9 board), the
+    segment, via, zone and polygon stay on /X with R5's pad, /X keeps its row, and nothing
+    is orphaned or warned of. The day the update follows KiCad this test changes with the
+    description and the ADR entry."""
+    rows = {"/GND": 1, "/X": 2} if version == "k9" else None
+    board = _board(
+        tmp_path,
+        [
+            _footprint("U1", _U1_AT, {"1": "/GND", "2": "/X"}, version=version, rows=rows),
+            _footprint("R5", _R5_AT, {"1": "/X"}, version=version, rows=rows),
+            _track("segment", _X_SEGMENT, "/X", version=version, rows=rows),
+            _track("via", _SIG_TRACKS["via"], "/X", version=version, rows=rows),
+            _zone("/X", net_name=False, version=version, rows=rows),
+            _shape("/X", version=version, rows=rows),
+        ],
+        version=version,
+        rows=rows,
+    )
+    before = board.read_bytes()
+    held = _pcbnew_item_nets(board, version)
+    if held is not None and held != ["/X"] * 4:
+        raise RuntimeError(f"the premise fails: pcbnew reads the items on {held}")
+    summary = _apply_netlist(
+        board,
+        [E.NetComponent("U1", "V", "Ladder:Syn")],
+        [("/GND", [("U1", "1")]), ("/Y", [("U1", "2")])],
+    )
+    assert summary["stale_footprints"] == ["R5"] and summary["stale_removed"] == [], summary
+    assert summary["orphaned_tracks"] == summary["orphaned_zones"] == 0, summary
+    assert summary["warnings"] == [], summary
+    pad_net = ("kicad_pcb", "footprint", "pad", "net")
+    expected: list[tuple] = [("atom", (*pad_net, "/X"), b'"/X"', b'"/Y"')]
+    if version == "k9":
+        expected += [
+            ("atom", (*pad_net, "2"), b"2", b"3"),
+            ("insert", ("kicad_pcb", "net"), None, b'(net 3 "/Y")'),
+        ]
+    assert _edits(before, board.read_bytes()) == sorted(expected)
+    assert summary["nets_removed"] == 0, summary
+    if held is not None:
+        after = _pcbnew_item_nets(board, version)
+        assert after == ["/X"] * 4, f"pcbnew reads the items on {after} after the update"
+        pads = _pcbnew_nets(board)["pads"]
+        assert (pads["R5"]["1"][1], pads["U1"]["2"][1]) == ("/X", "/Y"), pads
 
 
 # ---------------------------------------------------------------------------
