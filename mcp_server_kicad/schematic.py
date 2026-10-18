@@ -3482,7 +3482,7 @@ def list_unconnected_pins(
     sub-sheet is checked from its project's root, as run_erc does, and gets
     the pins of that sheet alone.
 
-    The x and y of each entry are millimetres in sheet coordinates, the
+    The x and y of each entry are millimetres (mm) in sheet coordinates, the
     numbers get_pin_positions prints.
 
     Args:
@@ -3548,7 +3548,7 @@ def run_erc(
     on its own.
 
     Returns JSON report with violations. An item's position is in
-    millimetres in sheet coordinates, the numbers get_pin_positions prints.
+    millimetres (mm) in sheet coordinates, the numbers get_pin_positions prints.
     The report file saved in output_dir is kicad-cli's own.
 
     Args:

@@ -64,13 +64,6 @@ def test_files_the_project_does_not_use_are_unused_and_the_root_is_a_root(projec
         assert placed.kind == "unused" and placed.root == h.root and placed.instances == ()
 
 
-@pytest.mark.no_kicad_validation
-def test_a_file_with_no_project_is_a_root(tmp_path):
-    lone = tmp_path / "lone.kicad_sch"
-    lone.write_text("(kicad_sch)", encoding="utf-8")
-    assert _connectivity.place(lone).kind == "root"
-
-
 def _projects_shipped() -> list:
     """(id, root schematic) of the projects under the demos whose schematics all fit under the
     per-push size cap, which leaves out vme-wren."""
@@ -115,7 +108,7 @@ def test_shipped_project_is_placed_as_kicad_loads_it(root):
 
 # ---------------------------------------------------------------------------
 # hand-made hierarchies: the sheet blocks are all place() reads, so these files are references
-# between names, not schematics for kicad-cli to load
+# between names, not schematics for kicad-cli to load, and the oracle leaves them out
 # ---------------------------------------------------------------------------
 
 
@@ -140,37 +133,95 @@ def _project(folder: Path, files: dict[str, str]) -> Path:
     return folder / "p.kicad_sch"
 
 
-@pytest.mark.no_kicad_validation
+#: b sits at sub/b.kicad_sch and names c as 'c.kicad_sch': that is sub/c.kicad_sch, and the
+#: c.kicad_sch beside the root is not the one.
+_HOLDER_FOLDER = {
+    "p.kicad_sch": _sch(("u-a", "sub/b.kicad_sch")),
+    "sub/b.kicad_sch": _sch(("u-b", "c.kicad_sch")),
+    "sub/c.kicad_sch": _sch(),
+    "c.kicad_sch": _sch(),
+}
+_DOTS = {
+    "p.kicad_sch": _sch(("u-a", "sub/b.kicad_sch")),
+    "sub/b.kicad_sch": _sch(("u-b", "../shared/c.kicad_sch")),
+    "shared/c.kicad_sch": _sch(),
+}
+#: the file text holds two backslashes, which KiCad's lexer reads as one
+_WINDOWS_SEPARATOR = {
+    "p.kicad_sch": _sch(("u-a", "sub\\\\b.kicad_sch")),
+    "sub/b.kicad_sch": _sch(),
+}
+#: b names a, which holds the block for b, and the root: the walk does not go round again
+_CYCLE = {
+    "p.kicad_sch": _sch(("u-a", "a.kicad_sch")),
+    "a.kicad_sch": _sch(("u-b", "b.kicad_sch")),
+    "b.kicad_sch": _sch(
+        ("u-back", "a.kicad_sch"), ("u-root", "p.kicad_sch"), ("u-c", "c.kicad_sch")
+    ),
+    "c.kicad_sch": _sch(),
+}
+#: five folders below the project, past the three levels the reference rules search
+_DEEP = {
+    "p.kicad_sch": _sch(("u1", "a/x.kicad_sch")),
+    "a/x.kicad_sch": _sch(("u2", "b/y.kicad_sch")),
+    "a/b/y.kicad_sch": _sch(("u3", "c/z.kicad_sch")),
+    "a/b/c/z.kicad_sch": _sch(("u4", "d/w.kicad_sch")),
+    "a/b/c/d/w.kicad_sch": _sch(("u5", "e/leaf.kicad_sch")),
+    "a/b/c/d/e/leaf.kicad_sch": _sch(),
+}
+_TWICE = {
+    "p.kicad_sch": _sch(("u-1", "a.kicad_sch"), ("u-2", "a.kicad_sch")),
+    "a.kicad_sch": _sch(("u-b", "b.kicad_sch")),
+    "b.kicad_sch": _sch(),
+}
+_MISSING = {"p.kicad_sch": _sch(("u-a", "gone.kicad_sch")), "x.kicad_sch": _sch()}
+_BROKEN = "(kicad_sch (sheet ("
+_STOPPED = {
+    "p.kicad_sch": _sch(("u-a", "broken.kicad_sch")),
+    "broken.kicad_sch": _BROKEN,
+    "other.kicad_sch": _sch(),
+}
+_FOUND_ELSEWHERE = {
+    "p.kicad_sch": _sch(("u-a", "broken.kicad_sch"), ("u-b", "ok.kicad_sch")),
+    "broken.kicad_sch": _BROKEN,
+    "ok.kicad_sch": _sch(),
+}
+_THIRTEEN = [f"u{i}" for i in range(13)]
+#: thirteen uses of a file that has thirteen uses of the next, four deep, is 28,561 instances
+#: of the last file
+_TOO_MANY = {
+    "p.kicad_sch": _sch(*[(u, "a.kicad_sch") for u in _THIRTEEN]),
+    **{
+        f"{here}.kicad_sch": _sch(*[(u, f"{there}.kicad_sch") for u in _THIRTEEN])
+        for here, there in (("a", "b"), ("b", "c"), ("c", "d"))
+    },
+    "d.kicad_sch": _sch(),
+    "unused.kicad_sch": _sch(),
+}
+
+
+@pytest.mark.kicad_placeholder("lone.kicad_sch")
+def test_a_file_with_no_project_is_a_root(tmp_path):
+    lone = tmp_path / "lone.kicad_sch"
+    lone.write_text("(kicad_sch)", encoding="utf-8")
+    assert _connectivity.place(lone).kind == "root"
+
+
 class TestKicadsLoadRule:
+    @pytest.mark.kicad_placeholder(*_HOLDER_FOLDER)
     def test_a_name_resolves_against_the_folder_of_the_file_holding_the_block(self, tmp_path):
-        """b sits at sub/b.kicad_sch and names c as 'c.kicad_sch': that is sub/c.kicad_sch,
-        not a file beside the root."""
-        _project(
-            tmp_path,
-            {
-                "p.kicad_sch": _sch(("u-a", "sub/b.kicad_sch")),
-                "sub/b.kicad_sch": _sch(("u-b", "c.kicad_sch")),
-                "sub/c.kicad_sch": _sch(),
-                "c.kicad_sch": _sch(),
-            },
-        )
+        _project(tmp_path, _HOLDER_FOLDER)
         inner = _connectivity.place(tmp_path / "sub" / "c.kicad_sch")
         assert (inner.kind, inner.instances) == ("sheet", (("u-a", "u-b"),))
         assert _connectivity.place(tmp_path / "c.kicad_sch").kind == "unused"
 
+    @pytest.mark.kicad_placeholder(*_DOTS)
     def test_dots_in_a_name_are_taken_out(self, tmp_path):
-        _project(
-            tmp_path,
-            {
-                "p.kicad_sch": _sch(("u-a", "sub/b.kicad_sch")),
-                "sub/b.kicad_sch": _sch(("u-b", "../shared/c.kicad_sch")),
-                "shared/c.kicad_sch": _sch(),
-            },
-        )
-        assert _connectivity.place(tmp_path / "shared" / "c.kicad_sch").instances == (
-            ("u-a", "u-b"),
-        )
+        _project(tmp_path, _DOTS)
+        placed = _connectivity.place(tmp_path / "shared" / "c.kicad_sch")
+        assert placed.instances == (("u-a", "u-b"),)
 
+    @pytest.mark.kicad_placeholder("elsewhere/far.kicad_sch", "proj/p.kicad_sch")
     def test_an_absolute_name_stays_as_it_is(self, tmp_path):
         elsewhere = tmp_path / "elsewhere" / "far.kicad_sch"
         elsewhere.parent.mkdir()
@@ -180,61 +231,35 @@ class TestKicadsLoadRule:
         placed = _connectivity.place(elsewhere, tmp_path / "proj" / "p.kicad_sch")
         assert (placed.kind, placed.instances) == ("sheet", (("u-a",),))
 
+    @pytest.mark.kicad_placeholder(*_WINDOWS_SEPARATOR)
     def test_a_windows_separator_is_a_folder_separator(self, tmp_path):
-        _project(
-            tmp_path,
-            {"p.kicad_sch": _sch(("u-a", "sub\\\\b.kicad_sch")), "sub/b.kicad_sch": _sch()},
-        )
+        _project(tmp_path, _WINDOWS_SEPARATOR)
         assert _connectivity.place(tmp_path / "sub" / "b.kicad_sch").kind == "sheet"
 
+    @pytest.mark.kicad_placeholder(*_CYCLE)
     def test_a_sheet_that_contains_its_ancestor_is_not_entered(self, tmp_path):
-        """b names a, which holds the block for b, and the root: the walk does not go round
-        again, so c below b is placed once."""
-        _project(
-            tmp_path,
-            {
-                "p.kicad_sch": _sch(("u-a", "a.kicad_sch")),
-                "a.kicad_sch": _sch(("u-b", "b.kicad_sch")),
-                "b.kicad_sch": _sch(
-                    ("u-back", "a.kicad_sch"), ("u-root", "p.kicad_sch"), ("u-c", "c.kicad_sch")
-                ),
-                "c.kicad_sch": _sch(),
-            },
-        )
+        """c below b is placed once, not once for each time round."""
+        _project(tmp_path, _CYCLE)
         assert _connectivity.place(tmp_path / "c.kicad_sch").instances == (("u-a", "u-b", "u-c"),)
 
+    @pytest.mark.kicad_placeholder(*_DEEP)
     def test_a_sheet_many_folders_below_its_project_finds_it(self, tmp_path):
-        """Five folders below the project, past the three levels the reference rules search."""
-        _project(
-            tmp_path,
-            {
-                "p.kicad_sch": _sch(("u1", "a/x.kicad_sch")),
-                "a/x.kicad_sch": _sch(("u2", "b/y.kicad_sch")),
-                "a/b/y.kicad_sch": _sch(("u3", "c/z.kicad_sch")),
-                "a/b/c/z.kicad_sch": _sch(("u4", "d/w.kicad_sch")),
-                "a/b/c/d/w.kicad_sch": _sch(("u5", "e/leaf.kicad_sch")),
-                "a/b/c/d/e/leaf.kicad_sch": _sch(),
-            },
-        )
+        _project(tmp_path, _DEEP)
         placed = _connectivity.place(tmp_path / "a" / "b" / "c" / "d" / "e" / "leaf.kicad_sch")
         assert (placed.kind, placed.instances) == ("sheet", (("u1", "u2", "u3", "u4", "u5"),))
 
+    @pytest.mark.kicad_placeholder(*_TWICE)
     def test_a_file_used_by_two_blocks_is_placed_at_each(self, tmp_path):
-        _project(
-            tmp_path,
-            {
-                "p.kicad_sch": _sch(("u-1", "a.kicad_sch"), ("u-2", "a.kicad_sch")),
-                "a.kicad_sch": _sch(("u-b", "b.kicad_sch")),
-                "b.kicad_sch": _sch(),
-            },
-        )
+        _project(tmp_path, _TWICE)
         placed = _connectivity.place(tmp_path / "b.kicad_sch")
         assert sorted(placed.instances) == [("u-1", "u-b"), ("u-2", "u-b")]
 
+    @pytest.mark.kicad_placeholder(*_MISSING)
     def test_a_missing_sheet_file_is_an_empty_sheet(self, tmp_path):
-        _project(tmp_path, {"p.kicad_sch": _sch(("u-a", "gone.kicad_sch")), "x.kicad_sch": _sch()})
+        _project(tmp_path, _MISSING)
         assert _connectivity.place(tmp_path / "x.kicad_sch").kind == "unused"
 
+    @pytest.mark.kicad_placeholder("p.kicad_sch", "inner/p.kicad_sch", "inner/leaf.kicad_sch")
     def test_the_nearest_project_that_uses_the_file_wins(self, tmp_path):
         """inner/ is a project of its own; the outer project also names its root as a sheet."""
         _project(tmp_path, {"p.kicad_sch": _sch(("u-in", "inner/p.kicad_sch"))})
@@ -245,40 +270,20 @@ class TestKicadsLoadRule:
         assert (leaf.kind, leaf.root, leaf.instances) == ("sheet", inner, (("u-leaf",),))
 
 
-@pytest.mark.no_kicad_validation
 class TestWhatCannotBeTold:
+    @pytest.mark.kicad_placeholder(*_STOPPED)
     def test_an_unreadable_sheet_that_stopped_the_walk_before_the_file_is_named(self, tmp_path):
-        _project(
-            tmp_path,
-            {
-                "p.kicad_sch": _sch(("u-a", "broken.kicad_sch")),
-                "broken.kicad_sch": "(kicad_sch (sheet (",
-                "other.kicad_sch": _sch(),
-            },
-        )
+        _project(tmp_path, _STOPPED)
         with pytest.raises(ToolError, match=r"broken\.kicad_sch could not be read"):
             _connectivity.place(tmp_path / "other.kicad_sch")
 
+    @pytest.mark.kicad_placeholder(*_FOUND_ELSEWHERE)
     def test_an_unreadable_sheet_does_not_matter_when_the_file_is_found_elsewhere(self, tmp_path):
-        _project(
-            tmp_path,
-            {
-                "p.kicad_sch": _sch(("u-a", "broken.kicad_sch"), ("u-b", "ok.kicad_sch")),
-                "broken.kicad_sch": "(kicad_sch (sheet (",
-                "ok.kicad_sch": _sch(),
-            },
-        )
+        _project(tmp_path, _FOUND_ELSEWHERE)
         assert _connectivity.place(tmp_path / "ok.kicad_sch").instances == (("u-b",),)
 
+    @pytest.mark.kicad_placeholder(*_TOO_MANY)
     def test_a_hierarchy_of_too_many_instances_is_refused(self, tmp_path):
-        """Thirteen uses of a file that has thirteen uses of the next, four deep, is 28,561
-        instances of the last file."""
-        uuids = [f"u{i}" for i in range(13)]
-        files = {"p.kicad_sch": _sch(*[(u, "a.kicad_sch") for u in uuids])}
-        for here, there in (("a", "b"), ("b", "c"), ("c", "d")):
-            files[f"{here}.kicad_sch"] = _sch(*[(u, f"{there}.kicad_sch") for u in uuids])
-        files["d.kicad_sch"] = _sch()
-        files["unused.kicad_sch"] = _sch()
-        _project(tmp_path, files)
+        _project(tmp_path, _TOO_MANY)
         with pytest.raises(ToolError, match="more than 4096 sheet instances"):
             _connectivity.place(tmp_path / "unused.kicad_sch")

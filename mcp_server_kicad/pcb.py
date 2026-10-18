@@ -5245,7 +5245,7 @@ def export_3d(
 def export_positions(
     pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR
 ) -> PositionExportResult:
-    """Export component position file (pick and place) as CSV, in millimetres.
+    """Export component position file (pick and place) as CSV, in millimetres (mm).
 
     One row per footprint with the columns Ref, Val, Package, PosX, PosY, Rot
     and Side. PosX and PosY are the footprint's position in millimetres, with

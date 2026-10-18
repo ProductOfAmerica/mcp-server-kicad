@@ -168,7 +168,7 @@ def _violation(uuid: str, kind: str = "wire_dangling") -> dict:
     return {"type": kind, "items": [{"uuid": uuid, "description": "item", "pos": {"x": 0, "y": 0}}]}
 
 
-@pytest.mark.no_kicad_validation
+@pytest.mark.kicad_placeholder("s.kicad_sch")
 def test_a_sheets_violations_are_picked_by_instance_path_and_by_item(tmp_path):
     """A report as kicad-cli writes it: the root's entry holds the violations without a sheet
     path, whatever sheet their item is on, and one entry for each instance of a sheet holds the
