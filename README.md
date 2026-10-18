@@ -377,7 +377,7 @@ app through Controlled folder access.
 | `export_pcb` | Export board layers to PDF, SVG, or DXF |
 | `export_gerbers` | Export Gerber files, all layers or a specific list |
 | `export_3d` | Export a 3D model (STEP/STL/GLB) or render the 3D view to PNG |
-| `export_positions` | Export a component position file for pick and place |
+| `export_positions` | Export a pick-and-place position file as CSV, in millimetres |
 | `export_ipc2581` | Export in IPC-2581 format for manufacturing data exchange |
 
 </details>
