@@ -25,6 +25,8 @@ top-level item, ((0, "kicad_sch"), (index, head)).
   top-level items, and nothing else, judged by edit_judge.diff and checked by uuid.
 - assert_merge_edit(before, after, heads=...): its mirror for KiCad's junction delete,
   which joins collinear lines that met at the junction (SCH_LINE::MergeOverlap).
+- placed_symbol(data, reference): the location of the placed symbol of that Reference and
+  KiCad's reading of its position, transform and fields (kicad_ref.sch_field).
 """
 
 from __future__ import annotations
@@ -35,7 +37,7 @@ import edit_judge as J
 from kicad_ref import dsn_lexer as L
 from kicad_ref import eda_units as U
 from kicad_ref import parse_units as P
-from kicad_ref import sch_line
+from kicad_ref import sch_field, sch_line
 
 Point = tuple[int, int]
 Location = tuple[tuple[int, "str | None"], ...]
@@ -303,6 +305,38 @@ def assert_merge_edit(before: bytes, after: bytes, *, heads) -> list[Merge]:
 def iu(value: float) -> int:
     """A millimetre value on the 0.0001 mm grid in internal units, as KiCad reads its text."""
     return U.kiround(value * U.SCH_IU_PER_MM, major=9)
+
+
+def reference_of(symbol) -> str | None:
+    """The value of a placed symbol's Reference property, as the lexer reads it."""
+    for item in symbol.items:
+        if not (isinstance(item, L.Group) and _head(item) == "property"):
+            continue
+        parts = item.items[1:]
+        if parts and parts[0].kind == L.SYMBOL and parts[0].value == b"private":
+            parts = parts[1:]
+        if len(parts) > 1 and parts[0].value == b"Reference" and parts[1].kind in L.ATOM_KINDS:
+            return parts[1].value.decode("utf-8", "surrogateescape")
+    return None
+
+
+def placed_symbol(data: bytes, reference: str) -> tuple[Location, sch_field.PlacedSymbol]:
+    """(location, KiCad's reading) of the one top-level placed symbol of ``data`` whose
+    Reference property is ``reference`` (kicad_ref.sch_field.read_placed_symbol). KiCad 9
+    and 10 must read it alike, which they do away from parseInternalUnits' clamp and its
+    rounding ties; JudgeError otherwise, and for no such symbol or two."""
+    found = [
+        (location, group)
+        for location, group in _top(data, ("symbol",))
+        if _child(group, "lib_id") is not None and reference_of(group) == reference
+    ]
+    if len(found) != 1:
+        raise JudgeError(f"{len(found)} placed symbols are {reference!r}, not one")
+    location, group = found[0]
+    nine, ten = (sch_field.read_placed_symbol(group, major=m) for m in (9, 10))
+    if nine != ten:
+        raise JudgeError(f"KiCad 9 and 10 read {reference!r} differently: {nine} / {ten}")
+    return location, nine
 
 
 def iu_point(point) -> Point:

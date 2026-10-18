@@ -1769,8 +1769,8 @@ def test_one_changed_net_changes_only_its_pads(fp, dialect, names):
     2: its two atoms (its number and its name) on a KiCad 9 board, its name on a KiCad 10
     board. On a development-format board it loses its number and takes the name, as every
     net the tools write above format 20241229 is written by name (the board's table and its
-    other pads keep the pair). Names are drawn without line ends, which the tools quote by
-    hand (bug 67). The pass moved every pad it touched."""
+    other pads keep the pair). Names are drawn without line ends. The pass moved every pad it
+    touched."""
     assume(len(fp.pads) >= 3)
     a, b = names
     start = {"1": a, "2": a, "3": b}

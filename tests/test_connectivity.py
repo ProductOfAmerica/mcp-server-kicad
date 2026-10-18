@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import builtins
 import random
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
+import sexpr_gen
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
+from kicad_ref import parse_units as P
 from kicad_ref import transform as T
 from routing_fixtures import ORIENTED, fresh, junction, label, place, polyline, wire
 
@@ -75,6 +80,31 @@ def test_an_angle_kicad_truncates_is_read_the_same_way():
     assert e.value.codes == ("unloadable",)
 
 
+#: Orientation atoms KiCad's parser refuses (kicad_ref.parse_units) and Python's float() reads:
+#: nan and inf are no NUMBER, so NeedNUMBER stops at them, and 1e400 is a literal from_chars
+#: reports out of range. int() of an infinity raises OverflowError, which _angle once let out.
+_REFUSED_ANGLES = [
+    "nan",
+    "inf",
+    "-inf",
+    "infinity",
+    "-Infinity",
+    "1e400",
+    "-1e400",
+    "9e99999999999",
+]
+
+
+@pytest.mark.parametrize("atom", _REFUSED_ANGLES)
+def test_a_token_int_cannot_truncate_is_no_angle(atom):
+    """The parser port refuses the atom, so no angle is the angle _angle returns for it, not
+    an exception. (A leading '+', 9_0, digits outside ASCII and an underflow are refused by
+    KiCad and read by float() without an exception: bug 70, test_ladder_r2_transform.py.)"""
+    with pytest.raises(P.ParseRefusal):
+        T.parse_symbol_transform([("at", atom.encode())])
+    assert C._angle(atom) is None
+
+
 @pytest.mark.no_kicad_validation
 def test_an_unloadable_angle_refuses_the_whole_call(tmp_path):
     """The file is unloadable on purpose (that is the subject), so kicad-cli cannot check it."""
@@ -87,6 +117,22 @@ def test_an_unloadable_angle_refuses_the_whole_call(tmp_path):
     assert "angle 45" in plan.refusal()
 
 
+@pytest.mark.no_kicad_validation
+@pytest.mark.parametrize("angle", ["inf", "1e400"])
+def test_an_angle_that_raised_in_int_refuses_the_whole_call(tmp_path, angle):
+    """The same for the angles that raised inside float()'s int(): the plan is refused as
+    unloadable and names the angle, where it escaped as an OverflowError."""
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    data = (
+        Path(p).read_bytes().replace(b"(at 101.6 101.6 0)", f"(at 101.6 101.6 {angle})".encode(), 1)
+    )
+    Path(p).write_bytes(data)
+    plan = _plan(p, [("R1", "1")])
+    assert plan.codes == ["unloadable"]
+    assert f"angle {angle}" in plan.refusal()
+
+
 def test_ints_format_exactly():
     assert [C.mm(v) for v in (977900, 1016000, -12700, 0, 1, 25400)] == [
         "97.79",
@@ -97,6 +143,42 @@ def test_ints_format_exactly():
         "2.54",
     ]
     assert C.iu("97.79") == 977900 and C.iu("-0.00005") == -1
+
+
+#: Pin numbers: any text, runs of the decimal digits at any length, the characters str.isdigit
+#: accepts and int() refuses (a superscript, a circled digit), and the lone surrogates a
+#: byte that is no UTF-8 decodes to under surrogateescape, as the CST reads one.
+_PIN_NUMBERS = st.one_of(
+    st.text(max_size=8),
+    st.text("0123456789", max_size=12),
+    st.text("0123456789²①٣", max_size=6),
+    st.text(st.characters(min_codepoint=0xDC80, max_codepoint=0xDCFF), max_size=3),
+)
+
+
+@settings(max_examples=sexpr_gen.budget(2))
+@given(a=_PIN_NUMBERS, b=_PIN_NUMBERS)
+@example("²", "2")
+@example("①", "10")
+@example("9" * 4301, "9" * 4300)
+@example("9" * 4301, "²")
+def test_pad_order_ranks_any_two_pin_numbers(a, b):
+    """Any two pin numbers are ranked one way or the other, none refused: a number made of
+    decimal digits, whatever its length, goes by its value (decimal.Decimal, which has no
+    digit limit), ahead of every other text, and ties and other texts go by their text.
+    So 2 comes before 10 and '²' and a 4301 digit number have places, where int() refused
+    both."""
+    ka, kb = C._pad_order(a), C._pad_order(b)
+    if a == b:
+        assert ka == kb
+        return
+    assert (ka < kb) != (kb < ka), f"{a!r} and {b!r} are not ranked one way"
+    if a.isdecimal() and b.isdecimal():
+        assert (ka < kb) == ((Decimal(a), a) < (Decimal(b), b))
+    elif a.isdecimal() or b.isdecimal():
+        assert (ka < kb) == a.isdecimal()
+    else:
+        assert (ka < kb) == (a < b)
 
 
 # ---------------------------------------------------------------------------------------------
@@ -1290,7 +1372,6 @@ def test_a_netclass_field_on_any_label_is_a_carrier(tmp_path):
     [
         b'(reference "R1")',
         b"(reference R1)",
-        b'(reference"R1")',
         b'( reference\t"R1" )',
         b'("reference" "R1")',
         b'\r\n\t\t\t\t(reference "R1")\r\n',
@@ -1300,10 +1381,45 @@ def test_a_netclass_field_on_any_label_is_a_carrier(tmp_path):
     ],
 )
 def test_the_reference_pattern_matches_every_spelling(text):
-    """Quoted, bare, re-spaced and glued: every way _cst.TOKEN reads (reference R1) or
-    (property Reference R1)."""
+    """Quoted, bare and re-spaced, a paren glued to an atom included: the plain ways _cst
+    reads (reference R1) or (property Reference R1)."""
     pattern = C.refs_pattern({"R1"})
     assert pattern is not None and pattern.search(text)
+
+
+#: Spellings KiCad's lexer, and so the CST, reads as the reference but the plain ones do
+#: not show: NUL and comment lines as whitespace, and a string spelled with escapes. Each
+#: with the atoms the CST reads at the head of the list.
+_REFERENCE_SPELLINGS = [
+    (b'(reference\n# a comment (with a paren)\n"R1")', ("reference", "R1")),
+    (b"(reference\r\n\t# a comment\r\n\tR1)", ("reference", "R1")),
+    (b'(\n# a comment\nreference "R1")', ("reference", "R1")),
+    (b'(\x00reference\x00"R1"\x00)', ("reference", "R1")),
+    (b"(reference\x00R1\x00)", ("reference", "R1")),
+    (
+        b'(property\n# note\n"Reference"\n  # note\n"R1" (at 0 0 0))',
+        ("property", "Reference", "R1"),
+    ),
+    (b'(property\x00"Reference"\x00R1\x00(at 0 0 0))', ("property", "Reference", "R1")),
+    (b'(reference "R\\x31")', ("reference", "R1")),
+    (b'(reference "R\\61")', ("reference", "R1")),
+    (b'(reference "\\x52\\x31")', ("reference", "R1")),
+    (b'(property "Reference" "R\\x31")', ("property", "Reference", "R1")),
+    (b'(property "Refer\\x65nce" "R1")', ("property", "Reference", "R1")),
+    (b'("ref\\145rence" "R1")', ("reference", "R1")),
+]
+
+
+@pytest.mark.parametrize(("text", "words"), _REFERENCE_SPELLINGS)
+def test_the_reference_pattern_matches_what_the_cst_reads_as_the_reference(text, words):
+    """Every spelling the CST reads as (reference R1) or (property Reference R1), whitespace
+    and escapes as KiCad's lexer reads them, is matched: a sheet the pattern misses is never
+    parsed by the duplicate-reference check. The CST's reading is asserted first, so a case
+    is a premise and not an assumption."""
+    node = _cst.parse(text).lists[0]
+    assert tuple(a.text for a in node.atoms[: len(words)]) == words
+    pattern = C.refs_pattern({"R1"})
+    assert pattern is not None and pattern.search(text), text
 
 
 @pytest.mark.parametrize(
@@ -1315,6 +1431,10 @@ def test_the_reference_pattern_matches_every_spelling(text):
         b'(name "R1")',
         b'(property "Value" "R1")',
         b'(reference_x "R1")',
+        b'(reference"R1")',  # a quote glued to a bare token is part of it: one atom
+        b"(reference\x0cR1)",  # FF is no whitespace to KiCad: one atom
+        b"(reference\n#R1\n)",  # a comment line, not a value
+        b"(reference #R1)",  # '#' after a token is data: the value is #R1
     ],
 )
 def test_the_reference_pattern_matches_only_that_reference(text):
@@ -1329,6 +1449,17 @@ def test_a_reference_the_file_would_escape_reads_every_sheet(ref):
 
 def test_the_structure_pattern_finds_sheets_and_tables_only():
     for text in (b"(sheet (at 1 2)", b"(sheet\r\n\t(at", b'("sheet"(at', b"(symbol_instances"):
+        assert C._STRUCTURE.search(text), text
+    # Whitespace and escapes as the CST reads them, the reading asserted first.
+    for text in (
+        b"(\n# a comment\nsheet (at 1 2))",
+        b"(\x00sheet\x00(at 1 2))",
+        b"(\r\n\t# a comment\r\n\tsymbol_instances)",
+        b'("shee\\164" (at 1 2))',
+        b'("symbol\\137instances")',
+    ):
+        head = _cst.parse(text).lists[0].head
+        assert head in ("sheet", "symbol_instances"), (text, head)
         assert C._STRUCTURE.search(text), text
     for text in (b"(sheet_instances (path", b"(sheetfile x)", b'(property "Sheetname" "x")'):
         assert not C._STRUCTURE.search(text), text

@@ -294,7 +294,7 @@ app through Controlled folder access.
 |------|-------------|
 | `place_component` | Place a component in the schematic |
 | `remove_component` | Remove a component by reference designator |
-| `move_component` | Move a placed component to a new position |
+| `move_component` | Move or turn a placed component. Its fields travel with it; wires stay where they are, as with KiCad's own Move, and the result names every pin whose connections changed. Called at the symbol's own position it turns the symbol in place, without snapping |
 | `set_component_property` | Set any property (Value, Reference, Footprint, ...) on a placed component |
 | `add_lib_symbol` | Load a symbol definition from a `.kicad_sym` library into the schematic |
 | `add_wires` | Add one or more wires between points as KiCad's wire tool does: a junction where three or more wires or pins meet, the wires split there |
@@ -414,7 +414,7 @@ app through Controlled folder access.
 | `is_root_schematic` | Check whether a schematic is the root or a sub-sheet |
 | `list_hierarchy` | List the full sheet hierarchy tree from root |
 | `get_sheet_info` | Get sheet details with pin and label matching status |
-| `validate_hierarchy` | Check every sheet for orphaned labels and pins, direction mismatches, duplicate refs, and junctions and bus entry ends left inside wires, with the call that repairs each |
+| `validate_hierarchy` | Check every sheet for orphaned labels and pins, direction mismatches, duplicate refs, junctions and bus entry ends left inside wires, and no-connect flags and wire ends left off the pins of mirrored, rotated parts, with the call that repairs each where a tool can |
 
 **Cross-sheet analysis**
 

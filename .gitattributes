@@ -1,3 +1,6 @@
 # The routing harness is LF on every checkout: baselines/derive.py --check compares bytes, and
 # Git for Windows' default (core.autocrlf=true) would check it out CRLF.
 /tools/routing_harness/** text=auto eol=lf
+# A sheet mcp-server-kicad 0.20.1 wrote (tests/test_ladder_r3_mirrored_pins.py), kept byte for
+# byte as it wrote it, LF line ends included, on every checkout.
+/tests/fixtures/mirrored_0_20_1.kicad_sch text eol=lf

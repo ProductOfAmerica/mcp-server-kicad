@@ -1,0 +1,2664 @@
+(kicad_sch
+	(version 20250114)
+	(generator "eeschema")
+	(generator_version "9.0")
+	(uuid "74cb3017-0b6c-412b-8c04-ba09e7337cc6")
+	(paper "A4")
+	(lib_symbols
+		(symbol "Q_NPN_BCE"
+		(pin_names
+			(offset 0)
+			(hide yes)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(property "Reference" "Q"
+			(at 5.08 1.27 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Value" "Q_NPN_BCE"
+			(at 5.08 -1.27 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(justify left)
+			)
+		)
+		(property "Footprint" ""
+			(at 5.08 2.54 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "NPN transistor, base/collector/emitter"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Sim.Device" "NPN"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Sim.Pins" "1=B 2=C 3=E"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "ki_keywords" "BJT"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(symbol "Q_NPN_BCE_0_1"
+			(polyline
+				(pts
+					(xy -2.54 0) (xy 0.635 0)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 0.635 1.905) (xy 0.635 -1.905)
+				)
+				(stroke
+					(width 0.508)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(circle
+				(center 1.27 0)
+				(radius 2.8194)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+		)
+		(symbol "Q_NPN_BCE_1_1"
+			(polyline
+				(pts
+					(xy 0.635 0.635) (xy 2.54 2.54)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 0.635 -0.635) (xy 2.54 -2.54)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 1.27 -1.778) (xy 1.778 -1.27) (xy 2.286 -2.286) (xy 1.27 -1.778)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type outline)
+				)
+			)
+			(pin input line
+				(at -5.08 0 0)
+				(length 2.54)
+				(name "B"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 2.54 5.08 270)
+				(length 2.54)
+				(name "C"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "2"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 2.54 -5.08 90)
+				(length 2.54)
+				(name "E"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "3"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
+		(embedded_fonts no)
+	)
+		(symbol "R"
+		(pin_numbers
+			(hide yes)
+		)
+		(pin_names
+			(offset 0)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(property "Reference" "R"
+			(at 2.032 0 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "R"
+			(at 0 0 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at -1.778 0 90)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Resistor"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "ki_keywords" "R res resistor"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "ki_fp_filters" "R_*"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(symbol "R_0_1"
+			(rectangle
+				(start -1.016 -2.54)
+				(end 1.016 2.54)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+		)
+		(symbol "R_1_1"
+			(pin passive line
+				(at 0 3.81 270)
+				(length 1.27)
+				(name "~"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 0 -3.81 90)
+				(length 1.27)
+				(name "~"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "2"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
+		(embedded_fonts no)
+	)
+		(symbol "D"
+		(pin_numbers
+			(hide yes)
+		)
+		(pin_names
+			(offset 1.016)
+			(hide yes)
+		)
+		(exclude_from_sim no)
+		(in_bom yes)
+		(on_board yes)
+		(property "Reference" "D"
+			(at 0 2.54 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Value" "D"
+			(at 0 -2.54 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+			)
+		)
+		(property "Footprint" ""
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Datasheet" "~"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Description" "Diode"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Sim.Device" "D"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "Sim.Pins" "1=K 2=A"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "ki_keywords" "diode"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(property "ki_fp_filters" "TO-???* *_Diode_* *SingleDiode* D_*"
+			(at 0 0 0)
+			(effects
+				(font
+					(size 1.27 1.27)
+				)
+				(hide yes)
+			)
+		)
+		(symbol "D_0_1"
+			(polyline
+				(pts
+					(xy -1.27 1.27) (xy -1.27 -1.27)
+				)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 1.27 1.27) (xy 1.27 -1.27) (xy -1.27 0) (xy 1.27 1.27)
+				)
+				(stroke
+					(width 0.254)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+			(polyline
+				(pts
+					(xy 1.27 0) (xy -1.27 0)
+				)
+				(stroke
+					(width 0)
+					(type default)
+				)
+				(fill
+					(type none)
+				)
+			)
+		)
+		(symbol "D_1_1"
+			(pin passive line
+				(at -3.81 0 0)
+				(length 2.54)
+				(name "K"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "1"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+			(pin passive line
+				(at 3.81 0 180)
+				(length 2.54)
+				(name "A"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+				(number "2"
+					(effects
+						(font
+							(size 1.27 1.27)
+						)
+					)
+				)
+			)
+		)
+		(embedded_fonts no)
+	))
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 25.4 50.8 90)
+	(mirror x)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "5c8a9ca3-36a6-4421-87dd-a94196d7f2d3")
+	(property "Reference" "Q1"
+		(at 25.4 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q1"
+		(at 25.4 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 25.4 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 25.4 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "91831236-1cd6-4b1f-8483-1f84052fa6da")
+)
+	(pin "2"
+	(uuid "36789352-7a62-4041-a5ca-d43f781c2da0")
+)
+	(pin "3"
+	(uuid "4e26b898-4c7e-4b3b-83dd-3d192322838c")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q1")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 45.72 50.8 90)
+	(mirror x)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "a2aba992-707b-44a9-8734-3687e861d9c0")
+	(property "Reference" "Q2"
+		(at 45.72 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q2"
+		(at 45.72 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 45.72 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 45.72 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "8cf17561-f2db-4693-a6cf-25081d1caa39")
+)
+	(pin "2"
+	(uuid "1128071c-451c-43e6-8f56-ef31292e848e")
+)
+	(pin "3"
+	(uuid "ab2a10d0-abd5-4a37-b9d8-357bd3ced20d")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q2")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 66.04 50.8 90)
+	(mirror x)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "08cb7cc6-3fe5-4a8e-81a5-77cedd85dc6c")
+	(property "Reference" "Q3"
+		(at 66.04 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q3"
+		(at 66.04 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 66.04 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 66.04 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "88211885-9e17-4088-82a6-b189f91c0c72")
+)
+	(pin "2"
+	(uuid "a35759c6-99ad-4d2c-8408-2b84db2497a3")
+)
+	(pin "3"
+	(uuid "1d4cded4-cf31-4465-91c4-9a1ccdb8e04e")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q3")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "R")
+	(lib_id "Device:R")
+	(at 58.42 88.9 0)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "9241a50d-96da-490b-a8f6-9e860f5965b9")
+	(property "Reference" "RA3"
+		(at 58.42 85.09 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "RA3"
+		(at 58.42 92.71 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 58.42 88.9 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 58.42 88.9 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "9cf1b436-40ee-4092-b924-01427da5e8f1")
+)
+	(pin "2"
+	(uuid "e4d7e59f-cb45-4467-96ce-e34c98df58c3")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "RA3")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 86.36 50.8 90)
+	(mirror y)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "22c9232b-d541-4088-8c5f-55d017ca5b39")
+	(property "Reference" "Q4"
+		(at 86.36 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q4"
+		(at 86.36 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 86.36 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 86.36 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "8d9a07b2-c9d1-400c-a094-9ae57c45e085")
+)
+	(pin "2"
+	(uuid "6183151d-e776-4bb3-a648-92ea155954a2")
+)
+	(pin "3"
+	(uuid "2e1b934a-2c5a-4f99-99a0-8da0031af02d")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q4")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 106.68 50.8 90)
+	(mirror y)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "27c23690-8144-4fbb-a3ff-856fb25e62f1")
+	(property "Reference" "Q5"
+		(at 106.68 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q5"
+		(at 106.68 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 106.68 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 106.68 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "46157055-44fe-4e68-82b2-c967ddad4338")
+)
+	(pin "2"
+	(uuid "0d3bdc24-8c38-4f8b-a571-a9afc98700d5")
+)
+	(pin "3"
+	(uuid "f010ed35-2347-48dd-aaa4-b4bf0a9bb22c")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q5")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 127 50.8 90)
+	(mirror y)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "cb8131a1-690f-4125-ba55-cde6b04691ab")
+	(property "Reference" "Q6"
+		(at 127 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q6"
+		(at 127 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 127 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 127 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "497b166f-38a9-4ddd-b8cb-a5d19d77ff10")
+)
+	(pin "2"
+	(uuid "4015f684-da5b-4d39-a3e3-fffd0897d8d7")
+)
+	(pin "3"
+	(uuid "a3ab7d8f-c6a1-42dc-a4ce-19a317756e13")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q6")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "R")
+	(lib_id "Device:R")
+	(at 119.38 88.9 0)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "fa58351c-4733-480b-9459-d262c61a540b")
+	(property "Reference" "RA6"
+		(at 119.38 85.09 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "RA6"
+		(at 119.38 92.71 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 119.38 88.9 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 119.38 88.9 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "a2f73b66-123e-42b6-8979-59f9a5c744e4")
+)
+	(pin "2"
+	(uuid "61b5b95a-168e-4c74-9450-7dc2db6e486b")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "RA6")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 147.32 50.8 270)
+	(mirror x)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "a6ac2a6d-2323-4729-b7e7-bc68a35b8470")
+	(property "Reference" "Q7"
+		(at 147.32 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q7"
+		(at 147.32 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 147.32 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 147.32 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "47e8aa75-af09-4862-89da-7d1aae9dba7a")
+)
+	(pin "2"
+	(uuid "9fcc1890-1a96-4cf3-a083-56c48a2418f9")
+)
+	(pin "3"
+	(uuid "0da0a4f5-361a-4098-a052-f525c9798b04")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q7")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 167.64 50.8 270)
+	(mirror x)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "96506feb-6b56-4a55-bdbc-397337ded25c")
+	(property "Reference" "Q8"
+		(at 167.64 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q8"
+		(at 167.64 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 167.64 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 167.64 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "5350634e-a8bb-47d7-b70b-13eb6de0c992")
+)
+	(pin "2"
+	(uuid "822ac0b9-1854-40f4-bd18-19c1f6b39781")
+)
+	(pin "3"
+	(uuid "154911a3-aa12-460b-894a-0ae2a18f9ad0")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q8")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 187.96 50.8 270)
+	(mirror x)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "bf9bc8cc-fb01-4ed3-b9e0-457ca4728210")
+	(property "Reference" "Q9"
+		(at 187.96 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q9"
+		(at 187.96 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 187.96 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 187.96 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "497031fa-1309-4478-833c-5450aabaeb8b")
+)
+	(pin "2"
+	(uuid "3c0442ad-1723-4c73-95f2-d72fb4b0bc73")
+)
+	(pin "3"
+	(uuid "9bba82ec-d08d-4d1b-a15c-4f4a5fce5f9a")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q9")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "R")
+	(lib_id "Device:R")
+	(at 180.34 88.9 0)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "158f1693-3797-491b-90ae-d1bf20ae883a")
+	(property "Reference" "RA9"
+		(at 180.34 85.09 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "RA9"
+		(at 180.34 92.71 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 180.34 88.9 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 180.34 88.9 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "337976e1-8e6d-4637-8c34-e8a836273943")
+)
+	(pin "2"
+	(uuid "40e06ed0-9fb4-4bd2-993a-d8a725b707be")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "RA9")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 208.28 50.8 270)
+	(mirror y)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "88e281fc-552f-4815-b82d-ad54f274144b")
+	(property "Reference" "Q10"
+		(at 208.28 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q10"
+		(at 208.28 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 208.28 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 208.28 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "1f2dceb7-75ac-4116-b25f-f2e8fb9f807f")
+)
+	(pin "2"
+	(uuid "9025dfa2-1a9c-485b-8cc1-4561d6b9c437")
+)
+	(pin "3"
+	(uuid "bf088169-4543-47b4-be27-9798f85e15c3")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q10")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 228.6 50.8 270)
+	(mirror y)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "1142c7d7-8d6b-48ca-b917-f6a24407031d")
+	(property "Reference" "Q11"
+		(at 228.6 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q11"
+		(at 228.6 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 228.6 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 228.6 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "6b3e3518-38c6-437e-93a1-8d2efe26366d")
+)
+	(pin "2"
+	(uuid "f2a3bd01-b4f0-41ff-8228-e9b7e6ab6af0")
+)
+	(pin "3"
+	(uuid "d05e5678-eebb-40ec-b3a4-c82985349365")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q11")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 248.92 50.8 270)
+	(mirror y)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "5b8f3981-eda3-46c1-901d-5bfbad6eb4c1")
+	(property "Reference" "Q12"
+		(at 248.92 46.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q12"
+		(at 248.92 54.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 248.92 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 248.92 50.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "5795c844-ddc5-4e53-9f62-7a94eaa7e366")
+)
+	(pin "2"
+	(uuid "1ede6e3d-fa65-4ded-9bf0-1b31dbd5ab7e")
+)
+	(pin "3"
+	(uuid "b9e70bc2-7acb-4a1a-b1f7-f3e446e1a3be")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q12")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "R")
+	(lib_id "Device:R")
+	(at 241.3 88.9 0)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "dd4c2004-6ceb-41e5-8064-5e311a0b703d")
+	(property "Reference" "RA12"
+		(at 241.3 85.09 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "RA12"
+		(at 241.3 92.71 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 241.3 88.9 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 241.3 88.9 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "e9b3dc5c-32a2-46ad-8184-11cef3164eda")
+)
+	(pin "2"
+	(uuid "83eb91e0-8a27-4bfb-8a6a-0db9ba154a4b")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "RA12")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "R")
+	(lib_id "Device:R")
+	(at 25.4 127 90)
+	(mirror x)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "c7adecfc-3a3d-4a67-98da-9b193fa7fe7a")
+	(property "Reference" "R1"
+		(at 25.4 123.19 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "R1"
+		(at 25.4 130.81 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 25.4 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 25.4 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "815306ef-720b-40b0-8471-df31d866918d")
+)
+	(pin "2"
+	(uuid "f3571d77-06fc-454e-b8ce-5d301e16d20d")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "R1")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "R")
+	(lib_id "Device:R")
+	(at 55.88 127 270)
+	(mirror y)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "75e383bc-3323-416b-910d-d3c0babb4d1b")
+	(property "Reference" "R2"
+		(at 55.88 123.19 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "R2"
+		(at 55.88 130.81 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 55.88 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 55.88 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "623d1dea-8877-4bcd-8712-1f48232db3dc")
+)
+	(pin "2"
+	(uuid "c0af9f68-32b4-41a1-b19c-a9344a7a4719")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "R2")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "R")
+	(lib_id "Device:R")
+	(at 86.36 127 90)
+	(mirror y)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "bebb850b-86de-4c62-9507-13f5ebf6253d")
+	(property "Reference" "R3"
+		(at 86.36 123.19 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "R3"
+		(at 86.36 130.81 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 86.36 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 86.36 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "1df5f603-b050-4a48-965e-680958d3580e")
+)
+	(pin "2"
+	(uuid "71886aad-635e-410c-aa07-b736aebffc31")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "R3")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "R")
+	(lib_id "Device:R")
+	(at 78.74 152.4 0)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "594657ba-c54f-48c5-afc8-2394c03561e1")
+	(property "Reference" "RB3"
+		(at 78.74 148.59 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "RB3"
+		(at 78.74 156.21 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 78.74 152.4 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 78.74 152.4 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "fd04f2ab-0d5c-4f10-b753-41dcdc745d06")
+)
+	(pin "2"
+	(uuid "ea26c64f-0f5a-4ca7-9189-063703b214c5")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "RB3")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "D")
+	(lib_id "Device:D")
+	(at 116.84 127 270)
+	(mirror x)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "481fc6ef-fcf0-4a1f-8376-bd1af5139deb")
+	(property "Reference" "D1"
+		(at 116.84 123.19 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "D1"
+		(at 116.84 130.81 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 116.84 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 116.84 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "fd719e01-68d8-4de5-91a9-deb1289ca7b8")
+)
+	(pin "2"
+	(uuid "f917a046-ee35-4579-9065-1e454ac7cdfc")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "D1")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "D")
+	(lib_id "Device:D")
+	(at 147.32 127 90)
+	(mirror y)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "8fe881c2-a223-49da-8cec-ce9b5be16624")
+	(property "Reference" "D2"
+		(at 147.32 123.19 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "D2"
+		(at 147.32 130.81 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 147.32 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 147.32 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "0db65917-7de3-44bc-9933-95df23448eee")
+)
+	(pin "2"
+	(uuid "2ade21cc-2377-4020-8783-a1460644cfbe")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "D2")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "D")
+	(lib_id "Device:D")
+	(at 177.8 127 270)
+	(mirror y)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "76b912c5-7768-4e84-98ea-6b856b7c6027")
+	(property "Reference" "D3"
+		(at 177.8 123.19 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "D3"
+		(at 177.8 130.81 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 177.8 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 177.8 127 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "32f2335a-fb89-473c-98af-2640b22498f6")
+)
+	(pin "2"
+	(uuid "b787032b-fce9-4b62-a24e-e1036d9b326e")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "D3")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "R")
+	(lib_id "Device:R")
+	(at 170.18 152.4 0)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "0e4a6627-20e3-4c2a-8f31-c6dfae34c1b8")
+	(property "Reference" "RB6"
+		(at 170.18 148.59 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "RB6"
+		(at 170.18 156.21 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 170.18 152.4 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 170.18 152.4 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "c11965a2-36dd-41c2-b880-afd70a14b12f")
+)
+	(pin "2"
+	(uuid "22616612-c28c-4d4e-b0a1-15115395ddf9")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "RB6")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 25.4 177.8 90)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "02801a82-32e7-4765-bf5b-b552eff9d1a8")
+	(property "Reference" "Q20"
+		(at 25.4 173.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q20"
+		(at 25.4 181.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 25.4 177.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 25.4 177.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "9148eb6e-975c-4364-bd84-df2552e444c8")
+)
+	(pin "2"
+	(uuid "64076900-a240-40e9-a66f-6becc349ce73")
+)
+	(pin "3"
+	(uuid "d0aef636-53dd-412c-9e10-fa9c26cdaf52")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q20")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 55.88 177.8 270)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "c4d63f7a-d590-41c3-aae3-366feae7ec5c")
+	(property "Reference" "Q21"
+		(at 55.88 173.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q21"
+		(at 55.88 181.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 55.88 177.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 55.88 177.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "b8ed4311-c5cb-4e5c-be8f-b887fc018e1c")
+)
+	(pin "2"
+	(uuid "947d3049-58ac-4a24-ad17-8e73751833c9")
+)
+	(pin "3"
+	(uuid "11bda6f2-c0a6-4b9d-80f5-5248baecb8df")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q21")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 86.36 177.8 0)
+	(mirror x)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "767cb901-eb17-4611-870a-ea8ea3fecc25")
+	(property "Reference" "Q22"
+		(at 86.36 173.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q22"
+		(at 86.36 181.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 86.36 177.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 86.36 177.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "d1e8fb52-0d74-4089-9a48-87443cb9bfb0")
+)
+	(pin "2"
+	(uuid "b52f4e39-f782-48d3-b570-2a0dcd40bb80")
+)
+	(pin "3"
+	(uuid "4220229f-f11f-4bb7-8183-fffb15d1f4bf")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q22")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "R")
+	(lib_id "Device:R")
+	(at 78.74 203.2 0)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "9617e5dd-b7b7-44b1-9f28-3222efb99847")
+	(property "Reference" "RC3"
+		(at 78.74 199.39 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "RC3"
+		(at 78.74 207.01 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 78.74 203.2 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 78.74 203.2 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "36629ba3-22cb-49fc-8149-55de86d3055b")
+)
+	(pin "2"
+	(uuid "bb1e399e-1f45-4b59-9afd-728e7f266da3")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "RC3")
+				(unit 1)
+			)
+		)
+	)
+)
+	(symbol
+	(lib_name "Q_NPN_BCE")
+	(lib_id "Transistor_BJT:Q_NPN_BCE")
+	(at 116.84 177.8 180)
+	(mirror y)
+	(unit 1)
+	(exclude_from_sim no)
+	(in_bom yes)
+	(on_board yes)
+	(dnp no)
+	(uuid "87f2f0bc-0f25-43f2-afb4-742ec238eede")
+	(property "Reference" "Q23"
+		(at 116.84 173.99 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Value" "Q23"
+		(at 116.84 181.61 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+		)
+	)
+	(property "Footprint" ""
+		(at 116.84 177.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(property "Datasheet" "~"
+		(at 116.84 177.8 0)
+		(effects
+			(font
+				(size 1.27 1.27)
+			)
+			(hide yes)
+		)
+	)
+	(pin "1"
+	(uuid "7eadf538-f74d-4819-9f45-e528d404b7e6")
+)
+	(pin "2"
+	(uuid "34ca4e90-8a71-4f0d-9fa8-fcd8ac67be18")
+)
+	(pin "3"
+	(uuid "ff3cbc39-c710-4820-9825-84155e9e9de2")
+)
+	(instances
+		(project "mirrored_0_20_1"
+			(path "/74cb3017-0b6c-412b-8c04-ba09e7337cc6"
+				(reference "Q23")
+				(unit 1)
+			)
+		)
+	)
+)
+	(no_connect
+	(at 25.4 55.88)
+	(uuid "aef92c3b-1d91-4182-bda0-3c3ffb6244de")
+)
+	(no_connect
+	(at 81.28 53.34)
+	(uuid "29123c0c-6c56-4f77-8b03-326148641498")
+)
+	(no_connect
+	(at 152.4 53.34)
+	(uuid "1891c2e7-4186-4e46-8e6b-8e1b52f9e26e")
+)
+	(no_connect
+	(at 208.28 55.88)
+	(uuid "76897a9b-61c6-4a31-b564-40943d91a826")
+)
+	(no_connect
+	(at 29.21 127)
+	(uuid "7a4466ef-4791-4b7d-b022-a8c0698c77bc")
+)
+	(no_connect
+	(at 116.84 130.81)
+	(uuid "7f921e03-6997-4a38-b918-a00d030b5123")
+)
+	(no_connect
+	(at 25.4 182.88)
+	(uuid "ae2c8758-6977-4b2f-b394-67178bfeaea2")
+)
+	(no_connect
+	(at 119.38 182.88)
+	(uuid "fc069b5d-a2e0-4c28-bd9c-c52bf6aecfa6")
+)
+	(wire
+	(pts
+		(xy 50.8 48.26) (xy 48.26 48.26)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "e0f18627-fed7-407c-876f-51d5b6810f71")
+)
+	(wire
+	(pts
+		(xy 60.96 48.26) (xy 58.42 48.26)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "763525b9-b4f1-4969-811e-9e0b1eb5cba9")
+)
+	(wire
+	(pts
+		(xy 58.42 48.26) (xy 58.42 85.09)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "6702b3b4-d8f9-4414-aef8-9ffdf57a8baa")
+)
+	(wire
+	(pts
+		(xy 111.76 53.34) (xy 109.22 53.34)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "7cc4b1c9-fce8-4ad5-aaf8-b827ddf0167a")
+)
+	(wire
+	(pts
+		(xy 127 45.72) (xy 119.38 45.72)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "8ac1c071-4fe7-4a7e-964e-90d25a12c1da")
+)
+	(wire
+	(pts
+		(xy 119.38 45.72) (xy 119.38 85.09)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "4bd7b359-044a-4d5e-ac2d-04798f447e2c")
+)
+	(wire
+	(pts
+		(xy 167.64 45.72) (xy 167.64 48.26)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "6c33bf40-4d17-45bd-817c-6eeb64b06c4e")
+)
+	(wire
+	(pts
+		(xy 182.88 53.34) (xy 180.34 53.34)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "fa53b894-50e5-4890-a3b5-1514d090c203")
+)
+	(wire
+	(pts
+		(xy 180.34 53.34) (xy 180.34 85.09)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "f3b698af-7cc7-40ab-a396-51842177088c")
+)
+	(wire
+	(pts
+		(xy 233.68 48.26) (xy 231.14 48.26)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "60fc6528-abb0-4df5-a574-d53853880c0a")
+)
+	(wire
+	(pts
+		(xy 243.84 48.26) (xy 241.3 48.26)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "beb98861-4d6f-43ef-9440-c5edd2ddb20d")
+)
+	(wire
+	(pts
+		(xy 241.3 48.26) (xy 241.3 85.09)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "4fd7d676-4826-4ac0-9478-af1c63b3efa2")
+)
+	(wire
+	(pts
+		(xy 59.69 127) (xy 57.15 127)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "04849937-5965-424c-b411-f5ca44dd0852")
+)
+	(wire
+	(pts
+		(xy 90.17 127) (xy 78.74 127)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "f4a5c000-5746-442e-b1d0-24736ef8a200")
+)
+	(wire
+	(pts
+		(xy 78.74 127) (xy 78.74 148.59)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "a930189c-727c-4feb-955a-948d8ee0aeb4")
+)
+	(wire
+	(pts
+		(xy 147.32 123.19) (xy 147.32 125.73)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "88d58a56-e058-4e9c-a99e-b3172642bcc9")
+)
+	(wire
+	(pts
+		(xy 177.8 130.81) (xy 170.18 130.81)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "fb3a39a9-4ce8-4f31-9507-d03158087b5e")
+)
+	(wire
+	(pts
+		(xy 170.18 130.81) (xy 170.18 148.59)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "d9ccf272-2901-4619-87b8-b5a6a0c5e100")
+)
+	(wire
+	(pts
+		(xy 60.96 180.34) (xy 58.42 180.34)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "d08a2b33-21f5-4c84-ae13-d9dfb49dc361")
+)
+	(wire
+	(pts
+		(xy 88.9 172.72) (xy 78.74 172.72)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "23ebbe2b-4ed6-467c-92c7-8b999631a560")
+)
+	(wire
+	(pts
+		(xy 78.74 172.72) (xy 78.74 199.39)
+	)
+	(stroke
+		(width 0)
+		(type default)
+	)
+	(uuid "cf333ac7-7c97-4bd4-94c5-a9d046623b72")
+)
+	(label "N_Q2_2"
+	(at 48.26 48.26 180)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "0471c503-cac7-4649-8e54-b36ccc757d5a")
+)
+	(label "Net-(Q3-3)"
+	(at 60.96 48.26 0)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "fbfdf766-e43f-44bd-a7f6-b0ca3da08a42")
+)
+	(label "N_Q5_3"
+	(at 109.22 53.34 180)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "153d013b-bd25-42e3-9318-a6e44269f278")
+)
+	(label "Net-(Q6-1)"
+	(at 127 45.72 0)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "1ba4cc28-a1ce-4c04-be21-a9a49c772766")
+)
+	(label "N_Q8_1"
+	(at 167.64 48.26 270)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "ae31a92c-36a6-428e-851c-6f6db05492c5")
+)
+	(label "Net-(Q9-2)"
+	(at 182.88 53.34 0)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "f78d4d8d-b852-41bf-9f7a-8a97f6d58c00")
+)
+	(label "N_Q11_2"
+	(at 231.14 48.26 180)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "a1008e9b-8da6-4df1-af2e-0a3cbf5049d6")
+)
+	(label "Net-(Q12-3)"
+	(at 243.84 48.26 0)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "2d0abe1a-587f-40c0-8c73-959bd37a42d3")
+)
+	(label "N_R2_1"
+	(at 57.15 127 180)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "6dfe0994-afa1-4acc-aee3-e145988f009a")
+)
+	(label "Net-(R3-2)"
+	(at 90.17 127 0)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "8a0e35f5-0352-4453-8722-b677d0e8b570")
+)
+	(label "N_D2_1"
+	(at 147.32 125.73 270)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "a560af40-0dd4-4ae3-8e4f-e43b264091f3")
+)
+	(label "Net-(D3-1)"
+	(at 177.8 130.81 0)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "1b287641-83c7-49df-8f4a-8d1606b95005")
+)
+	(label "N_Q21_2"
+	(at 58.42 180.34 180)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "b5a71f17-9f54-47ab-b7a6-8479ba979e36")
+)
+	(label "Net-(Q22-3)"
+	(at 88.9 172.72 0)
+	(effects
+		(font
+			(size 1.27 1.27)
+		)
+	)
+	(uuid "ca0d4058-2f16-4533-88cd-1ae78b3afe87")
+)
+	(sheet_instances
+		(path "/"
+			(page "1")
+		)
+	)
+	(embedded_fonts no)
+)

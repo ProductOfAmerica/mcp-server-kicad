@@ -21,6 +21,7 @@ import hashlib
 import math
 import re
 import threading
+import unicodedata
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -280,23 +281,41 @@ def _apply(t: Matrix, x: int, y: int) -> Point:
 
 
 def _angle(text: str) -> int | None:
-    """An orientation atom as KiCad's parser reads it (truncated to an int), if it is one of
-    the four KiCad can load."""
+    """An orientation atom as float() reads it, truncated to an int, if it is 0, 90, 180 or 270.
+
+    None as well for a token KiCad's parser refuses that float() still reads and int() cannot
+    truncate: nan and inf are no NUMBER, so NeedNUMBER refuses them, and 1e400 is a literal
+    from_chars reports out of range (include/dsnlexer.h:531-535 and common/dsnlexer.cpp:859-916
+    at 9.0.8). int() of an infinity raises OverflowError, which reaches an MCP client as a bare
+    "Error executing tool".
+
+    A spelling KiCad's parser refuses and float() reads without an exception, such as '+90',
+    '9_0' and '1e-400', is read as that number, not refused: bug 70, step 12b.
+    """
     try:
         a = int(float(text))
-    except ValueError:
+    except (ValueError, OverflowError):
         return None
     return a if a in _ROT else None
 
 
-def symbol_transform(sym, ref: str) -> tuple[Point, Matrix]:
-    """Origin and transform of a placed symbol, read in file order as KiCad reads them.
+#: A placed symbol's position and transform while KiCad reads one of its children.
+Frame = tuple[Point, Matrix]
 
-    ``(at x y angle)`` resets the transform to that rotation and a later ``(mirror x|y)``
-    composes onto it, so KiCad rotates first and mirrors second. A ``(mirror)`` written before
-    ``(at)`` is therefore lost, exactly as KiCad's parser loses it.
+
+def symbol_frames(sym, ref: str) -> list[tuple[object, Frame]]:
+    """Each child list of a placed symbol, in file order, with the frame KiCad's parser holds
+    once it has read that child.
+
+    The parser starts from SCH_SYMBOL's default, (0, 0) and the identity. ``(at x y angle)``
+    sets the position and resets the transform to that rotation, and a later ``(mirror x|y)``
+    composes onto it, so KiCad rotates first and mirrors second and a ``(mirror)`` written
+    before ``(at)`` is lost. A property's ``(at)`` is read in the frame in force where it sits
+    (sch_io_kicad_sexpr_parser.cpp:3071-3098 and 3265-3268 at 9.0.8, 3188-3215 and 3504-3507
+    at 10.0.7), which is the frame of its own entry here, since a property sets no frame.
     """
     t, pos = _ROT[0], (0, 0)
+    out: list[tuple[object, Frame]] = []
     for ch in sym.lists:
         if ch.head == "at":
             a = ch.atoms
@@ -306,11 +325,66 @@ def symbol_transform(sym, ref: str) -> tuple[Point, Matrix]:
                 raise Refusal(
                     "unloadable",
                     f"{ref} is placed at angle {a[3].text}, which KiCad cannot load (0, 90, 180"
-                    " or 270 only). Remedy: rotate it to one of those in KiCad.",
+                    " or 270 only), so KiCad cannot open this sheet either. Remedy: call"
+                    f" move_component on {ref} at its own position with rotation 0, 90, 180 or"
+                    " 270, which repairs the angle.",
                 )
             t = _ROT[ang]
         elif ch.head == "mirror" and len(ch.atoms) > 1 and ch.atoms[1].text in _MIR:
             t = _compose(t, _MIR[ch.atoms[1].text])
+        out.append((ch, (pos, t)))
+    return out
+
+
+def symbol_transform(sym, ref: str) -> Frame:
+    """Origin and transform of a placed symbol, read in file order as KiCad reads them: the
+    frame after its last child (symbol_frames)."""
+    frames = symbol_frames(sym, ref)
+    return frames[-1][1] if frames else ((0, 0), _ROT[0])
+
+
+def _inverse(t: Matrix) -> Matrix:
+    """TRANSFORM::InverseTransform (libs/kimath/src/transform.cpp:59-78, the same at 9.0.8
+    and 10.0.7): the adjugate over the determinant, which is +1 or -1 for every symbol
+    transform, so the division is exact."""
+    x1, y1, x2, y2 = t
+    det = x1 * y2 - x2 * y1
+    assert det in (1, -1), t
+    return y2 // det, -y1 // det, -x2 // det, x1 // det
+
+
+def carry(p: Point, before: Frame, after: Frame) -> Point:
+    """Point ``p``, fixed in a symbol's own frame, as the symbol goes from ``before`` to
+    ``after``: S1 + T1 * T0^-1 * (p - S0).
+
+    KiCad keeps a field's offset textPos - S through Move, Rotate and both mirrors
+    (sch_symbol.h:701-710 at 9.0.8, 788-797 at 10.0.7; sch_symbol.cpp:2190-2242 at 9.0.8,
+    2827-2879 at 10.0.7), and a property's (at) is GetPosition, S + T * (textPos - S)
+    (sch_field.cpp:1615-1628 at 9.0.8, 1398-1411 at 10.0.7), so a property's (at) moves by
+    this rule. A pin end is fixed in the symbol's frame the same way.
+    """
+    (s0, t0), (s1, t1) = before, after
+    lx, ly = _apply(_inverse(t0), p[0] - s0[0], p[1] - s0[1])
+    dx, dy = _apply(t1, lx, ly)
+    return s1[0] + dx, s1[1] + dy
+
+
+def _old_order_transform(sym, ref: str) -> tuple[Point, Matrix]:
+    """symbol_transform with the order reversed: each mirror applied before the rotation.
+
+    Deliberately the old, wrong order: _transform_pin_pos mirrored a pin before rotating it
+    from v0.5.8 to v0.20.1. At rotation 90 or 270 with a mirror the point this gives is the
+    pin's end reflected through the symbol's origin (test_ladder_r3_mirrored_pins.py
+    measures 0.20.1 writing at it). It exists only so validate_hierarchy can find what those
+    releases left there; nothing may place or read a pin through it."""
+    pos, _kicad = symbol_transform(sym, ref)  # raises Refusal for an angle it refuses
+    t = _ROT[0]
+    for ch in sym.lists:
+        if ch.head == "at":
+            ang = _angle(ch.atoms[3].text) if len(ch.atoms) > 3 else 0
+            t = _ROT[ang or 0]  # never None here: symbol_transform refused such an angle
+        elif ch.head == "mirror" and len(ch.atoms) > 1 and ch.atoms[1].text in _MIR:
+            t = _compose(_MIR[ch.atoms[1].text], t)  # the mirror first, then the rotation
     return pos, t
 
 
@@ -603,6 +677,16 @@ def _xys(node) -> list[Point]:
     return [(iu(p.atoms[1].text), iu(p.atoms[2].text)) for p in pts.find_all("xy")]
 
 
+def _at_point(node) -> Point:
+    """Where a junction, no-connect flag, label or bus entry sits: its (at), else the origin,
+    where kicad-cli 9.0.8 reads an item written with no (at)
+    (tests/test_ladder_r3_mirrored_pins.py measures each kind)."""
+    at = node.find("at")
+    if at is None:
+        return (0, 0)
+    return iu(at.atoms[1].text), iu(at.atoms[2].text)
+
+
 def _pin_hidden(p) -> bool:
     if any(a.text == "hide" for a in p.atoms[3:]):
         return True
@@ -623,8 +707,17 @@ _MAX_CELLS = 1 << 16
 
 
 def _pad_order(num: str):
-    """Pad numbers in natural order: 2 before 10."""
-    return (0, int(num), "") if num.isdigit() else (1, 0, num)
+    """Pad numbers in natural order: 2 before 10. Every text has a place, none refuses a sort.
+
+    A number made of decimal digits goes by its value, however many digits it has, ahead of
+    every other text; the rest go by their text, and the text breaks a tie. int() is no way to
+    read the value: it refuses more than 4300 digits, and str.isdigit is true of '²', which
+    it cannot read.
+    """
+    if num.isdecimal():
+        digits = "".join(str(unicodedata.decimal(c)) for c in num).lstrip("0")
+        return (0, len(digits), digits, num)
+    return (1, 0, "", num)
 
 
 class _UF:
@@ -869,16 +962,25 @@ _MAX_INSTANCES = 4096
 _PROJECT_LEVELS = 3
 
 
+#: Whitespace as _cst reads it between two atoms: space, TAB, CR, LF and NUL, and after a line
+#: break a comment line, a '#' first on its line with the rest of the line.
+_WS = rb"(?:[ \t\r\n\x00]|\n[ \t\r\x00]*#[^\n]*(?=\n|\Z))*"
+#: A string with an escape in it. _cst decodes \x41 and \101 and the other escapes KiCad's
+#: lexer does, so such a string may spell any text; matching it costs a parse at most.
+_ESCAPED = rb'"[^"\\\n]*\\[^\n](?:[^"\\\n]|\\[^\n])*"'
+
+
 def _atom(text: bytes) -> bytes:
-    """A regex for one s-expression atom with this text, quoted or bare, the way _cst.TOKEN
-    reads it: a bare atom runs to whitespace, a parenthesis, a quote or the end."""
+    """A regex for one s-expression atom with this text, the way _cst reads it: quoted, or
+    bare and running to whitespace, a parenthesis or the end; or any string spelled with
+    escapes, which may decode to it."""
     e = re.escape(text)
-    return rb'(?:"' + e + rb'"|' + e + rb'(?=[\s()"]|\Z))'
+    return rb'(?:"' + e + rb'"|' + e + rb"(?=[ \t\r\n\x00()]|\Z)|" + _ESCAPED + rb")"
 
 
 def _head(*words: bytes) -> bytes:
     """A regex for the start of a list whose leading atoms are *words*, any whitespace between."""
-    return rb"\(\s*" + rb"\s*".join(_atom(w) for w in words)
+    return rb"\(" + _WS + _WS.join(_atom(w) for w in words)
 
 
 #: A sheet block or a KiCad 6 instance table somewhere in the bytes. A match inside a quoted
@@ -901,13 +1003,7 @@ def refs_pattern(refs) -> re.Pattern | None:
         return None
     ref = b"(?:" + b"|".join(_atom(t) for t in texts) + b")"
     return re.compile(
-        _head(b"reference")
-        + rb"\s*"
-        + ref
-        + b"|"
-        + _head(b"property", b"Reference")
-        + rb"\s*"
-        + ref
+        _head(b"reference") + _WS + ref + b"|" + _head(b"property", b"Reference") + _WS + ref
     )
 
 
@@ -1248,24 +1344,16 @@ class Model:
             if xys:
                 self.areas.append(xys)
         elif h == "bus_entry":
-            at, size = ch.find("at"), ch.find("size")
-            x, y = iu(at.atoms[1].text), iu(at.atoms[2].text)
+            size = ch.find("size")
+            x, y = _at_point(ch)
             dx, dy = (
                 (iu(size.atoms[1].text), iu(size.atoms[2].text)) if size is not None else (0, 0)
             )
             self.add(Item("be", x, y, x + dx, y + dy))
         elif h in ("junction", "no_connect"):
-            at = ch.find("at")
-            self.add(
-                Item(
-                    "junction" if h == "junction" else "nc",
-                    iu(at.atoms[1].text),
-                    iu(at.atoms[2].text),
-                )
-            )
+            self.add(Item("junction" if h == "junction" else "nc", *_at_point(ch)))
         elif h in _LABEL_KINDS:
-            at = ch.find("at")
-            it = self.add(Item("label", iu(at.atoms[1].text), iu(at.atoms[2].text)))
+            it = self.add(Item("label", *_at_point(ch)))
             it.sub = _LABEL_KINDS[h]
             it.text = ch.atoms[1].text if len(ch.atoms) > 1 else ""
             it.name = None if h in ("netclass_flag", "directive_label") else netname(it.text)
@@ -2508,3 +2596,46 @@ def plan_wire_pins(
             f" every instance: {', '.join(f'{r}:{n}' for r, n in refs)}."
         )
     return plan
+
+
+# ---------------------------------------------------------------------------------------------
+# move_component's contact report
+# ---------------------------------------------------------------------------------------------
+
+
+@dataclass
+class ContactChange:
+    """One pin of a moved symbol whose exact-point contacts changed: its number, its end before
+    and after, and what it left and what it now meets (described as _desc describes them)."""
+
+    num: str
+    old: Point
+    new: Point
+    left: list[str]
+    met: list[str]
+
+
+def contact_changes(m: Model, node, before: Frame, after: Frame) -> list[ContactChange]:
+    """Every pin the placed symbol ``node`` draws whose contacts change when it goes from
+    frame ``before`` to frame ``after``, in pad order.
+
+    ``m`` is the model of the sheet before the edit. A pin's contacts are the items with a
+    connection point exactly at its end (a wire has its two ends), the moved symbol's own pins
+    left out because they travel with it; a pin end on a wire's interior is no contact.
+    test_new_sch_tools.py::TestMoveComponent checks the pins named against kicad-cli's netlist.
+    """
+    m.ensure()
+    own = [it for it in m.items if it.kind == "pin" and it.sym is not None and it.sym.node is node]
+    owned = {id(it) for it in own}
+    out = []
+    for it in sorted(own, key=lambda q: _pad_order(q.num or "")):
+        old = (it.x, it.y)
+        new = carry(old, before, after)
+        was = {id(q): q for q in m._pts.get(old, []) if id(q) not in owned}
+        now = {id(q): q for q in m._pts.get(new, []) if id(q) not in owned}
+        if was.keys() == now.keys():
+            continue
+        left = [_desc(was[k]) for k in was if k not in now]
+        met = [_desc(now[k]) for k in now if k not in was]
+        out.append(ContactChange(it.num or "", old, new, left, met))
+    return out

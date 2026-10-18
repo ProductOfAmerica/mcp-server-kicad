@@ -17,7 +17,16 @@ from mcp_server_kicad._connectivity import (
     not_drawn_message,
     pin_matches,
 )
-from mcp_server_kicad._cst import _fill_at, _node_text, _node_xy, _num, _numish
+from mcp_server_kicad._cst import (
+    SCH_IU_PER_MM,
+    _angle_text,
+    _fill_at,
+    _node_text,
+    _node_xy,
+    _num,
+    _numish,
+    _snap,
+)
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -183,7 +192,7 @@ def list_schematic_components(schematic_path: str = SCH_PATH) -> list[ComponentI
     _, root, *_ = _open_sch_cst(schematic_path)
     items = []
     for sym in root.find_all("symbol"):
-        at = sym.find("at")
+        at = sym.find_all("at")[-1]  # of two (at), KiCad keeps the last, as move_component does
         lib_id = sym.find("lib_id")
         items.append(
             ComponentItem(
@@ -613,11 +622,10 @@ def place_component(
             " the existing symbol."
         )
 
-    _bounds_check(x, y, page_w, page_h, page_name)
-
-    # Snap placement to grid
+    # Snap placement to grid, then check the position that is written.
     x = _snap_grid(x)
     y = _snap_grid(y)
+    _bounds_check(x, y, page_w, page_h, page_name)
 
     # A placed symbol is a part only if its definition sits in lib_symbols
     # beside it: KiCad keeps the body and pins there, and the instance merely
@@ -646,7 +654,7 @@ def place_component(
     node.find("lib_name").atoms[1].set_text(lib_sym.atoms[1].text)
     node.find("lib_id").atoms[1].set_text(lib_id)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation)
+    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
     if mirror:
         m = _cst.parse(b"(mirror x)").lists[0]
         m.atoms[1].set_text(mirror)
@@ -657,11 +665,11 @@ def place_component(
     # Properties
     props = node.find_all("property")
     props[0].atoms[2].set_text(reference)
-    _fill_at(props[0], x, round(y - 3.81, 4))
+    _fill_at(props[0], x, y - 3.81, iu=SCH_IU_PER_MM)
     props[1].atoms[2].set_text(value)
-    _fill_at(props[1], x, round(y + 3.81, 4))
-    _fill_at(props[2], x, y)
-    _fill_at(props[3], x, y)
+    _fill_at(props[1], x, y + 3.81, iu=SCH_IU_PER_MM)
+    _fill_at(props[2], x, y, iu=SCH_IU_PER_MM)
+    _fill_at(props[3], x, y, iu=SCH_IU_PER_MM)
 
     # Pin UUIDs from the lib symbol
     instances = node.find("instances")
@@ -930,7 +938,9 @@ def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     for w in wires:
         for xk, yk in [("x1", "y1"), ("x2", "y2")]:
-            _bounds_check(w[xk], w[yk], page_w, page_h, page_name)
+            _bounds_check(
+                _snap(w[xk], SCH_IU_PER_MM), _snap(w[yk], SCH_IU_PER_MM), page_w, page_h, page_name
+            )
     before = _cst.serialize(tree)
     m = _model(root)
     m.ensure()
@@ -1097,14 +1107,15 @@ def _wire_xys(node) -> list[tuple[float, float]]:
 
 
 def _splice_wire(root, x1: float, y1: float, x2: float, y2: float) -> list[tuple[float, float]]:
-    """Splice one wire node; returns its rounded endpoints for auto-junction scans."""
+    """Splice one wire node; returns its endpoints as the file holds them, for auto-junction
+    scans."""
     node = _WIRE_TPL.copy()
     xys = node.find("pts").find_all("xy")
     points = []
     for xy, vx, vy in [(xys[0], x1, y1), (xys[1], x2, y2)]:
-        px, py = round(vx, 4), round(vy, 4)
-        xy.atoms[1].set_text(_num(px))
-        xy.atoms[2].set_text(_num(py))
+        px, py = _snap(vx, SCH_IU_PER_MM), _snap(vy, SCH_IU_PER_MM)
+        xy.atoms[1].set_text(_num(px, SCH_IU_PER_MM))
+        xy.atoms[2].set_text(_num(py, SCH_IU_PER_MM))
         points.append((px, py))
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "wire", node)
@@ -1121,7 +1132,10 @@ Point = _connectivity.Point
 
 def _req_point(x: float, y: float) -> Point:
     """A requested point in internal units, as KiCad reads the text _splice_wire writes."""
-    return _connectivity.iu(_num(round(x, 4))), _connectivity.iu(_num(round(y, 4)))
+    return (
+        _connectivity.iu(_num(x, SCH_IU_PER_MM)),
+        _connectivity.iu(_num(y, SCH_IU_PER_MM)),
+    )
 
 
 def _xy_iu(node) -> Point:
@@ -1355,6 +1369,260 @@ def _cuts_inside_lines(root, path: str) -> list[dict]:
             )
         issues.append(issue)
     return issues
+
+
+#: The releases whose _transform_pin_pos mirrored a pin before rotating it (git history: v0.5.8
+#: to v0.20.1; v0.2.0 to v0.5.7 turned the other way, v0.21.0 has no such function).
+_OLD_RELEASES = "0.5.8 to 0.20.1"
+
+
+def _off_pin_items(root, path: str) -> list[dict]:
+    """validate_hierarchy's issues for the no-connect flags (no_connect_off_pin) and wire ends
+    (wire_end_off_pin) on one parsed sheet at the point releases 0.5.8 to 0.20.1 gave a pin.
+    They mirrored a pin before rotating it, so at rotation 90 or 270 with a mirror their point
+    is the pin's end reflected through the symbol's origin
+    (_connectivity._old_order_transform); 0.20.1's no_connect_pin, wire_pins_to_net and
+    connect_pins all wrote there (measured: tests/test_ladder_r3_mirrored_pins.py).
+
+    Only a point where KiCad draws no pin is checked: where it draws one, as at the other pin
+    of a two-pin part, the item is on that pin. A flag there is reported unless a sheet pin or
+    a hierarchical label is there too (ercCheckNoConnects, connection_graph.cpp:3735-3750 at
+    9.0.8). A wire end is left alone when an end of another item lies on it, a bus's apart:
+    KiCad leaves a wire end dangling only where none does (SCH_LINE::UpdateDanglingState,
+    sch_line.cpp:616 at 9.0.8). A flag there and the label 0.20.1's connect_pins put there,
+    Net-(<ref>-<pin>) with the pin as the call named it, do not count as such an end. Either
+    is left alone where any reader may join it to a pin KiCad draws for the point already (the
+    model's possible view), as a flag wired to that pin is, or a wire after its repair.
+
+    Where several pins were put at the point, each flag and wire end gets one issue that lists
+    them all, with a note and no repair, since which pin it was written for is not known. A
+    flag carries a note, since no tool removes a flag by its position. A wire end's repair is
+    wire_pins_to_net with the one local label name on the wire's net that the tool accepts, if
+    planning that call refuses nothing; else a note, which carries the plan's refusal or, where
+    the net has no single such name, names the pin a run of wires from the end reaches. A sheet
+    the model refuses gets nothing."""
+    if not any(_connectivity.effective_mirror(s) for s in root.find_all("symbol")):
+        return []
+    try:
+        model = _connectivity.Model(root)
+    except _connectivity.Refusal:
+        return []
+    model.ensure()
+    drawn = {(it.x, it.y) for it in model.items if it.kind == "pin"}
+    spots: dict[Point, list] = {}  # old point -> (symbol, library pin, KiCad's end) per pin there
+    for s in model.syms:
+        if s.lib is None or s.derived or _connectivity.effective_mirror(s.node) is None:
+            continue
+        pos, t = _connectivity.symbol_transform(s.node, s.ref)
+        old_pos, old_t = _connectivity._old_order_transform(s.node, s.ref)
+        subs = {id(sub): sub for u in s.units for sub in _instance_units(s.lib, u, s.style)}
+        for sub in subs.values():
+            for pin in sub.find_all("pin"):
+                if pin.find("at") is None:
+                    continue
+                end = _connectivity.pin_end(pos, t, pin, s.ref)[:2]
+                at = _connectivity.pin_end(old_pos, old_t, pin, s.ref)[:2]
+                if at != end and at not in drawn:
+                    spots.setdefault(at, []).append((s, pin, end))
+    issues = []
+    for at, pins in spots.items():
+        issues += _left_at(model, root, at, pins, path)
+    return issues
+
+
+def _remove_call(w) -> str:
+    """The sentence that names the remove_wire call for wire item w."""
+    mm = _connectivity.mm
+    return f"remove_wire({mm(w.x)}, {mm(w.y)}, {mm(w.x2)}, {mm(w.y2)}) removes this wire."
+
+
+def _gave(pads: list[tuple]) -> str:
+    """The sentence that names the several pins the old transform put at one point."""
+    pt = _connectivity.pt
+    where = "; ".join(f"{s.ref} pin {num} at {pt(end)}" for s, num, _name, end in pads)
+    return (
+        f"Releases {_OLD_RELEASES} gave {len(pads)} pins this point, mirrored before rotated,"
+        f" and KiCad draws them elsewhere ({where})."
+    )
+
+
+def _flag_note(model, root, pads: list[tuple]) -> str:
+    """The note of a no_connect_off_pin issue for the pins pads, which the flag misses."""
+    delete = (
+        " No tool removes a no-connect flag by its position (remove_no_connect looks at the pin"
+        " KiCad draws): delete it in KiCad's editor"
+    )
+    if len(pads) > 1:
+        return (
+            f"{_gave(pads)} Which of them the flag was meant for is not known here, and KiCad"
+            " draws none of them at the point, so the flag misses all of"
+            f" them.{delete}, then no_connect_pin flags each of them that should be flagged."
+        )
+    s, num, _name, end = pads[0]
+    if any(it.kind == "nc" for it in model._pts.get(end, ())):
+        then = "; the pin is flagged already."
+    elif _get_pin_or_none(root, s.ref, num) == end:
+        then = f", then no_connect_pin({s.ref!r}, {num!r}) flags the pin."
+    else:
+        then = ", and flag the pin there too."
+    return (
+        f"This flag is at the point releases {_OLD_RELEASES} gave {s.ref} pin {num}, mirrored"
+        f" before rotated; KiCad draws the pin at {_connectivity.pt(end)}, so the flag misses"
+        f" it.{delete}{then}"
+    )
+
+
+def _left_at(model, root, at: Point, pins: list, path: str) -> list[dict]:
+    """_off_pin_items' issues for the point at, where KiCad draws no pin: what lies there, for
+    the pins the old transform put there, each (placed symbol, library pin, KiCad's end of
+    it). One pin gives issues with its own fields and, for a wire end, a repair where there is
+    one. Two or more give one issue per item naming every pin in "pins", with a note and no
+    repair, since which of them the item was written for is not known."""
+    here = model._pts.get(at, [])
+    if not here:
+        return []
+    child = _connectivity._child_text
+    pads = [(s, child(pin, "number"), child(pin, "name"), end) for s, pin, end in pins]
+    mm = _connectivity.IU_PER_MM
+    where = {"x": at[0] / mm, "y": at[1] / mm}
+    if len(pads) == 1:
+        s, num, _name, end = pads[0]
+        pin_at = {"pin_x": end[0] / mm, "pin_y": end[1] / mm}
+        base = {"file": path, "reference": s.ref, "pin": num, **where, **pin_at}
+    else:
+        listed = [
+            {"reference": s.ref, "pin": num, "pin_x": end[0] / mm, "pin_y": end[1] / mm}
+            for s, num, _name, end in pads
+        ]
+        base = {"file": path, **where, "pins": listed}
+    drawn = [
+        it
+        for s, num, _name, end in pads
+        for it in model._pts.get(end, ())
+        if it.kind == "pin" and it.ref == s.ref and it.num == num
+    ]
+
+    def joined(it) -> bool:
+        """Whether any reader may join it to a pin KiCad draws for this point already: the
+        model's possible view, which the model builds once."""
+        possible = model.coarse().uf
+        return any(possible.find(p.id) == possible.find(it.id) for p in drawn)
+
+    out = []
+    # ERC takes a no-connect at a sheet pin or a hierarchical label as that port's
+    # (ercCheckNoConnects, connection_graph.cpp:3735-3750 at 9.0.8).
+    port = any(
+        it.kind == "sheetpin" or (it.kind == "label" and it.sub == "hierarchical label")
+        for it in here
+    )
+    flags = [] if port else [it for it in here if it.kind == "nc" and not joined(it)]
+    if flags:
+        note = _flag_note(model, root, pads)
+        out += [{"type": "no_connect_off_pin", **base, "note": note} for _flag in flags]
+    own = {f"Net-({s.ref}-{label})" for s, num, name, _end in pads for label in (num, name)}
+    # dict.fromkeys: a wire of no length is listed at its point twice.
+    for w in dict.fromkeys(it for it in here if it.kind == "wire"):
+        others = [
+            it
+            for it in here
+            if it is not w
+            and it.kind not in ("nc", "bus")
+            and not (
+                it.kind == "label"
+                and it.sub == "label"
+                and _connectivity.unescape(it.text or "") in own
+            )
+        ]
+        if others or joined(w):
+            continue
+        issue = {"type": "wire_end_off_pin", **base, "wire": _stretch((w.x, w.y), (w.x2, w.y2))}
+        if len(pads) > 1:
+            issue["note"] = (
+                f"{_gave(pads)} Which of them the wire was meant for is not known here, and"
+                " KiCad draws none of them at the point, so the wire misses all of them."
+                f" Wire the pins as meant; {_remove_call(w)}"
+            )
+        else:
+            s, num, _name, end = pads[0]
+            repair, why = _join_repair(model, root, s.ref, num, w, at, path)
+            if repair is not None:
+                issue["repair"] = repair
+            else:
+                issue["note"] = (
+                    f"This wire ends at the point releases {_OLD_RELEASES} gave {s.ref} pin"
+                    f" {num}, mirrored before rotated; KiCad draws the pin at"
+                    f" {_connectivity.pt(end)}, so the wire misses it. {why}"
+                )
+        out.append(issue)
+    return out
+
+
+def _get_pin_or_none(root, reference: str, pin_name: str) -> Point | None:
+    """Where no_connect_pin finds a pin, in internal units, or None."""
+    try:
+        x, y, _ = _get_pin_pos_cst(root, reference, pin_name)
+    except ValueError:
+        return None
+    return _req_point(x, y)
+
+
+def _join_repair(model, root, ref: str, num: str, w, at: Point, path: str):
+    """(repair, None) calling wire_pins_to_net to put pin num of ref on the one local label name
+    of wire w's net that the tool accepts, when planning that call refuses nothing; or (None,
+    why not). The wire ends at the point at. See _off_pin_items."""
+    labels = (
+        it
+        for its in model.narrow_names(w).values()
+        for it in its
+        if it.kind == "label" and it.sub == "label"
+    )
+    usable: dict[str, str] = {}
+    for text in sorted({it.text for it in labels if it.text}):
+        try:
+            _connectivity.check_args(text, "auto", 2.54)
+        except _connectivity.Refusal:
+            continue  # wire_pins_to_net refuses this name as label_text
+        usable.setdefault(_connectivity.netname(text), text)
+    remove = _remove_call(w)
+    if len(usable) == 1:
+        (text,) = usable.values()
+        pins = [{"reference": ref, "pin": num}]
+        plan = _connectivity.plan_wire_pins(root, pins, text, "auto", 2.54, path)
+        if not plan.refused:
+            arguments = {"pins": pins, "label_text": text, "schematic_path": path}
+            return {"tool": "wire_pins_to_net", "arguments": arguments}, None
+        return None, (
+            f"wire_pins_to_net would put the pin on {text!r}, the wire's net, but refuses: "
+            + "; ".join(plan.lines)
+            + f" Act on that, or wire the pin as meant; {remove}"
+        )
+    far = _run_end(model, w, at)
+    if far is not None and far.ref and far.num:
+        reaches = f"Its wires run to {far.ref} pin {far.num}."
+    else:
+        reaches = "Its wires run to no single pin, so what it was meant to join is not known here."
+    return None, (
+        f"Its net carries no single local label name that wire_pins_to_net accepts. {reaches}"
+        f" Wire the pin as meant; {remove}"
+    )
+
+
+def _run_end(model, w, at: Point):
+    """The one pin a run of wires from wire w ends at: from w's end that is not at, along the
+    one other wire ending at each point where nothing else does, to a point holding pins.
+    None where the run branches, meets anything else, or ends at no pin or at two."""
+    seen = {w.id}
+    q = (w.x2, w.y2) if (w.x, w.y) == at else (w.x, w.y)
+    while True:
+        here = [it for it in model._pts.get(q, ()) if it.id not in seen]
+        pins = [it for it in here if it.kind == "pin"]
+        if pins:
+            return pins[0] if len(pins) == 1 else None
+        if len(here) != 1 or here[0].kind != "wire":
+            return None
+        w = here[0]
+        seen.add(w.id)
+        q = (w.x2, w.y2) if (w.x, w.y) == q else (w.x, w.y)
 
 
 def _plain_stroke(node) -> bool:
@@ -1888,12 +2156,12 @@ def add_label(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    x, y = _snap(x, SCH_IU_PER_MM), _snap(y, SCH_IU_PER_MM)
     _bounds_check(x, y, page_w, page_h, page_name)
-    x, y = round(x, 4), round(y, 4)
     node = _LABEL_TPL.copy()
     node.atoms[1].set_text(text)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation)
+    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -1938,7 +2206,13 @@ def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> st
     # which KiCad reads off the page as anywhere else, so the repairs validate_hierarchy names
     # hold there as well.
     for spec in refused:
-        _bounds_check(spec["x"], spec["y"], page_w, page_h, page_name)
+        _bounds_check(
+            _snap(spec["x"], SCH_IU_PER_MM),
+            _snap(spec["y"], SCH_IU_PER_MM),
+            page_w,
+            page_h,
+            page_name,
+        )
     if refused:
         named = ", ".join(f"({spec['x']}, {spec['y']})" for spec in refused)
         raise ToolError(
@@ -1991,25 +2265,233 @@ def move_component(
     rotation: Literal[0, 90, 180, 270] | None = None,
     schematic_path: str = SCH_PATH,
 ) -> str:
-    """Move a placed component to a new position.
+    """Move a placed component, turn it, or both.
+
+    The symbol and all its fields move together: each field keeps its place relative to the
+    symbol, rotation included, and keeps its own text angle, so KiCad draws it turning with
+    the symbol. KiCad's GUI would also re-place auto-placed fields after a turn when its
+    autoplace preference is on; this tool does not.
+
+    Wires, labels, junctions and no-connect flags stay where they are, as with KiCad's own
+    Move. The result lists every pin whose connections changed (what it left, what it now
+    meets); reconnect those with wire_pins_to_net or connect_pins.
+
+    x and y snap to the 1.27 mm grid when the symbol moves, and the grid point must lie on the
+    page. Passing the symbol's own position (as list_schematic_components reports it) turns it in
+    place without snapping, wherever it stands, off the page included. Nothing is written when
+    nothing would change.
 
     Args:
         reference: Reference designator (e.g. "R1")
         x: New X position
         y: New Y position
-        rotation: New rotation in degrees (None = keep current)
+        rotation: The absolute angle in degrees (None = keep current); a mirrored symbol keeps
+            its mirror. It is written as KiCad writes it, so it also repairs an angle KiCad
+            cannot load, such as 45, +90 or none; a call without it refuses one this tool
+            cannot read as 0, 90, 180 or 270.
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
-    _bounds_check(x, y, page_w, page_h, page_name)
-    x, y = _snap_grid(x), _snap_grid(y)
     sym = _find_sym_cst(root, reference)
     if sym is None:
         raise ToolError(f"Component {reference} not found." + _SEE_PLACED)
     _check_rotation(rotation)
-    _fill_at(sym, x, y, rotation)
+    ats = sym.find_all("at")
+    if not ats:
+        raise ToolError(
+            f"{reference} has no (at) giving its position, so it cannot be moved without"
+            " guessing where it is. Remedy: open and save the sheet in KiCad, which writes one."
+            " The file was not changed."
+        )
+    for at in ats:
+        if len(at.atoms) < 3:
+            raise ToolError(f"{reference} has an (at) with no x and y. The file was not changed.")
+        for atom in at.atoms[1:3]:
+            _sym_iu(atom.text, reference)
+    for at in ats[:-1]:
+        text, read = _placed_angle(at)
+        if read is None:
+            raise ToolError(
+                f"{reference} carries more than one (at), and an earlier one is placed"
+                f" {_angle_words(text)}, which KiCad cannot load. This tool edits"
+                " the last (at), the one KiCad keeps, so the sheet would still not load."
+                " Remedy: delete the extra (at) by hand, then move it again. The file was not"
+                " changed."
+            )
+    last = ats[-1]
+    s0 = (_sym_iu(last.atoms[1].text, reference), _sym_iu(last.atoms[2].text, reference))
+    # KiCad reads a symbol's angle unconditionally, so an (at) with none is as unloadable as one
+    # at 45 (sch_io_kicad_sexpr_parser.cpp:3074 at 9.0.8, 3191 at 10.0.7): its old orientation
+    # then means nothing, and only a rotation says what the repaired symbol is.
+    old_angle, read = _placed_angle(last)
+    bad_angle = read is None
+    if bad_angle and rotation is None:
+        raise ToolError(
+            f"{reference} is placed {_angle_words(old_angle)}, which KiCad cannot"
+            " load (0, 90, 180 or 270 only), so KiCad cannot open this sheet. Pass rotation=0,"
+            " 90, 180 or 270 to repair it; its fields then keep the places the file gives"
+            " them. The file was not changed."
+        )
+    # In place when the call names the symbol's own position: KiCad turns a single symbol about
+    # its own position (sch_edit_tool.cpp:814 at 9.0.8, 1009 at 10.0.7). Nothing then moves, so
+    # the page does not bound the call, and a symbol placed off the page can still be turned or
+    # have its angle repaired. A call that moves the symbol is snapped to the grid first, and
+    # the page bounds the grid point that is written.
+    if _is_here(x, y, s0):
+        s1 = s0
+    else:
+        x, y = _snap_grid(x), _snap_grid(y)
+        _bounds_check(x, y, page_w, page_h, page_name)
+        s1 = (_mm_iu(x), _mm_iu(y))
+    # A rotation is written unless the atom already holds it as KiCad writes it: float() also
+    # reads spellings KiCad refuses (+90, 9_0, 1e-400: bug 70), and writing it repairs them.
+    turn = rotation is not None and old_angle != _angle_text(rotation)
+    where = f"({_connectivity.mm(s1[0])}, {_connectivity.mm(s1[1])})"
+    if s1 == s0 and not turn:
+        return f"{reference} is already at {where} at that angle: nothing changed, nothing written."
+
+    model, reason = None, None
+    if bad_angle:
+        reason = "a placement KiCad cannot load gives its pins no position to compare against"
+    else:
+        try:
+            model = _connectivity.Model(root)
+            model.check_loadable()
+        except _connectivity.Refusal as e:
+            model, reason = None, e.text
+        except Exception:
+            # The report only advises and the edit does not depend on it, so whatever a sheet
+            # holds that the model cannot read (a text where a number goes, one past a double's
+            # range) must not stop the move.
+            model, reason = None, "an item on this sheet could not be read"
+    if bad_angle and rotation is not None:
+        _write_angle(last, rotation)  # the repair: the old orientation has no meaning
+    try:
+        before = _connectivity.symbol_frames(sym, reference)
+    except _connectivity.Refusal as e:
+        raise ToolError(e.text) from None
+    for atom, value in zip(last.atoms[1:3], s1):
+        if _connectivity.iu(atom.text) != value:
+            atom.set_text(_connectivity.mm(value))
+    if turn and not bad_angle and rotation is not None:
+        _write_angle(last, rotation)
+    after = _connectivity.symbol_frames(sym, reference)
+    frame_before = {id(ch): f for ch, f in before}
+    frame_after = {id(ch): f for ch, f in after}
+    for prop in sym.find_all("property"):
+        held = prop.find_all("at")
+        if not held or len(held[-1].atoms) < 3:
+            continue
+        pat = held[-1]
+        p = (_sym_iu(pat.atoms[1].text, reference), _sym_iu(pat.atoms[2].text, reference))
+        q = _connectivity.carry(p, frame_before[id(prop)], frame_after[id(prop)])
+        for atom, old, new in zip(pat.atoms[1:3], p, q):
+            if old != new:
+                atom.set_text(_connectivity.mm(new))
+    changes = []
+    if model is not None:
+        try:
+            changes = _connectivity.contact_changes(model, sym, before[-1][1], after[-1][1])
+        except Exception:
+            # Advisory like the model's build above: what the comparison cannot do stops nothing.
+            reason = "the contacts of its pins could not be compared"
     _atomic_write(schematic_path, _cst.serialize(tree))
-    return f"Moved {reference} to ({x}, {y})"
+
+    if bad_angle:
+        how = f"moved it to {where}" if s1 != s0 else f"kept it at {where}"
+        lines = [
+            f"{reference} was placed {_angle_words(old_angle)}, which KiCad cannot"
+            f" load; set it to {rotation} and {how}. Its fields keep the places the file gives"
+            " them, moved only with the symbol."
+        ]
+    elif s1 != s0:
+        lines = [f"Moved {reference} to {where}" + (f", rotated to {rotation}" if turn else "")]
+    else:
+        lines = [f"Rotated {reference} in place at {where} to {rotation}"]
+    if reason is not None:
+        lines.append(f"Connections were not checked: {reason}")
+    elif changes:
+        lines.append(
+            "Warning: these pins changed connection. Wires, labels and no-connect flags stay"
+            " where they were, as KiCad's own Move leaves them:"
+        )
+        for c in changes[:_REPORT_CAP]:
+            left = " and ".join(c.left) or "nothing"
+            met = " and ".join(c.met) or "nothing"
+            lines.append(
+                f"  {reference}:{c.num} left {_connectivity.pt(c.old)}: {left};"
+                f" now at {_connectivity.pt(c.new)}: {met}"
+            )
+        if len(changes) > _REPORT_CAP:
+            lines.append(f"  and {len(changes) - _REPORT_CAP} more pins changed connection")
+        lines.append("Reconnect them with wire_pins_to_net or connect_pins.")
+    return "\n".join(lines)
+
+
+#: Pins move_component's result lists one by one; the rest it counts.
+_REPORT_CAP = 10
+
+
+def _mm_iu(value: float) -> int:
+    """A coordinate given in mm, in internal units: ``kiround`` of the mm times 10,000."""
+    return _connectivity.kiround(value * _connectivity.IU_PER_MM)
+
+
+def _is_here(x: float, y: float, here: Point) -> bool:
+    """Whether (x, y) in mm is the internal-unit position ``here``. False for a value no
+    position holds: nan, or one past what internal units can count."""
+    try:
+        return (_mm_iu(x), _mm_iu(y)) == here
+    except (ValueError, OverflowError):
+        return False
+
+
+def _sym_iu(text: str, reference: str) -> int:
+    """A coordinate atom of ``reference`` in internal units; a ToolError naming the token when
+    ``iu`` cannot read it (a word, inf, nan, or a number too large to scale to internal
+    units), before anything is written.
+
+    ``iu`` does not clamp, so 1e308 is refused though kicad-cli loads a sheet holding it: bug
+    69, held by test_a_symbol_at_a_coordinate_kicad_clamps_is_moved.
+    """
+    try:
+        return _connectivity.iu(text)
+    except (ValueError, OverflowError):
+        raise ToolError(
+            f"{reference} holds the coordinate {text!r}, which this tool cannot read as a"
+            " position. The file was not changed."
+        ) from None
+
+
+def _placed_angle(at) -> tuple[str | None, int | None]:
+    """The angle atom of a placed symbol's ``(at)`` as written, None where it gives none, and
+    as ``_connectivity._angle`` reads it, None where that is not 0, 90, 180 or 270.
+
+    KiCad reads the angle unconditionally: NeedNUMBER meets the closing paren of an
+    ``(at x y)`` and refuses the sheet (sch_io_kicad_sexpr_parser.cpp:3074 at 9.0.8, 3191 at
+    10.0.7), so a placement with none is as unloadable as one at 45. The shared readers
+    (``symbol_frames``) still read a missing angle as 0, a known failure that
+    test_ladder_r2_transform.py holds as an expected one. This tool does not guess it: a call
+    without a rotation is refused, and the rotation it is given is the repair.
+    """
+    text = at.atoms[3].text if len(at.atoms) > 3 else None
+    return text, None if text is None else _connectivity._angle(text)
+
+
+def _angle_words(text: str | None) -> str:
+    """How a message places a symbol whose ``(at)`` angle is ``text``, None for none: "at
+    angle 45", or "with no angle"."""
+    return "with no angle" if text is None else f"at angle {text}"
+
+
+def _write_angle(at, rotation: int) -> None:
+    """Make the ``(at)`` list ``at`` read ``rotation`` as its angle: the angle atom it has is
+    retexted, and one it lacks is appended after y with the single space KiCad writes there."""
+    text = _angle_text(rotation)
+    if len(at.atoms) > 3:
+        at.atoms[3].set_text(text)
+    else:
+        at.children.append(_cst.Atom(text.encode(), b" "))
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -2056,7 +2538,7 @@ def set_component_property(
         node.atoms[2].set_text(value)
         node.find("id").atoms[1].set_text(str(max(ids, default=-1) + 1))
         cx, cy = _node_xy(sym)
-        _fill_at(node, cx, cy)
+        _fill_at(node, cx, cy, iu=SCH_IU_PER_MM)
         if props:
             sym.insert_after(props[-1], node)
         else:
@@ -2163,13 +2645,13 @@ def add_global_label(
     if shape not in _VALID_LABEL_SHAPES:
         raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_LABEL_SHAPES))}")
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    x, y = _snap(x, SCH_IU_PER_MM), _snap(y, SCH_IU_PER_MM)
     _bounds_check(x, y, page_w, page_h, page_name)
-    x, y = round(x, 4), round(y, 4)
     node = _GLABEL_TPL.copy()
     node.atoms[1].set_text(text)
     node.find("shape").atoms[1].set_text(shape)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation)
+    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "global_label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -2198,13 +2680,13 @@ def add_hierarchical_label(
     if shape not in _VALID_LABEL_SHAPES:
         raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_LABEL_SHAPES))}")
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    x, y = _snap(x, SCH_IU_PER_MM), _snap(y, SCH_IU_PER_MM)
     _bounds_check(x, y, page_w, page_h, page_name)
-    x, y = round(x, 4), round(y, 4)
     node = _HLABEL_TPL.copy()
     node.atoms[1].set_text(text)
     node.find("shape").atoms[1].set_text(shape)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation)
+    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "hierarchical_label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -2292,10 +2774,12 @@ def modify_hierarchical_label(
         changes.append(f"shape={new_shape}")
     at = target.find("at")
     if new_x is not None:
-        at.atoms[1].set_text(_num(round(new_x, 4)))
+        new_x = _snap(new_x, SCH_IU_PER_MM)
+        at.atoms[1].set_text(_num(new_x, SCH_IU_PER_MM))
         changes.append(f"x={new_x}")
     if new_y is not None:
-        at.atoms[2].set_text(_num(round(new_y, 4)))
+        new_y = _snap(new_y, SCH_IU_PER_MM)
+        at.atoms[2].set_text(_num(new_y, SCH_IU_PER_MM))
         changes.append(f"y={new_y}")
     _atomic_write(schematic_path, _cst.serialize(tree))
     warning = ""
@@ -2460,11 +2944,12 @@ def add_text(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    x, y = _snap(x, SCH_IU_PER_MM), _snap(y, SCH_IU_PER_MM)
     _bounds_check(x, y, page_w, page_h, page_name)
     node = _TEXT_TPL.copy()
     node.atoms[1].set_text(text)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation)
+    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "text", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -2718,7 +3203,7 @@ def connect_pins(
     if not has_label:
         node = _LABEL_TPL.copy()
         node.atoms[1].set_text(f"Net-({ref1}-{pin1})")
-        _fill_at(node, round(x1, 4), round(y1, 4), 0)
+        _fill_at(node, x1, y1, 0, SCH_IU_PER_MM)
         node.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(root, "label", node)
 
@@ -2747,7 +3232,7 @@ def no_connect_pin(
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     px, py, _ = _get_pin_pos_cst(root, reference, pin_name)
-    px, py = round(px, 4), round(py, 4)
+    px, py = _snap(px, SCH_IU_PER_MM), _snap(py, SCH_IU_PER_MM)
 
     tol = 0.1
     for nc in root.find_all("no_connect"):
@@ -2756,7 +3241,7 @@ def no_connect_pin(
             return f"No-connect already present on {reference}:{pin_name} at ({px}, {py})"
 
     node = _NC_TPL.copy()
-    _fill_at(node, px, py)
+    _fill_at(node, px, py, iu=SCH_IU_PER_MM)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "no_connect", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
