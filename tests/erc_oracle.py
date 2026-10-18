@@ -1,20 +1,20 @@
 """Which violations of a project's ERC belong to one sheet, by kicad-cli's own reading.
 
-kicad-cli files an ERC violation under the sheet path of its main item, except that a few
-kinds (a dangling label or wire) carry no sheet path and are filed under the root, whatever
-sheet the item is on (eeschema/erc/erc_report.cpp:169-172 at 9.0.8, 193-196 at 10.0.7).
-A sheet's own violations are therefore:
+kicad-cli files an ERC violation under the sheet path of its main item, and one whose main
+item has no sheet path under the first sheet of the report (eeschema/erc/erc_report.cpp:169-172
+at 9.0.8, 193-196 at 10.0.7). A sheet's own violations are therefore:
 
 - the entries kicad-cli files under the sheet's paths, found by name: the netlist
   (``kicad-cli sch export netlist``) names the file of every sheet path, and the report
   names each entry by the same path (both are SCH_SHEET_PATH::PathHumanReadable); and
-- the entries under the root whose main item lives in the sheet's file, found by the item's
-  uuid in the bytes of the project's sheet files, refused (RuntimeError) when two files
+- the violations in the first entry whose main item lives in the sheet's file, found by the
+  item's uuid in the bytes of the project's sheet files, refused (RuntimeError) when two files
   hold it.
 
-It never reads a report's ``uuid_path`` and imports nothing from mcp_server_kicad, so it
-shares no assumption with the filter it judges. Fixtures name their sheet files uniquely,
-because the netlist prints only a file's name.
+It never reads a report's ``uuid_path`` and imports nothing from mcp_server_kicad. It shares
+with the filter it judges the rule above, that the report's first entry holds the violations
+without a sheet path, and the item's uuid as what ties a violation to a file. Fixtures name
+their sheet files uniquely, because the netlist prints only a file's name.
 """
 
 from __future__ import annotations
@@ -99,7 +99,7 @@ class Project:
         """The violations that are *sheet*'s own, every instance of it included."""
         mine = []
         for index, entry in enumerate(self.report["sheets"]):
-            if index == 0:  # the root's entry: the root's own items, and every item with no path
+            if index == 0:  # the first sheet's own items, and every item with no sheet path
                 mine += [v for v in entry["violations"] if self._file_of(v) == sheet.name]
             elif self.names.get(entry["path"]) == sheet.name:
                 mine += entry["violations"]

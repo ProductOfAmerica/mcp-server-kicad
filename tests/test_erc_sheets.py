@@ -6,9 +6,9 @@ its project's root came back with nothing. Bug 79: a sheet in a folder below its
 found no root at all, and a file no sheet uses was taken for a sheet.
 
 A sheet's own violations are the entries kicad-cli files under the sheet's instance paths and
-those it files under the root whose item lives in the sheet's file. tests/erc_oracle.py reads
-both from kicad-cli's own report and netlist, so no assumption of the filter under test reaches
-the judge.
+the violations in the report's first entry whose item lives in the sheet's file. tests/erc_oracle.py
+reads both from kicad-cli's own report and netlist, and shares with the filter under test only the
+rule that the first entry holds the violations without a sheet path.
 """
 
 from __future__ import annotations
@@ -279,7 +279,7 @@ def _violation(uuid: str, kind: str = "wire_dangling") -> dict:
 
 @pytest.mark.kicad_placeholder("s.kicad_sch")
 def test_a_sheets_violations_are_picked_by_instance_path_and_by_item(tmp_path):
-    """A report as kicad-cli writes it: the root's entry holds the violations without a sheet
+    """A report as kicad-cli writes it: the first entry holds the violations without a sheet
     path, whatever sheet their item is on, and one entry for each instance of a sheet holds the
     rest. The sheet file here writes one uuid quoted and one bare, as kiutils does, and the
     report writes them in upper case."""

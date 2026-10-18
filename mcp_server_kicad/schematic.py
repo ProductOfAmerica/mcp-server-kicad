@@ -3393,14 +3393,13 @@ def _sheet_violations(
 ) -> list[dict]:
     """The violations of a root's ERC *report* that belong to the sheet file *path*.
 
-    kicad-cli files a violation under the sheet path of its main item, and a few kinds, such
-    as a dangling label or wire, under the root whatever sheet the item is on (WriteJsonReport,
-    erc_report.cpp:169-172 at 9.0.8: the root's entry takes every violation without a sheet
-    path). So:
+    kicad-cli files a violation under the sheet path of its main item, and one whose main item
+    has no sheet path under the first sheet of the report (WriteJsonReport, erc_report.cpp:172
+    at 9.0.8). So:
 
-    - an entry for a sheet path takes the sheet's *instances* (the block uuids from the root,
-      which its uuid_path holds after the root's own) and all its violations are the sheet's;
-    - the root's entry (the first) yields a violation whose first item is an item of *path*.
+    - the first entry yields a violation whose first item is an item of *path*;
+    - a later entry whose sheet path is one of the sheet's *instances* (the block uuids from
+      the root, which its uuid_path holds after the root's own) yields all its violations.
 
     A sheet used twice has an entry for each use, and keeps both.
     """
@@ -3543,9 +3542,8 @@ def run_erc(
     """Run Electrical Rules Check (ERC) on a schematic.
 
     A sub-sheet is checked from its project's root, so the hierarchy around it
-    counts, and only that sheet's own violations are returned, one entry for each
-    place the project uses it. A file that no sheet of its project uses is checked
-    on its own.
+    counts, and only that sheet's own violations are returned. A file that no
+    sheet of its project uses is checked on its own.
 
     Returns JSON report with violations. An item's position is in
     millimetres (mm) in sheet coordinates, the numbers get_pin_positions prints.

@@ -202,10 +202,9 @@ check a sub-sheet from its project's root schematic, wherever the sheet
 file sits in the project, for full hierarchy context. This eliminates
 false positives from missing parent connections (hierarchical label
 errors, dangling wire errors). The result holds only that sheet's own
-violations, one entry for each place the project uses it, and a `"note"`
-field says when the check ran from the root. A file that no sheet of its
-project uses is checked on its own. Item positions are millimetres in
-sheet coordinates, the numbers `get_pin_positions` prints.
+violations, and a `"note"` field says when the check ran from the root. A
+file that no sheet of its project uses is checked on its own. Item positions
+are millimetres in sheet coordinates, the numbers `get_pin_positions` prints.
 
 ### Step 2: Fix by Category
 
