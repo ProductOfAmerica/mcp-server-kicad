@@ -1064,11 +1064,11 @@ _LEAF = SheetFacts("", _ON_SYMBOL_VERSION, (), (), ())
 
 def _real(p: Path) -> Path:
     """*p* resolved, or made absolute when it cannot be: resolving a symlink loop raises
-    (RuntimeError before Python 3.13, OSError after). No reader can open such a file, KiCad
-    included, so it then counts as a missing sheet."""
+    (RuntimeError before Python 3.13, OSError after), and a NUL in the name raises ValueError.
+    No reader can open such a file, so it then counts as a missing sheet."""
     try:
         return p.resolve()
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return p.absolute()
 
 
@@ -1233,35 +1233,63 @@ def _instances(root: Path, target: Path) -> tuple[list[tuple[str, ...]], list[st
     absolute one stays as it is, and a file that is already its own ancestor is not entered
     (SCH_IO_KICAD_SEXPR::loadHierarchy, sch_io_kicad_sexpr.cpp:189-222 at 9.0.8). A sheet file
     used twice is entered at each use, as KiCad's sheet list holds it.
+
+    Each file is read once, and only the sheets that lead to *target* are entered, so a part of
+    the hierarchy that does not hold it costs nothing however often it is reused. Raises
+    ToolError when more than _MAX_INSTANCES sheets are entered on the way to *target*.
     """
     want = _real(target)
-    blocks: dict[Path, list[tuple[str, str]] | None] = {}
-    found: list[tuple[str, ...]] = []
+    # each file's sheet blocks as (block uuid, resolved file), by resolved path; None for a file
+    # that could not be read. *target* is not read: nothing below it is looked for.
+    held: dict[Path, list[tuple[str, Path]] | None] = {}
     unread: list[str] = []
-    stack: list[tuple[Path, tuple[str, ...], tuple[Path, ...]]] = [(root, (), (_real(root),))]
+    todo = [root]
+    while todo:
+        here = todo.pop()
+        key = _real(here)
+        if key == want or key in held:
+            continue
+        blocks = _sheet_blocks(here)
+        if blocks is None:
+            held[key] = None
+            if here.name not in unread:
+                unread.append(here.name)
+            continue
+        children = [
+            (uuid, Path(os.path.normpath(os.path.join(here.parent, name.replace("\\", "/")))))
+            for uuid, name in blocks
+        ]
+        held[key] = [(uuid, _real(child)) for uuid, child in children]
+        todo.extend(child for _uuid, child in reversed(children))
+    # the files that hold a sheet leading to *target*, found from it upwards
+    parents: dict[Path, list[Path]] = {}
+    for key, blocks_of in held.items():
+        for _uuid, child in blocks_of or ():
+            parents.setdefault(child, []).append(key)
+    leads = {want}
+    todo = [want]
+    while todo:
+        for parent in parents.get(todo.pop(), ()):
+            if parent not in leads:
+                leads.add(parent)
+                todo.append(parent)
+    found: list[tuple[str, ...]] = []
+    stack: list[tuple[tuple[str, ...], tuple[Path, ...]]] = [((), (_real(root),))]
     entered = 0
     while stack:
-        here, chain, ancestors = stack.pop()
+        chain, ancestors = stack.pop()
         if ancestors[-1] == want:
             found.append(chain)
             continue
         entered += 1
         if entered > _MAX_INSTANCES:
             raise ToolError(
-                f"The sheet hierarchy of {root.name} has more than {_MAX_INSTANCES} sheet"
-                f" instances, too many to tell whether it uses {target.name}."
+                f"{target.name} is used through more than {_MAX_INSTANCES} sheet instances of"
+                f" {root.name}, too many to place it in the hierarchy."
             )
-        if ancestors[-1] not in blocks:
-            blocks[ancestors[-1]] = _sheet_blocks(here)
-        children = blocks[ancestors[-1]]
-        if children is None:
-            if here.name not in unread:
-                unread.append(here.name)
-            continue
-        for uuid, name in reversed(children):
-            child = Path(os.path.normpath(os.path.join(here.parent, name.replace("\\", "/"))))
-            if _real(child) not in ancestors:
-                stack.append((child, (*chain, uuid), (*ancestors, _real(child))))
+        for uuid, child in reversed(held[ancestors[-1]] or ()):
+            if child in leads and child not in ancestors:
+                stack.append(((*chain, uuid), (*ancestors, child)))
     return found, unread
 
 
@@ -1270,13 +1298,15 @@ def _top_level_sheets(root: Path) -> list[Path]:
 
     A KiCad 10 project lists them under schematic.top_level_sheets in its .kicad_pro, each file
     resolved against the project's folder (eeschema_helpers.cpp:153 at 10.0.7). A project file
-    that is missing, is not JSON or lists none adds nothing.
+    that is missing, is not JSON, holds anything but a list there or lists none adds nothing.
     """
     try:
         listed = json.loads(root.with_suffix(".kicad_pro").read_bytes())["schematic"][
             "top_level_sheets"
         ]
     except (OSError, ValueError, KeyError, TypeError):
+        return [root]
+    if not isinstance(listed, list):
         return [root]
     out = [root]
     for entry in listed:
@@ -1295,11 +1325,11 @@ def place(path: str | Path, root: str | Path | None = None) -> Placement:
     the file's folder or any folder above it (_project_roots), whose hierarchy uses the file.
     A project's hierarchy is that of each top-level sheet it lists (_top_level_sheets).
 
-    Raises ToolError when the answer cannot be told: a hierarchy of more than _MAX_INSTANCES
-    sheet instances, or a sheet file that could not be read stopped a walk before it reached
-    the file, in the project that was named or the one in the file's own folder. A project
-    further up that cannot be read through is no evidence about a file that no readable sheet
-    names, so it leaves the file a root of no project.
+    Raises ToolError when the answer cannot be told: a sheet file that could not be read
+    stopped a walk before it reached the file, in the project that was named or the one in the
+    file's own folder; or a project uses the file through more than _MAX_INSTANCES sheet
+    instances (_instances). A project further up that cannot be read through is no evidence
+    about a file that no readable sheet names, so it leaves the file a root of no project.
     """
     target = Path(os.path.abspath(path))
     roots = (

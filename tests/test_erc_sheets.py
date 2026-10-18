@@ -207,6 +207,100 @@ def test_a_broken_sheet_in_a_project_above_does_not_stop_a_file_below_it(tmp_pat
     assert Counter(pin["detail"] for pin in listed.pins) == _pins(alone)
 
 
+@requires_cli
+@pytest.mark.parametrize(
+    "listed",
+    [None, [{"filename": "a\u0000b.kicad_sch"}]],
+    ids=["null", "a-name-no-file-can-have"],
+)
+def test_a_project_file_above_with_no_usable_sheet_list_does_not_stop_a_file_below_it(
+    tmp_path, listed
+):
+    """up/u.kicad_pro holds a schematic.top_level_sheets that names no sheet file. The tools
+    read that file for every schematic at or below up/, and neither the project's own
+    u.kicad_sch nor work/y, which nothing in the project names, may be refused for it. y is
+    checked on its own. The judge is kicad-cli's ERC of y."""
+    up = tmp_path / "up"
+    project.create_project(directory=str(up), name="u")
+    pro = up / "u.kicad_pro"
+    data = json.loads(pro.read_text(encoding="utf-8"))
+    data.setdefault("schematic", {})["top_level_sheets"] = listed
+    pro.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    lone = up / "work" / "y.kicad_sch"
+    lone.parent.mkdir()
+    project.create_schematic(schematic_path=str(lone))
+    schematic.place_component("Device:R", "R1", "10K", 50.8, 50.8, schematic_path=str(lone))
+    alone = erc_oracle.violations_of(erc_oracle.erc_of(lone))
+    assert alone, "premise: the file holds an unwired resistor"
+
+    out = str(tmp_path / "out")
+    located = project.is_root_schematic(schematic_path=str(lone))
+    run = schematic.run_erc(str(lone), out)
+    listed_pins = schematic.list_unconnected_pins(str(lone), out)
+
+    assert project.is_root_schematic(schematic_path=str(up / "u.kicad_sch")).is_root is True
+    assert (located.is_root, located.root_path) == (True, None)
+    assert _keys(run.violations) == _keys(alone)
+    assert run.source == lone.name
+    assert Counter(pin["detail"] for pin in listed_pins.pins) == _pins(alone)
+
+
+def _reused_project(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A project whose root holds 65 sheets of tile.kicad_sch, each holding 65 sheets of
+    pixel.kicad_sch, and then a sheet Power (power.kicad_sch): 1 + 65 + 65 * 65 + 1 = 4,292
+    sheet instances, more than _connectivity._MAX_INSTANCES. experiments/lone.kicad_sch is used
+    by no sheet. Power and lone each hold an unwired resistor. Returns the root, power and
+    lone."""
+    top = tmp_path / "big"
+    project.create_project(directory=str(top), name="p")
+    root, tile, pixel, power = (top / f"{n}.kicad_sch" for n in ("p", "tile", "pixel", "power"))
+    lone = top / "experiments" / "lone.kicad_sch"
+    lone.parent.mkdir()
+    for path in (tile, pixel, power, lone):
+        project.create_schematic(schematic_path=str(path))
+    for i in range(65):
+        x, y = 25.4 + (i % 13) * 30.48, 25.4 + (i // 13) * 15.24
+        project.add_hierarchical_sheet(str(root), f"T{i}", str(tile), [], x, y)
+        project.add_hierarchical_sheet(str(tile), f"P{i}", str(pixel), [], x, y)
+    project.add_hierarchical_sheet(str(root), "Power", str(power), [], 25.4, 200.66)
+    for path, ref in ((power, "R1"), (lone, "R2")):
+        schematic.place_component("Device:R", ref, "10K", 50.8, 50.8, schematic_path=str(path))
+    return root, power, lone
+
+
+@requires_cli
+def test_a_project_of_thousands_of_sheet_instances_does_not_stop_the_files_it_is_asked_about(
+    tmp_path,
+):
+    """4,292 instances is no reason to refuse Power, which the root names last, or the file
+    in experiments/ that no sheet names: Power is checked from the root and gets its own
+    violations, and the lone file is checked on its own. The judge is kicad-cli's ERC of the
+    root, read by tests/erc_oracle.py, and of the lone file."""
+    root, power, lone = _reused_project(tmp_path)
+    want = erc_oracle.Project(root).own(power)
+    assert want, "premise: Power holds an unwired resistor"
+    alone = erc_oracle.violations_of(erc_oracle.erc_of(lone))
+    assert alone, "premise: the lone file holds an unwired resistor"
+    out = str(tmp_path / "out")
+
+    placed = project.is_root_schematic(schematic_path=str(power))
+    run = schematic.run_erc(str(power), out)
+    listed = schematic.list_unconnected_pins(str(power), out)
+    assert (placed.is_root, Path(str(placed.root_path))) == (False, root)
+    assert _keys(run.violations) == _keys(want)
+    assert run.source == root.name
+    assert Counter(pin["detail"] for pin in listed.pins) == _pins(want)
+
+    placed = project.is_root_schematic(schematic_path=str(lone))
+    run = schematic.run_erc(str(lone), out)
+    listed = schematic.list_unconnected_pins(str(lone), out)
+    assert (placed.is_root, placed.root_path) == (True, None)
+    assert _keys(run.violations) == _keys(alone)
+    assert run.source == lone.name
+    assert "uses this file" in (run.note or "")
+    assert Counter(pin["detail"] for pin in listed.pins) == _pins(alone)
+
+
 def _top_level_project(tmp_path: Path) -> tuple[Path, Path, Path]:
     """A project whose .kicad_pro lists two top-level sheets, proj.kicad_sch and
     second.kicad_sch, the second holding a sheet of its own, sub.kicad_sch. Each file has an

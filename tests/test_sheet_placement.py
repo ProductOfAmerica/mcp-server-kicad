@@ -213,15 +213,19 @@ _TOP_LEVEL_SHEETS = [
 ]
 _THIRTEEN = [f"u{i}" for i in range(13)]
 #: thirteen uses of a file that has thirteen uses of the next, four deep, is 28,561 instances
-#: of the last file
+#: of the last file, d, which holds one sheet, e. p names power last, after all of that.
+#: unused and experiments/lone are named by no sheet.
 _TOO_MANY = {
-    "p.kicad_sch": _sch(*[(u, "a.kicad_sch") for u in _THIRTEEN]),
+    "p.kicad_sch": _sch(*[(u, "a.kicad_sch") for u in _THIRTEEN], ("u-power", "power.kicad_sch")),
     **{
         f"{here}.kicad_sch": _sch(*[(u, f"{there}.kicad_sch") for u in _THIRTEEN])
         for here, there in (("a", "b"), ("b", "c"), ("c", "d"))
     },
-    "d.kicad_sch": _sch(),
+    "d.kicad_sch": _sch(("u-e", "e.kicad_sch")),
+    "e.kicad_sch": _sch(),
+    "power.kicad_sch": _sch(),
     "unused.kicad_sch": _sch(),
+    "experiments/lone.kicad_sch": _sch(),
 }
 
 
@@ -345,10 +349,33 @@ class TestWhatCannotBeTold:
             )
 
     @pytest.mark.kicad_placeholder(*_TOO_MANY)
-    def test_a_hierarchy_of_too_many_instances_is_refused(self, tmp_path):
+    def test_a_file_used_through_too_many_sheet_instances_is_refused(self, tmp_path):
         _project(tmp_path, _TOO_MANY)
         with pytest.raises(ToolError, match="more than 4096 sheet instances"):
-            _connectivity.place(tmp_path / "unused.kicad_sch")
+            _connectivity.place(tmp_path / "e.kicad_sch")
+
+    @pytest.mark.kicad_placeholder(*_TOO_MANY)
+    @pytest.mark.parametrize("name", ["unused.kicad_sch", "experiments/lone.kicad_sch"])
+    def test_a_file_no_sheet_uses_is_unused_however_many_instances_the_project_has(
+        self, tmp_path, name
+    ):
+        """The project is read through (every file once) and nothing in it names the file, so
+        28,561 instances of d are no reason to say the answer cannot be told."""
+        _project(tmp_path, _TOO_MANY)
+        placed = _connectivity.place(tmp_path / name)
+        assert placed == _connectivity.Placement("unused", tmp_path / "p.kicad_sch")
+
+    @pytest.mark.kicad_placeholder(*_TOO_MANY)
+    def test_a_file_among_too_many_instances_is_found_wherever_p_names_it(self, tmp_path):
+        """power is p's last sheet, after thirteen that between them hold 28,561 instances of
+        other files. Only the sheets that lead to the file are entered."""
+        _project(tmp_path, _TOO_MANY)
+        placed = _connectivity.place(tmp_path / "power.kicad_sch")
+        assert (placed.kind, placed.root, placed.instances) == (
+            "sheet",
+            tmp_path / "p.kicad_sch",
+            (("u-power",),),
+        )
 
 
 class TestTopLevelSheets:
@@ -400,8 +427,24 @@ class TestTopLevelSheets:
             "second.kicad_sch",
             ["second.kicad_sch"],
             [{"uuid": "u"}, {"filename": 5}, {"filename": ""}, {"filename": "gone.kicad_sch"}],
+            None,
+            0,
+            True,
+            1.5,
+            {"filename": "second.kicad_sch"},
+            [{"filename": "a\u0000b.kicad_sch"}],
         ],
-        ids=["a-string", "a-list-of-strings", "entries-that-name-no-file"],
+        ids=[
+            "a-string",
+            "a-list-of-strings",
+            "entries-that-name-no-file",
+            "null",
+            "zero",
+            "true",
+            "a-float",
+            "an-object",
+            "a-name-with-a-nul",
+        ],
     )
     def test_a_list_that_names_no_sheet_file_adds_no_root(self, tmp_path, declared):
         self._two(tmp_path, declared)
