@@ -17,7 +17,15 @@ from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 
 import mcp_server_kicad._cst as _cst
-from mcp_server_kicad._cst import PCB_IU_PER_MM, _angle_text, _fill_at, _num, _numish, _snap
+from mcp_server_kicad._cst import (
+    PCB_IU_PER_MM,
+    _anchor_ws,
+    _angle_text,
+    _fill_at,
+    _num,
+    _numish,
+    _snap,
+)
 from mcp_server_kicad._freerouting import (
     check_java as _check_java,
 )
@@ -495,19 +503,22 @@ def _new_net(value: str, *, quoted: bool):
 def _put_net(node, old, new) -> None:
     """Make ``new`` the (net ...) child of ``node``: in place of ``old`` with its
     separator, else where KiCad writes one (straight after a zone's head, before
-    any other item's uuid)."""
+    any other item's uuid). A separator taken from a sibling is cut to its line
+    break and indentation (_anchor_ws), as insert_after cuts its anchor's, so a
+    comment line is never copied beside a node."""
     if old is not None:
         new.sep = old.sep
         node.children[node.children.index(old)] = new
     elif node.head == "zone":
         first = node.lists[0] if node.lists else None
-        node.insert_after(node.atoms[0], new, sep=first.sep if first is not None else b"\n\t\t")
+        sep = _anchor_ws(first.sep) if first is not None else b"\n\t\t"
+        node.insert_after(node.atoms[0], new, sep=sep)
     else:
         uuid = node.find("uuid")
         if uuid is not None:
             node.insert_before(uuid, new)
         else:
-            node.append_child(new, node.lists[-1].sep if node.lists else b"\n\t\t")
+            node.append_child(new, _anchor_ws(node.lists[-1].sep) if node.lists else b"\n\t\t")
 
 
 def _set_zone_net_name(zone, name: str) -> None:
@@ -525,7 +536,7 @@ def _set_zone_net_name(zone, name: str) -> None:
         zone.children[zone.children.index(held)] = new
     else:
         net = zone.find("net")
-        zone.insert_after(net, new, sep=net.sep)
+        zone.insert_after(net, new, sep=_anchor_ws(net.sep))
 
 
 def _set_item_net(node, root, net: int, version: int | None = None) -> None:

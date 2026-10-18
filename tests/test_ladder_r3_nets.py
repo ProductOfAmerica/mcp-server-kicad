@@ -1988,6 +1988,67 @@ def test_an_item_with_no_net_child_gets_one_where_kicad_writes_it(tmp_path, vers
         assert kids[kids.index("net") + 1] == "uuid"
 
 
+#: A comment line as KiCad's lexer skips it: a line whose first non-blank byte is '#' (the
+#: lexer port, tests/kicad_ref/dsn_lexer.py). The CST keeps it in the separator of the node
+#: after it, so a writer that copies a neighbour's separator copies the comment with it.
+_COMMENT_LINE = re.compile(rb"(?m)^[ \t\r\x00]*#")
+
+
+def _noted(item: str, without: Sequence[str], above: str) -> str:
+    """``item`` without its children headed ``without`` (each on a line of its own) and with a
+    comment line before its child ``above``, the one line that starts with that text."""
+    kept = [
+        line
+        for line in item.splitlines(keepends=True)
+        if not line.lstrip().startswith(tuple(f"({head} " for head in without))
+    ]
+    at = [i for i, line in enumerate(kept) if line.lstrip().startswith(above)]
+    if len(at) != 1:
+        raise RuntimeError(f"{len(at)} lines of the item start with {above!r}")
+    kept.insert(at[0], "\t\t# note\n")
+    return "".join(kept)
+
+
+@pytest.mark.parametrize(
+    ("version", "kind", "without", "above"),
+    [
+        pytest.param("k9", "zone", ("net", "net_name"), "(layer", id="k9 zone, no net child"),
+        pytest.param("k10", "zone", ("net", "net_name"), "(layer", id="k10 zone, no net child"),
+        pytest.param("k9", "zone", ("net_name",), "(net ", id="k9 zone, no net_name"),
+        pytest.param("k9", "segment", ("net", "uuid"), "(layer", id="k9 segment, no net or uuid"),
+        pytest.param("k10", "segment", ("net", "uuid"), "(layer", id="k10 segment, no net or uuid"),
+    ],
+)
+def test_the_net_a_writer_puts_in_copies_no_comment_line(tmp_path, version, kind, without, above):
+    """pcb._set_item_net puts a zone or a segment that lacks a child on /GND, a comment line
+    standing before the child it puts the net beside. The board keeps that one comment line,
+    where a writer that gave the new child its neighbour's separator wrote it twice: a comment
+    is whitespace to KiCad, and the CST keeps it in the separator of the node after it."""
+    rows = _ROWS if version == "k9" else None
+    items = {
+        "zone": _zone("/GND", net_name=True, version=version, rows=rows),
+        "segment": _track("segment", _GND_SEGMENT, "/GND", version=version, rows=rows),
+    }
+    board = _board(
+        tmp_path,
+        [_u1(_PAD_NETS, version=version, rows=rows), _noted(items[kind], without, above)],
+        version=version,
+        rows=rows,
+    )
+    before = board.read_bytes()
+    if len(_COMMENT_LINE.findall(before)) != 1:
+        raise RuntimeError("premise: the board holds one comment line")
+    tree = _cst.parse(before)
+    root = tree.lists[0]
+    pcb._set_item_net(root.find(kind), root, 1)
+    after = _cst.serialize(tree)
+    want_net, _ = _written_net_tokens(version, kind, 1)
+    item = J.item_at(after, _the(after, "kicad_pcb", kind))
+    if after == before or _net_tokens(item) != [want_net]:
+        raise RuntimeError("premise: the call put the item on /GND")
+    assert len(_COMMENT_LINE.findall(after)) == 1
+
+
 # ---------------------------------------------------------------------------
 # N1: binding a pad reproduces the bytes of KiCad's own pads
 # ---------------------------------------------------------------------------
