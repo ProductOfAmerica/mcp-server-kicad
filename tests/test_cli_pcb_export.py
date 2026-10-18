@@ -183,6 +183,8 @@ class TestExportPositions:
         board = _positions_board(tmp_path)
         result = pcb.export_positions(str(board), str(tmp_path / "out"))
         assert result.component_count == len(_PLACED)
+        header = Path(result.path).read_text(encoding="utf-8").splitlines()[0]
+        assert header == "Ref,Val,Package,PosX,PosY,Rot,Side"
         assert _problems(_exported_rows(result.path), _boards_own_footprints(board)) == []
 
     @pytest.mark.skipif(PJ.skip_reason() is not None, reason=PJ.skip_reason() or "")

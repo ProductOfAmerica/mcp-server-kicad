@@ -5247,10 +5247,9 @@ def export_positions(
 ) -> PositionExportResult:
     """Export component position file (pick and place) as CSV, in millimetres (mm).
 
-    One row per footprint with the columns Ref, Val, Package, PosX, PosY, Rot
-    and Side. PosX and PosY are the footprint's position in millimetres, with
-    the board's Y axis negated; Rot is its angle in degrees; Side is top or
-    bottom.
+    The columns are Ref, Val, Package, PosX, PosY, Rot and Side. PosX and PosY
+    are the footprint's position in millimetres, with the board's Y axis
+    negated; Rot is its angle in degrees; Side is top or bottom.
 
     Args:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
