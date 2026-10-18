@@ -669,7 +669,9 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   as "Error executing tool". `symbol_frames` still reads a missing angle as 0, and the
   number readers still accept tokens KiCad refuses without an exception (a leading `+`, `9_0`,
   `1e-400`): bug 70, step 12b, whose strict xfails in `test_ladder_r2_transform.py` are untouched.
-  The contact report only advises, so what the model cannot read or compare (a refusal, or an
+  A rotation is written as KiCad writes it unless the angle atom already holds that text, so a
+  call with one repairs those spellings, as the old unconditional rewrite did (kicad-cli 9.0.8,
+  2026-10-18). The contact report only advises, so what the model cannot read or compare (a refusal, or an
   exception) gets "Connections were not checked" and the move goes ahead. KiCad's GUI
   re-places auto-placed fields after a turn when its autoplace preference is on; this tool keeps
   KiCad's core rule, since the autoplacer needs font metrics (step 23). Evidence (kicad-cli

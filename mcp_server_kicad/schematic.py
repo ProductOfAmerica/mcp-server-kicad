@@ -2286,8 +2286,9 @@ def move_component(
         x: New X position
         y: New Y position
         rotation: The absolute angle in degrees (None = keep current); a mirrored symbol keeps
-            its mirror. Also repairs a symbol whose angle this tool cannot read as 0, 90, 180
-            or 270, or that has none, which a call without it refuses.
+            its mirror. It is written as KiCad writes it, so it also repairs an angle KiCad
+            cannot load, such as 45, +90 or none; a call without it refuses one this tool
+            cannot read as 0, 90, 180 or 270.
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
@@ -2342,7 +2343,9 @@ def move_component(
         x, y = _snap_grid(x), _snap_grid(y)
         _bounds_check(x, y, page_w, page_h, page_name)
         s1 = (_mm_iu(x), _mm_iu(y))
-    turn = rotation is not None and (bad_angle or read != rotation)
+    # A rotation is written unless the atom already holds it as KiCad writes it: float() also
+    # reads spellings KiCad refuses (+90, 9_0, 1e-400: bug 70), and writing it repairs them.
+    turn = rotation is not None and old_angle != _angle_text(rotation)
     where = f"({_connectivity.mm(s1[0])}, {_connectivity.mm(s1[1])})"
     if s1 == s0 and not turn:
         return f"{reference} is already at {where} at that angle: nothing changed, nothing written."

@@ -1133,6 +1133,27 @@ class TestSymbolFamilyPreservation:
         )
         assert "45" in message, f"the result does not say R1 was at angle 45: {message!r}"
 
+    @pytest.mark.parametrize(
+        ("to", "target"),
+        [((100, 100), (1_000_000, 1_000_000)), ((63.5, 63.5), (635_000, 635_000))],
+        ids=["in_place", "moved"],
+    )
+    @pytest.mark.parametrize(("angle", "rotation"), [("+90", 90), ("9_0", 90), ("1e-400", 0)])
+    def test_a_rotation_is_written_over_an_angle_kicad_refuses(
+        self, tmp_path, angle, rotation, to, target
+    ):
+        """R1 at an angle KiCad's parser refuses and float() reads as a quarter turn (bug 70),
+        turned in place or moved with that quarter turn as the rotation: the rotation is
+        written as KiCad writes it, so kicad-cli loads the sheet and KiCad reads R1 at the
+        target and that angle."""
+        path = _r1_variant(tmp_path, "bug70.kicad_sch", f"(at 100 100 {angle}) (unit 1)".encode())
+        _require_unloadable(path)
+        schematic.move_component("R1", *to, rotation=rotation, schematic_path=str(path))
+        if HAS_KICAD_CLI:
+            assert_kicad_parseable(path)
+        _, new = S.placed_symbol(path.read_bytes(), "R1")
+        assert (new.position, new.transform) == (target, turned((0, ""), rotation))
+
     def test_unloadable_angle_remedy_names_a_repair_that_works(self, tmp_path):
         """A pin read of R1 at angle 45 refuses [unloadable]. KiCad cannot open the sheet,
         so a remedy pointing at KiCad cannot be followed; the one that works is
