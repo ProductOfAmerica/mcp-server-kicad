@@ -216,6 +216,9 @@ class AtomChange(NamedTuple):
 _W = 1 << 40
 #: Above this many cells the middle of a list is aligned greedily instead.
 _DP_LIMIT = 250_000
+#: The most placements of an insertion tried against the bytes, and the most alternatives
+#: for one group of identical siblings.
+_MAX_CHOICES = 1024
 
 
 def _dissimilarity(a: Item, b: Item) -> int:
@@ -504,24 +507,21 @@ def _assert_insertion(
             f"{verb} items labelled {sorted(labels.elements(), key=str)},"
             f" expected {sorted(heads, key=str)}"
         )
-    # Among byte-identical siblings the structure cannot say which one is new, so
-    # every choice inside such a run is tried against the bytes.
-    runs: dict[tuple[Path, int, int], int] = {}
+    # Among byte-identical siblings the structure cannot say which ones are new, wherever they
+    # stand in their list: the alignment's choice is tried first, then every other choice of as
+    # many of them, each against the bytes.
+    groups: dict[tuple[Path, int], list[int]] = {}
     for e in edits:
         siblings = _children_at(b_tree, e.path)
-        sig = siblings[e.index].sig
-        lo = hi = e.index
-        while lo > 0 and siblings[lo - 1].sig == sig:
-            lo -= 1
-        while hi + 1 < len(siblings) and siblings[hi + 1].sig == sig:
-            hi += 1
-        runs[(e.path, lo, hi)] = runs.get((e.path, lo, hi), 0) + 1
-    options = [
-        [(path, chosen) for chosen in combinations(range(lo, hi + 1), count)]
-        for (path, lo, hi), count in runs.items()
-    ]
+        groups.setdefault((e.path, siblings[e.index].sig), []).append(e.index)
+    options = []
+    for (path, sig), own in groups.items():
+        same = [i for i, s in enumerate(_children_at(b_tree, path)) if s.sig == sig]
+        aligned = tuple(sorted(own))
+        others = (c for c in combinations(same, len(own)) if c != aligned)
+        options.append([(path, aligned), *((path, c) for c in islice(others, _MAX_CHOICES))])
     first_failure: AssertionError | None = None
-    for choice in islice(product(*options), 1024):
+    for choice in islice(product(*options), _MAX_CHOICES):
         picked = [
             (path, index, _children_at(b_tree, path)[index])
             for path, chosen in choice

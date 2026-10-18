@@ -6,18 +6,16 @@ tests/test_ladder_r1_judges.py. A handful of files go to kicad-cli itself, throu
 netlist's field export (conftest.netlist_fields), so KiCad judges the hand-edited
 shapes directly.
 
-The CST and KiCad's lexer agree on everything KiCad's writers produce. They part on
-input KiCad never writes (decision D3 of the rung-1 plan), and those tests are strict
-xfails naming the defect:
+The CST and KiCad's lexer agree on everything KiCad's writers produce, and on input KiCad
+never writes (decision D3 of the rung-1 plan):
 
-- Bug 64: a quoted string that KiCad refuses as unterminated (a raw line end inside the
-  quotes, or a quote still open at the end of the input) is accepted by the CST, as the
-  comment on _cst.TOKEN says it is on purpose. KiCad refuses such a file outright: the
+- A quoted string that KiCad refuses as unterminated (a raw line end inside the quotes,
+  or a quote still open at the end of the input) is refused by the CST too: the
   unterminated-string error at common/dsnlexer.cpp:730 at 9.0.8, 733 at 10.0.7.
-- Bug 65: token boundaries. A line whose first non-blank byte is '#' is a comment to
-  KiCad (dsnlexer.cpp:575-598 at 9.0.8); a quote glued to a bare token is part of that
-  token, because a bare token runs to the next separator (805-824); NUL is a separator
-  and FF and VT are not (isSpace, 452-470). The CST reads each the other way.
+- Token boundaries. A line whose first non-blank byte is '#' is a comment to KiCad
+  (dsnlexer.cpp:575-598 at 9.0.8); a quote glued to a bare token is part of that token,
+  because a bare token runs to the next separator (805-824); NUL is a separator and FF
+  and VT are not (isSpace, 452-470).
 
 Bars are not a difference: the CST keeps a run of bytes holding '|' as one atom where
 KiCad's lexer, once it knows the bar, splits it into tokens; edit_judge.lexer_view
@@ -33,7 +31,7 @@ from pathlib import Path
 import edit_judge as J
 import pytest
 import sexpr_gen as G
-from conftest import netlist_fields, requires_cli
+from conftest import _kicad_cli_major, netlist_fields, requires_cli
 from hypothesis import event, example, given
 from hypothesis import strategies as st
 from kicad_ref import dsn_lexer as L
@@ -42,16 +40,6 @@ from kicad_ref.richio import quotes
 from mcp_server_kicad import _cst
 
 FIXTURE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
-
-_BUG_64 = (
-    "bug 64: the CST accepts a string KiCad's lexer refuses as unterminated (a raw line"
-    " end inside quotes, or a quote open at the end of input); fixed by step 11"
-)
-_BUG_65 = (
-    "bug 65: the CST splits tokens where KiCad's lexer does not ('#' comment lines, a"
-    " quote glued to a bare token, NUL as a separator, FF and VT inside a token); fixed by"
-    " step 11"
-)
 
 
 # ---------------------------------------------------------------------------
@@ -326,11 +314,10 @@ def test_glued_bar_runs_are_one_atom(doc):
 
 
 # ---------------------------------------------------------------------------
-# Bug 65: token boundaries on input KiCad's writers never produce
+# token boundaries on input KiCad's writers never produce
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_65)
 @given(G.comment_line_doc())
 @example(b'(kicad_sch\n\t#(note\n\t(paper "A4")\n)\n')
 @example(b'(kicad_sch\n#note\n\t(paper "A4")\n)\n')
@@ -344,7 +331,6 @@ def test_comment_lines_read_as_kicad_reads_them(doc):
     assert difference is None, difference
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_65)
 @given(G.glued_quote_doc())
 @example(b'(p ab"cd")')
 def test_quote_glued_to_a_token_is_part_of_it(doc):
@@ -355,7 +341,6 @@ def test_quote_glued_to_a_token_is_part_of_it(doc):
     assert difference is None, difference
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_65)
 @given(G.whitespace_class_doc())
 @example(b"(p a\x0cb)")
 @example(b"(p a\x0bb)")
@@ -434,12 +419,7 @@ _HAND_EDITS = {
 @requires_cli
 @pytest.mark.parametrize(
     "case",
-    [
-        pytest.param(
-            name, marks=pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_65)
-        )
-        for name in sorted(_HAND_EDITS)
-    ],
+    sorted(_HAND_EDITS),
 )
 def test_cst_reads_hand_edited_tokens_as_kicad_cli(tmp_path, case):
     """kicad-cli loads each hand-edited schematic; the CST must parse it too and read
@@ -457,6 +437,11 @@ def test_cst_reads_hand_edited_tokens_as_kicad_cli(tmp_path, case):
     ):
         raise RuntimeError(f"premise: kicad-cli read the {case} edit as never measured: {kicad!r}")
     cst = _cst_r1_fields(data)
+    if _kicad_cli_major() >= 10:
+        # KiCad 10 reads a field whose value is exactly "~" as empty in a file older than
+        # 20250318 (sch_io_kicad_sexpr_parser.cpp:2329-2332 at 10.0.7; the fixture is
+        # 20250114), so its netlist prints the fixture's Datasheet empty: not the tokens' doing.
+        cst = {name: "" if value == "~" else value for name, value in cst.items()}
     assert cst == kicad, f"R1's fields: the CST reads {cst!r}, kicad-cli {kicad!r}"
 
 
@@ -502,7 +487,6 @@ def test_unbalanced_parens_are_refused_where_kicads_lexer_finds_them(doc):
     assert _cst.serialize(tree) == doc
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_64)
 @given(G.unterminated_doc())
 @example(b'(p "A\nB")')
 @example(b'(a) "b')
@@ -526,7 +510,6 @@ def test_unterminated_strings_are_refused(doc):
 
 @requires_cli
 @pytest.mark.no_kicad_validation  # the schematic KiCad refuses is this test's subject
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_64)
 def test_cst_refuses_what_kicad_cli_refuses_as_unterminated(tmp_path):
     """A property value with a raw line end inside its quotes: kicad-cli refuses the
     schematic (M4), so the CST must refuse it too."""

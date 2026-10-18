@@ -4,25 +4,51 @@ on:
     branches: [main, master, "ci/**"]
   pull_request:
     branches: [main, master]
-    # A pull request touching only these files runs nothing here: no test or
-    # lint step reads any of them. Markdown is not on the list, because ruff
-    # format --check . reads the Python blocks in every .md (kicad-suite.yml,
-    # which runs no ruff, skips Markdown-only PRs too). Pushes to main and ci/**
-    # are not filtered: release.yml refuses a commit without its own green push
-    # runs. If a ruleset ever requires one of these jobs, a PR touching only
-    # these files would wait on it forever.
-    paths-ignore:
-      - "NOTICE"
-      - ".coderabbit.yaml"
-      - ".github/ISSUE_TEMPLATE/**"
-      - ".github/FUNDING.yml"
-      - ".github/dependabot.yml"
-      - ".github/assets/**"
   workflow_dispatch:
 permissions:
   contents: read
 jobs:
+  # Decides whether lint and test run. The workflow itself always runs, so the
+  # result job below always reports and main's ruleset can require it; a
+  # paths-ignore filter would leave a docs-only PR waiting on it forever.
+  changes:
+    runs-on: ubuntu-26.04
+    outputs:
+      code: ${{ steps.diff.outputs.code }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # A PR checks out its merge commit; its first parent is the base.
+          fetch-depth: 2
+      # A pull request touching only these files skips lint and test: neither
+      # reads any of them. Markdown is not on the list, because ruff format
+      # --check . reads the Python blocks in every .md (kicad-suite.yml, which
+      # runs no ruff, skips Markdown-only PRs too). Pushes and manual runs skip
+      # nothing: release.yml refuses a commit without its own green push runs.
+      - id: diff
+        # Explicit, for pipefail: the default shell would let a failing
+        # docs_only.py hide behind tee's exit status.
+        shell: bash
+        env:
+          EVENT: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT" != pull_request ]; then
+            echo "code=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cat > "$RUNNER_TEMP/skip.txt" <<'EOF'
+          NOTICE
+          .coderabbit.yaml
+          .github/ISSUE_TEMPLATE/**
+          .github/FUNDING.yml
+          .github/dependabot.yml
+          .github/assets/**
+          EOF
+          git diff --name-only HEAD^1 HEAD | tee "$RUNNER_TEMP/changed.txt"
+          python3 .github/tools/docs_only.py "$RUNNER_TEMP/skip.txt" < "$RUNNER_TEMP/changed.txt" | tee -a "$GITHUB_OUTPUT"
   lint:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
@@ -37,6 +63,8 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pyright
   test:
+    needs: changes
+    if: needs.changes.outputs.code == 'true'
     runs-on: ubuntu-26.04
     strategy:
       matrix:
@@ -57,3 +85,22 @@ jobs:
           EXPECTED: ${{ matrix.python-version }}
         run: uv run python -c "import os, sys; v = '%d.%d' % sys.version_info[:2]; assert v == os.environ['EXPECTED'], (v, os.environ['EXPECTED'])"
       - run: uv run pytest -v -n auto
+  # The one check main's ruleset requires from this workflow. It passes when
+  # lint and every test leg passed, or when changes found a docs-only PR and
+  # both were skipped; anything else, a cancelled run included, fails it.
+  result:
+    name: CI result
+    if: always()
+    needs: [changes, lint, test]
+    runs-on: ubuntu-26.04
+    steps:
+      - env:
+          CHANGES: ${{ needs.changes.result }}
+          CODE: ${{ needs.changes.outputs.code }}
+          LINT: ${{ needs.lint.result }}
+          TEST: ${{ needs.test.result }}
+        run: |
+          echo "changes=$CHANGES code=$CODE lint=$LINT test=$TEST"
+          [ "$CHANGES" = success ] || exit 1
+          if [ "$CODE" = false ]; then want=skipped; else want=success; fi
+          [ "$LINT" = "$want" ] && [ "$TEST" = "$want" ]

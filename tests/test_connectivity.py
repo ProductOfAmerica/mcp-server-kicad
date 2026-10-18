@@ -1290,7 +1290,6 @@ def test_a_netclass_field_on_any_label_is_a_carrier(tmp_path):
     [
         b'(reference "R1")',
         b"(reference R1)",
-        b'(reference"R1")',
         b'( reference\t"R1" )',
         b'("reference" "R1")',
         b'\r\n\t\t\t\t(reference "R1")\r\n',
@@ -1300,10 +1299,45 @@ def test_a_netclass_field_on_any_label_is_a_carrier(tmp_path):
     ],
 )
 def test_the_reference_pattern_matches_every_spelling(text):
-    """Quoted, bare, re-spaced and glued: every way _cst.TOKEN reads (reference R1) or
-    (property Reference R1)."""
+    """Quoted, bare and re-spaced, a paren glued to an atom included: the plain ways _cst
+    reads (reference R1) or (property Reference R1)."""
     pattern = C.refs_pattern({"R1"})
     assert pattern is not None and pattern.search(text)
+
+
+#: Spellings KiCad's lexer, and so the CST, reads as the reference but the plain ones do
+#: not show: NUL and comment lines as whitespace, and a string spelled with escapes. Each
+#: with the atoms the CST reads at the head of the list.
+_REFERENCE_SPELLINGS = [
+    (b'(reference\n# a comment (with a paren)\n"R1")', ("reference", "R1")),
+    (b"(reference\r\n\t# a comment\r\n\tR1)", ("reference", "R1")),
+    (b'(\n# a comment\nreference "R1")', ("reference", "R1")),
+    (b'(\x00reference\x00"R1"\x00)', ("reference", "R1")),
+    (b"(reference\x00R1\x00)", ("reference", "R1")),
+    (
+        b'(property\n# note\n"Reference"\n  # note\n"R1" (at 0 0 0))',
+        ("property", "Reference", "R1"),
+    ),
+    (b'(property\x00"Reference"\x00R1\x00(at 0 0 0))', ("property", "Reference", "R1")),
+    (b'(reference "R\\x31")', ("reference", "R1")),
+    (b'(reference "R\\61")', ("reference", "R1")),
+    (b'(reference "\\x52\\x31")', ("reference", "R1")),
+    (b'(property "Reference" "R\\x31")', ("property", "Reference", "R1")),
+    (b'(property "Refer\\x65nce" "R1")', ("property", "Reference", "R1")),
+    (b'("ref\\145rence" "R1")', ("reference", "R1")),
+]
+
+
+@pytest.mark.parametrize(("text", "words"), _REFERENCE_SPELLINGS)
+def test_the_reference_pattern_matches_what_the_cst_reads_as_the_reference(text, words):
+    """Every spelling the CST reads as (reference R1) or (property Reference R1), whitespace
+    and escapes as KiCad's lexer reads them, is matched: a sheet the pattern misses is never
+    parsed by the duplicate-reference check. The CST's reading is asserted first, so a case
+    is a premise and not an assumption."""
+    node = _cst.parse(text).lists[0]
+    assert tuple(a.text for a in node.atoms[: len(words)]) == words
+    pattern = C.refs_pattern({"R1"})
+    assert pattern is not None and pattern.search(text), text
 
 
 @pytest.mark.parametrize(
@@ -1315,6 +1349,10 @@ def test_the_reference_pattern_matches_every_spelling(text):
         b'(name "R1")',
         b'(property "Value" "R1")',
         b'(reference_x "R1")',
+        b'(reference"R1")',  # a quote glued to a bare token is part of it: one atom
+        b"(reference\x0cR1)",  # FF is no whitespace to KiCad: one atom
+        b"(reference\n#R1\n)",  # a comment line, not a value
+        b"(reference #R1)",  # '#' after a token is data: the value is #R1
     ],
 )
 def test_the_reference_pattern_matches_only_that_reference(text):
@@ -1329,6 +1367,17 @@ def test_a_reference_the_file_would_escape_reads_every_sheet(ref):
 
 def test_the_structure_pattern_finds_sheets_and_tables_only():
     for text in (b"(sheet (at 1 2)", b"(sheet\r\n\t(at", b'("sheet"(at', b"(symbol_instances"):
+        assert C._STRUCTURE.search(text), text
+    # Whitespace and escapes as the CST reads them, the reading asserted first.
+    for text in (
+        b"(\n# a comment\nsheet (at 1 2))",
+        b"(\x00sheet\x00(at 1 2))",
+        b"(\r\n\t# a comment\r\n\tsymbol_instances)",
+        b'("shee\\164" (at 1 2))',
+        b'("symbol\\137instances")',
+    ):
+        head = _cst.parse(text).lists[0].head
+        assert head in ("sheet", "symbol_instances"), (text, head)
         assert C._STRUCTURE.search(text), text
     for text in (b"(sheet_instances (path", b"(sheetfile x)", b'(property "Sheetname" "x")'):
         assert not C._STRUCTURE.search(text), text

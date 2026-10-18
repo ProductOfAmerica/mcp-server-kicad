@@ -15,6 +15,7 @@ and shares nothing with its original, and an edit that raises changes nothing.
 
 from __future__ import annotations
 
+import re
 import sys
 from typing import Any
 
@@ -289,13 +290,19 @@ _TEXT = st.one_of(
 def _check_set_text(doc: bytes, path: tuple, value: str, *, quoted: bool) -> None:
     """set_text(value) on the atom at ``path`` changes that atom's bytes and nothing
     else, and KiCad's lexer reads exactly one atom there whose decoded bytes are the
-    UTF-8 of ``value``."""
+    UTF-8 of ``value``. A value holding a NUL is the one value refused, and a refusal
+    changes nothing (no escape carries a NUL to KiCad; the codec rung judges why)."""
     before_items = _premise(doc)
     target = _port_at(before_items, path)
     if target is None or target.kind not in L.ATOM_KINDS or (target.kind == L.STRING) != quoted:
         raise J.JudgeError(f"the generated target at {path} is not the atom kind asked for")
     tree = _cst.parse(doc)
-    _cst_at(tree, path).set_text(value)
+    try:
+        _cst_at(tree, path).set_text(value)
+    except ValueError:
+        assert "\x00" in value, f"set_text refused {value!r}, which holds no NUL"
+        assert _cst.serialize(tree) == doc, "a refused set_text changed the document"
+        return
     after = _cst.serialize(tree)
 
     end = len(after) - (len(doc) - target.end)
@@ -326,19 +333,11 @@ def _check_set_text(doc: bytes, path: tuple, value: str, *, quoted: bool) -> Non
 def test_quoted_set_text_changes_only_its_token(case, value):
     """Retexting a quoted atom with any text: one STRING token whose bytes, as KiCad's
     lexer decodes them, are the text's UTF-8, in the atom's place, and every other byte
-    where it was. (What KiCad then stores for a NUL is the codec rung's question.)"""
+    where it was."""
     doc, path = case
     _check_set_text(doc, path, value, quoted=True)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 59: set_text leaves '|' and NUL unquoted in a bare atom, and a '#' first on a"
-        " line; fixed by step 11"
-    ),
-)
 @example(case=(b"(a\n\tb)", (0, 1)), value="#x")
 @example(case=(b"(a b)", (0, 1)), value="a|b")
 @example(case=(b"(a b)", (0, 1)), value="a\x00b")
@@ -470,6 +469,75 @@ def test_inserted_node_takes_its_anchors_whitespace(doc, data):
         assert _leading(after, children, index + 1, opened) == ws, "the anchor lost its whitespace"
 
 
+#: A comment line as KiCad's lexer skips it: its first non-blank byte is '#'.
+_COMMENT_LINE = re.compile(rb"(?m)^[ \t\r\x00]*#")
+
+
+def _comment_lines(tree) -> int:
+    """How many comment lines the separators of a tree hold."""
+    total = 0
+    pending = [tree]
+    while pending:
+        node = pending.pop()
+        total += len(_COMMENT_LINE.findall(node.sep))
+        if node.children is not None:
+            total += len(_COMMENT_LINE.findall(node.close_sep))
+            pending.extend(node.children)
+    return total
+
+
+@given(doc=G.comment_line_doc(), crlf=st.booleans(), data=st.data())
+def test_an_insertion_beside_a_commented_node_leaves_one_copy_of_the_comment(doc, crlf, data):
+    """A comment line is whitespace to KiCad's lexer, and lies in the separator of the node
+    after it. With no separator given, a node inserted next to such an anchor takes the
+    anchor's own line break and indentation (from its last line end, a CR before that
+    included), never the comment line: the document still holds exactly the comment lines it
+    held, the anchor keeps (insert_after) or hands over (insert_before) its whole separator,
+    and KiCad's lexer reads the result as the document with the one new item inserted.
+    LF and CRLF line ends."""
+    if crlf:
+        doc = doc.replace(b"\n", b"\r\n")
+    _premise(doc)
+    tree = _cst.parse(doc)
+    commented = [(path, node) for path, node in _cst_nodes(tree) if _COMMENT_LINE.search(node.sep)]
+    assume(commented)
+    path, anchor = data.draw(st.sampled_from(commented), label="commented node")
+    parent = _cst_at(tree, path[:-1])
+    ops = ["insert_after"]
+    if path[-1] != 0 or len(path) == 1:  # a new first item would change the list's name
+        ops.append("insert_before")
+    op = data.draw(st.sampled_from(ops), label="op")
+    item = data.draw(G.kicad_item(), label="fresh item")
+    node, _, _ = _fresh(item)
+    comments, old_sep = _comment_lines(tree), anchor.sep
+    own_line = re.search(rb"\r?\n[^\n]*\Z", old_sep)
+    assert own_line is not None
+    getattr(parent, op)(anchor, node)
+    after = _cst.serialize(tree)
+
+    assert _comment_lines(_cst.parse(after)) == comments, f"{op} copied or dropped a comment"
+    if op == "insert_after":
+        assert (anchor.sep, node.sep) == (old_sep, own_line.group())
+    else:
+        assert (node.sep, anchor.sep) == (old_sep, own_line.group())
+    label = next(J.walk(item, knows_bar=True))[1].label
+    J.assert_inserted(doc, after, heads=[label], knows_bar=True)
+
+
+def test_removing_a_node_takes_the_comment_line_above_it():
+    """remove_child takes the child with all of its leading whitespace, and a comment line
+    above the child is part of that whitespace: the result is the document less one span
+    from the end of the item before the child to the end of the child, which KiCad's lexer
+    reads as that one item removed."""
+    before = b"(r\n\t(a)\n\t# a note (with a paren\n\t(b 1)\n\t(d)\n)\n"
+    tree = _cst.parse(before)
+    root = tree.lists[0]
+    root.remove_child(root.find("b"))
+    after = _cst.serialize(tree)
+    assert after == b"(r\n\t(a)\n\t(d)\n)\n"
+    J.assert_removed(before, after, heads=["b"], knows_bar=True)
+
+
 # ---------------------------------------------------------------------------
 # copy
 # ---------------------------------------------------------------------------
@@ -523,14 +591,6 @@ def test_copy_is_an_independent_byte_identical_tree(doc):
     assert _cst.serialize(tree) == doc
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 66: List.copy recurses, so a tree parse and serialize accept can raise"
-        " RecursionError; fixed by step 11"
-    ),
-)
 def test_copy_accepts_every_tree_parse_accepts():
     """parse and serialize walk the tree with an explicit stack, so they take any depth;
     copy must take every tree they do. Nested 100 levels past the interpreter's
@@ -624,6 +684,8 @@ def _gaps(data: bytes, group) -> list[bytes]:
 
 
 _FINITE = st.floats(allow_nan=False, allow_infinity=False)
+#: Millimetres within what KiCad's int coordinates reach, so KiROUND does not clamp.
+_COORDINATE_MM = st.floats(-2147.0, 2147.0, allow_nan=False, allow_infinity=False)
 
 
 @given(case=_holder_doc(), x=_FINITE, y=_FINITE, angle=st.one_of(st.none(), _FINITE))
@@ -673,6 +735,45 @@ def test_fill_at_rewrites_only_its_at_node(case, x, y, angle):
 
     _cst._fill_at(_cst_at(tree, holder_path), *args)
     assert _cst.serialize(tree) == after, "a second identical _fill_at changed the bytes"
+
+
+@given(
+    case=_holder_doc(),
+    x=_COORDINATE_MM,
+    y=_COORDINATE_MM,
+    angle=st.one_of(st.none(), st.floats(-1e4, 1e4, allow_nan=False, allow_subnormal=False)),
+    scale=st.sampled_from((U.SCH_IU_PER_MM, U.PCB_IU_PER_MM)),
+)
+@example(
+    case=(b"(root (symbol (at 1 2)))", (0, 1), 1),
+    x=100.123456,
+    y=1e-07,
+    angle=0.1 + 0.2,
+    scale=10_000,
+)
+def test_fill_at_with_a_scale_writes_kicads_text_and_changes_only_its_at_node(
+    case, x, y, angle, scale
+):
+    """_fill_at(node, x, y, angle, scale) is _fill_at with each position written as the text
+    KiCad writes for the units it holds (KiROUND( v * scale ), FormatInternalUnits) and the
+    angle as FormatAngle writes it, an angle KiCad would write "-0" for written 0; every byte
+    outside the node's first (at ...) is where it was."""
+    doc, holder_path, at_index = case
+    holder = _port_at(_premise(doc), holder_path)
+    tree = _cst.parse(doc)
+    _cst._fill_at(_cst_at(tree, holder_path), x, y, angle, scale)
+    after = _cst.serialize(tree)
+
+    location = ((0, "root"), (holder_path[1], holder.items[0].value.decode()), (at_index, "at"))
+    if after != doc:
+        J.assert_confined(doc, after, location, knows_bar=True)
+    toks = _port_at(_result(after), holder_path + (at_index,)).items
+    want = [U.format_internal_units(U.kiround(v * scale, major=9), scale) for v in (x, y)]
+    if angle is not None:
+        text = U.format_angle(angle)
+        want.append("0" if text == "-0" else text)
+    got = [after[t.start : t.end].decode() for t in toks[1:]]
+    assert got[: len(want)] == want, (got, want)
 
 
 @given(case=_holder_doc(numbers=_NUMBER), doc=G.kicad_doc())

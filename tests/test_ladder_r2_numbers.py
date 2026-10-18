@@ -505,10 +505,6 @@ _board_xy = st.one_of(
     st.floats(-2000.0, 2000.0, allow_nan=False, allow_infinity=False),
     G.nm_coordinates(2000 * MM).map(lambda nm: nm / MM),
 )
-_BUG_61 = (
-    "bug 61: the writers spell a number through _cst._num, with digits below the file's"
-    " resolution, float noise or an exponent, which KiCad never writes; fixed by step 11"
-)
 
 
 def _fixed_point_problems(tokens, iu_per_mm: int, parse) -> list[str]:
@@ -562,7 +558,6 @@ def _named(data: bytes, head: bytes, name: bytes):
     return found[0]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_61)
 @example(x=100.123456, y=50.0, rotation=0)
 @settings(max_examples=sexpr_gen.budget(4))
 @given(x=_page_x, y=_page_y, rotation=_text_rotations)
@@ -570,8 +565,8 @@ def test_add_text_writes_kicads_coordinate_text(x, y, rotation):
     """The x and y add_text writes are fixed points of KiCad's read then write:
     FormatInternalUnits(parseInternalUnits(t)) == t, the text KiCad itself writes for a
     text's position (saveText, eeschema/sch_io/kicad_sexpr/sch_io_kicad_sexpr.cpp:
-    1303-1308 at 9.0.8, 1464-1469 at 10.0.7). add_text at 100.123456 writes "100.123456",
-    which KiCad reads as 1001235 internal units and writes "100.1235"."""
+    1303-1308 at 9.0.8, 1464-1469 at 10.0.7). add_text at 100.123456 used to write
+    "100.123456", which KiCad reads as 1001235 internal units and writes "100.1235"."""
     at = _child(
         _named(_write_schematic(schematic.add_text, x, y, rotation), b"text", b"ladder"), b"at"
     )
@@ -585,9 +580,9 @@ def test_add_text_writes_kicads_coordinate_text(x, y, rotation):
 @settings(max_examples=sexpr_gen.budget(4))
 @given(x=_page_x, y=_page_y, rotation=_text_rotations)
 def test_add_label_writes_kicads_coordinate_text(x, y, rotation):
-    """The same fixed point for add_label, which rounds a position to 4 decimals before
-    it writes it: the page bound keeps the value non-negative and the rounding makes it 0
-    or at least 0.0001, so no exponent text arises.
+    """The same fixed point for add_label, which snaps a position to the schematic's
+    0.0001 mm grid before it writes it: the page bound keeps the value non-negative and the
+    snap makes it 0 or at least 0.0001, so no exponent text arises.
 
     And KiCad holds the label where it was asked, to its resolution: within half an
     internal unit of the request, the most rounding to 0.0001 mm can move a value, plus
@@ -621,7 +616,6 @@ def _footprint(data: bytes, reference: str):
     return found[0]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_61)
 @example(x=1.3203125, y=1e-05, rotation=0.1 + 0.2, version="k9")
 @settings(max_examples=sexpr_gen.budget(4))
 @given(
@@ -635,9 +629,9 @@ def test_move_footprint_writes_kicads_number_text(x, y, rotation, version):
     parseBoardUnits then FormatInternalUnits, and the angle is FormatAngle's text for the
     angle parseDouble reads (the footprint writer, pcbnew/pcb_io/kicad_sexpr/
     pcb_io_kicad_sexpr.cpp:1127-1131 at 9.0.8, 1231-1235 at 10.0.7). Whether the angle
-    is normalized as KiCad stores it is bug 53's subject, not this test's. Today
-    1.3203125 is written as is (KiCad reads 1320313 nm and writes "1.320313"), 1e-05
-    as "1e-05" and 0.1 + 0.2 degrees as "0.30000000000000004"."""
+    is normalized as KiCad stores it is bug 53's subject, not this test's.
+    1.3203125 used to be written as is (KiCad reads 1320313 nm and writes "1.320313"),
+    1e-05 as "1e-05"."""
     board = G.board_text([G.footprint_text("R1", (100 * MM, 80 * MM))], version=version)
     with tempfile.TemporaryDirectory() as work:
         path = Path(work) / "move.kicad_pcb"
@@ -650,7 +644,6 @@ def test_move_footprint_writes_kicads_number_text(x, y, rotation, version):
     assert not problems, problems
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_61)
 @example(start=(1e-05, 2.5e-07), end=(10.1 + 0.2, 3.0))
 @settings(max_examples=sexpr_gen.budget(4))
 @given(start=st.tuples(_board_xy, _board_xy), end=st.tuples(_board_xy, _board_xy))
@@ -658,7 +651,7 @@ def test_add_trace_writes_kicads_number_text(start, end):
     """The start and end add_trace writes are fixed points of parseBoardUnits then
     FormatInternalUnits (the segment writer, pcb_io_kicad_sexpr.cpp:2413-2416 at 9.0.8,
     2837-2840 at 10.0.7). On a KiCad 9 board, chosen while add_trace refused its default
-    net 0 on a KiCad 10 board (bug 21, test_ladder_r3_nets.py). Today it writes "1e-05",
+    net 0 on a KiCad 10 board (bug 21, test_ladder_r3_nets.py). It used to write "1e-05",
     "2.5e-07" and "10.299999999999999"."""
     with tempfile.TemporaryDirectory() as work:
         path = Path(work) / "trace.kicad_pcb"

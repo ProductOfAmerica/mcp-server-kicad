@@ -17,7 +17,15 @@ from mcp_server_kicad._connectivity import (
     not_drawn_message,
     pin_matches,
 )
-from mcp_server_kicad._cst import _fill_at, _node_text, _node_xy, _num, _numish
+from mcp_server_kicad._cst import (
+    SCH_IU_PER_MM,
+    _fill_at,
+    _node_text,
+    _node_xy,
+    _num,
+    _numish,
+    _snap,
+)
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -613,11 +621,10 @@ def place_component(
             " the existing symbol."
         )
 
-    _bounds_check(x, y, page_w, page_h, page_name)
-
-    # Snap placement to grid
+    # Snap placement to grid, then check the position that is written.
     x = _snap_grid(x)
     y = _snap_grid(y)
+    _bounds_check(x, y, page_w, page_h, page_name)
 
     # A placed symbol is a part only if its definition sits in lib_symbols
     # beside it: KiCad keeps the body and pins there, and the instance merely
@@ -646,7 +653,7 @@ def place_component(
     node.find("lib_name").atoms[1].set_text(lib_sym.atoms[1].text)
     node.find("lib_id").atoms[1].set_text(lib_id)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation)
+    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
     if mirror:
         m = _cst.parse(b"(mirror x)").lists[0]
         m.atoms[1].set_text(mirror)
@@ -657,11 +664,11 @@ def place_component(
     # Properties
     props = node.find_all("property")
     props[0].atoms[2].set_text(reference)
-    _fill_at(props[0], x, round(y - 3.81, 4))
+    _fill_at(props[0], x, y - 3.81, iu=SCH_IU_PER_MM)
     props[1].atoms[2].set_text(value)
-    _fill_at(props[1], x, round(y + 3.81, 4))
-    _fill_at(props[2], x, y)
-    _fill_at(props[3], x, y)
+    _fill_at(props[1], x, y + 3.81, iu=SCH_IU_PER_MM)
+    _fill_at(props[2], x, y, iu=SCH_IU_PER_MM)
+    _fill_at(props[3], x, y, iu=SCH_IU_PER_MM)
 
     # Pin UUIDs from the lib symbol
     instances = node.find("instances")
@@ -930,7 +937,9 @@ def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     for w in wires:
         for xk, yk in [("x1", "y1"), ("x2", "y2")]:
-            _bounds_check(w[xk], w[yk], page_w, page_h, page_name)
+            _bounds_check(
+                _snap(w[xk], SCH_IU_PER_MM), _snap(w[yk], SCH_IU_PER_MM), page_w, page_h, page_name
+            )
     before = _cst.serialize(tree)
     m = _model(root)
     m.ensure()
@@ -1097,14 +1106,15 @@ def _wire_xys(node) -> list[tuple[float, float]]:
 
 
 def _splice_wire(root, x1: float, y1: float, x2: float, y2: float) -> list[tuple[float, float]]:
-    """Splice one wire node; returns its rounded endpoints for auto-junction scans."""
+    """Splice one wire node; returns its endpoints as the file holds them, for auto-junction
+    scans."""
     node = _WIRE_TPL.copy()
     xys = node.find("pts").find_all("xy")
     points = []
     for xy, vx, vy in [(xys[0], x1, y1), (xys[1], x2, y2)]:
-        px, py = round(vx, 4), round(vy, 4)
-        xy.atoms[1].set_text(_num(px))
-        xy.atoms[2].set_text(_num(py))
+        px, py = _snap(vx, SCH_IU_PER_MM), _snap(vy, SCH_IU_PER_MM)
+        xy.atoms[1].set_text(_num(px, SCH_IU_PER_MM))
+        xy.atoms[2].set_text(_num(py, SCH_IU_PER_MM))
         points.append((px, py))
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "wire", node)
@@ -1121,7 +1131,10 @@ Point = _connectivity.Point
 
 def _req_point(x: float, y: float) -> Point:
     """A requested point in internal units, as KiCad reads the text _splice_wire writes."""
-    return _connectivity.iu(_num(round(x, 4))), _connectivity.iu(_num(round(y, 4)))
+    return (
+        _connectivity.iu(_num(x, SCH_IU_PER_MM)),
+        _connectivity.iu(_num(y, SCH_IU_PER_MM)),
+    )
 
 
 def _xy_iu(node) -> Point:
@@ -2092,12 +2105,12 @@ def add_label(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    x, y = _snap(x, SCH_IU_PER_MM), _snap(y, SCH_IU_PER_MM)
     _bounds_check(x, y, page_w, page_h, page_name)
-    x, y = round(x, 4), round(y, 4)
     node = _LABEL_TPL.copy()
     node.atoms[1].set_text(text)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation)
+    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -2142,7 +2155,13 @@ def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> st
     # which KiCad reads off the page as anywhere else, so the repairs validate_hierarchy names
     # hold there as well.
     for spec in refused:
-        _bounds_check(spec["x"], spec["y"], page_w, page_h, page_name)
+        _bounds_check(
+            _snap(spec["x"], SCH_IU_PER_MM),
+            _snap(spec["y"], SCH_IU_PER_MM),
+            page_w,
+            page_h,
+            page_name,
+        )
     if refused:
         named = ", ".join(f"({spec['x']}, {spec['y']})" for spec in refused)
         raise ToolError(
@@ -2205,13 +2224,13 @@ def move_component(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
-    _bounds_check(x, y, page_w, page_h, page_name)
     x, y = _snap_grid(x), _snap_grid(y)
+    _bounds_check(x, y, page_w, page_h, page_name)
     sym = _find_sym_cst(root, reference)
     if sym is None:
         raise ToolError(f"Component {reference} not found." + _SEE_PLACED)
     _check_rotation(rotation)
-    _fill_at(sym, x, y, rotation)
+    _fill_at(sym, x, y, rotation, SCH_IU_PER_MM)
     _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Moved {reference} to ({x}, {y})"
 
@@ -2260,7 +2279,7 @@ def set_component_property(
         node.atoms[2].set_text(value)
         node.find("id").atoms[1].set_text(str(max(ids, default=-1) + 1))
         cx, cy = _node_xy(sym)
-        _fill_at(node, cx, cy)
+        _fill_at(node, cx, cy, iu=SCH_IU_PER_MM)
         if props:
             sym.insert_after(props[-1], node)
         else:
@@ -2367,13 +2386,13 @@ def add_global_label(
     if shape not in _VALID_LABEL_SHAPES:
         raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_LABEL_SHAPES))}")
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    x, y = _snap(x, SCH_IU_PER_MM), _snap(y, SCH_IU_PER_MM)
     _bounds_check(x, y, page_w, page_h, page_name)
-    x, y = round(x, 4), round(y, 4)
     node = _GLABEL_TPL.copy()
     node.atoms[1].set_text(text)
     node.find("shape").atoms[1].set_text(shape)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation)
+    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "global_label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -2402,13 +2421,13 @@ def add_hierarchical_label(
     if shape not in _VALID_LABEL_SHAPES:
         raise ToolError(f"invalid shape '{shape}'. Use: {', '.join(sorted(_VALID_LABEL_SHAPES))}")
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    x, y = _snap(x, SCH_IU_PER_MM), _snap(y, SCH_IU_PER_MM)
     _bounds_check(x, y, page_w, page_h, page_name)
-    x, y = round(x, 4), round(y, 4)
     node = _HLABEL_TPL.copy()
     node.atoms[1].set_text(text)
     node.find("shape").atoms[1].set_text(shape)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation)
+    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "hierarchical_label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -2496,10 +2515,12 @@ def modify_hierarchical_label(
         changes.append(f"shape={new_shape}")
     at = target.find("at")
     if new_x is not None:
-        at.atoms[1].set_text(_num(round(new_x, 4)))
+        new_x = _snap(new_x, SCH_IU_PER_MM)
+        at.atoms[1].set_text(_num(new_x, SCH_IU_PER_MM))
         changes.append(f"x={new_x}")
     if new_y is not None:
-        at.atoms[2].set_text(_num(round(new_y, 4)))
+        new_y = _snap(new_y, SCH_IU_PER_MM)
+        at.atoms[2].set_text(_num(new_y, SCH_IU_PER_MM))
         changes.append(f"y={new_y}")
     _atomic_write(schematic_path, _cst.serialize(tree))
     warning = ""
@@ -2664,11 +2685,12 @@ def add_text(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
+    x, y = _snap(x, SCH_IU_PER_MM), _snap(y, SCH_IU_PER_MM)
     _bounds_check(x, y, page_w, page_h, page_name)
     node = _TEXT_TPL.copy()
     node.atoms[1].set_text(text)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation)
+    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "text", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -2922,7 +2944,7 @@ def connect_pins(
     if not has_label:
         node = _LABEL_TPL.copy()
         node.atoms[1].set_text(f"Net-({ref1}-{pin1})")
-        _fill_at(node, round(x1, 4), round(y1, 4), 0)
+        _fill_at(node, x1, y1, 0, SCH_IU_PER_MM)
         node.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(root, "label", node)
 
@@ -2951,7 +2973,7 @@ def no_connect_pin(
     """
     tree, root, *_ = _open_sch_cst(schematic_path)
     px, py, _ = _get_pin_pos_cst(root, reference, pin_name)
-    px, py = round(px, 4), round(py, 4)
+    px, py = _snap(px, SCH_IU_PER_MM), _snap(py, SCH_IU_PER_MM)
 
     tol = 0.1
     for nc in root.find_all("no_connect"):
@@ -2960,7 +2982,7 @@ def no_connect_pin(
             return f"No-connect already present on {reference}:{pin_name} at ({px}, {py})"
 
     node = _NC_TPL.copy()
-    _fill_at(node, px, py)
+    _fill_at(node, px, py, iu=SCH_IU_PER_MM)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "no_connect", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
