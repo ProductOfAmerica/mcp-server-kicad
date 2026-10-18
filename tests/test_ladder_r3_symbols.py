@@ -659,9 +659,10 @@ def test_no_hostile_number_makes_a_move_raise_anything_but_a_refusal(tmp_path, c
     each hostile token above, then R1 moved or turned in place: the call returns, or raises a
     ToolError and leaves the file byte for byte as it was. An exception of any other type is
     what an MCP client is told only as "Error executing tool", and it is what one
-    OverflowError after another (a pin's coordinate, a wire's, an angle) once was. For 1e308
-    as a coordinate the ToolError is the tool's own limit, since KiCad loads that sheet. The
-    sheets are hostile on purpose, so the oracle skips the one this test leaves."""
+    OverflowError after another (a pin's coordinate, a wire's, an angle) once was. A ToolError
+    for 1e308 as a coordinate is bug 69, which test_a_symbol_at_a_coordinate_kicad_clamps_is_moved
+    holds as an expected failure; this sweep allows it until step 12b. The sheets are hostile on
+    purpose, so the oracle skips the one this test leaves."""
     data = _NATIVE.read_bytes()
     spans = [
         (item.start, item.end)
@@ -690,20 +691,58 @@ def test_no_hostile_number_makes_a_move_raise_anything_but_a_refusal(tmp_path, c
     )
 
 
-def test_the_refusal_of_a_coordinate_kicad_clamps_does_not_blame_kicad(tmp_path):
-    """R1 placed at x = 1e308 and moved: the tool cannot read the coordinate and refuses it,
-    naming the token, with the file byte for byte as it was. KiCad reads it, clamped, and
-    loads the sheet (the comment over _HOSTILE_NUMBERS), so the message must not say that
-    KiCad cannot read it. The sheet is no placeholder, so the oracle loads it too."""
-    path = _hand_edited(tmp_path, _at(b"0", "1e308", "100"))
+@pytest.mark.kicad_placeholder("hand.kicad_sch")
+@pytest.mark.parametrize(
+    "token", [t for t in _HOSTILE_NUMBERS if t != b"1e308"], ids=lambda t: t.decode()
+)
+def test_a_coordinate_kicad_refuses_is_refused_by_name(tmp_path, token):
+    """R1 placed at x = a token KiCad's parser refuses (the port) and kicad-cli cannot load
+    (the premises, checked first): a move is refused with a ToolError that names the token,
+    and the file is byte for byte as it was. The unloadable sheet is the subject, so the
+    oracle skips it."""
+    try:
+        P.parse_sch_internal_units(token, major=9)
+    except P.ParseRefusal:
+        pass
+    else:
+        raise RuntimeError(
+            f"the premise is a coordinate KiCad's parser refuses; it reads {token!r}"
+        )
+    path = _hand_edited(tmp_path, _at(b"0", token.decode(), "100"))
+    _premise_cli_refuses(path)
     before = path.read_bytes()
     result, raised = _outcome(
         lambda: schematic.move_component("R1", 63.5, 63.5, schematic_path=str(path))
     )
     assert isinstance(raised, ToolError), f"returned {result!r}, raised {raised!r}"
-    assert "1e308" in str(raised), f"the refusal does not name the token: {raised}"
-    assert "KiCad" not in str(raised), f"the refusal blames KiCad for a token it reads: {raised}"
+    assert token.decode() in str(raised), f"the refusal does not name the token: {raised}"
     assert path.read_bytes() == before
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="bug 69: the schematic reader does not clamp a coordinate as KiCad does; "
+    "fixed by step 12b",
+)
+def test_a_symbol_at_a_coordinate_kicad_clamps_is_moved(tmp_path):
+    """R1 placed at x = 1e308, which kicad-cli loads (the premise, checked first; see the
+    comment over _HOSTILE_NUMBERS), moved to (63.5, 63.5): the call returns, and KiCad reads R1
+    at the target and every field at the offset in the symbol's frame it had. The tool refuses
+    the call today because _connectivity.iu does not clamp."""
+    path = _hand_edited(tmp_path, _at(b"0", "1e308", "100"))
+    if HAS_KICAD_CLI:
+        run_erc(path)
+    _, old = sch_judge.placed_symbol(path.read_bytes(), "R1")
+    result, raised = _outcome(
+        lambda: schematic.move_component("R1", 63.5, 63.5, schematic_path=str(path))
+    )
+    assert raised is None, f"raised {raised!r} on a sheet kicad-cli loads"
+    _, new = sch_judge.placed_symbol(path.read_bytes(), "R1")
+    assert new.position == (635_000, 635_000), f"returned {result!r}, R1 is at {new.position}"
+    assert {n: f.offset for n, f in new.fields.items()} == {
+        n: f.offset for n, f in old.fields.items()
+    }, "the symbol moved and its fields did not keep their place on it"
 
 
 #: Places the 297 x 210 mm native sheet does not hold, each on the 0.01 mm grid KiCad writes.
