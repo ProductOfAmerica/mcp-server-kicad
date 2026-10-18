@@ -15,10 +15,15 @@ import subprocess
 from pathlib import Path
 from xml.etree.ElementTree import ParseError
 
+import edit_judge as J
 import footprint_judge as FJ
 import geom_gen as G
+import pcbnew_judge as PJ
+import pcbnew_nets as PN
 import pytest
 from conftest import HAS_KICAD_CLI
+from kicad_ref import dsn_lexer as L
+from kicad_ref import footprint as F
 from kiutils.board import Board
 
 import mcp_server_kicad._cst as _cst
@@ -32,7 +37,7 @@ from mcp_server_kicad._shared import (
     _resolve_system_lib,
     _run_cli,
 )
-from mcp_server_kicad.models import UpdatePcbResult
+from mcp_server_kicad.models import PointSpec, UpdatePcbResult
 
 NETLIST_XML = """<?xml version="1.0" encoding="UTF-8"?>
 <export version="E">
@@ -959,6 +964,68 @@ def _make_project(tmp_path):
     return sch, str(tmp_path / "e2e.kicad_pcb")
 
 
+#: Format 20251028 is where KiCad 10 stopped writing net codes (pcb_io_kicad_sexpr.h:201 at
+#: 10.0.7): a board at or past it is in KiCad 10's own net dialect, names only.
+_NO_NET_CODES_FORMAT = 20251028
+
+
+def _k10_board_with_sig_renamed(tmp_path):
+    """The project of _make_project imported, its board upgraded by kicad-cli 10 to KiCad 10's
+    own format (the import creates a KiCad 9 board on every runner), a trace on net 0 at x 10,
+    a trace on /SIG at x 30 and a zone on /SIG added, then /SIG renamed to /SIG2 in the
+    schematic and the update run again. Returns (the board before that update, after it, the
+    update's result). Skips below kicad-cli 10, which has the upgrade; RuntimeError when the
+    upgrade leaves a board that is not in KiCad 10's net dialect."""
+    from mcp_server_kicad.pcb import (
+        add_copper_zone,
+        add_trace,
+        list_pcb_nets,
+        update_pcb_from_schematic,
+    )
+    from mcp_server_kicad.schematic import add_label, list_schematic_labels, remove_label
+
+    if (_kicad_cli_major() or 0) < 10:
+        pytest.skip("the board is upgraded to KiCad 10's format by kicad-cli 10's pcb upgrade")
+    sch, pcb_path = _make_project(tmp_path)
+    update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
+    _run_cli(["pcb", "upgrade", "--force", pcb_path])
+    version = int(FJ.child(FJ.root(Path(pcb_path).read_bytes()), b"version").items[1].value)
+    if version < _NO_NET_CODES_FORMAT:
+        raise RuntimeError(f"kicad-cli 10's pcb upgrade left the board at format {version}")
+    sig = next(n for n in list_pcb_nets(pcb_path=pcb_path) if n.name == "/SIG")
+    add_trace(10, 10, 20, 10, net=0, pcb_path=pcb_path)
+    add_trace(30, 10, 40, 10, net=sig.number, pcb_path=pcb_path)
+    corners: list[PointSpec] = [{"x": 60, "y": 60}, {"x": 80, "y": 60}, {"x": 80, "y": 80}]
+    add_copper_zone("/SIG", "F.Cu", corners, pcb_path=pcb_path)
+    for label in list_schematic_labels(schematic_path=sch):
+        if label.text == "SIG":
+            add_label("SIG2", label.x, label.y, schematic_path=sch)
+    remove_label("SIG", schematic_path=sch)
+    before = Path(pcb_path).read_bytes()
+    result = update_pcb_from_schematic(schematic_path=sch, pcb_path=pcb_path)
+    return before, Path(pcb_path).read_bytes(), result
+
+
+def _segment_at(data: bytes, x: float):
+    """The segment of the board ``data`` that starts at x (mm), as KiCad's lexer reads it;
+    None when there is none."""
+    for group in F.children(FJ.root(data), b"segment"):
+        start = F.child(group, b"start")
+        if start is not None and float(start.items[1].value) == x:
+            return group
+    return None
+
+
+def _pad_records(data: bytes, ref: str) -> list[tuple[bytes, str | None]]:
+    """Each pad of footprint ``ref`` in order, as (its bytes, the net its (net ...) names or
+    None), read by KiCad's lexer: a name is the last token of the child."""
+    out = []
+    for group in F.pad_groups(FJ.footprint_group(data, ref)):
+        net = F.child(group, b"net")
+        out.append((data[group.start : group.end], net.items[-1].value.decode() if net else None))
+    return out
+
+
 @requires_e2e
 class TestUpdatePcbE2E:
     def test_initial_import(self, tmp_path):
@@ -1170,10 +1237,11 @@ class TestUpdatePcbE2E:
         assert len(vias) == 4
 
     def test_add_trace_net_binding_survives_reimport(self, tmp_path):
-        """Live trap-#1 gate: on the KiCad 10 runner the imported board is
-        K10-format, so add_trace/add_via must emit the name-based net
-        dialect there; a load-order rebind or a rejected file fails here.
-        On KiCad 9 the same test pins the numeric dialect.
+        """The KiCad 9 dialect, live on every runner. The import creates its board from
+        _EMPTY_PCB_TPL, which is KiCad 9's format 20241229 whichever kicad-cli runs it, so
+        add_trace and add_via write the numbers list_pcb_nets reports and a second import keeps
+        each item on the net it was on. The KiCad 10 dialect is
+        test_a_kicad10_board_orphans_in_its_own_dialect's, which upgrades the board first.
         """
         from mcp_server_kicad.pcb import (
             add_trace,
@@ -1204,6 +1272,65 @@ class TestUpdatePcbE2E:
         assert via.net == sig2.number
         drc = run_drc(pcb_path=pcb_path)
         assert drc.violation_count >= 0
+
+    def test_a_kicad10_board_orphans_in_its_own_dialect(self, tmp_path):
+        """N9, the live KiCad 10 gate of the net dialect. The import makes a KiCad 9 board on
+        every runner (_EMPTY_PCB_TPL), so kicad-cli 10's own pcb upgrade turns it into a
+        board of KiCad 10's format, and the test skips below kicad-cli 10. On it a trace on net
+        0, a trace on /SIG and a zone on /SIG; then /SIG renamed in the schematic and the
+        update run: it completes, counts the /SIG trace in orphaned_tracks and the zone in
+        orphaned_zones, writes the /SIG trace as KiCad 10 writes a track on no net, (net ""),
+        takes the zone's (net ...) off as KiCad 10 writes a zone on none, leaves the net 0
+        trace and the format stamp as they were, and the board still loads (the autouse
+        oracle loads it with kicad-cli 10, and pcbnew 10 reads both items on no net, below)."""
+        before, after, result = _k10_board_with_sig_renamed(tmp_path)
+        assert result.status == "ok", result
+        assert (result.orphaned_tracks, result.orphaned_zones) == (1, 1), result
+        stamp = [FJ.child(FJ.root(data), b"version").items[1].value for data in (before, after)]
+        assert stamp[0] == stamp[1], stamp
+        was, now = _segment_at(before, 10), _segment_at(after, 10)
+        assert was is not None and now is not None
+        assert before[was.start : was.end] == after[now.start : now.end], "net 0 trace changed"
+        orphaned = _segment_at(after, 30)
+        assert orphaned is not None and _segment_at(before, 30) is not None
+        net = F.child(orphaned, b"net")
+        assert net is not None
+        assert [(t.kind, t.value) for t in net.items[1:]] == [(L.STRING, b"")]
+        (zone,) = F.children(FJ.root(after), b"zone")
+        assert F.child(zone, b"net") is None and F.child(zone, b"net_name") is None
+        if PJ.skip_reason() is None and PJ.major() >= 10:
+            read = PN.read(tmp_path / "e2e.kicad_pcb")
+            uuids = [FJ.child(group, b"uuid").items[1].value.decode() for group in (orphaned, zone)]
+            assert [read["items"][uuid][1] for uuid in uuids] == ["", ""], read["items"]
+            assert "/SIG" not in [name for _, name in read["nets"]], read["nets"]
+
+    def test_a_kicad10_board_keeps_unchanged_pads_in_place(self, tmp_path):
+        """The same board and update, judged on its pads (bug 22 on KiCad 10): the pads of the
+        footprints the update did not swap whose net did not change (R1 and R2's pads on /GND)
+        are as KiCad 10 saved them, byte for byte, where the pass cleared each pad's net and
+        put it back after (layers ...), ahead of the roundrect_rratio KiCad 10 writes there;
+        and a pad whose net did change (the ones on /SIG, now /SIG2) differs from KiCad's bytes
+        in that one atom of its (net ...)."""
+        before, after, result = _k10_board_with_sig_renamed(tmp_path)
+        left = [
+            FJ.reference_of(fp)
+            for fp in F.children(FJ.root(before), b"footprint")
+            if FJ.reference_of(fp) not in {*result.fpid_changed, *result.added}
+        ]
+        assert left, result
+        unchanged = changed = 0
+        for ref in left:
+            for old, new in zip(_pad_records(before, ref), _pad_records(after, ref)):
+                if old[1] == new[1]:
+                    unchanged += 1
+                    assert old[0] == new[0], f"{ref}: a pad on {old[1]!r} moved"
+                    continue
+                changed += 1
+                (net,) = J.find_paths(old[0], lambda loc, item: item.head == "net")
+                assert J.atom_changes(old[0], new[0]) == [
+                    J.AtomChange(net, 1, f'"{old[1]}"'.encode(), f'"{new[1]}"'.encode())
+                ]
+        assert unchanged and changed, (unchanged, changed)
 
 
 def _set_symbol_flags(sch: str, reference: str, **flags: bool) -> None:

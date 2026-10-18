@@ -696,6 +696,51 @@ def test_stale_removal_removes_an_unlocked_footprint(tmp_path, spelling):
     assert _stale_removed(tmp_path, spelling)
 
 
+def _removed_with_attr(work: Path, attr: str) -> bool:
+    """Whether update with delete_stale removes U1, which the netlist leaves out, when its
+    attributes read ``attr`` (its (attr ...) list, in place of the (attr smd) edit_gen writes);
+    U2 stays in the netlist."""
+    u1 = E.board_footprint_text(E.footprint_with_pad_at(45.0), "U1", _AT, 0.0)
+    if u1.count("\t\t(attr smd)\n") != 1:
+        raise RuntimeError("edit_gen's footprint no longer holds one (attr smd)")
+    u1 = u1.replace("\t\t(attr smd)\n", f"\t\t({attr})\n")
+    u2 = E.board_footprint_text(E.footprint_with_pad_at(0.0), "U2", _NEIGHBOUR, 0.0)
+    board = _board(work / "attrs.kicad_pcb", [u1, u2])
+    netlist = E.netlist_text([E.NetComponent("U2", "V", "Ladder:Syn")])
+    summary = _update(board, netlist, [], delete_stale=True)
+    if summary["stale_footprints"] != ["U1"]:
+        raise RuntimeError(f"U1 was not found stale: {summary}")
+    removed = "U1" in summary["stale_removed"]
+    on_board = [FJ.reference_of(fp) for fp in F.children(FJ.root(board.read_bytes()), b"footprint")]
+    if removed == ("U1" in on_board):
+        raise RuntimeError(f"the summary and the board disagree: {summary}, {on_board}")
+    return removed
+
+
+@pytest.mark.parametrize(
+    "attr",
+    [
+        "attr smd board_only",
+        "attr board_only",
+        "attr through_hole board_only exclude_from_pos_files exclude_from_bom",
+    ],
+)
+def test_stale_removal_keeps_a_board_only_footprint(tmp_path, attr):
+    """delete_stale keeps a stale footprint marked board_only (a mounting hole, a fiducial: a
+    part that exists on the board alone), as KiCad's updater does: it clears doDelete for one
+    whatever the option says (board_netlist_updater.cpp:1427-1428 at 9.0.8, 2334-2335 at
+    10.0.7). The parser reads board_only from any (attr ...) list, among the other tokens
+    KiCad writes there. The tool removed it."""
+    assert not _removed_with_attr(tmp_path, attr)
+
+
+@pytest.mark.parametrize("attr", ["attr smd", "attr smd exclude_from_bom dnp"])
+def test_stale_removal_removes_a_footprint_that_is_not_board_only(tmp_path, attr):
+    """The passing sibling: a stale footprint whose attributes do not include board_only is
+    removed under delete_stale, whatever else its (attr ...) holds."""
+    assert _removed_with_attr(tmp_path, attr)
+
+
 # ---------------------------------------------------------------------------
 # constructs the swap does not port (N4, the swap rows)
 # ---------------------------------------------------------------------------
@@ -1168,3 +1213,39 @@ def test_nightly_swap_matches_pcbnew(picks):
         found = _swap_runs(pairs, cases, Path(work))
     problems = _pcbnew_problems(found, "B.Cu", "geometry")
     assert not problems, "\n".join(problems[:40])
+
+
+@pytest.mark.parametrize("side", _SIDES)
+def test_swap_to_a_footprint_with_zones_matches_pcbnew(tmp_path, side):
+    """Issue 128's swap, judged by pcbnew: a footprint KiCad placed (ESP32-C6-MINI-1, which
+    owns zones) at 90 and at 30 degrees on the front and on the back, swapped by the update for
+    another that owns zones too (ESP32-S2-MINI-1) and by pcbnew's replay of ExchangeFootprint:
+    the new footprint's zones, whose points are board coordinates (format( ZONE ) writes them
+    without the footprint, pcb_io_kicad_sexpr.cpp:2628-2638 at 9.0.8, 3061-3074 at 10.0.7), read
+    as pcbnew's do, within two nanometres off the quarter turns, with the position, angle and
+    side of the footprint. The issue reported them left at the library's coordinates; the
+    update already swaps them as pcbnew does (measured 2026-10-17 on KiCad 9.0.8, over a copy
+    of the issue's probe: the zones of all 20 swaps, ESP32-C6-MINI-1 placed at 0, 90, -90, 180
+    and 30 degrees on both sides and swapped to each of the two modules, are pcbnew's), and
+    this pins it."""
+    reason = PJ.skip_reason()
+    if reason:
+        pytest.skip(reason)
+    pair = (E.stock_footprint("ESP32-C6-MINI-1"), E.stock_footprint("ESP32-S2-MINI-1"))
+    cases = [(0, angle, side) for angle in (90.0, 30.0)]
+    runs = _swap_runs([pair], cases, tmp_path)
+    major = PJ.major()
+    problems = []
+    for ref, what, angle, run_side, mine, theirs in runs:
+        got, want = FJ.read(mine, ref, major=major), FJ.read(theirs, ref, major=major)
+        if not want.zones:
+            raise RuntimeError(f"{what}: the footprint pcbnew swaps in owns no zone")
+        found = FJ.differences(
+            got._replace(pads=(), texts=()),
+            want._replace(pads=(), texts=()),
+            tolerance_nm=_tolerance(angle),
+            copper_count=FJ.copper_count(mine),
+        )
+        problems += [f"{what}: {problem}" for problem in found]
+    assert len(runs) == len(cases)
+    assert not problems, f"{len(problems)} problems:\n" + "\n".join(problems[:20])

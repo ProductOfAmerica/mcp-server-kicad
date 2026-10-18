@@ -755,8 +755,11 @@ class TestApplyNetlistCst:
         (fp,) = root.find_all("footprint")
         (bound,) = [p for p in fp.find_all("pad") if p.find("net") is not None]
         net = bound.find("net")
-        assert not net.atoms[1].text.lstrip("-").isdigit(), (
-            f"emitted a numeric net reference into a KiCad 10 board: {net.atoms[1].text!r}"
+        # KiCad 10 reads a quoted token as a net name and an unquoted number as a legacy
+        # code (parseNet, pcb_io_kicad_sexpr_parser.cpp:296-342 at 10.0.7), so the atom
+        # has to be quoted: a name that happened to be all digits would still be one.
+        assert [a.raw[:1] for a in net.atoms[1:]] == [b'"'], (
+            f"emitted a net reference KiCad 10 takes for a code: {[a.raw for a in net.atoms]!r}"
         )
         assert pcb._net_name_of(root, bound) == "GND"
 
