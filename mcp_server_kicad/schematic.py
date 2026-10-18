@@ -621,11 +621,10 @@ def place_component(
             " the existing symbol."
         )
 
-    _bounds_check(x, y, page_w, page_h, page_name)
-
-    # Snap placement to grid
+    # Snap placement to grid, then check the position that is written.
     x = _snap_grid(x)
     y = _snap_grid(y)
+    _bounds_check(x, y, page_w, page_h, page_name)
 
     # A placed symbol is a part only if its definition sits in lib_symbols
     # beside it: KiCad keeps the body and pins there, and the instance merely
@@ -938,7 +937,9 @@ def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
     for w in wires:
         for xk, yk in [("x1", "y1"), ("x2", "y2")]:
-            _bounds_check(w[xk], w[yk], page_w, page_h, page_name)
+            _bounds_check(
+                _snap(w[xk], SCH_IU_PER_MM), _snap(w[yk], SCH_IU_PER_MM), page_w, page_h, page_name
+            )
     before = _cst.serialize(tree)
     m = _model(root)
     m.ensure()
@@ -1950,7 +1951,13 @@ def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> st
     # which KiCad reads off the page as anywhere else, so the repairs validate_hierarchy names
     # hold there as well.
     for spec in refused:
-        _bounds_check(spec["x"], spec["y"], page_w, page_h, page_name)
+        _bounds_check(
+            _snap(spec["x"], SCH_IU_PER_MM),
+            _snap(spec["y"], SCH_IU_PER_MM),
+            page_w,
+            page_h,
+            page_name,
+        )
     if refused:
         named = ", ".join(f"({spec['x']}, {spec['y']})" for spec in refused)
         raise ToolError(
@@ -2013,8 +2020,8 @@ def move_component(
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
-    _bounds_check(x, y, page_w, page_h, page_name)
     x, y = _snap_grid(x), _snap_grid(y)
+    _bounds_check(x, y, page_w, page_h, page_name)
     sym = _find_sym_cst(root, reference)
     if sym is None:
         raise ToolError(f"Component {reference} not found." + _SEE_PLACED)

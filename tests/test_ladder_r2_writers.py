@@ -41,6 +41,7 @@ import pytest
 from kicad_ref import dsn_lexer as L
 from kicad_ref import eda_units as U
 from kicad_ref import parse_units as P
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import pcb, project, schematic, symbol
 from mcp_server_kicad.models import PointSpec
@@ -635,3 +636,67 @@ def test_writers_spell_numbers_as_kicad_does(tmp_path, name, case):
             if r not in held
         ]
     assert not problems, "\n".join(problems)
+
+
+# ---------------------------------------------------------------------------
+# the page check reads the value written
+# ---------------------------------------------------------------------------
+
+#: The fixture's A4 sheet is 297 mm wide (PAGE_INFO::pageA4, page_info.cpp:70 at 9.0.8).
+_A4_WIDTH = 297.0
+#: On the sheet, but 234 steps of the 1.27 mm grid, 297.18 mm, are past its edge.
+_OFF_BY_THE_GRID = 296.9
+#: Past the edge, but 100 nm units round it to 297 mm, the edge itself.
+_ON_BY_THE_UNIT = 297.00004
+
+_GRID_SNAPPED: dict[str, Callable[[str], Any]] = {
+    "place_component": lambda sch: schematic.place_component(
+        "Device:R", "R2", "10K", _OFF_BY_THE_GRID, 100.0, 0, "", "", sch
+    ),
+    "move_component": lambda sch: schematic.move_component(
+        "R1", _OFF_BY_THE_GRID, 100.0, None, sch
+    ),
+}
+
+
+def _refusal(path: str, call: Callable[[], Any]) -> str:
+    """The message of a refused call, which must leave the file as it was."""
+    before = Path(path).read_bytes()
+    with pytest.raises(ToolError) as refused:
+        call()
+    assert Path(path).read_bytes() == before, "the refused call changed the file"
+    return str(refused.value)
+
+
+@pytest.mark.parametrize("tool", list(_GRID_SNAPPED))
+def test_a_request_the_grid_moves_past_the_edge_is_refused(tmp_path, tool):
+    """The tool snaps the request to the 1.27 mm grid, so the page check reads the snapped
+    value: 296.9 mm is refused as 297.18 mm, and the file is left as it was."""
+    if not round(_OFF_BY_THE_GRID / 1.27) * 1.27 > _A4_WIDTH > _OFF_BY_THE_GRID:
+        raise RuntimeError("premise: the request is on the sheet and its grid point is not")
+    sch = _sch(tmp_path)["sch"]
+    message = _refusal(sch, lambda: _GRID_SNAPPED[tool](sch))
+    assert "(297.18, " in message, message
+
+
+def test_a_wire_end_the_units_put_on_the_edge_is_written(tmp_path):
+    """add_wires checks the end it writes: 297.00004 mm reads as 2970000 units, 297 mm, the
+    sheet's edge, so the wire is written and ends there."""
+    if P.parse_sch_internal_units(b"297.00004", major=9) != round(_A4_WIDTH * SCH):
+        raise RuntimeError("premise: the request does not read as the edge")
+    sch = _sch(tmp_path)["sch"]
+    before = _read_files(tmp_path)
+    schematic.add_wires([{"x1": 290.0, "y1": 50.8, "x2": _ON_BY_THE_UNIT, "y2": 50.8}], sch)
+    written = _written(before, _read_files(tmp_path))
+    xs = [token for head, position, token in written if head == b"xy" and position == 1]
+    assert b"297" in xs, xs
+
+
+def test_a_junction_refused_on_the_edge_is_not_called_off_the_sheet(tmp_path):
+    """Nothing joins at (297.00004, 50.8), so add_junctions refuses it; the point it would
+    write is 297 mm, the sheet's edge, so the refusal is the junction rule's, not the page's."""
+    sch = _sch(tmp_path)["sch"]
+    message = _refusal(
+        sch, lambda: schematic.add_junctions([{"x": _ON_BY_THE_UNIT, "y": 50.8}], sch)
+    )
+    assert "outside the sheet boundary" not in message, message
