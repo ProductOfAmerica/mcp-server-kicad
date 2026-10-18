@@ -7,8 +7,8 @@ found no root at all, and a file no sheet uses was taken for a sheet.
 
 A sheet's own violations are the entries kicad-cli files under the sheet's instance paths and
 the violations in the report's first entry whose item lives in the sheet's file. tests/erc_oracle.py
-reads both from kicad-cli's own report and netlist, and shares with the filter under test only the
-rule that the first entry holds the violations without a sheet path.
+reads both from kicad-cli's own report and netlist; its docstring says what it shares with the
+filter under test.
 """
 
 from __future__ import annotations
