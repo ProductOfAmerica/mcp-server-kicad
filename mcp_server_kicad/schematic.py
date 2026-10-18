@@ -18,6 +18,7 @@ from mcp_server_kicad._connectivity import (
     pin_matches,
 )
 from mcp_server_kicad._cst import (
+    PCB_IU_PER_MM,
     SCH_IU_PER_MM,
     _angle_text,
     _fill_at,
@@ -3287,6 +3288,66 @@ def remove_no_connect(
 # ---------------------------------------------------------------------------
 
 
+# kicad-cli's JSON ERC report prints an item's position with the board's 1e6 units per
+# millimetre where a schematic has 1e4, in every release from 9.0.0 below 10.0.7: erc_report.cpp
+# builds the JSON writer's units provider from pcbIUScale (line 161 at 10.0.6) and, from 10.0.7,
+# from schIUScale, which its text report uses on every release.
+_ERC_JSON_SCALED_FROM = (9, 0, 0)
+_ERC_JSON_FIXED_IN = (10, 0, 7)
+_ERC_REPORT_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:\.\d+)*")
+_ERC_SCALE_NOTE = (
+    "KiCad {version} writes item positions in its ERC report 100 times too small; they are"
+    " corrected here to millimetres in sheet coordinates. A length quoted inside an item"
+    " description is KiCad's own text and carries the same error."
+)
+
+
+def _erc_positions_in_sheet_mm(report: dict) -> bool:
+    """Put every item position of a kicad-cli ERC JSON *report* in the sheet's millimetres.
+
+    The report's own version says whether KiCad scaled the positions wrongly (above). An
+    unreadable version, or units other than mm, means no opinion: the report is left as it is.
+    Returns whether positions were changed.
+    """
+    found = _ERC_REPORT_VERSION.fullmatch(str(report.get("kicad_version", "")))
+    if found is None or report.get("coordinate_units") != "mm":
+        return False
+    version = tuple(int(part) for part in found.groups())
+    if not _ERC_JSON_SCALED_FROM <= version < _ERC_JSON_FIXED_IN:
+        return False
+    for sheet in report.get("sheets", []):
+        for violation in sheet.get("violations", []):
+            for item in violation.get("items", []):
+                pos = item.get("pos")
+                for axis in ("x", "y"):
+                    if isinstance(pos, dict) and isinstance(pos.get(axis), int | float):
+                        # KiCad printed iu / 1e6 for a schematic unit count iu; give back
+                        # the count, then the millimetres it is.
+                        pos[axis] = round(pos[axis] * PCB_IU_PER_MM) / SCH_IU_PER_MM
+    return True
+
+
+def _run_erc_json(erc_target: str, output_dir: str) -> tuple[dict, str | None]:
+    """Run ERC on *erc_target*: its JSON report with every position in sheet millimetres,
+    and the note that says so when they had to be corrected."""
+    out_dir = output_dir or str(Path(erc_target).parent)
+    out_path = str(Path(out_dir) / (Path(erc_target).stem + "-erc.json"))
+    _run_cli(
+        ["sch", "erc", "--format", "json", "--severity-all", "--units", "mm"]
+        + ["--output", out_path, erc_target],
+        check=False,
+    )
+    try:
+        with open(out_path, encoding="utf-8") as f:
+            report = json.load(f)
+    except FileNotFoundError:
+        raise ToolError("ERC failed to produce output file")
+    note = None
+    if _erc_positions_in_sheet_mm(report):
+        note = _ERC_SCALE_NOTE.format(version=report["kicad_version"])
+    return report, note
+
+
 def _parse_unconnected_pins(erc_report: dict, sheet_filter: str | None = None) -> list[dict]:
     """Extract unconnected pin violations from an ERC report.
 
@@ -3327,6 +3388,9 @@ def list_unconnected_pins(
     Requires kicad-cli. Auto-redirects to root schematic for sub-sheets
     to avoid false positives from hierarchical label context.
 
+    The x and y of each entry are millimetres in sheet coordinates, the
+    numbers get_pin_positions prints.
+
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         output_dir: Directory for ERC report file. Optional; omit to use the configured default.
@@ -3338,29 +3402,11 @@ def list_unconnected_pins(
     erc_target = root_path or schematic_path
     sheet_filter = Path(schematic_path).name if root_path else None
 
-    out_dir = output_dir or str(Path(erc_target).parent)
-    out_path = str(Path(out_dir) / (Path(erc_target).stem + "-erc.json"))
-    _run_cli(
-        [
-            "sch",
-            "erc",
-            "--format",
-            "json",
-            "--severity-all",
-            "--output",
-            out_path,
-            erc_target,
-        ],
-        check=False,
-    )
-    try:
-        with open(out_path, encoding="utf-8") as f:
-            report = json.load(f)
-    except FileNotFoundError:
-        raise ToolError("ERC failed to produce output")
+    report, scale_note = _run_erc_json(erc_target, output_dir)
 
     pins = _parse_unconnected_pins(report, sheet_filter=sheet_filter)
-    note = "ERC ran from root schematic to include full hierarchy context" if root_path else None
+    root_note = "ERC ran from root schematic to include full hierarchy context" if root_path else ""
+    note = " ".join(filter(None, [root_note, scale_note])) or None
     return UnconnectedPinsResult(unconnected_count=len(pins), pins=pins, note=note)
 
 
@@ -3411,7 +3457,9 @@ def run_erc(
     Auto-redirects to root schematic for sub-sheets to avoid false
     positives from missing hierarchical context.
 
-    Returns JSON report with violations.
+    Returns JSON report with violations. An item's position is in
+    millimetres in sheet coordinates, the numbers get_pin_positions prints.
+    The report file saved in output_dir is kicad-cli's own.
 
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
@@ -3425,17 +3473,7 @@ def run_erc(
     erc_target = root_path or schematic_path
     sheet_filter = Path(schematic_path).name if root_path else None
 
-    out_dir = output_dir or str(Path(erc_target).parent)
-    out_path = str(Path(out_dir) / (Path(erc_target).stem + "-erc.json"))
-    _run_cli(
-        ["sch", "erc", "--format", "json", "--severity-all", "--output", out_path, erc_target],
-        check=False,
-    )
-    try:
-        with open(out_path, encoding="utf-8") as f:
-            report = json.load(f)
-    except FileNotFoundError:
-        raise ToolError("ERC failed to produce output file")
+    report, scale_note = _run_erc_json(erc_target, output_dir)
 
     all_violations = []
     for sheet in report.get("sheets", []):
@@ -3446,7 +3484,8 @@ def run_erc(
         all_violations.extend(sheet.get("violations", []))
 
     root_note = "ERC ran from root schematic to include full hierarchy context" if root_path else ""
-    note = " ".join(filter(None, [root_note, _sym_lib_table_note(all_violations)])) or None
+    notes = [root_note, scale_note, _sym_lib_table_note(all_violations)]
+    note = " ".join(filter(None, notes)) or None
     return ErcResult(
         source=report.get("source", ""),
         kicad_version=report.get("kicad_version", ""),
