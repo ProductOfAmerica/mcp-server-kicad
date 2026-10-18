@@ -1377,9 +1377,9 @@ _OLD_RELEASES = "0.5.8 to 0.20.1"
 
 def _off_pin_items(root, path: str) -> list[dict]:
     """validate_hierarchy's issues for the no-connect flags (no_connect_off_pin) and wire ends
-    (wire_end_off_pin) that releases 0.5.8 to 0.20.1 left on one parsed sheet where they put a
-    pin. They mirrored a pin before rotating it, so at rotation 90 or 270 with a mirror their
-    point is the pin's end reflected through the symbol's origin
+    (wire_end_off_pin) on one parsed sheet at the point releases 0.5.8 to 0.20.1 gave a pin.
+    They mirrored a pin before rotating it, so at rotation 90 or 270 with a mirror their point
+    is the pin's end reflected through the symbol's origin
     (_connectivity._old_order_transform); 0.20.1's no_connect_pin, wire_pins_to_net and
     connect_pins all wrote there (measured: tests/test_ladder_r3_mirrored_pins.py).
 
@@ -1453,8 +1453,8 @@ def _flag_note(model, root, pads: list[tuple]) -> str:
     )
     if len(pads) > 1:
         return (
-            f"{_gave(pads)} This flag was written for one or more of them, which is not known"
-            " here, and KiCad draws none of them at the point, so the flag misses all of"
+            f"{_gave(pads)} Which of them the flag was meant for is not known here, and KiCad"
+            " draws none of them at the point, so the flag misses all of"
             f" them.{delete}, then no_connect_pin flags each of them that should be flagged."
         )
     s, num, _name, end = pads[0]
@@ -1465,9 +1465,9 @@ def _flag_note(model, root, pads: list[tuple]) -> str:
     else:
         then = ", and flag the pin there too."
     return (
-        f"Releases {_OLD_RELEASES} put this flag here for {s.ref} pin {num}, at the point they"
-        f" gave the pin, mirrored before rotated; KiCad draws the pin at"
-        f" {_connectivity.pt(end)}, so the flag misses it.{delete}{then}"
+        f"This flag is at the point releases {_OLD_RELEASES} gave {s.ref} pin {num}, mirrored"
+        f" before rotated; KiCad draws the pin at {_connectivity.pt(end)}, so the flag misses"
+        f" it.{delete}{then}"
     )
 
 
@@ -1537,9 +1537,9 @@ def _left_at(model, root, at: Point, pins: list, path: str) -> list[dict]:
         issue = {"type": "wire_end_off_pin", **base, "wire": _stretch((w.x, w.y), (w.x2, w.y2))}
         if len(pads) > 1:
             issue["note"] = (
-                f"{_gave(pads)} This wire was written for one or more of them, which is not"
-                " known here, and KiCad draws none of them at the point, so the wire misses"
-                f" all of them. Wire the pins as meant; {_remove_call(w)}"
+                f"{_gave(pads)} Which of them the wire was meant for is not known here, and"
+                " KiCad draws none of them at the point, so the wire misses all of them."
+                f" Wire the pins as meant; {_remove_call(w)}"
             )
         else:
             s, num, _name, end = pads[0]
@@ -1548,8 +1548,8 @@ def _left_at(model, root, at: Point, pins: list, path: str) -> list[dict]:
                 issue["repair"] = repair
             else:
                 issue["note"] = (
-                    f"Releases {_OLD_RELEASES} ended this wire at the point they gave {s.ref}"
-                    f" pin {num}, mirrored before rotated; KiCad draws the pin at"
+                    f"This wire ends at the point releases {_OLD_RELEASES} gave {s.ref} pin"
+                    f" {num}, mirrored before rotated; KiCad draws the pin at"
                     f" {_connectivity.pt(end)}, so the wire misses it. {why}"
                 )
         out.append(issue)

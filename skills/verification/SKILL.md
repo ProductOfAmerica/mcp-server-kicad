@@ -147,17 +147,17 @@ wire, and kicad-cli 9 (ERC, netlist, PCB update) cuts the wire there.
 Make the call each issue names in `repair`, exactly as given, then
 re-run `validate_hierarchy` to confirm.
 
-**If `no_connect_off_pin` or `wire_end_off_pin`:** an earlier version
-put a no-connect flag or a wire end where it computed a pin of a part
-rotated 90 or 270 degrees and mirrored, and KiCad draws that pin at
-`pin_x`, `pin_y`, so the flag or the wire misses it. For a wire end
-with a `repair`, make that call exactly as given: it joins the pin to
-what the wire reaches, and leaves the old wire where it is. A flag
-always carries a `note` (below), since no tool removes a flag by its
-position. An issue that lists `pins` in place of `reference`, `pin`,
-`pin_x` and `pin_y` is a point where the earlier version put several
-pins: which one the flag or wire was written for is not known, so it
-carries a note and no repair.
+**If `no_connect_off_pin` or `wire_end_off_pin`:** versions 0.5.8 to
+0.20.1 of this package computed the pin of a part rotated 90 or 270
+degrees and mirrored at a point where KiCad draws no pin, so a flag or
+a wire end placed there misses it: KiCad draws the pin at `pin_x`,
+`pin_y`. For a wire end with a `repair`, make that call exactly as
+given: it joins the pin to what the wire reaches, and leaves the old
+wire where it is. A flag always carries a `note` (below), since no tool
+removes a flag by its position. An issue that lists `pins` in place of
+`reference`, `pin`, `pin_x` and `pin_y` is a point where those versions
+put several pins: which one the flag or wire was written for is not
+known, so it carries a note and no repair.
 
 **If an issue carries a `note` and no `repair`:** no tool call fixes it,
 and the note says why. Do not work around it with other tools (removing,

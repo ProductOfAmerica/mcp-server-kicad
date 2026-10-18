@@ -911,8 +911,8 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     either), or it is a bus entry end where KiCad allows no junction.
 
     Per file too: the no-connect flags ("no_connect_off_pin") and wire ends
-    ("wire_end_off_pin") that releases 0.5.8 to 0.20.1 left where they put a pin of a symbol
-    at rotation 90 or 270 with a mirror. They mirrored before rotating, so that point is the
+    ("wire_end_off_pin") at the point releases 0.5.8 to 0.20.1 gave a pin of a symbol at
+    rotation 90 or 270 with a mirror. They mirrored before rotating, so that point is the
     pin's end reflected through the symbol's origin, and 0.20.1's no_connect_pin,
     wire_pins_to_net and connect_pins wrote there (measured). Only a point where KiCad draws
     no pin is checked. Each issue names the symbol ("reference"), the "pin", the point ("x",
