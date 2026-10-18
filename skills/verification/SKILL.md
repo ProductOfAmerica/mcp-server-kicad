@@ -56,9 +56,11 @@ These are the kicad MCP tools you should be using during verification:
 
 **Schematic checks:**
 - `run_erc` — run electrical rules check, returns all violations.
-  Auto-redirects sub-sheets to root for full hierarchy context.
+  Checks a sub-sheet from its project's root for full hierarchy context
+  and returns that sheet's own violations.
 - `list_unconnected_pins` — find unconnected pins by component.
-  Auto-redirects sub-sheets to root to avoid false positives.
+  Checks a sub-sheet from its project's root to avoid false positives
+  and returns that sheet's own pins.
 - `get_net_connections` — trace a net to debug connectivity issues
 - `validate_hierarchy` — check for unannotated refs, duplicate refs,
   orphaned labels/pins, direction mismatches, junctions and bus entry
