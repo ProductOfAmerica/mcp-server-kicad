@@ -398,7 +398,10 @@ class TestTopLevelSheets:
             tmp_path / "second.kicad_sch",
             (("u-s",),),
         )
-        assert _connectivity.place(tmp_path / "a.kicad_sch").root == tmp_path / "p.kicad_sch"
+        # the project's own root is the file the .kicad_pro is named after, not the sheet's root
+        assert placed.project == tmp_path / "p.kicad_sch"
+        below_first = _connectivity.place(tmp_path / "a.kicad_sch")
+        assert (below_first.root, below_first.project) == (tmp_path / "p.kicad_sch",) * 2
 
     @pytest.mark.kicad_placeholder(*_TWO_TOP_LEVEL)
     def test_each_top_level_sheet_is_a_root(self, tmp_path):

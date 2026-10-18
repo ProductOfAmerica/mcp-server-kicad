@@ -3388,6 +3388,12 @@ def _item_uuids(path: Path) -> set[str]:
     return found
 
 
+def _entry_chain(entry: dict) -> tuple[str, ...]:
+    """The block uuids from the top-level sheet down to a report entry's sheet: its uuid_path
+    without the empty part before the first "/" and the top-level sheet's own uuid."""
+    return tuple(str(entry.get("uuid_path", "")).split("/")[2:])
+
+
 def _sheet_violations(
     report: dict, instances: tuple[tuple[str, ...], ...], path: Path
 ) -> list[dict]:
@@ -3409,7 +3415,7 @@ def _sheet_violations(
     for index, entry in enumerate(report.get("sheets", [])):
         violations = entry.get("violations", [])
         if index:
-            if tuple(str(entry.get("uuid_path", "")).split("/")[2:]) in chains:
+            if _entry_chain(entry) in chains:
                 own.extend(violations)
         elif violations:
             uuids = _item_uuids(path)
@@ -3418,6 +3424,29 @@ def _sheet_violations(
                 if items and str(items[0].get("uuid", "")).lower() in uuids:
                     own.append(v)
     return own
+
+
+def _run_erc_for_sheet(
+    placement: _connectivity.Placement, output_dir: str
+) -> tuple[dict, str | None]:
+    """The ERC report to take a sheet's violations from, as _run_erc_json returns it.
+
+    It comes from the project's root schematic, so that the project's settings apply to the
+    sheet: kicad-cli takes a project from the name of the file it is given (LoadSchematic,
+    eeschema_helpers.cpp:92-93 at 10.0.7). For a sheet below one of the project's other
+    top-level sheets it comes from that top-level sheet when the report from the project's
+    root has no entry for the sheet, or none could be made.
+    """
+    assert placement.root is not None and placement.project is not None
+    if placement.project != placement.root:
+        chains = set(placement.instances)
+        try:
+            report, note = _run_erc_json(str(placement.project), output_dir)
+            if any(_entry_chain(entry) in chains for entry in report.get("sheets", [])):
+                return report, note
+        except ToolError:
+            pass  # no report from the project's root: try the top-level sheet that holds it
+    return _run_erc_json(str(placement.root), output_dir)
 
 
 class _ErcRun(NamedTuple):
@@ -3429,11 +3458,13 @@ class _ErcRun(NamedTuple):
 def _erc(schematic_path: str, output_dir: str, project_path: str) -> _ErcRun:
     """ERC for one schematic file, the way a user means it, with positions in sheet millimetres.
 
-    A sheet of a project is checked from the top-level sheet that holds it, so that the hierarchy
+    A sheet of a project is checked from the project's root schematic, so that the hierarchy
     around it is there, and only the violations of that sheet are returned (_sheet_violations).
-    A file that is a root, or that no sheet of its project uses, is checked as a root of its own.
-    *project_path* names the project whose hierarchy to look in; a file that hierarchy does not
-    use is refused, since it cannot be given a place in it.
+    A sheet below one of the project's other top-level sheets is checked from that top-level
+    sheet when the report from the project's root holds no entry for it. A file that is a root,
+    or that no sheet of its project uses, is given to kicad-cli as it is, and everything in its
+    report comes back. *project_path* names the project whose hierarchy to look in; a file that
+    hierarchy does not use is refused, since it cannot be given a place in it.
     """
     target = _require_kicad_path(schematic_path, "schematic")
     if project_path:
@@ -3452,8 +3483,7 @@ def _erc(schematic_path: str, output_dir: str, project_path: str) -> _ErcRun:
 
     notes: list[str] = []
     if placement.kind == "sheet":
-        assert placement.root is not None
-        report, scale_note = _run_erc_json(str(placement.root), output_dir)
+        report, scale_note = _run_erc_for_sheet(placement, output_dir)
         violations = _sheet_violations(report, placement.instances, target)
         notes.append(
             "ERC ran from root schematic to include full hierarchy context;"

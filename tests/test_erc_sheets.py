@@ -301,10 +301,11 @@ def test_a_project_of_thousands_of_sheet_instances_does_not_stop_the_files_it_is
     assert Counter(pin["detail"] for pin in listed.pins) == _pins(alone)
 
 
-def _top_level_project(tmp_path: Path) -> tuple[Path, Path, Path]:
+def _top_level_project(tmp_path: Path, ignore: str = "") -> tuple[Path, Path, Path]:
     """A project whose .kicad_pro lists two top-level sheets, proj.kicad_sch and
     second.kicad_sch, the second holding a sheet of its own, sub.kicad_sch. Each file has an
-    unwired resistor."""
+    unwired resistor, and sub a dangling wire. With *ignore*, the project sets that ERC check
+    to ignore."""
     folder = tmp_path / "proj"
     project.create_project(directory=str(folder), name="proj")
     root, second, sub = (folder / f"{n}.kicad_sch" for n in ("proj", "second", "sub"))
@@ -315,6 +316,9 @@ def _top_level_project(tmp_path: Path) -> tuple[Path, Path, Path]:
     )
     for path, ref in ((root, "R1"), (second, "R2"), (sub, "R3")):
         schematic.place_component("Device:R", ref, "10K", 50.8, 50.8, schematic_path=str(path))
+    schematic.add_wires(
+        [{"x1": 127.0, "y1": 25.4, "x2": 152.4, "y2": 25.4}], schematic_path=str(sub)
+    )
 
     def uuid_of(path: Path) -> str:
         found = re.search(r'\(uuid "([^"]+)"\)', path.read_text(encoding="utf-8"))
@@ -327,20 +331,34 @@ def _top_level_project(tmp_path: Path) -> tuple[Path, Path, Path]:
         {"uuid": uuid_of(root), "name": "Root", "filename": "proj.kicad_sch"},
         {"uuid": uuid_of(second), "name": "Second", "filename": "second.kicad_sch"},
     ]
+    if ignore:
+        data.setdefault("erc", {}).setdefault("rule_severities", {})[ignore] = "ignore"
     pro.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return root, second, sub
 
 
 @requires_cli
-def test_a_sheet_below_a_second_top_level_sheet_is_checked_from_that_sheet(tmp_path):
-    """The .kicad_pro lists two top-level sheets, as KiCad 10 writes it. A sheet below the
-    second was reported a root and checked on its own; it is checked from the second, and
-    only its own violations come back. The judge is kicad-cli's ERC and netlist of the
-    second."""
-    _, second, sub = _top_level_project(tmp_path)
-    judged = erc_oracle.Project(second)
+@pytest.mark.parametrize(
+    "ignore",
+    ["", "pin_not_connected"],
+    ids=["default-settings", "project-ignores-pin_not_connected"],
+)
+def test_a_sheet_below_a_second_top_level_sheet_is_checked_under_its_project(tmp_path, ignore):
+    """The .kicad_pro lists two top-level sheets. A sheet below the second is checked from the
+    project's file when that report holds the sheet, so that the project's settings apply to
+    it, and from the second otherwise, and only its own violations come back.
+
+    The judge is kicad-cli's own: its ERC and netlist of the project's file when the netlist
+    lists sub.kicad_sch, else of the second."""
+    root, second, sub = _top_level_project(tmp_path, ignore)
+    judged = erc_oracle.Project(root)
+    alone = erc_oracle.Project(second)
+    if sub.name not in judged.names.values():
+        judged = alone
     want = judged.own(sub)
-    assert want, "premise: kicad-cli reports violations that live in the sub-sheet"
+    wired = {v["type"] for v in alone.own(sub)}
+    if not {"pin_not_connected", "wire_dangling"} <= wired:
+        raise RuntimeError(f"premise: sub-sheet checked from the second reports only {wired}")
 
     located = project.is_root_schematic(schematic_path=str(sub))
     run = schematic.run_erc(str(sub), str(tmp_path / "out"))
@@ -348,8 +366,28 @@ def test_a_sheet_below_a_second_top_level_sheet_is_checked_from_that_sheet(tmp_p
 
     assert located.is_root is False and Path(str(located.root_path)) == second
     assert _keys(run.violations) == _keys(want)
-    assert run.source == second.name
+    assert any(v["type"] == "wire_dangling" for v in run.violations)
+    assert run.source == judged.root.name
     assert "root schematic" in (run.note or "")
+    assert Counter(pin["detail"] for pin in listed.pins) == _pins(want)
+
+
+@requires_cli
+@pytest.mark.kicad_placeholder("proj/proj.kicad_sch")
+def test_a_project_root_kicad_cli_cannot_load_does_not_stop_a_sheet_below_the_second(tmp_path):
+    """proj.kicad_sch is cut in half. The sheet below second.kicad_sch is still checked, from
+    the second. The judge is kicad-cli's ERC and netlist of the second."""
+    root, second, sub = _top_level_project(tmp_path)
+    want = erc_oracle.Project(second).own(sub)
+    assert want, "premise: kicad-cli reports violations that live in the sub-sheet"
+    data = root.read_bytes()
+    root.write_bytes(data[: len(data) // 2])
+
+    run = schematic.run_erc(str(sub), str(tmp_path / "out"))
+    listed = schematic.list_unconnected_pins(str(sub), str(tmp_path / "out"))
+
+    assert _keys(run.violations) == _keys(want)
+    assert run.source == second.name
     assert Counter(pin["detail"] for pin in listed.pins) == _pins(want)
 
 

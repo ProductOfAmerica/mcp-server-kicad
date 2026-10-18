@@ -1193,16 +1193,18 @@ class Placement:
     """Where a schematic file sits in the sheet hierarchy of its project.
 
     *kind* is "sheet" when a project's hierarchy uses the file: *root* is the top-level sheet
-    that hierarchy starts from and *instances* holds, for each place the hierarchy uses the
-    file, the uuids of the sheet blocks from the root down to it. It is "root" for a
-    top-level sheet of a project, or when the nearest project was not read through to say
-    otherwise, and "unused" when it was (*root*) and none of its sheets uses the file, which
-    is then a root of its own.
+    that hierarchy starts from, *project* the project's own root schematic (the one named after
+    its .kicad_pro, which is *root* unless the project lists other top-level sheets) and
+    *instances* holds, for each place the hierarchy uses the file, the uuids of the sheet
+    blocks from the root down to it. It is "root" for a top-level sheet of a project, or when
+    the nearest project was not read through to say otherwise, and "unused" when it was
+    (*root*) and none of its sheets uses the file, which is then a root of its own.
     """
 
     kind: str
     root: Path | None = None
     instances: tuple[tuple[str, ...], ...] = ()
+    project: Path | None = None
 
 
 def _sheet_blocks(path: Path) -> list[tuple[str, str]] | None:
@@ -1346,7 +1348,7 @@ def place(path: str | Path, root: str | Path | None = None) -> Placement:
                 return Placement("root", top)
             instances, not_read = _instances(top, target)
             if instances:
-                return Placement("sheet", top, tuple(instances))
+                return Placement("sheet", top, tuple(instances), project_root)
             unread += not_read
         if index == 0:
             nearest_read = not unread
