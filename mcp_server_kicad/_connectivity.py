@@ -622,6 +622,16 @@ def _xys(node) -> list[Point]:
     return [(iu(p.atoms[1].text), iu(p.atoms[2].text)) for p in pts.find_all("xy")]
 
 
+def at_point(node) -> Point:
+    """Where a junction, no-connect flag, label or bus entry sits: its (at), else the origin,
+    where kicad-cli 9.0.8 reads an item written with no (at)
+    (tests/test_ladder_r3_mirrored_pins.py measures each kind)."""
+    at = node.find("at")
+    if at is None:
+        return (0, 0)
+    return iu(at.atoms[1].text), iu(at.atoms[2].text)
+
+
 def _pin_hidden(p) -> bool:
     if any(a.text == "hide" for a in p.atoms[3:]):
         return True
@@ -1270,24 +1280,16 @@ class Model:
             if xys:
                 self.areas.append(xys)
         elif h == "bus_entry":
-            at, size = ch.find("at"), ch.find("size")
-            x, y = iu(at.atoms[1].text), iu(at.atoms[2].text)
+            size = ch.find("size")
+            x, y = at_point(ch)
             dx, dy = (
                 (iu(size.atoms[1].text), iu(size.atoms[2].text)) if size is not None else (0, 0)
             )
             self.add(Item("be", x, y, x + dx, y + dy))
         elif h in ("junction", "no_connect"):
-            at = ch.find("at")
-            self.add(
-                Item(
-                    "junction" if h == "junction" else "nc",
-                    iu(at.atoms[1].text),
-                    iu(at.atoms[2].text),
-                )
-            )
+            self.add(Item("junction" if h == "junction" else "nc", *at_point(ch)))
         elif h in _LABEL_KINDS:
-            at = ch.find("at")
-            it = self.add(Item("label", iu(at.atoms[1].text), iu(at.atoms[2].text)))
+            it = self.add(Item("label", *at_point(ch)))
             it.sub = _LABEL_KINDS[h]
             it.text = ch.atoms[1].text if len(ch.atoms) > 1 else ""
             it.name = None if h in ("netclass_flag", "directive_label") else netname(it.text)

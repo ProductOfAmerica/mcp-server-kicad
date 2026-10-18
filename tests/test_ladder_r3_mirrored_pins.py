@@ -39,13 +39,13 @@ import kicad_corpus as K
 import pytest
 import sch_judge as S
 import sexpr_gen
-from conftest import _nightly_skip_reason, netlist_nodes, requires_cli
+from conftest import _nightly_skip_reason, netlist_nodes, requires_cli, run_erc
 from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import dsn_lexer as L
 from kicad_ref import transform as T
 from netlist_oracle import bare_name, judge, nets
-from routing_fixtures import ORIENTED, fresh, label, no_connect, place, wire
+from routing_fixtures import ORIENTED, fresh, junction, label, no_connect, place, splice, wire
 
 from mcp_server_kicad import project, schematic
 
@@ -763,6 +763,142 @@ def test_edits_by_the_fixed_tools_are_not_reported(tmp_path):
                 anchor = f"RX{i + 1}"
                 place(p, "R", anchor, origin[0] - 7.62, origin[1] + 25.4)
                 schematic.connect_pins(ref, "3", anchor, "1", schematic_path=p)
+    assert _new_issues(p) == []
+
+
+# ---------------------------------------------------------------------------------------------
+# Items written with no (at)
+# ---------------------------------------------------------------------------------------------
+
+_EFFECTS = "(effects (font (size 1.27 1.27)))"
+#: Items KiCad's parser accepts without an (at), as a file would hold them.
+_NO_AT = {
+    "junction": '(junction (diameter 0) (color 0 0 0 0) (uuid "x"))',
+    "no_connect": '(no_connect (uuid "x"))',
+    "label": f'(label "X" {_EFFECTS} (uuid "x"))',
+    "global_label": f'(global_label "G" (shape input) {_EFFECTS} (uuid "x"))',
+    "hierarchical_label": f'(hierarchical_label "H" (shape input) {_EFFECTS} (uuid "x"))',
+    "bus_entry": '(bus_entry (size 2.54 2.54) (stroke (width 0) (type default)) (uuid "x"))',
+}
+
+
+@pytest.mark.parametrize("kind", _NO_AT)
+def test_an_item_with_no_at_does_not_stop_the_check(tmp_path, kind):
+    """R1 at 90 with a mirror and one item written with no (at): the check answers and finds
+    nothing, as it does without the item. The connectivity model once raised AttributeError
+    on it. The autouse oracle loads each sheet in kicad-cli."""
+    p = fresh(tmp_path, "noat")
+    place(p, "R", "R1", 50.8, 50.8, rot=90, mirror="x")
+    splice(p, _NO_AT[kind])
+    result = project.validate_hierarchy(schematic_path=p)
+    assert (result.status, result.issues) == ("ok", [])
+
+
+def test_the_cut_scan_survives_an_item_with_no_at(tmp_path):
+    """A junction strictly inside a wire makes the cut scan build the model, which once
+    raised on a label with no (at) anywhere on the sheet: the junction is reported, as it is
+    without the label."""
+    p = fresh(tmp_path, "cut")
+    place(p, "R", "R1", 50.8, 50.8)
+    wire(p, 25.4, 76.2, 76.2, 76.2)
+    junction(p, 50.8, 76.2)
+    splice(p, _NO_AT["label"])
+    result = project.validate_hierarchy(schematic_path=p)
+    assert [i["type"] for i in result.issues] == ["junction_inside_wire"]
+
+
+@requires_cli
+@pytest.mark.parametrize("kind", ["label", "global_label", "hierarchical_label", "no_connect"])
+def test_kicad_reads_a_label_or_flag_with_no_at_at_the_origin(tmp_path, kind):
+    """kicad-cli's netlist of R1 with pin 1's end at the origin: a label written with no (at)
+    names pin 1's net, and a no-connect written with no (at) flags pin 1."""
+    p = fresh(tmp_path, "origin")
+    place(p, "R", "R1", 0, 3.81)
+    splice(p, _NO_AT[kind])
+    nodes = netlist_nodes(p)
+    if kind == "no_connect":
+        assert nodes[next(n for n in nodes if ("R1", "1") in nodes[n])][("R1", "1")].endswith(
+            "+no_connect"
+        )
+    else:
+        name = {"label": "X", "global_label": "G", "hierarchical_label": "H"}[kind]
+        assert ("R1", "1") in nodes[name], nodes
+
+
+@requires_cli
+def test_kicad_reads_a_junction_with_no_at_at_the_origin(tmp_path):
+    """A wire from (-5.08, 0) to (5.08, 0) labelled LH at its left end, R3:1 on its right
+    end, and a wire from the origin down to R4:1, so that R4:1 reaches LH only through a
+    junction at the origin. kicad-cli's netlist joins them with a junction written with no
+    (at), as with one at (0 0), and not without one."""
+
+    def tee(name, junction_text):
+        p = fresh(tmp_path, name)
+        place(p, "R", "R3", 8.89, 0, rot=90)
+        place(p, "R", "R4", 0, 8.89)
+        wire(p, -5.08, 0, 5.08, 0)
+        wire(p, 0, 0, 0, 5.08)
+        label(p, "LH", -5.08, 0)
+        if junction_text:
+            splice(p, junction_text)
+        return netlist_nodes(p)["LH"]
+
+    plain = '(junction {} (diameter 0) (color 0 0 0 0) (uuid "x"))'
+    assert ("R4", "1") not in tee("none", None)
+    assert ("R4", "1") in tee("origin", plain.format("(at 0 0)"))
+    assert ("R4", "1") in tee("noat", plain.format(""))
+
+
+def _erc_points(path) -> set[tuple[int, int]]:
+    """Where kicad-cli's ERC puts its violations, in internal units (its JSON gives them in
+    mm divided by 100)."""
+    return {
+        (round(item["pos"]["x"] * 1e6), round(item["pos"]["y"] * 1e6))
+        for sheet in run_erc(path)["sheets"]
+        for violation in sheet["violations"]
+        for item in violation["items"]
+    }
+
+
+@requires_cli
+def test_kicad_reads_a_bus_entry_with_no_at_at_the_origin(tmp_path):
+    """kicad-cli's ERC marks a lone bus entry where the entry is: one written with no (at)
+    is marked where one at (0 0) is, and not where one at (12.7 12.7) is."""
+
+    def marked(name, at):
+        p = fresh(tmp_path, name)
+        splice(p, _NO_AT["bus_entry"].replace("(size", f"{at}(size", 1))
+        return _erc_points(p)
+
+    origin = marked("origin", "(at 0 0) ")
+    assert origin and origin == marked("noat", "")
+    assert origin != marked("elsewhere", "(at 12.7 12.7) ")
+
+
+def test_the_check_reads_a_flag_with_no_at_at_the_origin(tmp_path):
+    """Q1 at (5.08, 2.54), 90 with a mirror x: the point 0.20.1 gave its pin 3 is the origin
+    (OLD), where KiCad draws no pin. A no-connect written with no (at) is there, so the check
+    reports it, at (0, 0)."""
+    p = fresh(tmp_path, "origin_flag")
+    place(p, "Q_NPN_BCE", "Q1", 5.08, 2.54, rot=90, mirror="x")
+    splice(p, _NO_AT["no_connect"])
+    (issue,) = _new_issues(p)
+    x, y, _out = ORIENTED["Q_NPN_BCE"][(90, "x")][2]
+    assert _key(issue) == ("no_connect_off_pin", "Q1", "3", (0, 0), _at((5.08, 2.54), (x, y)))
+
+
+@pytest.mark.parametrize(
+    "kind", ["junction", "label", "global_label", "hierarchical_label", "bus_entry"]
+)
+def test_a_wire_end_at_the_origin_meets_an_item_with_no_at(tmp_path, kind):
+    """A stub from Q1:3's old point, the origin, is reported; once an item written with no
+    (at) is there the wire end meets it, as it meets an item written at (0 0), and is not."""
+    p = fresh(tmp_path, "origin_wire")
+    place(p, "Q_NPN_BCE", "Q1", 5.08, 2.54, rot=90, mirror="x")
+    wire(p, 0, 0, 2.54, 0)
+    label(p, "C", 2.54, 0)
+    assert [i["type"] for i in _new_issues(p)] == ["wire_end_off_pin"]
+    splice(p, _NO_AT[kind])
     assert _new_issues(p) == []
 
 
