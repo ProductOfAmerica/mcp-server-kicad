@@ -411,7 +411,7 @@ app through Controlled folder access.
 
 | Tool | Description |
 |------|-------------|
-| `is_root_schematic` | Check whether a schematic is its project's root or one of its sheets, wherever the sheet file sits; a file no sheet uses is a root |
+| `is_root_schematic` | Check whether a schematic is its project's root or one of its sheets, including a sheet in a folder below the project's; a file no sheet uses is a root |
 | `list_hierarchy` | List the full sheet hierarchy tree from root |
 | `get_sheet_info` | Get sheet details with pin and label matching status |
 | `validate_hierarchy` | Check every sheet for orphaned labels and pins, direction mismatches, duplicate refs, junctions and bus entry ends left inside wires, and no-connect flags and wire ends left off the pins of mirrored, rotated parts, with the call that repairs each where a tool can |

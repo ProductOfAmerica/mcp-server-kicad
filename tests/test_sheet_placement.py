@@ -221,6 +221,22 @@ class TestKicadsLoadRule:
         )
         assert _connectivity.place(tmp_path / "c.kicad_sch").instances == (("u-a", "u-b", "u-c"),)
 
+    def test_a_sheet_many_folders_below_its_project_finds_it(self, tmp_path):
+        """Five folders below the project, past the three levels the reference rules search."""
+        _project(
+            tmp_path,
+            {
+                "p.kicad_sch": _sch(("u1", "a/x.kicad_sch")),
+                "a/x.kicad_sch": _sch(("u2", "b/y.kicad_sch")),
+                "a/b/y.kicad_sch": _sch(("u3", "c/z.kicad_sch")),
+                "a/b/c/z.kicad_sch": _sch(("u4", "d/w.kicad_sch")),
+                "a/b/c/d/w.kicad_sch": _sch(("u5", "e/leaf.kicad_sch")),
+                "a/b/c/d/e/leaf.kicad_sch": _sch(),
+            },
+        )
+        placed = _connectivity.place(tmp_path / "a" / "b" / "c" / "d" / "e" / "leaf.kicad_sch")
+        assert (placed.kind, placed.instances) == ("sheet", (("u1", "u2", "u3", "u4", "u5"),))
+
     def test_a_file_used_by_two_blocks_is_placed_at_each(self, tmp_path):
         _project(
             tmp_path,

@@ -1042,11 +1042,11 @@ class Hierarchy:
     error: Refusal | None = None
 
 
-def _project_roots(path: Path) -> list[Path]:
+def _project_roots(path: Path, levels: int = _PROJECT_LEVELS) -> list[Path]:
     """Root schematics that may own this sheet, nearest first: the .kicad_sch named after the
-    only .kicad_pro in its directory, then in each of the _PROJECT_LEVELS directories above."""
+    only .kicad_pro in its directory, then in each of the *levels* directories above."""
     out, d = [], path.parent
-    for _ in range(_PROJECT_LEVELS + 1):
+    for _ in range(levels + 1):
         pros = list(d.glob("*.kicad_pro"))
         if len(pros) == 1 and pros[0].with_suffix(".kicad_sch").is_file():
             out.append(pros[0].with_suffix(".kicad_sch"))
@@ -1266,13 +1266,18 @@ def _instances(root: Path, target: Path) -> tuple[list[tuple[str, ...]], list[st
 def place(path: str | Path, root: str | Path | None = None) -> Placement:
     """Where the schematic at *path* sits in its project.
 
-    The project is *root*'s when that root schematic is given; otherwise the nearest one found
-    from the file's folder upwards (_project_roots) whose hierarchy uses the file. Raises
-    ToolError when the answer cannot be told: a hierarchy of more than _MAX_INSTANCES sheet
-    instances, or a sheet file that could not be read stopped the walk before it reached the file.
+    The project is *root*'s when that root schematic is given; otherwise the nearest one, in
+    the file's folder or any folder above it (_project_roots), whose hierarchy uses the file.
+    Raises ToolError when the answer cannot be told: a hierarchy of more than _MAX_INSTANCES
+    sheet instances, or a sheet file that could not be read stopped the walk before it reached
+    the file.
     """
     target = Path(os.path.abspath(path))
-    roots = [Path(os.path.abspath(root))] if root is not None else _project_roots(target)
+    roots = (
+        [Path(os.path.abspath(root))]
+        if root is not None
+        else _project_roots(target, len(target.parents))
+    )
     unread: list[str] = []
     for candidate in roots:
         if _real(candidate) == _real(target):
