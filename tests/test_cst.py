@@ -1145,14 +1145,35 @@ class TestSymbolFamilyPreservation:
         """R1 at an angle KiCad's parser refuses and float() reads as a quarter turn (bug 70),
         turned in place or moved with that quarter turn as the rotation: the rotation is
         written as KiCad writes it, so kicad-cli loads the sheet and KiCad reads R1 at the
-        target and that angle."""
+        target and that angle. The edit is exactly R1's angle, its x and y where it moves,
+        and each property's x and y moved by R1's own displacement: KiCad reads no frame in
+        the old file (expected_move_changes needs one), so the fields keep the places the
+        file gives them, as test_unloadable_angle_is_repaired_by_a_rotation states."""
         path = _r1_variant(tmp_path, "bug70.kicad_sch", f"(at 100 100 {angle}) (unit 1)".encode())
         _require_unloadable(path)
+        before = path.read_bytes()
+        written = _written_fields(before, "R1")
         schematic.move_component("R1", *to, rotation=rotation, schematic_path=str(path))
+        after = path.read_bytes()
         if HAS_KICAD_CLI:
             assert_kicad_parseable(path)
-        _, new = S.placed_symbol(path.read_bytes(), "R1")
+        location, new = S.placed_symbol(after, "R1")
         assert (new.position, new.transform) == (target, turned((0, ""), rotation))
+        dx, dy = target[0] - 1_000_000, target[1] - 1_000_000
+        moved = {name: (x + dx, y + dy, a) for name, ((x, y), a) in written.items()}
+        assert {n: (*f.written, f.angle) for n, f in new.fields.items()} == moved
+        item = J.item_at(before, location)
+        at_index, _ = _last_at(item)
+        want = []
+        for index, child in enumerate(item.items):
+            if index == at_index:
+                at_path = location + ((index, "at"),)
+                want += [(at_path, k) for k in (1, 2) if (dx, dy) != (0, 0)] + [(at_path, 3)]
+            elif child.head == "property" and (dx, dy) != (0, 0):
+                at, _ = _last_at(child)
+                want += [(location + ((index, "property"), (at, "at")), k) for k in (1, 2)]
+        got = J.atom_changes(before, after)
+        assert [(c.path, c.index) for c in got] == want, [(c.path[-1], c.index) for c in got]
 
     def test_unloadable_angle_remedy_names_a_repair_that_works(self, tmp_path):
         """A pin read of R1 at angle 45 refuses [unloadable]. KiCad cannot open the sheet,
