@@ -2618,10 +2618,9 @@ def contact_changes(m: Model, node, before: Frame, after: Frame) -> list[Contact
     frame ``before`` to frame ``after``, in pad order.
 
     ``m`` is the model of the sheet before the edit. A pin's contacts are the items with a
-    connection point exactly at its end, its own symbol's pins left out: KiCad groups items by
-    exact connection point (CONNECTION_GRAPH::updateItemConnectivity,
-    connection_graph.cpp:1147-1395 at 9.0.8, 1361-1542 at 10.0.7), a wire by its two ends. A pin
-    end on a wire's interior is not a contact; KiCad joins it to nothing without a junction.
+    connection point exactly at its end (a wire has its two ends), the moved symbol's own pins
+    left out because they travel with it; a pin end on a wire's interior is no contact.
+    test_new_sch_tools.py::TestMoveComponent checks the pins named against kicad-cli's netlist.
     """
     m.ensure()
     own = [it for it in m.items if it.kind == "pin" and it.sym is not None and it.sym.node is node]

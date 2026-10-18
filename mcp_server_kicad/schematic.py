@@ -2331,11 +2331,11 @@ def move_component(
             " 90, 180 or 270 to repair it; its fields then keep the places the file gives"
             " them. The file was not changed."
         )
-    # In place when the call names the symbol's own position as KiCad reads it: KiCad turns a
-    # single symbol about its own position (sch_edit_tool.cpp:814 at 9.0.8, 1009 at 10.0.7).
-    # Nothing then moves, so the page does not bound the call, and a symbol KiCad loads off the
-    # page can still be turned, or have its angle repaired. A call that moves the symbol is
-    # snapped to the grid first, and the page bounds the grid point that is written.
+    # In place when the call names the symbol's own position: KiCad turns a single symbol about
+    # its own position (sch_edit_tool.cpp:814 at 9.0.8, 1009 at 10.0.7). Nothing then moves, so
+    # the page does not bound the call, and a symbol placed off the page can still be turned or
+    # have its angle repaired. A call that moves the symbol is snapped to the grid first, and
+    # the page bounds the grid point that is written.
     if _is_here(x, y, s0):
         s1 = s0
     else:
@@ -2430,13 +2430,13 @@ _REPORT_CAP = 10
 
 
 def _mm_iu(value: float) -> int:
-    """A coordinate given in mm, in internal units as KiCad reads it."""
+    """A coordinate given in mm, in internal units: ``kiround`` of the mm times 10,000."""
     return _connectivity.kiround(value * _connectivity.IU_PER_MM)
 
 
 def _is_here(x: float, y: float, here: Point) -> bool:
-    """Whether (x, y) in mm is the internal-unit position ``here`` as KiCad reads the text.
-    False for a value no position holds: nan, or one past what internal units can count."""
+    """Whether (x, y) in mm is the internal-unit position ``here``. False for a value no
+    position holds: nan, or one past what internal units can count."""
     try:
         return (_mm_iu(x), _mm_iu(y)) == here
     except (ValueError, OverflowError):
@@ -2445,16 +2445,11 @@ def _is_here(x: float, y: float, here: Point) -> bool:
 
 def _sym_iu(text: str, reference: str) -> int:
     """A coordinate atom of ``reference`` in internal units; a ToolError naming the token when
-    this tool cannot read it as a position, before anything is written.
+    ``iu`` cannot read it (a word, inf, nan, or a number too large to scale to internal
+    units), before anything is written.
 
-    That is a limit of the tool's, not always of KiCad's. KiCad's parser refuses a word, inf,
-    nan and a number past a double's range (parseDouble), and cannot load the sheet. It reads
-    any other number, clamping a coordinate past INT_MAX * 0.7071 internal units (about
-    151849 mm) to that (parseInternalUnits, sch_io_kicad_sexpr_parser.cpp:618-638 at 9.0.8,
-    676-696 at 10.0.7), so it loads a sheet that holds 1e308 as a coordinate. ``iu`` does not
-    clamp (_shared.kiround): it raises on a number whose product with 10,000 is infinity (about
-    1.8e304 mm and up, 1e308 among them), and reads one between the clamp and that point as
-    written, not as KiCad does.
+    ``iu`` does not clamp, so 1e308 is refused though kicad-cli loads a sheet holding it: bug
+    69, held by test_a_symbol_at_a_coordinate_kicad_clamps_is_moved.
     """
     try:
         return _connectivity.iu(text)
