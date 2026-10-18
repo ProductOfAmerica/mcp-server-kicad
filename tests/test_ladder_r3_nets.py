@@ -817,13 +817,10 @@ def _zone_net_in_pcbnew(board: Path, uuid: str) -> tuple[list, list]:
 
 
 def test_k9_orphaned_zone_reads_on_no_net_in_pcbnew(tmp_path):
-    """The same update, judged by pcbnew 9 reading the result: the zone is on no net (name "")
-    and the board has no /SIG net; before the update it is on /SIG. Skipped on pcbnew 10,
-    which reads a KiCad 9 zone by the number when its legacy name is empty: this is pcbnew 9's
-    rule (the module docstring of tests/test_ladder_r3_judges.py keeps the same line)."""
+    """The same update, judged by the pcbnew this machine has, 9 or 10, reading the result: the
+    zone is on no net (name "") and the board has no /SIG net; before the update it is on /SIG
+    (the premise, RuntimeError otherwise)."""
     _need_pcbnew()
-    if PJ.major() >= 10:
-        pytest.skip("pcbnew 10 reads a KiCad 9 board through its legacy rules; this is pcbnew 9's")
     board = _zone_board(tmp_path, _zone("/SIG", net_name=True, version="k9", rows=_ROWS))
     uuid = _uuid_of(J.item_at(board.read_bytes(), _the(board.read_bytes(), "kicad_pcb", "zone")))
     zone_net, nets = _zone_net_in_pcbnew(board, uuid)
@@ -831,8 +828,8 @@ def test_k9_orphaned_zone_reads_on_no_net_in_pcbnew(tmp_path):
         raise RuntimeError(f"the premise fails: pcbnew reads the zone on {zone_net} before it")
     _update_without_sig(board)
     zone_net, nets = _zone_net_in_pcbnew(board, uuid)
-    assert zone_net[1] == "", f"the zone is still on {zone_net} in pcbnew 9"
-    assert "/SIG" not in [name for _, name in nets], f"pcbnew 9 recreated /SIG: {nets}"
+    assert zone_net[1] == "", f"the zone is still on {zone_net} in pcbnew"
+    assert "/SIG" not in [name for _, name in nets], f"pcbnew recreated /SIG: {nets}"
 
 
 def test_a_zone_left_with_a_stale_net_name_is_orphaned(tmp_path):
@@ -923,15 +920,13 @@ def test_a_copper_shape_on_a_net_that_left_goes_to_no_net(tmp_path, version):
 
 
 def test_a_copper_shape_on_a_net_that_left_reads_on_no_net_in_pcbnew(tmp_path):
-    """The KiCad 9 half of the test above, judged by pcbnew 9: the shape reads on /SIG before
+    """The KiCad 9 half of the test above, judged by pcbnew: the shape reads on /SIG before
     the update (the premise, RuntimeError otherwise) and on no net after it, with no /SIG net
-    in the board. Skipped on pcbnew 10, as the zone's test is. It reads on no net today too, by
-    accident: the shape keeps (net 3) after the row is pruned, a number past the table, which
-    pcbnew logs as an invalid net ID and reads on none (measured 2026-10-17),
-    so this guards the reading the fix must keep and the test above judges the number."""
+    in the board. It reads on no net today too, by accident: the shape keeps (net 3) after the
+    row is pruned, a number past the table, which pcbnew 9 logs as an invalid net ID and reads
+    on none (measured 2026-10-17), so this guards the reading the fix must keep and the test
+    above judges the number."""
     _need_pcbnew()
-    if PJ.major() >= 10:
-        pytest.skip("pcbnew 10 reads a KiCad 9 board through its legacy rules; this is pcbnew 9's")
     board = _board(
         tmp_path,
         [_u1(_PAD_NETS, version="k9", rows=_ROWS), _shape("/SIG", version="k9", rows=_ROWS)],
@@ -944,7 +939,7 @@ def test_a_copper_shape_on_a_net_that_left_reads_on_no_net_in_pcbnew(tmp_path):
         raise RuntimeError(f"the premise fails: pcbnew reads the shape on {read['items'][uuid]}")
     _apply(board, _PAD_NETS)
     read = _pcbnew_nets(board)
-    assert read["items"][uuid][1] == "", f"the shape is on {read['items'][uuid]} in pcbnew 9"
+    assert read["items"][uuid][1] == "", f"the shape is on {read['items'][uuid]} in pcbnew"
     assert "/SIG" not in [name for _, name in read["nets"]], read["nets"]
 
 

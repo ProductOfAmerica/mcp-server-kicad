@@ -802,12 +802,11 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   Gates: `tests/test_ladder_r3_nets.py`,
   `test_output_validity.py`, `test_netlist_import.py` (N9 and N9b: an upgraded KiCad 10 board) and the
   swap file's board only and zone tests, on KiCad 9 locally and in CI on the Linux 9.0 and 10.0 legs,
-  macOS and Windows. The KiCad 10 halves were source reading until the legs ran: the tests commit ran on
-  the Linux 10.0, macOS and Windows legs before the fix (pcbnew 10 wrote the no-net harvest of N8 without
-  an API difference), and the fix commit passed there after. The review fixes after it are in the same
-  state: the pcbnew 10 halves of their tests (the nets a kept footprint holds, a KiCad 10 board's bare
-  numbers read by load order, and the update's reading of one, with and without a swap) are source
-  reading until those legs run them.
+  macOS and Windows. The legs have run the pcbnew 10 halves: on 4103915 one test failed there, the zone
+  of the bare-number test, whose pcbnew 10 reading differed from the one the tools gave. The zone rule
+  above is judged there by that test, by the test of the order a zone lists its net and layers in, by
+  the updates' reading of a zone numbered for a net that left, and by the KiCad 9 zone and shape checks,
+  which no longer skip on pcbnew 10.
 - 2026-10-17: the CST reads KiCad's tokens and escapes, the writers write the numbers KiCad holds,
   and names reach the file through set_text (step 11, #114, bugs 4, 28, 29, 59, 61, 64, 65, 66, 67
   and 86). It supersedes the codec and malformed-input bullets of ADR-1, which state the contract
