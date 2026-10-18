@@ -711,6 +711,32 @@ def test_k9_nets_read_by_pcbnew(tmp_path, case):
     assert not accepted, f"add_trace wrote the numbers {accepted}, which name no net in pcbnew"
 
 
+@pytest.mark.parametrize("tool", ["add_trace", "add_via", "add_copper_zone", "add_thermal_vias"])
+def test_a_k9_board_with_no_table_refuses_a_listed_net_and_says_why(tmp_path, tool):
+    """The board of the [k9] case of test_a_bare_net_number_binds_as_the_kicad_that_loads_the_
+    format_binds_it: KiCad 9's format with no net table at all, not even net 0, U1's pads on /B
+    and /A. list_pcb_nets numbers those names 1 and 2, but on this board a number names a net
+    only through a row (the rule above), so each tool asked for /B, by its number, by its name
+    or through U1's pad 1, refuses, leaves the board as it was, and says the board holds no net
+    table. The refusal said only that no net had the number and that the board's nets were
+    none, though list_pcb_nets had just offered it."""
+    board = _numbered_board(tmp_path, "k9")
+    listed = [(item.number, item.name) for item in pcb.list_pcb_nets(str(board))]
+    if listed != [(1, "/B"), (2, "/A")]:
+        raise RuntimeError(f"the premise fails: list_pcb_nets gives {listed}")
+    before = board.read_bytes()
+    corners: list[PointSpec] = [{"x": 10, "y": 10}, {"x": 40, "y": 10}, {"x": 40, "y": 40}]
+    with pytest.raises(ToolError) as refused:
+        if tool == "add_copper_zone":
+            pcb.add_copper_zone("/B", "F.Cu", corners, pcb_path=str(board))
+        elif tool == "add_thermal_vias":
+            pcb.add_thermal_vias("U1", pad_number="1", rows=1, cols=1, pcb_path=str(board))
+        else:
+            _place(tool, 1, board)
+    assert board.read_bytes() == before, f"{tool} refused and changed the board"
+    assert "no net table" in str(refused.value), str(refused.value)
+
+
 # ---------------------------------------------------------------------------
 # a net is written in the board's dialect
 # ---------------------------------------------------------------------------

@@ -602,6 +602,13 @@ def _set_item_net(node, root, net: int, version: int | None = None) -> None:
     name = ""
     if net != 0:
         nets = _net_rows(root) if numeric else _net_table(root)
+        if numeric and not nets:
+            raise ToolError(
+                f"Net {net} not found: this board declares no net table, and in its format"
+                " (KiCad 9's or older) a number names a net only through a row of one, so"
+                " only 0, no net, can be written. update_pcb_from_schematic declares the"
+                " nets the schematic uses. Nothing was written."
+            )
         names = _by_number(nets)
         if net not in names:
             raise _unknown_net(net, nets)
@@ -3147,9 +3154,10 @@ def add_trace(
         width: Trace width in mm
         layer: Copper layer (e.g. "F.Cu", "B.Cu")
         net: A net number from list_pcb_nets, or 0 for no net. Any other number is refused
-            and nothing is written. A KiCad 10 board holds nets by name and its numbers are
-            derived from where each net first appears, so read list_pcb_nets again after
-            an edit.
+            and nothing is written, and so is every number but 0 on a board in KiCad 9's
+            format or older that has no net table. A KiCad 10 board holds nets by name and
+            its numbers are derived from where each net first appears, so read
+            list_pcb_nets again after an edit.
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
     x1, y1, x2, y2, width = (_snap(v, PCB_IU_PER_MM) for v in (x1, y1, x2, y2, width))
@@ -3189,9 +3197,10 @@ def add_via(
         size: Via pad size in mm
         drill: Drill diameter in mm
         net: A net number from list_pcb_nets, or 0 for no net. Any other number is refused
-            and nothing is written. A KiCad 10 board holds nets by name and its numbers are
-            derived from where each net first appears, so read list_pcb_nets again after
-            an edit.
+            and nothing is written, and so is every number but 0 on a board in KiCad 9's
+            format or older that has no net table. A KiCad 10 board holds nets by name and
+            its numbers are derived from where each net first appears, so read
+            list_pcb_nets again after an edit.
         layers: Via layers (default: ["F.Cu", "B.Cu"])
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
     """
