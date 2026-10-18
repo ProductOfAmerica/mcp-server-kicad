@@ -232,7 +232,7 @@ _COMMENTED = [
 
 @requires_cli
 def test_a_jobset_with_a_byte_order_mark_still_runs(tmp_path):
-    """kicad-cli reads a UTF-8 jobset with a byte order mark and leaves it as it is."""
+    """kicad-cli reads a UTF-8 jobset with a byte order mark."""
     directory = _project(tmp_path)
     reports = tmp_path / "reports"
     jobset = _jobset(directory / "jp.kicad_jobset", [_erc_job()], [_folder(str(reports))])
@@ -269,8 +269,8 @@ def test_a_jobset_with_comments_runs_because_kicad_cli_reads_it(tmp_path, commen
 @pytest.mark.parametrize("content", _UNREADABLE)
 def test_a_jobset_kicad_cli_cannot_read_is_an_error_and_left_as_it_is(tmp_path, content):
     """kicad-cli answers a jobset it cannot parse by replacing it with an empty jobset, or by
-    deleting it, and exits 0 either way (a premise, measured here on a copy). The tool gives
-    it a copy, so the jobset is what it was, and says that nothing ran."""
+    deleting it (a premise, measured here on a copy). The tool gives it a copy, so the jobset
+    is what it was, and says that nothing ran."""
     directory = _project(tmp_path)
     jobset = directory / "broken.kicad_jobset"
     jobset.write_bytes(content)

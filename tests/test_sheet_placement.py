@@ -200,8 +200,9 @@ _TWO_TOP_LEVEL = {
     "second.kicad_sch": _sch(("u-s", "sub.kicad_sch")),
     "sub.kicad_sch": _sch(),
 }
-#: schematic.top_level_sheets as KiCad 10.0.6 writes it, one entry per top-level sheet
-#: (demos/pic_programmer/pic_programmer.kicad_pro), with this project's two
+#: schematic.top_level_sheets in the form KiCad 10.0.6 writes it, a filename, a name and a uuid
+#: for each top-level sheet (demos/pic_programmer/pic_programmer.kicad_pro), with this
+#: project's two
 _TOP_LEVEL_SHEETS = [
     {"filename": "p.kicad_sch", "name": "p", "uuid": "2e45d1d2-c73f-46e5-98d6-3a9dc360bff5"},
     {
@@ -309,8 +310,8 @@ class TestWhatCannotBeTold:
     @pytest.mark.kicad_placeholder(*_ABOVE)
     def test_an_unreadable_sheet_of_a_project_above_does_not_claim_the_file(self, tmp_path):
         """broken.kicad_sch may or may not name the file, and the file is not beside p's
-        project. KiCad opens a schematic on its own project, so the file is a root of its
-        own, and no project is said to have been read through and found not to use it."""
+        project, so the file is a root of its own, and no project is said to have been read
+        through and found not to use it."""
         _project(tmp_path, _ABOVE)
         placed = _connectivity.place(tmp_path / "experiments" / "other.kicad_sch")
         assert placed == _connectivity.Placement("root")
@@ -332,10 +333,9 @@ class TestWhatCannotBeTold:
 
 
 class TestTopLevelSheets:
-    """A KiCad 10 project lists its top-level sheets in its .kicad_pro, and a sheet below any of
-    them is a sheet of the project (EESCHEMA_HELPERS::LoadSchematic, eeschema/eeschema_helpers.cpp:
-    141-177 at 10.0.7). The list is written as KiCad 10.0.6 writes it in
-    demos/pic_programmer/pic_programmer.kicad_pro."""
+    """place() takes each top-level sheet that a project's .kicad_pro lists as a root of the
+    project, so a sheet below any of them is a sheet of it. The list is in the form KiCad
+    10.0.6 writes it (demos/pic_programmer/pic_programmer.kicad_pro)."""
 
     def _two(self, folder: Path, declared) -> None:
         _project(folder, _TWO_TOP_LEVEL)
@@ -369,8 +369,8 @@ class TestTopLevelSheets:
 
     @pytest.mark.kicad_placeholder(*_TWO_TOP_LEVEL)
     def test_a_project_that_lists_none_has_only_its_own_root(self, tmp_path):
-        """KiCad 9 projects have no list; the sheet below second.kicad_sch is then used by
-        no sheet of p."""
+        """With no list, p.kicad_sch is the project's only root, and the sheet below
+        second.kicad_sch is used by no sheet of p."""
         _project(tmp_path, _TWO_TOP_LEVEL)
         assert _connectivity.place(tmp_path / "sub.kicad_sch").kind == "unused"
 

@@ -1269,9 +1269,8 @@ def _top_level_sheets(root: Path) -> list[Path]:
     """*root*, then the other top-level sheets its project lists.
 
     A KiCad 10 project lists them under schematic.top_level_sheets in its .kicad_pro, each file
-    resolved against the project's folder, and loads the hierarchy of each as a top level of
-    the one schematic (EESCHEMA_HELPERS::LoadSchematic, eeschema_helpers.cpp:141-177 at 10.0.7).
-    A project file that is missing, is not JSON or lists none adds nothing.
+    resolved against the project's folder (eeschema_helpers.cpp:153 at 10.0.7). A project file
+    that is missing, is not JSON or lists none adds nothing.
     """
     try:
         listed = json.loads(root.with_suffix(".kicad_pro").read_bytes())["schematic"][
@@ -1300,7 +1299,7 @@ def place(path: str | Path, root: str | Path | None = None) -> Placement:
     sheet instances, or a sheet file that could not be read stopped a walk before it reached
     the file, in the project that was named or the one in the file's own folder. A project
     further up that cannot be read through is no evidence about a file that no readable sheet
-    names, which KiCad opens on its own project, so it leaves the file a root of no project.
+    names, so it leaves the file a root of no project.
     """
     target = Path(os.path.abspath(path))
     roots = (

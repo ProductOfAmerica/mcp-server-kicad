@@ -239,10 +239,10 @@ def _top_level_project(tmp_path: Path) -> tuple[Path, Path, Path]:
 
 @requires_cli
 def test_a_sheet_below_a_second_top_level_sheet_is_checked_from_that_sheet(tmp_path):
-    """KiCad 10 lists a project's top-level sheets in its .kicad_pro, and a sheet below the
-    second of them is a sheet of the project: it was reported a root and checked on its own.
-    It is checked from the top-level sheet that holds it, and only its own violations come
-    back. The judge is kicad-cli's ERC and netlist of that top-level sheet."""
+    """The .kicad_pro lists two top-level sheets, as KiCad 10 writes it. A sheet below the
+    second was reported a root and checked on its own; it is checked from the second, and
+    only its own violations come back. The judge is kicad-cli's ERC and netlist of the
+    second."""
     _, second, sub = _top_level_project(tmp_path)
     judged = erc_oracle.Project(second)
     want = judged.own(sub)
