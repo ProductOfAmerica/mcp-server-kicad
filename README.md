@@ -431,7 +431,7 @@ app through Controlled folder access.
 | `annotate_schematic` | Auto-assign reference designators, respecting hierarchy |
 | `export_hierarchical_netlist` | Export a netlist with hierarchy info (requires `kicad-cli`) |
 | `flatten_hierarchy` | Flatten a hierarchical schematic into a single sheet |
-| `run_jobset` | Run a KiCad jobset file |
+| `run_jobset` | Run a KiCad jobset against the project beside it; an error when nothing ran or a job failed |
 | `get_version` | Get KiCad version information |
 
 </details>

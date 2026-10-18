@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import Counter
 from pathlib import Path
 
@@ -1922,19 +1923,60 @@ def export_hierarchical_netlist(
         raise ToolError(f"Failed to parse netlist at {output_path}: {e}") from e
 
 
+# kicad-cli prints this line once for each output it runs, as literals that no locale
+# changes (kicad/jobs_runner.cpp:324-328 at 9.0.8), and colours it.
+_JOBSET_COUNTS = re.compile(r"(\d+) jobs succeeded, (\d+) job failed")
+_ANSI_COLOUR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _project_beside(jobset: Path) -> Path:
+    """The one .kicad_pro in the jobset's own folder, else a ToolError saying why not."""
+    found = sorted(jobset.parent.glob("*.kicad_pro"))
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        raise ToolError(
+            f"No .kicad_pro beside {jobset.name} in {jobset.parent}. run_jobset runs a jobset"
+            " against the one project file in the jobset's own folder."
+        )
+    names = ", ".join(p.name for p in found)
+    raise ToolError(
+        f"{len(found)} .kicad_pro files beside {jobset.name} in {jobset.parent} ({names}),"
+        " and run_jobset needs exactly one to know which project the jobset runs against."
+    )
+
+
 @mcp.tool(annotations=_EXPORT)
 def run_jobset(jobset_path: str) -> str:
-    """Run a KiCad jobset file.
+    """Run a KiCad jobset file: every output it defines.
+
+    The jobset runs against the one .kicad_pro in its own folder, and a relative
+    output folder in it is relative to that folder. It is an error when nothing
+    ran or a job failed, and the error carries the counts kicad-cli reported.
 
     Args:
         jobset_path: Path to .kicad_jobset file
     """
-    _require_kicad_path(jobset_path, "jobset")
-    try:
-        result = _run_cli(["jobset", "run", jobset_path])
-        return f"Jobset completed successfully.\n{result.stdout}"
-    except (RuntimeError, FileNotFoundError) as e:
-        raise ToolError(f"Jobset failed: {e}") from e
+    jobset = Path(os.path.abspath(_require_kicad_path(jobset_path, "jobset")))
+    pro = _project_beside(jobset)
+    result = _run_cli(
+        ["jobset", "run", "--file", str(jobset), str(pro)], check=False, cwd=str(pro.parent)
+    )
+    stdout = _ANSI_COLOUR.sub("", result.stdout)
+    counts = _JOBSET_COUNTS.findall(stdout)
+    reported = "; ".join(f"{done} jobs succeeded, {failed} job failed" for done, failed in counts)
+    if result.returncode != 0 or any(int(failed) for _, failed in counts):
+        detail = f" {result.stderr.strip()}" if result.stderr.strip() else ""
+        raise ToolError(
+            f"Jobset {jobset.name} failed: kicad-cli exit code {result.returncode},"
+            f" {reported or 'no job counts'}.{detail}"
+        )
+    if not any(int(done) for done, _ in counts):
+        raise ToolError(
+            f"Jobset {jobset.name} ran nothing: kicad-cli reported {reported or 'no job counts'}."
+            " A jobset with no outputs, or a file that is not a jobset, runs nothing."
+        )
+    return f"Jobset completed successfully.\n{stdout}"
 
 
 @mcp.tool(annotations=_READ_ONLY)
