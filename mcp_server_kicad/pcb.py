@@ -5287,14 +5287,15 @@ def export_ipc2581(
 
     Args:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
-        output: Output file path
+        output: Output file path. Optional; omit to write <board name>.xml to the
+            configured output directory, or beside the board when none is configured.
         precision: Numeric precision (default: 3)
         compress: Compress output file
         version: IPC-2581 version (default: "C")
         units: Output units - "mm" or "in"
     """
     _require_kicad_path(pcb_path, "board")
-    out = output or str(Path(OUTPUT_DIR) / (Path(pcb_path).stem + ".xml"))
+    out = output or str(Path(OUTPUT_DIR or Path(pcb_path).parent) / (Path(pcb_path).stem + ".xml"))
     args = ["pcb", "export", "ipc2581", pcb_path, "-o", out]
     if precision != 3:
         args += ["--precision", str(precision)]
