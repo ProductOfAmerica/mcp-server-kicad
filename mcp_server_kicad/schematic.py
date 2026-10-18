@@ -1533,7 +1533,7 @@ def _left_at(model, root, at: Point, pins: list, path: str) -> list[dict]:
             it
             for it in here
             if it is not w
-            and it.kind != "nc"
+            and it.kind not in ("nc", "bus")
             and not (
                 it.kind == "label"
                 and it.sub == "label"

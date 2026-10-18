@@ -44,8 +44,21 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import dsn_lexer as L
 from kicad_ref import transform as T
+from mcp.server.mcpserver.exceptions import ToolError
 from netlist_oracle import bare_name, judge, nets
-from routing_fixtures import ORIENTED, fresh, junction, label, no_connect, place, splice, wire
+from routing_fixtures import (
+    ORIENTED,
+    bus,
+    bus_entry,
+    fresh,
+    junction,
+    label,
+    no_connect,
+    place,
+    polyline,
+    splice,
+    wire,
+)
 
 from mcp_server_kicad import project, schematic
 
@@ -340,6 +353,37 @@ def test_kicad_draws_no_pin_where_the_report_points(tmp_path):
     for call in two:
         other = {"1": "2", "2": "1"}[call.pin]
         assert drawn[call.old] == {(call.ref, other)}, (call, drawn[call.old])
+
+
+@requires_cli
+def test_kicad_erc_marks_the_flags_and_stubs_the_report_lists_and_no_route(tmp_path):
+    """kicad-cli's ERC on the 0.20.1 sheet: no_connect_dangling at each of the four flags the
+    report lists, unconnected_wire_endpoint on each of the four stubs it lists (ERC places a
+    wire at its start) and on nothing else, so on no route: the Net-(REF-PIN) label
+    connect_pins wrote sits on each route's first end. The report lists the routes too."""
+    p = _copy_fixture(tmp_path)
+    by_key = {_key(i): i for i in _new_issues(p)}
+    report = run_erc(p)
+
+    def listed(kind):
+        return {
+            (round(item["pos"]["x"] * 1e6), round(item["pos"]["y"] * 1e6))
+            for sheet in report["sheets"]
+            for violation in sheet["violations"]
+            if violation["type"] == kind
+            for item in violation["items"]
+        }
+
+    flags = {call.old for call in _STRAYED if call.tool == "no_connect_pin"}
+    stubs = {
+        S.iu_point((w["x1"], w["y1"]))
+        for call in _STRAYED
+        if call.tool == "wire_pins_to_net"
+        for w in [by_key[_expected(call)]["wire"]]
+    }
+    assert listed("no_connect_dangling") == flags
+    assert listed("unconnected_wire_endpoint") == stubs
+    assert len(flags) == len(stubs) == 4
 
 
 def _delete_flag(path, at) -> None:
@@ -678,28 +722,78 @@ def _named(p, at: tuple[float, float]) -> None:
     label(p, "OTHER", *at)
 
 
-@pytest.mark.parametrize(
-    "build",
-    [
-        pytest.param(_corner, id="a_corner"),
-        pytest.param(_tee, id="a_tee_as_kicad_saves_it"),
-        pytest.param(_named, id="a_label_of_another_name"),
-    ],
-)
-def test_a_wire_end_that_meets_something_else_there_is_not_reported(tmp_path, build):
-    """A stub whose end dangles at an old point no pin occupies is reported; once that end
-    meets something else there it is not: a second wire's end (a corner), KiCad's T (three
-    wire ends and a junction), a label. By KiCad's rule none of those ends dangles then
-    (SCH_LINE::UpdateDanglingState, sch_line.cpp:596-640 at 9.0.8: another item's end point
-    there). KiCad's own files agree: in its 9.0.8 demos, of the 6,002 points where a pin's
-    end reflected through its symbol's origin finds no pin, whatever the symbol's state, 27
-    hold wire ends, 77 in all, every one meeting another wire's end, a junction or a label
-    and none dangling (measured 2026-10-16)."""
+def _junction_dot(p, at: tuple[float, float]) -> None:
+    junction(p, *at)
+
+
+def _bus_end(p, at: tuple[float, float]) -> None:
+    bus(p, *at, at[0], at[1] + 2.54)
+
+
+def _graphic_line(p, at: tuple[float, float]) -> None:
+    polyline(p, *at, at[0], at[1] + 2.54)
+
+
+def _bus_entry_end(p, at: tuple[float, float]) -> None:
+    bus_entry(p, *at, 2.54, 2.54)
+
+
+#: What else may end at a stub's end at an old point no pin occupies, and whether that end then
+#: dangles: only an end of another item that is not a bus's clears it.
+_NEIGHBOURS = [
+    pytest.param(None, True, id="nothing"),
+    pytest.param(_corner, False, id="a_corner"),
+    pytest.param(_tee, False, id="a_tee_as_kicad_saves_it"),
+    pytest.param(_named, False, id="a_label_of_another_name"),
+    pytest.param(_junction_dot, False, id="a_junction"),
+    pytest.param(_bus_entry_end, False, id="a_bus_entry"),
+    pytest.param(_bus_end, True, id="a_bus_end"),
+    pytest.param(_graphic_line, True, id="a_graphic_line_end"),
+]
+
+
+def _stub_sheet(tmp_path, build):
     p, at, _end = _q_sheet(tmp_path, "met")
     _stub(p, at)
-    assert [i["type"] for i in _new_issues(p)] == ["wire_end_off_pin"]
-    build(p, at)
-    assert _new_issues(p) == []
+    if build is not None:
+        build(p, at)
+    return p, at
+
+
+@pytest.mark.parametrize("build, dangling", _NEIGHBOURS)
+def test_a_wire_end_is_reported_where_it_dangles(tmp_path, build, dangling):
+    """A stub from an old point no pin occupies, and what else may end there: the stub is
+    reported when its end dangles, and not once another item's end that is not a bus's meets
+    it (a second wire's end, KiCad's T, a label, a junction, a bus entry). The next test has
+    kicad-cli say where it dangles. KiCad's own files agree: in its 9.0.8 demos, of the 6,002
+    points where a pin's end reflected through its symbol's origin finds no pin, whatever the
+    symbol's state, 27 hold wire ends, 77 in all, every one meeting another wire's end, a
+    junction or a label and none dangling (measured 2026-10-17)."""
+    p, _at = _stub_sheet(tmp_path, build)
+    assert ([i["type"] for i in _new_issues(p)] == ["wire_end_off_pin"]) == dangling
+
+
+@requires_cli
+@pytest.mark.parametrize("build, dangling", _NEIGHBOURS)
+def test_kicad_leaves_a_wire_end_dangling_unless_an_end_but_a_buss_meets_it(
+    tmp_path, build, dangling
+):
+    """The judge of the test above: kicad-cli's ERC lists the stub, whose other end carries a
+    label, as an unconnected wire endpoint exactly when its end at the old point dangles, as
+    the table says (SCH_LINE::UpdateDanglingState, sch_line.cpp:616 at 9.0.8). ERC places a
+    wire at its start, and the stub starts at the old point; it is the one horizontal wire
+    that does."""
+    p, at = _stub_sheet(tmp_path, build)
+    want = S.iu_point(at)
+    listed = any(
+        item["description"].startswith("Horizontal Wire")
+        and (round(item["pos"]["x"] * 1e6), round(item["pos"]["y"] * 1e6)) == want
+        for sheet in run_erc(p)["sheets"]
+        for violation in sheet["violations"]
+        if violation["type"] == "unconnected_wire_endpoint"
+        for item in violation["items"]
+    )
+    assert listed == dangling
 
 
 @pytest.mark.parametrize(
@@ -724,15 +818,29 @@ def test_only_the_label_0_20_1_wrote_there_does_not_count(tmp_path, text, report
         assert "repair" not in issue and "remove_wire(" in issue["note"], issue
 
 
-def test_a_flag_on_a_hierarchical_label_is_not_reported(tmp_path):
+def _erc_types(path) -> set[str]:
+    return {
+        violation["type"] for sheet in run_erc(path)["sheets"] for violation in sheet["violations"]
+    }
+
+
+@pytest.mark.parametrize(
+    "oracle", [pytest.param(False, id="model"), pytest.param(True, id="kicad", marks=requires_cli)]
+)
+def test_a_flag_on_a_hierarchical_label_is_not_reported(tmp_path, oracle):
     """A flag at Q1:1's old point is reported; with a hierarchical label at the same point it
-    is not, since KiCad accepts a no-connect that shares its point with a hierarchical label
-    or a sheet pin (ercCheckNoConnects, connection_graph.cpp:3735-3750 at 9.0.8)."""
+    is not. kicad-cli's ERC marks the flag alone as no_connect_dangling and says nothing of
+    it once the label shares its point (ercCheckNoConnects accepts a hierarchical pin or label
+    at the flag's position, connection_graph.cpp:3735-3745 at 9.0.8)."""
     p, at, _end = _q_sheet(tmp_path, "port")
     no_connect(p, *at)
     assert [i["type"] for i in _new_issues(p)] == ["no_connect_off_pin"]
+    if oracle:
+        assert "no_connect_dangling" in _erc_types(p)
     label(p, "PORT", *at, kind="hierarchical_label")
     assert _new_issues(p) == []
+    if oracle:
+        assert "no_connect_dangling" not in _erc_types(p)
 
 
 @pytest.mark.parametrize(
@@ -753,6 +861,17 @@ def test_a_flag_wired_to_its_pin_is_not_reported(tmp_path, oracle):
         assert types[("Q1", "1")].endswith("+no_connect"), types
 
 
+def test_remove_no_connect_finds_no_flag_at_the_old_point(tmp_path):
+    """A flag at Q1:1's old point: remove_no_connect looks at the pin KiCad draws, finds no
+    flag there, and writes nothing, so the note sends the user to KiCad's editor."""
+    p, at, _end = _q_sheet(tmp_path, "unremovable")
+    no_connect(p, *at)
+    before = Path(p).read_bytes()
+    with pytest.raises(ToolError, match="No no-connect flag"):
+        schematic.remove_no_connect("Q1", "1", schematic_path=p)
+    assert Path(p).read_bytes() == before
+
+
 def test_a_flag_note_says_whether_the_pin_is_flagged_already(tmp_path):
     """A flag at Q1:1's old point: its note names the no_connect_pin call that flags the pin
     KiCad draws, and once a flag sits there (no_connect_pin's), says so instead. Either way the
@@ -771,8 +890,6 @@ def test_a_repair_the_tool_would_refuse_is_a_note_with_its_refusal(tmp_path):
     wire_pins_to_net refuses to put the pin on N as well, since its net carries M ([names]),
     so the issue names no repair and its note gives that refusal. The tool itself confirms
     it: called as the note describes, it refuses and writes nothing."""
-    from mcp.server.mcpserver.exceptions import ToolError
-
     p, at, _end = _q_sheet(tmp_path, "refused")
     wire(p, *at, at[0], at[1] - 2.54)
     label(p, "N", at[0], at[1] - 2.54)
