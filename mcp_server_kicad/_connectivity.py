@@ -21,6 +21,7 @@ import hashlib
 import math
 import re
 import threading
+import unicodedata
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -704,8 +705,17 @@ _MAX_CELLS = 1 << 16
 
 
 def _pad_order(num: str):
-    """Pad numbers in natural order: 2 before 10."""
-    return (0, int(num), "") if num.isdigit() else (1, 0, num)
+    """Pad numbers in natural order: 2 before 10. Every text has a place, none refuses a sort.
+
+    A number made of decimal digits goes by its value, however many digits it has, ahead of
+    every other text; the rest go by their text, and the text breaks a tie. int() is no way to
+    read the value: it refuses more than 4300 digits, and str.isdigit is true of '²', which
+    it cannot read.
+    """
+    if num.isdecimal():
+        digits = "".join(str(unicodedata.decimal(c)) for c in num).lstrip("0")
+        return (0, len(digits), digits, num)
+    return (1, 0, "", num)
 
 
 class _UF:

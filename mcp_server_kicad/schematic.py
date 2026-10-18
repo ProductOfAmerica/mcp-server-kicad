@@ -2387,7 +2387,11 @@ def move_component(
                 atom.set_text(_connectivity.mm(new))
     changes = []
     if model is not None:
-        changes = _connectivity.contact_changes(model, sym, before[-1][1], after[-1][1])
+        try:
+            changes = _connectivity.contact_changes(model, sym, before[-1][1], after[-1][1])
+        except Exception:
+            # Advisory like the model's build above: what the comparison cannot do stops nothing.
+            reason = "the contacts of its pins could not be compared"
     _atomic_write(schematic_path, _cst.serialize(tree))
 
     if bad_angle:

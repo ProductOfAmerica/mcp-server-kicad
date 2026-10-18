@@ -236,6 +236,52 @@ class TestMoveComponent:
         problems = report_problems(message, "R1", before, path.read_bytes())
         assert not problems, "\n".join(problems) + "\n" + message
 
+    @requires_cli
+    @pytest.mark.parametrize(
+        "number",
+        ["²", "①", "9" * 4301],
+        ids=["superscript_two", "circled_one", "4301_digits"],
+    )
+    def test_names_a_pin_whose_number_int_cannot_read(self, tmp_path, number):
+        """U1 has two pins, numbered ``number`` and "2", and a wire joins the first to R2. The
+        number is a superscript two, a circled one or 4301 digits: str.isdigit accepts each and
+        int() refuses each. kicad-cli's netlist names U1:<number> on R2's net before the move
+        and on a net of its own after (the premises, checked first; the export is also how
+        kicad-cli loads the sheet both times). The call returns, KiCad reads U1 at the target
+        with every field at its offset, and the result names that pin and no other, with the
+        ends and contacts the files bear out."""
+        lib = RF.custom_lib(
+            tmp_path,
+            "TWO",
+            [
+                (number, "A", "passive", -5.08, 0, 0, False),
+                ("2", "B", "passive", 5.08, 0, 180, False),
+            ],
+        )
+        path = Path(RF.fresh(tmp_path, "odd"))
+        RF.place_custom(str(path), lib, "TWO", "U1", 101.6, 76.2)
+        RF.place(str(path), "R", "R2", 88.9, 76.2, rot=90)
+        u1_end = pin_ends(path.read_bytes(), "U1")[number]
+        r2_end = max(pin_ends(path.read_bytes(), "R2").values())
+        RF.wire(str(path), *(v / 10_000 for v in (*u1_end, *r2_end)))
+        before = path.read_bytes()
+        joined = net_keys(path, "U1", (number, "2"))
+        if joined[number] is None or not any(ref == "R2" for ref, _ in joined[number][2]):
+            raise RuntimeError(f"the premise is U1:{number} on R2's net in kicad-cli: {joined}")
+        _, old = S.placed_symbol(before, "U1")
+        message = schematic.move_component("U1", 127.0, 101.6, schematic_path=str(path))
+        apart = net_keys(path, "U1", (number, "2"))
+        if apart[number] is None or any(ref == "R2" for ref, _ in apart[number][2]):
+            raise RuntimeError(f"the premise is U1:{number} off R2's net in kicad-cli: {apart}")
+        _, new = S.placed_symbol(path.read_bytes(), "U1")
+        assert new.position == (1_270_000, 1_016_000), f"KiCad reads U1 at {new.position}"
+        assert {n: f.offset for n, f in new.fields.items()} == {
+            n: f.offset for n, f in old.fields.items()
+        }, "U1 moved and its fields did not keep their place on it"
+        assert set(named_pins(message, "U1")) == {number}, message[:1000]
+        problems = report_problems(message, "U1", before, path.read_bytes())
+        assert not problems, "\n".join(problems) + "\n" + message[:1000]
+
     def test_report_is_capped(self, tmp_path):
         """A 100-pin part with a wire on every pin, moved clear of all of them: every pin
         leaves its wire and meets nothing (the premise, read from both files with the

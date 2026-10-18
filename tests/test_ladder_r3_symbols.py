@@ -61,7 +61,7 @@ from test_ladder_r2_pins import (
     symbol_placement,
 )
 
-from mcp_server_kicad import schematic
+from mcp_server_kicad import _connectivity, schematic
 
 #: The 1.27 mm grid move_component snaps a translation to, in internal units.
 GRID = 12_700
@@ -588,6 +588,36 @@ def test_a_move_goes_ahead_where_the_rest_of_the_sheet_cannot_be_read(tmp_path, 
     )
     assert raised is None, f"raised {raised!r} instead of moving R1"
     _, new = sch_judge.placed_symbol(path.read_bytes(), "R1")
+    assert new.position == (635_000, 635_000), f"returned {result!r}, R1 is at {new.position}"
+    assert {n: f.offset for n, f in new.fields.items()} == {
+        n: f.offset for n, f in old.fields.items()
+    }, "the symbol moved and its fields did not keep their place on it"
+    assert result is not None and "Connections were not checked" in result, result
+
+
+@pytest.mark.parametrize(
+    "error",
+    [ValueError("a pin number"), OverflowError("a coordinate"), AssertionError("a transform")],
+    ids=lambda error: type(error).__name__,
+)
+def test_a_report_that_cannot_be_computed_does_not_stop_the_move(
+    kicad_native_sch, monkeypatch, error
+):
+    """The contact report only advises, so whatever its comparison of the moved symbol's pins
+    raises (here injected, on the native fixture, which kicad-cli loads) does not stop the
+    move: KiCad reads R1 at the target and every field at the offset it had, and the result
+    says its connections were not checked."""
+
+    def broken(*args, **kwargs):
+        raise error
+
+    monkeypatch.setattr(_connectivity, "contact_changes", broken)
+    _, old = sch_judge.placed_symbol(kicad_native_sch.read_bytes(), "R1")
+    result, raised = _outcome(
+        lambda: schematic.move_component("R1", 63.5, 63.5, schematic_path=str(kicad_native_sch))
+    )
+    assert raised is None, f"raised {raised!r} instead of moving R1"
+    _, new = sch_judge.placed_symbol(kicad_native_sch.read_bytes(), "R1")
     assert new.position == (635_000, 635_000), f"returned {result!r}, R1 is at {new.position}"
     assert {n: f.offset for n, f in new.fields.items()} == {
         n: f.offset for n, f in old.fields.items()

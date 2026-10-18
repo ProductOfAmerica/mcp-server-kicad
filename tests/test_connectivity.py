@@ -8,9 +8,13 @@ from __future__ import annotations
 
 import builtins
 import random
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
+import sexpr_gen
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
 from kicad_ref import parse_units as P
 from kicad_ref import transform as T
 from routing_fixtures import ORIENTED, fresh, junction, label, place, polyline, wire
@@ -139,6 +143,42 @@ def test_ints_format_exactly():
         "2.54",
     ]
     assert C.iu("97.79") == 977900 and C.iu("-0.00005") == -1
+
+
+#: Pin numbers: any text, runs of the decimal digits at any length, the characters str.isdigit
+#: accepts and int() refuses (a superscript, a circled digit), and the lone surrogates a
+#: byte that is no UTF-8 decodes to under surrogateescape, as the CST reads one.
+_PIN_NUMBERS = st.one_of(
+    st.text(max_size=8),
+    st.text("0123456789", max_size=12),
+    st.text("0123456789²①٣", max_size=6),
+    st.text(st.characters(min_codepoint=0xDC80, max_codepoint=0xDCFF), max_size=3),
+)
+
+
+@settings(max_examples=sexpr_gen.budget(2))
+@given(a=_PIN_NUMBERS, b=_PIN_NUMBERS)
+@example("²", "2")
+@example("①", "10")
+@example("9" * 4301, "9" * 4300)
+@example("9" * 4301, "²")
+def test_pad_order_ranks_any_two_pin_numbers(a, b):
+    """Any two pin numbers are ranked one way or the other, none refused: a number made of
+    decimal digits, whatever its length, goes by its value (decimal.Decimal, which has no
+    digit limit), ahead of every other text, and ties and other texts go by their text.
+    So 2 comes before 10 and '²' and a 4301 digit number have places, where int() refused
+    both."""
+    ka, kb = C._pad_order(a), C._pad_order(b)
+    if a == b:
+        assert ka == kb
+        return
+    assert (ka < kb) != (kb < ka), f"{a!r} and {b!r} are not ranked one way"
+    if a.isdecimal() and b.isdecimal():
+        assert (ka < kb) == ((Decimal(a), a) < (Decimal(b), b))
+    elif a.isdecimal() or b.isdecimal():
+        assert (ka < kb) == a.isdecimal()
+    else:
+        assert (ka < kb) == (a < b)
 
 
 # ---------------------------------------------------------------------------------------------
