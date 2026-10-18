@@ -290,10 +290,11 @@ def test_validate_hierarchy_reports_what_0_20_1_left(tmp_path):
 
 def test_the_report_names_each_wire_and_how_to_join_its_pin(tmp_path):
     """Per issue on the 0.20.1 sheet: a flag carries a note and no repair, since no tool
-    removes a flag by its position; a wire end names its wire, one of whose ends is the
-    point, and as its repair the call that joins the pin to what the wire reaches, which for
-    0.20.1's own writes is the call that wrote it, made again: wire_pins_to_net with the
-    stub's net name, connect_pins to the route's other pin."""
+    removes a flag by its position. A wire end names its wire, one of whose ends is the point.
+    A stub's net carries one local label, so its repair is the wire_pins_to_net call that puts
+    the pin on that name, the call that wrote the stub, made again. A route's net carries only
+    the Net-(REF-PIN) label connect_pins wrote, a name wire_pins_to_net refuses, so it has a
+    note and no repair, and the note names the pin its wires run to: the anchor of the call."""
     p = _copy_fixture(tmp_path)
     wires = {(line.start, line.end) for line in S.lines(Path(p).read_bytes())}
     by_key = {_key(i): i for i in _new_issues(p)}
@@ -315,18 +316,10 @@ def test_the_report_names_each_wire_and_how_to_join_its_pin(tmp_path):
                     "schematic_path": p,
                 },
             }
+            assert issue["repair"] == want, issue
         else:
-            want = {
-                "tool": "connect_pins",
-                "arguments": {
-                    "ref1": call.ref,
-                    "pin1": call.pin,
-                    "ref2": call.anchor,
-                    "pin2": "1",
-                    "schematic_path": p,
-                },
-            }
-        assert issue["repair"] == want, issue
+            assert "repair" not in issue, issue
+            assert f"{call.anchor} pin 1" in issue["note"], issue
 
 
 @requires_cli
@@ -367,38 +360,46 @@ def _delete_flag(path, at) -> None:
     Path(path).write_bytes(data[:start] + data[end:])
 
 
-def test_the_repairs_clear_the_report(tmp_path):
-    """Made as named, each repair clears its issue: a wire end once the call joined its pin to
-    the wire's net, a flag once the user deleted it in KiCad's editor and called the
-    no_connect_pin its note names. The re-run reports nothing of either kind."""
-    p = _copy_fixture(tmp_path)
-    issues = _new_issues(p)
-    assert len(issues) == len(_STRAYED)
+def _act_on_report(p, issues) -> None:
+    """What the report asks for on the 0.20.1 sheet: the repair an issue names; for a flag, the
+    user deleting it in KiCad's editor and calling the no_connect_pin its note names; for a
+    route, whose note names the pin its wires run to, the user wiring the pin to it as the
+    0.20.1 call meant (connect_pins, as this package writes it now)."""
+    by_key = {_expected(c): c for c in _STRAYED}
     for issue in issues:
         if "repair" in issue:
             getattr(schematic, issue["repair"]["tool"])(**issue["repair"]["arguments"])
-        else:
+        elif issue["type"] == "no_connect_off_pin":
             _delete_flag(p, S.iu_point((issue["x"], issue["y"])))
             schematic.no_connect_pin(issue["reference"], issue["pin"], schematic_path=p)
+        else:
+            call = by_key[_key(issue)]
+            schematic.connect_pins(call.ref, call.pin, call.anchor, "1", schematic_path=p)
+
+
+def test_acting_on_the_report_clears_it(tmp_path):
+    """Made as asked (_act_on_report), each issue of the 0.20.1 sheet clears: a stub's once the
+    call joined its pin to the stub's net, a route's once the pin is wired to the pin its wires
+    run to, a flag's once the user deleted it and called the no_connect_pin its note names. The
+    re-run reports nothing of either kind."""
+    p = _copy_fixture(tmp_path)
+    issues = _new_issues(p)
+    assert len(issues) == len(_STRAYED)
+    _act_on_report(p, issues)
     assert _new_issues(p) == []
 
 
 @requires_cli
-def test_after_the_repairs_kicad_reads_each_pin_as_0_20_1_meant_it(tmp_path):
-    """kicad-cli's netlist after the repairs of the 0.20.1 sheet: each flagged transistor
-    pin is a no-connect pin (+no_connect), each stubbed one is on its stub's net, each routed
-    one shares its anchor's net, and against the netlist before, nothing else merged, split
-    or was renamed."""
+def test_after_acting_on_the_report_kicad_reads_each_pin_as_0_20_1_meant_it(tmp_path):
+    """kicad-cli's netlist after acting on the report of the 0.20.1 sheet: each flagged
+    transistor pin is a no-connect pin (+no_connect), each stubbed one is on its stub's net,
+    each routed one shares its anchor's net, and against the netlist before, nothing else
+    merged, split or was renamed."""
     p = _copy_fixture(tmp_path)
     before = nets(p)
     issues = _new_issues(p)
     assert len(issues) == len(_STRAYED)
-    for issue in issues:
-        if "repair" in issue:
-            getattr(schematic, issue["repair"]["tool"])(**issue["repair"]["arguments"])
-        else:
-            _delete_flag(p, S.iu_point((issue["x"], issue["y"])))
-            schematic.no_connect_pin(issue["reference"], issue["pin"], schematic_path=p)
+    _act_on_report(p, issues)
     after = nets(p)
     groups = [{(c.ref, c.pin), (c.anchor, "1")} if c.anchor else {(c.ref, c.pin)} for c in _STRAYED]
     verdict = judge(before, after, groups)
@@ -413,6 +414,56 @@ def test_after_the_repairs_kicad_reads_each_pin_as_0_20_1_meant_it(tmp_path):
             assert bare_name(on[node][0]) == f"N_{call.ref}_{call.pin}", (call, on[node])
         else:
             assert on[node][1] == {node, (call.anchor, "1")}, (call, on[node])
+
+
+def _named_route(tmp_path, anchor: str) -> tuple[str, _Call]:
+    """The 0.20.1 sheet with Q3:3 on M and the anchor of its route, RA3:1, on a name: N, a
+    local label, or G, a global one. connect_pins wrote its Net-(Q3-3) label only because the
+    net had no name, so a route to a named net holds none, and the label goes first."""
+    p = _copy_fixture(tmp_path)
+    call = next(c for c in _STRAYED if c.tool == "connect_pins")
+    schematic.remove_label(
+        f"Net-({call.ref}-{call.pin})", call.old[0] / 1e4, call.old[1] / 1e4, schematic_path=p
+    )
+    schematic.wire_pins_to_net([{"reference": call.ref, "pin": call.pin}], "M", schematic_path=p)
+    if anchor == "N":
+        pins = [{"reference": call.anchor, "pin": "1"}]
+        schematic.wire_pins_to_net(pins, anchor, schematic_path=p)
+    else:
+        x, y, _out = ORIENTED["R"][(0, "")][0]
+        schematic.add_global_label(
+            anchor,
+            round(call.origin[0] - 7.62 + x, 4),
+            round(88.9 + y, 4),
+            rotation=0,
+            schematic_path=p,
+        )
+    return p, call
+
+
+@requires_cli
+@pytest.mark.parametrize("anchor", ["N", "G"])
+def test_no_wire_end_repair_joins_two_named_nets(tmp_path, anchor):
+    """Q3:3 is on M and the 0.20.1 route from its old point ends at RA3:1, on N (a local
+    label) or on G (a global one). Whatever the report offers for that wire, kicad-cli's
+    netlist after it joins no two named nets: putting a pin on a net never means joining M
+    with N or with G. The report offers no repair here, and its note says why: for N the
+    refusal of the wire_pins_to_net call that would put the pin on N, for G, which that
+    call cannot name, the pin the wires run to."""
+    p, call = _named_route(tmp_path, anchor)
+    before = nets(p)
+    (issue,) = [
+        i for i in _new_issues(p) if i["type"] == "wire_end_off_pin" and i["reference"] == call.ref
+    ]
+    if "repair" in issue:
+        getattr(schematic, issue["repair"]["tool"])(**issue["repair"]["arguments"])
+    verdict = judge(before, nets(p), [{(call.ref, call.pin), (call.anchor, "1")}])
+    assert verdict.named_merge == [], (issue, verdict.problems())
+    assert "repair" not in issue, issue
+    if anchor == "N":
+        assert "[names]" in issue["note"], issue
+    else:
+        assert f"{call.anchor} pin 1" in issue["note"], issue
 
 
 def test_validate_hierarchy_does_not_write_the_sheet_it_reports_on(tmp_path):

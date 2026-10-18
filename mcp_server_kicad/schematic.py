@@ -1390,11 +1390,11 @@ def _off_pin_items(root, path: str) -> list[dict]:
     the flag then marks the pin, and the wire gives it what it was meant to, as once its repair
     is made.
 
-    A flag carries a note, since no tool removes a flag by its position. A wire end's repair
-    joins the pin to what the wire reaches: wire_pins_to_net with the one local label name on
-    the wire's net, if planning that call refuses nothing; else connect_pins to the one pin a
-    run of wires from it ends at, if connect_pins finds both pins where KiCad draws them;
-    else a note. A sheet the model refuses gets nothing: KiCad cannot load it either."""
+    A flag carries a note, since no tool removes a flag by its position. A wire end's repair is
+    wire_pins_to_net with the one local label name on the wire's net, if planning that call
+    refuses nothing; else a note, which carries the plan's refusal or, where the net has no
+    single local label name, names the pin a run of wires from the end reaches. A sheet the
+    model refuses gets nothing: KiCad cannot load it either."""
     if not any(_connectivity.effective_mirror(s) for s in root.find_all("symbol")):
         return []
     try:
@@ -1486,7 +1486,7 @@ def _left_at(model, root, s, pin, at: Point, end: Point, path: str) -> list[dict
         if others or joined(w):
             continue
         issue = {"type": "wire_end_off_pin", **base, "wire": _stretch((w.x, w.y), (w.x2, w.y2))}
-        repair, why = _join_repair(model, root, s.ref, num, w, at, end, path)
+        repair, why = _join_repair(model, root, s.ref, num, w, at, path)
         if repair is not None:
             issue["repair"] = repair
         else:
@@ -1508,9 +1508,10 @@ def _get_pin_or_none(root, reference: str, pin_name: str) -> Point | None:
     return _req_point(x, y)
 
 
-def _join_repair(model, root, ref: str, num: str, w, at: Point, end: Point, path: str):
-    """(repair, None) joining pin num of ref to the net of wire w, whose end at misses it; or
-    (None, why not). See _off_pin_items."""
+def _join_repair(model, root, ref: str, num: str, w, at: Point, path: str):
+    """(repair, None) putting pin num of ref on the one local label name of wire w's net, as
+    wire_pins_to_net, when planning that call refuses nothing; or (None, why not). The wire
+    ends at the point at. See _off_pin_items."""
     labels = (
         it
         for its in model.narrow_names(w).values()
@@ -1526,7 +1527,6 @@ def _join_repair(model, root, ref: str, num: str, w, at: Point, end: Point, path
         usable.setdefault(_connectivity.netname(text), text)
     mm = _connectivity.mm
     remove = f"remove_wire({mm(w.x)}, {mm(w.y)}, {mm(w.x2)}, {mm(w.y2)}) removes this wire."
-    refused = ""
     if len(usable) == 1:
         (text,) = usable.values()
         pins = [{"reference": ref, "pin": num}]
@@ -1534,25 +1534,19 @@ def _join_repair(model, root, ref: str, num: str, w, at: Point, end: Point, path
         if not plan.refused:
             arguments = {"pins": pins, "label_text": text, "schematic_path": path}
             return {"tool": "wire_pins_to_net", "arguments": arguments}, None
-        refused = (
+        return None, (
             f"wire_pins_to_net would put the pin on {text!r}, the wire's net, but refuses: "
             + "; ".join(plan.lines)
+            + f" Act on that, or wire the pin as meant; {remove}"
         )
     far = _run_end(model, w, at)
     if far is not None and far.ref and far.num:
-        here = _get_pin_or_none(root, ref, num) == end
-        there = _get_pin_or_none(root, far.ref, far.num) == (far.x, far.y)
-        if here and there:
-            arguments = {"ref1": ref, "pin1": num, "ref2": far.ref, "pin2": far.num}
-            return {
-                "tool": "connect_pins",
-                "arguments": {**arguments, "schematic_path": path},
-            }, None
-    if refused:
-        return None, f"{refused} Act on that, or wire the pin as meant; {remove}"
+        reaches = f"Its wires run to {far.ref} pin {far.num}."
+    else:
+        reaches = "Its wires run to no single pin, so what it was meant to join is not known here."
     return None, (
-        "Its net carries no local label to put the pin on, and its wires run to no single"
-        f" pin, so what it was meant to join is not known here: wire the pin as meant; {remove}"
+        f"Its net carries no single local label name to put the pin on. {reaches}"
+        f" Wire the pin as meant; {remove}"
     )
 
 
