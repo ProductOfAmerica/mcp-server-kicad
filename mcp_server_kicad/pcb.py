@@ -3527,12 +3527,9 @@ def update_pcb_from_schematic(
     footprint that is kept: delete_stale off, or locked, or board only); such a
     net keeps its row and everything on it. Segments, arcs and vias sent to no
     net are counted in orphaned_tracks, zones in orphaned_zones, and copper
-    shapes are named in warnings. KiCad's own update differs when a pad of a
-    footprint it updates moves from a net the netlist no longer has to another
-    (a net renamed in the schematic): it moves the vias and copper zones on the
-    old net to the new one, also when a kept pad holds the old net. This update
-    reconnects none of them; they go to no net with the rest, or stay on the net
-    a kept pad holds.
+    shapes are named in warnings. Nothing on a renamed net is moved to its new
+    name: it goes to no net with the rest, or stays on the old net while a kept
+    pad holds it.
 
     What KiCad's own update copies from the symbol follows it here, with
     two exceptions named below. The Value. Every other symbol field, as hidden
@@ -4680,16 +4677,11 @@ def _apply_netlist_cst(
     on no net, spelled as the board's format spells it (_set_item_net); segments, arcs
     and vias are counted in orphaned_tracks, zones in orphaned_zones, and a shape,
     which has no field, is named in warnings. A net a pad that stays is on keeps its
-    row and everything on it. KiCad's own update keeps such a net too, since it marks
-    the net of every pad of every footprint it keeps current and removes the rest, but
-    not everything on it: when a pad of a footprint it updates moves from a net to
-    another it records the pair (m_oldToNewNets, pcbnew/netlist_reader/
-    board_netlist_updater.cpp:932 at 9.0.8, 1202 at 10.0.7), and updateCopperZoneNets
-    (1005-1221 and the call at 1417 at 9.0.8, 1676-1892 and 2323 at 10.0.7), which runs
-    before the stale footprints are settled, moves the vias and the copper zones on a
-    net the netlist no longer has to the pair's new net. This update reconnects none of
-    them: a via or a zone on a net no pad that stays is on goes to no net with the
-    rest, and one on a net such a pad holds stays on it.
+    row and everything on it. KiCad's update keeps such a net too, since it marks the
+    net of every pad of every footprint it keeps current and removes the rest
+    (pcbnew/netlist_reader/board_netlist_updater.cpp:1475-1485 and 1506 at 9.0.8).
+    Nothing on a renamed net is moved to its new name: it goes to no net with the rest,
+    or stays on the old net while a pad that stays holds it.
     """
     components, nets = _parse_netlist(netlist_path)
     summary = _new_summary()
@@ -4823,9 +4815,7 @@ def _apply_netlist_cst(
     # every footprint it keeps current, and only a net no pad is on is removed, which
     # sends everything on it to net 0 (board_netlist_updater.cpp:1475-1485 and 1506 at
     # 9.0.8, 2406-2416 and 2438 at 10.0.7; board_commit.cpp:399-400 and board.cpp:
-    # 1328-1341 at 9.0.8). So this runs after the stale footprints are gone. A via or a
-    # zone on a net a pad moved off is not reconnected to the pad's new net, as KiCad's
-    # update does (the docstring) ---
+    # 1328-1341 at 9.0.8). So this runs after the stale footprints are gone ---
     live = {n["name"] for n in nets}
     kept = live | {
         _read_net_name(pad, version, bound)

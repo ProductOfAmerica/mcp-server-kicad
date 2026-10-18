@@ -726,31 +726,19 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   stays is on it: the update marks the net of every pad of every footprint it does not delete current
   before it removes the rest (board_netlist_updater.cpp:1475-1485 and 1506 at 9.0.8, 2406-2416 and 2438
   at 10.0.7), so a stale footprint kept by the default delete_stale, a locked one and one marked board
-  only keep their nets, and the segments, arcs and copper shapes on them; the vias and copper zones on
-  such a net are the exception below. The orphan pass ran before the stale footprints were settled and
-  sent everything on such a net to no net while the pad stayed on it; the stale pass now runs first, and
-  the orphan pass and the prune leave a net a remaining pad is on. A shape the pass left on a pruned row
-  kept a number no row had, and a later update that added a net gave that number to a new row, which put
-  the shape on it. A new row is now numbered one above the largest number a row, pad, track, zone or
-  copper shape uses (bug 101), and a board with no table at all declares every name the netlist uses,
-  including one only a zone's net_name spells (bug 100). The result has no field for a shape, so each is
-  named in warnings. This is not KiCad's whole update. When a pad of a footprint it updates moves from a
-  net to another it records the pair (m_oldToNewNets, board_netlist_updater.cpp:932 at 9.0.8, 1202 at
-  10.0.7), and updateCopperZoneNets, called before the stale footprints are settled (1005-1221 and 1417
-  at 9.0.8, 1676-1892 and 2323 at 10.0.7), moves each via whose net the netlist no longer has and that
-  it recorded a pair for to the pair's new net, and each copper zone whose net the netlist no longer has
-  to the net of a pad connected to it that changed, else to the pair's. It does not ask whether a pad
-  that stays holds the old net: that net stays current through the pad (1475-1485 at 9.0.8) with its
-  segments, arcs and copper shapes, while its vias and zones move. So where this pass sends a via or a
-  zone on a renamed net to no net, KiCad moves it to the new net, and where a pad that stays holds the
-  old net this pass leaves them on it and KiCad moves them (measured 2026-10-17 on this pass with U1's
-  pad 2 moved from /X to /Y, a stale R5 holding /X and a segment, a via, a zone and a polygon on /X: all
-  four stay on /X and nothing is orphaned,
-  `test_a_renamed_net_a_footprint_that_stays_is_on_keeps_what_is_on_it`; KiCad's side is source reading,
-  since neither kicad-cli nor pcbnew's API runs the updater). Whether to follow KiCad is a product
-  decision left open, and the tool's description says what this pass does. KiCad 10's AllConnectedItems
-  also visits footprint-level zones and graphics, which the pass does not; how often KiCad 10 writes
-  such an item on a net is unmeasured.
+  only keep their nets, and everything on them. The orphan pass ran before the stale footprints were
+  settled and sent everything on such a net to no net while the pad stayed on it; the stale pass now
+  runs first, and the orphan pass and the prune leave a net a remaining pad is on. A shape the pass left
+  on a pruned row kept a number no row had, and a later update that added a net gave that number to a
+  new row, which put the shape on it. A new row is now numbered one above the largest number a row, pad,
+  track, zone or copper shape uses (bug 101), and a board with no table at all declares every name the
+  netlist uses, including one only a zone's net_name spells (bug 100). The result has no field for a
+  shape, so each is named in warnings. Nothing on a renamed net is moved to its new name: with U1's
+  pad 2 moved from /X to /Y, a stale R5 holding /X and a segment, a via, a zone and a polygon on /X, all
+  four stay on /X and nothing is orphaned (measured 2026-10-17,
+  `test_a_renamed_net_a_footprint_that_stays_is_on_keeps_what_is_on_it`), and with no pad that stays on
+  /X they go to no net with the rest. The pass reaches the board's own items, not the zones and
+  graphics inside a footprint.
 
   The pad pass binds a pad only where its net changes (bug 22). It cleared every pad of a matched
   footprint and bound them again, which moved the (net ...) of all 21 pads of ecc83's footprints that the

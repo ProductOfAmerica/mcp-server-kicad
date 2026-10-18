@@ -19,12 +19,11 @@ board with no table; bug 22, a pad whose net did not change keeps its bytes; bug
 and prune passes see the copper shapes that carry a net; bug 100, a name a board with no table
 spells gets a row; bug 101, a new row never takes a number an item already refers to. Review
 fixes: a net a pad of a footprint that stays is on has not left the schematic (a via or a zone
-on such a net that was renamed stays where it is, where KiCad's own update moves it, pinned as
-the tool's description states it); and a bare net number is bound as the KiCad that loads the
-board's format binds it, read by the update before it swaps a footprint or moves a pad. The
-judges are KiCad's own parser and writer, read at 9.0.8 and 10.0.7 and cited where each is
-used; pcbnew, where this machine has it; the lexer port in tests/kicad_ref for what a file
-holds; and the files KiCad ships.
+on such a net that was renamed stays on it); and a bare net number is read through
+_bound_names, a zone's once a copper layer is listed ahead of it, read by the update before it
+swaps a footprint or moves a pad. The judges are KiCad's own parser and writer, read at 9.0.8
+and 10.0.7 and cited where each is used; pcbnew, where this machine has it; the lexer port in
+tests/kicad_ref for what a file holds; and the files KiCad ships.
 
 KiCad 9's rule, read at 9.0.8. A net reference is a number, and the parser maps every number
 through the board's table: getNetCode over the map parseNETINFO_ITEM fills, zeros in its gaps
@@ -1095,8 +1094,7 @@ def test_a_net_a_footprint_that_stays_is_on_stays_whole(tmp_path, version, stays
     segment on /Y, a net no pad is on, going to no net with its row on a KiCad 9 board. The
     pass sent all four items on /X to no net while R5's pad stayed on it (measured 2026-10-17:
     pcbnew 9.0.8 read the pad on /X, and the polygon on no net). No pad of a footprint the
-    netlist names leaves /X here, so KiCad's reconnection of the vias and zones of a renamed
-    net has nothing to move; the test below is the board where a pad does leave."""
+    netlist names leaves /X here; in the test below one does."""
     delete_stale, lock, attr = _STAYS[stays]
     board = _kept_board(tmp_path, version, lock=lock, attr=attr)
     before = board.read_bytes()
@@ -1149,19 +1147,15 @@ def test_a_net_no_pad_that_stays_is_on_goes_to_no_net_with_all_on_it(tmp_path, v
 
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_a_renamed_net_a_footprint_that_stays_is_on_keeps_what_is_on_it(tmp_path, version):
-    """Where this update parts from KiCad's own, pinned as the tool's description states it.
-    U1's pad 2 and the pad of R5, which the netlist leaves out and which stays under the
-    default delete_stale, are on /X, and a segment, a via, a copper zone and a copper polygon
-    are on /X. The netlist names U1 alone and puts its pad 2 on /Y: /X is renamed. KiCad's
-    update records the pair when it moves the pad (m_oldToNewNets, board_netlist_updater.cpp:
-    932 at 9.0.8, 1202 at 10.0.7), and updateCopperZoneNets, which runs before the stale
-    footprints are settled, moves the via and the zone to /Y whether or not a pad that stays
-    holds /X (1005-1221 and the call at 1417, 9.0.8; 1676-1892 and 2323, 10.0.7); /X stays
-    current through R5's pad and keeps the segment and the polygon. Neither kicad-cli nor
-    pcbnew's API runs the updater, so that half rests on the source. This update reconnects
-    nothing: its one change is U1's pad 2 on /Y (with a row for /Y on a KiCad 9 board), the
-    segment, via, zone and polygon stay on /X with R5's pad, /X keeps its row, and nothing
-    is orphaned or warned of. The day the update follows KiCad this test changes with the
+    """A net renamed while a footprint that stays holds it, pinned as the tool's description
+    states it. U1's pad 2 and the pad of R5, which the netlist leaves out and which stays
+    under the default delete_stale, are on /X, and a segment, a via, a copper zone and a
+    copper polygon are on /X. The netlist names U1 alone and puts its pad 2 on /Y: /X is
+    renamed. The update moves nothing to /Y: its one change is U1's pad 2 on /Y (with a row
+    for /Y on a KiCad 9 board), the segment, via, zone and polygon stay on /X with R5's pad,
+    /X keeps its row, and nothing is orphaned or warned of. pcbnew, where the legs have it,
+    reads the four items on /X before the update and after it, and after it R5's pad on /X and
+    U1's pad 2 on /Y. A change to what the update does with them changes this test, the
     description and the ADR entry."""
     rows = {"/GND": 1, "/X": 2} if version == "k9" else None
     board = _board(
