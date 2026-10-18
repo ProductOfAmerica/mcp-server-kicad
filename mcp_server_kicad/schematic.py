@@ -3430,9 +3430,9 @@ class _ErcRun(NamedTuple):
 def _erc(schematic_path: str, output_dir: str, project_path: str) -> _ErcRun:
     """ERC for one schematic file, the way a user means it, with positions in sheet millimetres.
 
-    A sheet of a project is checked from the project's root, so that the hierarchy around it is
-    there, and only the violations of that sheet are returned (_sheet_violations). A file that
-    is a root, or that no sheet of its project uses, is checked as a root of its own.
+    A sheet of a project is checked from the top-level sheet that holds it, so that the hierarchy
+    around it is there, and only the violations of that sheet are returned (_sheet_violations).
+    A file that is a root, or that no sheet of its project uses, is checked as a root of its own.
     *project_path* names the project whose hierarchy to look in; a file that hierarchy does not
     use is refused, since it cannot be given a place in it.
     """

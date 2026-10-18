@@ -19,6 +19,7 @@ reads the sheet blocks of a project's schematics to say where a file sits in the
 from __future__ import annotations
 
 import hashlib
+import json
 import math
 import os
 import re
@@ -1191,11 +1192,12 @@ _SHEET_BLOCK = re.compile(_head(b"sheet"))
 class Placement:
     """Where a schematic file sits in the sheet hierarchy of its project.
 
-    *kind* is "sheet" when a project's hierarchy uses the file: *root* is that project's root
-    schematic and *instances* holds, for each place the hierarchy uses the file, the uuids of
-    the sheet blocks from the root down to it. It is "root" for a project's own root
-    schematic, or when no project was found, and "unused" when one was found (*root*, the
-    nearest) and none of its sheets uses the file, which is then a root of its own.
+    *kind* is "sheet" when a project's hierarchy uses the file: *root* is the top-level sheet
+    that hierarchy starts from and *instances* holds, for each place the hierarchy uses the
+    file, the uuids of the sheet blocks from the root down to it. It is "root" for a
+    top-level sheet of a project, or when no project was read through to say otherwise, and
+    "unused" when one was (*root*, the nearest) and none of its sheets uses the file, which is
+    then a root of its own.
     """
 
     kind: str
@@ -1263,14 +1265,42 @@ def _instances(root: Path, target: Path) -> tuple[list[tuple[str, ...]], list[st
     return found, unread
 
 
+def _top_level_sheets(root: Path) -> list[Path]:
+    """*root*, then the other top-level sheets its project lists.
+
+    A KiCad 10 project lists them under schematic.top_level_sheets in its .kicad_pro, each file
+    resolved against the project's folder, and loads the hierarchy of each as a top level of
+    the one schematic (EESCHEMA_HELPERS::LoadSchematic, eeschema_helpers.cpp:141-177 at 10.0.7).
+    A project file that is missing, is not JSON or lists none adds nothing.
+    """
+    try:
+        listed = json.loads(root.with_suffix(".kicad_pro").read_bytes())["schematic"][
+            "top_level_sheets"
+        ]
+    except (OSError, ValueError, KeyError, TypeError):
+        return [root]
+    out = [root]
+    for entry in listed:
+        name = entry.get("filename") if isinstance(entry, dict) else None
+        if isinstance(name, str) and name:
+            sheet = Path(os.path.normpath(os.path.join(root.parent, name.replace("\\", "/"))))
+            if all(_real(sheet) != _real(seen) for seen in out):
+                out.append(sheet)
+    return out
+
+
 def place(path: str | Path, root: str | Path | None = None) -> Placement:
     """Where the schematic at *path* sits in its project.
 
     The project is *root*'s when that root schematic is given; otherwise the nearest one, in
     the file's folder or any folder above it (_project_roots), whose hierarchy uses the file.
+    A project's hierarchy is that of each top-level sheet it lists (_top_level_sheets).
+
     Raises ToolError when the answer cannot be told: a hierarchy of more than _MAX_INSTANCES
-    sheet instances, or a sheet file that could not be read stopped the walk before it reached
-    the file.
+    sheet instances, or a sheet file that could not be read stopped a walk before it reached
+    the file, in the project that was named or the one in the file's own folder. A project
+    further up that cannot be read through is no evidence about a file that no readable sheet
+    names, which KiCad opens on its own project, so it leaves the file a root of no project.
     """
     target = Path(os.path.abspath(path))
     roots = (
@@ -1278,20 +1308,29 @@ def place(path: str | Path, root: str | Path | None = None) -> Placement:
         if root is not None
         else _project_roots(target, len(target.parents))
     )
-    unread: list[str] = []
-    for candidate in roots:
-        if _real(candidate) == _real(target):
-            return Placement("root", candidate)
-        instances, not_read = _instances(candidate, target)
-        if instances:
-            return Placement("sheet", candidate, tuple(instances))
-        unread += not_read
-    if unread:
+    stopped: tuple[Path, str] | None = None  # the project and the file that stopped its walk
+    read_through: Path | None = None  # the nearest project whose sheets were all read
+    for project_root in roots:
+        unread: list[str] = []
+        for top in _top_level_sheets(project_root):
+            if _real(top) == _real(target):
+                return Placement("root", top)
+            instances, not_read = _instances(top, target)
+            if instances:
+                return Placement("sheet", top, tuple(instances))
+            unread += not_read
+        if not unread:
+            read_through = read_through or project_root
+        elif stopped is None and (
+            root is not None or _real(project_root.parent) == _real(target.parent)
+        ):
+            stopped = (project_root, unread[0])
+    if stopped:
         raise ToolError(
-            f"Cannot tell whether the project at {roots[0].name} uses {target.name}:"
-            f" {unread[0]} could not be read."
+            f"Cannot tell whether the project at {stopped[0].name} uses {target.name}:"
+            f" {stopped[1]} could not be read."
         )
-    return Placement("unused", roots[0]) if roots else Placement("root")
+    return Placement("unused", read_through) if read_through else Placement("root")
 
 
 def _one_part(group: list[tuple[SymRecord, tuple[int, ...]]]) -> str | None:

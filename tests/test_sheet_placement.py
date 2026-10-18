@@ -16,6 +16,7 @@ netlist cannot be asked about, KiCad's own load rule above.
 
 from __future__ import annotations
 
+import json
 import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
@@ -186,6 +187,29 @@ _FOUND_ELSEWHERE = {
     "broken.kicad_sch": _BROKEN,
     "ok.kicad_sch": _sch(),
 }
+#: p's only sheet is cut short, and experiments/ holds a file of its own with no project
+_ABOVE = {
+    "p.kicad_sch": _sch(("u-a", "broken.kicad_sch")),
+    "broken.kicad_sch": _BROKEN,
+    "experiments/other.kicad_sch": _sch(),
+}
+#: a project that lists two top-level sheets; the second holds the sheet below it
+_TWO_TOP_LEVEL = {
+    "p.kicad_sch": _sch(("u-a", "a.kicad_sch")),
+    "a.kicad_sch": _sch(),
+    "second.kicad_sch": _sch(("u-s", "sub.kicad_sch")),
+    "sub.kicad_sch": _sch(),
+}
+#: schematic.top_level_sheets as KiCad 10.0.6 writes it, one entry per top-level sheet
+#: (demos/pic_programmer/pic_programmer.kicad_pro), with this project's two
+_TOP_LEVEL_SHEETS = [
+    {"filename": "p.kicad_sch", "name": "p", "uuid": "2e45d1d2-c73f-46e5-98d6-3a9dc360bff5"},
+    {
+        "filename": "second.kicad_sch",
+        "name": "Second",
+        "uuid": "0b6b5f4e-7f0e-4c53-a8d7-1d2f7e8a9c10",
+    },
+]
 _THIRTEEN = [f"u{i}" for i in range(13)]
 #: thirteen uses of a file that has thirteen uses of the next, four deep, is 28,561 instances
 #: of the last file
@@ -282,8 +306,90 @@ class TestWhatCannotBeTold:
         _project(tmp_path, _FOUND_ELSEWHERE)
         assert _connectivity.place(tmp_path / "ok.kicad_sch").instances == (("u-b",),)
 
+    @pytest.mark.kicad_placeholder(*_ABOVE)
+    def test_an_unreadable_sheet_of_a_project_above_does_not_claim_the_file(self, tmp_path):
+        """broken.kicad_sch may or may not name the file, and the file is not beside p's
+        project. KiCad opens a schematic on its own project, so the file is a root of its
+        own, and no project is said to have been read through and found not to use it."""
+        _project(tmp_path, _ABOVE)
+        placed = _connectivity.place(tmp_path / "experiments" / "other.kicad_sch")
+        assert placed == _connectivity.Placement("root")
+
+    @pytest.mark.kicad_placeholder(*_ABOVE)
+    def test_an_unreadable_sheet_stops_the_walk_of_a_project_that_is_named(self, tmp_path):
+        """The caller asked about p's hierarchy, so what it cannot read is not skipped."""
+        _project(tmp_path, _ABOVE)
+        with pytest.raises(ToolError, match=r"broken\.kicad_sch could not be read"):
+            _connectivity.place(
+                tmp_path / "experiments" / "other.kicad_sch", tmp_path / "p.kicad_sch"
+            )
+
     @pytest.mark.kicad_placeholder(*_TOO_MANY)
     def test_a_hierarchy_of_too_many_instances_is_refused(self, tmp_path):
         _project(tmp_path, _TOO_MANY)
         with pytest.raises(ToolError, match="more than 4096 sheet instances"):
             _connectivity.place(tmp_path / "unused.kicad_sch")
+
+
+class TestTopLevelSheets:
+    """A KiCad 10 project lists its top-level sheets in its .kicad_pro, and a sheet below any of
+    them is a sheet of the project (EESCHEMA_HELPERS::LoadSchematic, eeschema/eeschema_helpers.cpp:
+    141-177 at 10.0.7). The list is written as KiCad 10.0.6 writes it in
+    demos/pic_programmer/pic_programmer.kicad_pro."""
+
+    def _two(self, folder: Path, declared) -> None:
+        _project(folder, _TWO_TOP_LEVEL)
+        (folder / "p.kicad_pro").write_text(
+            json.dumps({"schematic": {"top_level_sheets": declared}}), encoding="utf-8"
+        )
+
+    @pytest.mark.kicad_placeholder(*_TWO_TOP_LEVEL)
+    def test_a_sheet_below_a_second_top_level_sheet_has_that_sheet_as_its_root(self, tmp_path):
+        self._two(tmp_path, _TOP_LEVEL_SHEETS)
+        placed = _connectivity.place(tmp_path / "sub.kicad_sch")
+        assert (placed.kind, placed.root, placed.instances) == (
+            "sheet",
+            tmp_path / "second.kicad_sch",
+            (("u-s",),),
+        )
+        assert _connectivity.place(tmp_path / "a.kicad_sch").root == tmp_path / "p.kicad_sch"
+
+    @pytest.mark.kicad_placeholder(*_TWO_TOP_LEVEL)
+    def test_each_top_level_sheet_is_a_root(self, tmp_path):
+        self._two(tmp_path, _TOP_LEVEL_SHEETS)
+        for name in ("p", "second"):
+            placed = _connectivity.place(tmp_path / f"{name}.kicad_sch")
+            assert (placed.kind, placed.root) == ("root", tmp_path / f"{name}.kicad_sch")
+
+    @pytest.mark.kicad_placeholder(*_TWO_TOP_LEVEL)
+    def test_the_project_that_is_named_has_its_top_level_sheets_too(self, tmp_path):
+        self._two(tmp_path, _TOP_LEVEL_SHEETS)
+        placed = _connectivity.place(tmp_path / "sub.kicad_sch", tmp_path / "p.kicad_sch")
+        assert (placed.kind, placed.root) == ("sheet", tmp_path / "second.kicad_sch")
+
+    @pytest.mark.kicad_placeholder(*_TWO_TOP_LEVEL)
+    def test_a_project_that_lists_none_has_only_its_own_root(self, tmp_path):
+        """KiCad 9 projects have no list; the sheet below second.kicad_sch is then used by
+        no sheet of p."""
+        _project(tmp_path, _TWO_TOP_LEVEL)
+        assert _connectivity.place(tmp_path / "sub.kicad_sch").kind == "unused"
+
+    @pytest.mark.kicad_placeholder(*_TWO_TOP_LEVEL)
+    @pytest.mark.parametrize(
+        "declared",
+        [
+            "second.kicad_sch",
+            ["second.kicad_sch"],
+            [{"uuid": "u"}, {"filename": 5}, {"filename": ""}, {"filename": "gone.kicad_sch"}],
+        ],
+        ids=["a-string", "a-list-of-strings", "entries-that-name-no-file"],
+    )
+    def test_a_list_that_names_no_sheet_file_adds_no_root(self, tmp_path, declared):
+        self._two(tmp_path, declared)
+        assert _connectivity.place(tmp_path / "sub.kicad_sch").kind == "unused"
+
+    @pytest.mark.kicad_placeholder(*_TWO_TOP_LEVEL)
+    def test_a_project_file_that_is_not_json_adds_no_root(self, tmp_path):
+        _project(tmp_path, _TWO_TOP_LEVEL)
+        (tmp_path / "p.kicad_pro").write_bytes(bytes([255]) + b" not json")
+        assert _connectivity.place(tmp_path / "sub.kicad_sch").kind == "unused"

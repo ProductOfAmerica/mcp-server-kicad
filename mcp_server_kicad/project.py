@@ -1115,7 +1115,7 @@ def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:
 
     A sheet is found in its project wherever its file sits below the project's
     folder. A file that no sheet of its project uses is a root. For a sub-sheet,
-    root_path is the project's root schematic.
+    root_path is the top-level sheet of its project that holds it.
 
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
