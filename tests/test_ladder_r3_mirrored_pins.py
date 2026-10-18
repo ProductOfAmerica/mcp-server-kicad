@@ -787,16 +787,16 @@ def _nightly_demo_params():
 def test_kicads_demos_hold_parts_the_check_reads():
     """The premise of the two tests below, so that they cannot pass for want of a case: the
     demo sheets they read on every push place symbols at 90 or 270 with a mirror, as the
-    lexer port and the transform port read them."""
-    if not K.share_dirs():
+    lexer port and the transform port read them. Skipped where the install ships no demo
+    sheets."""
+    demos = K.shipped(subdirs=("demos",), suffixes=(".kicad_sch",), names=(), cap=K.PER_PUSH_CAP)
+    if not demos:
         pytest.skip(K.NO_INSTALL)
     import test_ladder_r2_pins as PINS
 
     mirrored = {T.parse_symbol_transform([("at", str(r)), ("mirror", m)]) for r, m in _MIRRORED}
     count = 0
-    for _name, path in K.shipped(
-        subdirs=("demos",), suffixes=(".kicad_sch",), names=(), cap=K.PER_PUSH_CAP
-    ):
+    for _name, path in demos:
         try:
             root = K.lexed(path)[0]
         except L.LexError:
@@ -807,6 +807,20 @@ def test_kicads_demos_hold_parts_the_check_reads():
             except LookupError:
                 continue
     assert count > 0
+
+
+def test_the_demo_premise_skips_where_the_install_ships_no_demos(monkeypatch):
+    """An install with templates and no demo sheets (the macOS cask) fails the premise on
+    'assert 0 > 0' unless it skips; no such install is at hand here, so K.shipped answers
+    nothing for the demos."""
+    shipped = K.shipped
+
+    def without_demos(subdirs=("demos", "template"), **kwargs):
+        return [] if subdirs == ("demos",) else shipped(subdirs=subdirs, **kwargs)
+
+    monkeypatch.setattr(K, "shipped", without_demos)
+    with pytest.raises(pytest.skip.Exception):
+        test_kicads_demos_hold_parts_the_check_reads()
 
 
 @pytest.mark.parametrize("path", _demo_params(K.PER_PUSH_CAP))
