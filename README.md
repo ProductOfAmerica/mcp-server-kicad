@@ -286,7 +286,7 @@ app through Controlled folder access.
 | `get_symbol_pins` | Get pin info for a symbol in the schematic's `lib_symbols` |
 | `get_pin_positions` | Get absolute pin positions for a placed component, accounting for rotation and mirror |
 | `get_net_connections` | Get all connections for a named net (multi-hop BFS wire tracing) |
-| `list_unconnected_pins` | List unconnected pins from ERC data |
+| `list_unconnected_pins` | List the pins ERC reports as not connected, positions in millimetres; a sub-sheet gets its own |
 
 **Write**
 
@@ -321,7 +321,7 @@ app through Controlled folder access.
 
 | Tool | Description |
 |------|-------------|
-| `run_erc` | Run Electrical Rules Check, with `project_path` support for hierarchies |
+| `run_erc` | Run Electrical Rules Check, positions in millimetres; a sub-sheet is checked from its project's root and gets its own violations, with `project_path` to name the project |
 | `export_schematic` | Export schematic to PDF, SVG, or DXF |
 | `export_netlist` | Export the schematic netlist |
 | `export_bom` | Export a Bill of Materials as CSV |

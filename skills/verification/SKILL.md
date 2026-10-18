@@ -196,11 +196,14 @@ Use `run_erc` to get the full violation list. Read every violation
 before fixing anything — some errors share a root cause.
 
 **Sub-sheet note:** `run_erc` and `list_unconnected_pins` automatically
-redirect sub-sheets to the root schematic for full hierarchy context.
-This eliminates false positives from missing parent connections
-(hierarchical label errors, dangling wire errors). The result is
-filtered to only include violations from the target sub-sheet, and a
-`"note"` field indicates when redirection occurred.
+check a sub-sheet from its project's root schematic, wherever the sheet
+file sits in the project, for full hierarchy context. This eliminates
+false positives from missing parent connections (hierarchical label
+errors, dangling wire errors). The result holds only that sheet's own
+violations, one entry for each place the project uses it, and a `"note"`
+field says when the check ran from the root. A file that no sheet of its
+project uses is checked on its own. Item positions are millimetres in
+sheet coordinates, the numbers `get_pin_positions` prints.
 
 ### Step 2: Fix by Category
 

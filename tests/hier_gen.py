@@ -14,7 +14,7 @@ result in the tests that use it; nothing here is the oracle.
         Deep sch/deep/deep.kicad_sch   one unwired resistor, named from mid.kicad_sch
       Sub    sub/sub.kicad_sch         one unwired resistor and a hierarchical label on a sheet pin
     stray.kicad_sch           in the project's folder, used by no sheet; one unwired resistor
-    sch/stray2.kicad_sch      in a subfolder, used by no sheet
+    sch/stray2.kicad_sch      in a subfolder, used by no sheet; one unwired resistor
 
 Every sheet file has a name of its own, because the netlist names a sheet's file by the
 file's name alone.
@@ -93,6 +93,7 @@ def build(tmp_path: Path) -> Hierarchy:
         ("deep", "R3"),
         ("sub", "R4"),
         ("stray", "R5"),
+        ("stray2", "R6"),
     ):
         schematic.place_component(
             "Device:R",

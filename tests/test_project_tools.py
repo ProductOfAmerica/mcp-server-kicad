@@ -875,7 +875,12 @@ class TestSubSheetErcRedirect:
         result = schematic.run_erc(schematic_path=str(child_path))
         assert result.note is not None, "Expected a 'note' indicating root redirect"
         assert "root schematic" in result.note
-        assert result.violation_count == 0
+        # The child's own violations, as kicad-cli's report of the root files them. They were
+        # 0 here until the tool matched sheets by file name, which kicad-cli's paths never hold.
+        want = erc_oracle.Project(proj_dir / "erc_proj.kicad_sch").own(child_path)
+        assert want, "premise: kicad-cli reports violations that live in the child"
+        assert erc_oracle.keys(result.violations) == erc_oracle.keys(want)
+        assert result.violation_count == len(want)
 
     def test_erc_on_root_no_redirect(self, tmp_path: Path):
         """Run ERC on root schematic directly — no redirect note expected."""

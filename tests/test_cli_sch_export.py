@@ -117,7 +117,7 @@ class TestListUnconnectedPins:
                 },
             ],
         }
-        result = schematic._parse_unconnected_pins(fake_erc_json)
+        result = schematic._parse_unconnected_pins(fake_erc_json["sheets"][0]["violations"])
         # Should include the real unconnected pin, not the sub-sheet noise
         assert len(result) == 1
         assert result[0]["description"] == "Pin not connected"
@@ -125,5 +125,5 @@ class TestListUnconnectedPins:
     def test_empty_violations(self):
         """No violations returns empty list."""
         fake_erc_json = {"sheets": [{"violations": []}]}
-        result = schematic._parse_unconnected_pins(fake_erc_json)
+        result = schematic._parse_unconnected_pins(fake_erc_json["sheets"][0]["violations"])
         assert result == []
