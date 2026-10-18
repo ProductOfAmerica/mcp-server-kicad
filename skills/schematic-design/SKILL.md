@@ -241,7 +241,7 @@ the wiring lands in every instance, and the note names each one.
 
 **Placing components:**
 - `place_component` — place a symbol instance on the schematic
-- `move_component` — reposition a placed component
+- `move_component`: move or turn a placed component. Its fields travel with it, wires stay put and the result names the pins whose connections changed; called at the symbol's own position it turns the symbol in place. Place and move parts before wiring, and after a move reconnect the pins the result names.
 - `remove_component` — delete a placed component
 - `set_component_property` — change reference, value, footprint, etc.
 - `set_page_size` — resize the schematic sheet

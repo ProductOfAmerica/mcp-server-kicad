@@ -8,9 +8,14 @@ from __future__ import annotations
 
 import builtins
 import random
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
+import sexpr_gen
+from hypothesis import example, given, settings
+from hypothesis import strategies as st
+from kicad_ref import parse_units as P
 from kicad_ref import transform as T
 from routing_fixtures import ORIENTED, fresh, junction, label, place, polyline, wire
 
@@ -75,6 +80,31 @@ def test_an_angle_kicad_truncates_is_read_the_same_way():
     assert e.value.codes == ("unloadable",)
 
 
+#: Orientation atoms KiCad's parser refuses (kicad_ref.parse_units) and Python's float() reads:
+#: nan and inf are no NUMBER, so NeedNUMBER stops at them, and 1e400 is a literal from_chars
+#: reports out of range. int() of an infinity raises OverflowError, which _angle once let out.
+_REFUSED_ANGLES = [
+    "nan",
+    "inf",
+    "-inf",
+    "infinity",
+    "-Infinity",
+    "1e400",
+    "-1e400",
+    "9e99999999999",
+]
+
+
+@pytest.mark.parametrize("atom", _REFUSED_ANGLES)
+def test_a_token_int_cannot_truncate_is_no_angle(atom):
+    """The parser port refuses the atom, so no angle is the angle _angle returns for it, not
+    an exception. (A leading '+', 9_0, digits outside ASCII and an underflow are refused by
+    KiCad and read by float() without an exception: bug 70, test_ladder_r2_transform.py.)"""
+    with pytest.raises(P.ParseRefusal):
+        T.parse_symbol_transform([("at", atom.encode())])
+    assert C._angle(atom) is None
+
+
 @pytest.mark.no_kicad_validation
 def test_an_unloadable_angle_refuses_the_whole_call(tmp_path):
     """The file is unloadable on purpose (that is the subject), so kicad-cli cannot check it."""
@@ -87,6 +117,22 @@ def test_an_unloadable_angle_refuses_the_whole_call(tmp_path):
     assert "angle 45" in plan.refusal()
 
 
+@pytest.mark.no_kicad_validation
+@pytest.mark.parametrize("angle", ["inf", "1e400"])
+def test_an_angle_that_raised_in_int_refuses_the_whole_call(tmp_path, angle):
+    """The same for the angles that raised inside float()'s int(): the plan is refused as
+    unloadable and names the angle, where it escaped as an OverflowError."""
+    p = fresh(tmp_path)
+    place(p, "R", "R1", 101.6, 101.6)
+    data = (
+        Path(p).read_bytes().replace(b"(at 101.6 101.6 0)", f"(at 101.6 101.6 {angle})".encode(), 1)
+    )
+    Path(p).write_bytes(data)
+    plan = _plan(p, [("R1", "1")])
+    assert plan.codes == ["unloadable"]
+    assert f"angle {angle}" in plan.refusal()
+
+
 def test_ints_format_exactly():
     assert [C.mm(v) for v in (977900, 1016000, -12700, 0, 1, 25400)] == [
         "97.79",
@@ -97,6 +143,42 @@ def test_ints_format_exactly():
         "2.54",
     ]
     assert C.iu("97.79") == 977900 and C.iu("-0.00005") == -1
+
+
+#: Pin numbers: any text, runs of the decimal digits at any length, the characters str.isdigit
+#: accepts and int() refuses (a superscript, a circled digit), and the lone surrogates a
+#: byte that is no UTF-8 decodes to under surrogateescape, as the CST reads one.
+_PIN_NUMBERS = st.one_of(
+    st.text(max_size=8),
+    st.text("0123456789", max_size=12),
+    st.text("0123456789²①٣", max_size=6),
+    st.text(st.characters(min_codepoint=0xDC80, max_codepoint=0xDCFF), max_size=3),
+)
+
+
+@settings(max_examples=sexpr_gen.budget(2))
+@given(a=_PIN_NUMBERS, b=_PIN_NUMBERS)
+@example("²", "2")
+@example("①", "10")
+@example("9" * 4301, "9" * 4300)
+@example("9" * 4301, "²")
+def test_pad_order_ranks_any_two_pin_numbers(a, b):
+    """Any two pin numbers are ranked one way or the other, none refused: a number made of
+    decimal digits, whatever its length, goes by its value (decimal.Decimal, which has no
+    digit limit), ahead of every other text, and ties and other texts go by their text.
+    So 2 comes before 10 and '²' and a 4301 digit number have places, where int() refused
+    both."""
+    ka, kb = C._pad_order(a), C._pad_order(b)
+    if a == b:
+        assert ka == kb
+        return
+    assert (ka < kb) != (kb < ka), f"{a!r} and {b!r} are not ranked one way"
+    if a.isdecimal() and b.isdecimal():
+        assert (ka < kb) == ((Decimal(a), a) < (Decimal(b), b))
+    elif a.isdecimal() or b.isdecimal():
+        assert (ka < kb) == a.isdecimal()
+    else:
+        assert (ka < kb) == (a < b)
 
 
 # ---------------------------------------------------------------------------------------------

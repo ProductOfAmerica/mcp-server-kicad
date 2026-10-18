@@ -644,6 +644,43 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   the kicad-cli 9 netlist anchors locally and on the Linux 9.0 leg (kicad-cli 10 joins a wire through
   a junction, so it cannot see the cut), and the KiCad 10 group twin on the 10.0 leg, macOS and
   Windows.
+- 2026-10-15: move_component carries a placed symbol's fields (step 9, #112, bugs 1, 12, 96, 97
+  and 98). A property's `(at)` is the field's drawn position, S + T * (textPos - S)
+  (sch_field.cpp:1615-1628 at 9.0.8), read back through T^-1 in the frame KiCad's parser holds
+  where the property sits (sch_io_kicad_sexpr_parser.cpp:3071-3098 and 3265-3268 at 9.0.8), and
+  Move, Rotate and both mirrors keep textPos - S. The tool used to rewrite the symbol's first `(at)`
+  and nothing else, so every field stayed behind. It now reads the frames in file order
+  (`_connectivity.symbol_frames`), rewrites the last `(at)`, the one KiCad keeps, and carries each
+  property's last `(at)` by P' = S'_p + T'_p * T_p^-1 * (P - S_p) (`_connectivity.carry`),
+  rewriting only atoms whose value changes, with `mm` text; angles, effects and
+  `(fields_autoplaced)` are untouched, and the file is written once through `_atomic_write`. A call
+  at the symbol's own position, compared in IU, is in place: no grid snap (KiCad turns a single
+  symbol about its own position, sch_edit_tool.cpp:814 at 9.0.8) and no page check, since nothing
+  moves, so a symbol KiCad loads off the page can still be turned or have its angle repaired; a
+  call that changes nothing writes nothing. A symbol with no `(at)` is refused with the file
+  intact; one whose angle `_connectivity._angle` cannot read as 0, 90, 180 or 270, or that has
+  none, is refused without a rotation and repaired with one, its fields keeping the places the
+  file gives them. KiCad reads the angle unconditionally
+  (`parseDouble( "symbol orientation" )`, sch_io_kicad_sexpr_parser.cpp:3074 at 9.0.8, 3191 at
+  10.0.7), so that covers an `(at x y)` with no angle, `inf` and `nan`, which are no NUMBER, and
+  `1e400`, which `from_chars` reports out of range, as well as a number that is no quarter turn;
+  kicad-cli 9.0.8 refused each, measured on 2026-10-17. `_connectivity._angle` answers None for
+  `inf` and `1e400`, where `int(float())` raised an `OverflowError` that an MCP client sees only
+  as "Error executing tool". `symbol_frames` still reads a missing angle as 0, and the
+  number readers still accept tokens KiCad refuses without an exception (a leading `+`, `9_0`,
+  `1e-400`): bug 70, step 12b, whose strict xfails in `test_ladder_r2_transform.py` are untouched.
+  A rotation is written as KiCad writes it unless the angle atom already holds that text, so a
+  call with one repairs those spellings, as the old unconditional rewrite did (kicad-cli 9.0.8,
+  2026-10-18). The contact report only advises, so what the model cannot read or compare (a refusal, or an
+  exception) gets "Connections were not checked" and the move goes ahead. KiCad's GUI
+  re-places auto-placed fields after a turn when its autoplace preference is on; this tool keeps
+  KiCad's core rule, since the autoplacer needs font metrics (step 23). Evidence (kicad-cli
+  9.0.8, 2026-10-15): the port's drawn positions match kicad-cli's plotted anchors for all 88
+  fields of a sheet holding every state in KiCad's child order and in three orders it never
+  writes, within 1 IU; the 112 schematics KiCad ships hold 4,361 placed symbols, none in a
+  non-canonical order. Judge lesson: plotted field anchors come from the
+  invisible `<text>` element; the stroked glyph boxes are drawn upright and sit 0.0555 to 0.0857 mm
+  off the anchor, so they cannot judge a rigid move.
 - 2026-10-17: the CST reads KiCad's tokens and escapes, the writers write the numbers KiCad holds,
   and names reach the file through set_text (step 11, #114, bugs 4, 28, 29, 59, 61, 64, 65, 66, 67
   and 86). It supersedes the codec and malformed-input bullets of ADR-1, which state the contract

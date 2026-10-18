@@ -336,6 +336,21 @@ Each slice appends an entry when it lands.
   pull request's. It reports none on the 36 demo projects KiCad 9.0.8 ships (measured
   2026-10-15).
 
+- 2026-10-15, step 9: move_component reads the model, read-only, to say which pins of the moved
+  symbol changed contacts (`_connectivity.contact_changes`). A pin's contacts are the items with a
+  connection point exactly at its end, the moved symbol's own pins left out because they travel
+  with it. A pin end on a wire's interior is no contact. test_new_sch_tools.py::TestMoveComponent
+  checks, against kicad-cli's netlist, that in seven scenarios (one of them a pin landing on a
+  wire's interior) the pins named are exactly those whose net changed, and, against its ERC, that
+  a no-connect flag the report says was left is dangling. The report only advises: when the model
+  refuses the sheet or cannot read it, or the comparison of the pins' contacts raises, the result
+  says "Connections were not checked" and the move goes ahead. The pins are listed in
+  `_pad_order`, which ranks any text: it used to call int() on a string of digits, which raises
+  for '²' and for more than 4300 digits, though kicad-cli 9.0.8 loads a sheet with such a pin. The
+  model's other change is that `_angle` no longer raises on `inf` and `1e400`: a symbol at either
+  is `[unloadable]`, as one at 45 is. Its other readings of what KiCad refuses (a missing angle
+  read as 0, a leading `+`) are bug 70's, step 12b.
+
 - 2026-10-17, step 8c: validate_hierarchy lists the no-connect flags and wire ends left at the
   mirrored pin point. From v0.5.8 to v0.20.1 _transform_pin_pos mirrors a pin before it rotates it;
   v0.2.0 to v0.5.7 turn the other way and v0.21.0 has no such function. Each tag's function, run on
