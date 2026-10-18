@@ -928,20 +928,11 @@ def test_edit_judge_places_and_refuses_by_construction():
     assert (placed.index, placed.new_at) in {(2, 7), (3, 11)}
 
 
-_BUG_86 = (
-    "bug 86: assert_inserted and assert_removed try as the new item only identical"
-    " siblings next to each other, so an insertion whose items have identical siblings"
-    " further along (a pair put before an identical pair) is refused though the bytes fit;"
-    " fixed by step 11"
-)
-
-
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_86)
 def test_judge_finds_new_items_put_before_identical_ones():
     """after is before with " (x) (y)" put straight after "(r" (by construction): the new
     pair is the first one, the only pair whose removal leaves before's "\n" and "\t". The
     alignment matches the leading pair and reads the trailing one as new, and the pair
-    alternates, so no run of identical siblings holds the right choice."""
+    alternates, so no run of identical siblings next to each other holds the right choice."""
     before = b"(r\n(x)\t(y))"
     after = before[:2] + b" (x) (y)" + before[2:]
     edits = J.assert_inserted(before, after, heads=["x", "y"])
@@ -950,7 +941,6 @@ def test_judge_finds_new_items_put_before_identical_ones():
     assert [(e.index, e.old_at) for e in removed] == [(1, 3), (2, 7)]
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_86)
 def test_judge_finds_the_new_item_across_other_insertions():
     """after is before with two chunks of whole items put in, every byte of before where it
     was (by construction): so it is a pure insertion of (k a), (k b) and the later (m),

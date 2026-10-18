@@ -1154,13 +1154,15 @@ class TestPageBoundary:
             )
 
     def test_edge_coordinates_accepted(self, scratch_sch):
-        """Coordinates exactly at page edges should be accepted."""
+        """The last grid points on the A4 sheet, 233 and 165 steps of 1.27 mm, are accepted.
+        The check reads the snapped position, so (297, 210) itself, whose grid point is
+        (297.18, 209.55), is refused (tests/test_ladder_r2_writers.py)."""
         result = schematic.place_component(
             lib_id="Device:R",
             reference="R23",
             value="1K",
-            x=297,
-            y=210,
+            x=295.91,
+            y=209.55,
             schematic_path=str(scratch_sch),
             project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )

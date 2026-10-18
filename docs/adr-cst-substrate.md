@@ -13,8 +13,8 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
 **Evidence.** Round-trip byte-identity 15,711/15,711 files, 423 MB (all stock symbol libs, all 15,415 stock footprints, KiCad 6/7/8 demo saves, fork testdata); verifier reproduced exactly and extended to 596 further files (594/596, see policy below). Splices preserve 100% of bytes outside the edited region and are semantically taken up by KiCad (ERC violation deltas, netlist net renames, DRC item-count changes on boards). Parse+serialize of the 2.4 MB Device.kicad_sym: ~1.07 s.
 
 **Policies the spikes forced:**
-- **Escape codec is the only lossy surface.** KiCad's contract, measured against its writers: unescape `\\ \" \n \r \t`, keep the backslash on unknown escapes, re-escape `\ " LF CR` on write, TAB emitted raw. Raw LF inside a quoted atom is a KiCad hard reject; BOM is a KiCad hard reject. The escape probe stays in the tree as a per-KiCad-version regression test. (kiutils gets this wrong today: it corrupts `\\` and `\n` payloads on read.)
-- **Malformed input policy: refuse loudly.** KiCad's reader silently repairs broken files; its own 9.0.8 installer ships two malformed demos (unbalanced parens) that KiCad opens and the CST rejects. Consequence one: `kicad-cli` rc=0 proves loadability, never well-formedness, so byte-level checks stay the primary oracle in tests. Consequence two: the CST raises a positioned syntax error instead of guessing; same philosophy as the version guard.
+- **Escape codec is the only lossy surface.** KiCad's contract, measured against its writers: unescape `\\ \" \n \r \t`, keep the backslash on unknown escapes, re-escape `\ " LF CR` on write, TAB emitted raw. Raw LF inside a quoted atom is a KiCad hard reject; BOM is a KiCad hard reject. The escape probe stays in the tree as a per-KiCad-version regression test. (kiutils gets this wrong today: it corrupts `\\` and `\n` payloads on read.) The 2026-10-17 entry in the status log extends the unescape list to every escape KiCad's lexer decodes and adds the NUL refusal.
+- **Malformed input policy: refuse loudly.** KiCad's reader silently repairs broken files; its own 9.0.8 installer ships two malformed demos (unbalanced parens) that KiCad opens and the CST rejects. Consequence one: `kicad-cli` rc=0 proves loadability, never well-formedness, so byte-level checks stay the primary oracle in tests. Consequence two: the CST raises a positioned syntax error instead of guessing; same philosophy as the version guard. The 2026-10-17 entry in the status log adds a string that does not close on its own line to what is refused.
 - **Bytes-only I/O.** Text-mode reads silently rewrote every CRLF in a 5.9 MB board during spike B's first attempt. Inserted spans copy the EOL/indent of their anchor sibling (`insert_after(ref, node, sep=reuse)`), which is all the pretty-printing the substrate needs.
 
 **Node API (everything the spikes needed, nothing more):** `parse(bytes) -> Node`, `serialize(Node) -> bytes`, `head / atoms / lists / find / find_all`, `atom.set_text`, `list.copy`, `parent.insert_after(ref, node, sep=None)`, `text` decode-on-demand.
@@ -644,3 +644,82 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   the kicad-cli 9 netlist anchors locally and on the Linux 9.0 leg (kicad-cli 10 joins a wire through
   a junction, so it cannot see the cut), and the KiCad 10 group twin on the 10.0 leg, macOS and
   Windows.
+- 2026-10-17: the CST reads KiCad's tokens and escapes, the writers write the numbers KiCad holds,
+  and names reach the file through set_text (step 11, #114, bugs 4, 28, 29, 59, 61, 64, 65, 66, 67
+  and 86). It supersedes the codec and malformed-input bullets of ADR-1, which state the contract
+  as the spikes measured it.
+
+  Tokens are DSNLEXER's (common/dsnlexer.cpp:545-833 at 9.0.8, the same at 10.0.7): a line whose
+  first non-blank byte is `#` is whitespace, and lives in the separator of the node after it; NUL is
+  whitespace, form feed and vertical tab are not; a double quote inside a run of bare text is one of
+  its bytes; and a string that does not close on its own line is refused with a SyntaxError, as an
+  unbalanced paren already was. The bar, which DSNLEXER makes a token of its own, stays inside the
+  run of bare text it touches, so a bare atom may hold one. Atom.text decodes every escape the lexer
+  does: `\a \b \f \v \n \r \t \" \\`, `\x` with up to two hex digits, and one to three octal digits
+  cut to a byte; any other backslash stays. Atom.set_text writes as OUTPUTFORMATTER::Quotew does
+  (common/richio.cpp:509-556 at 9.0.8) and also quotes a bare value holding a bar or starting with
+  `#`. A value holding a NUL, or a lone surrogate, is refused with ValueError and the atom left as
+  it was: KiCad 9 ends a value at its first NUL (include/dsnlexer.h:434-437 at 9.0.8) and no escape
+  writes one. insert_after and insert_before reuse the anchor's own line break and indentation when
+  its separator carries a comment line, so a comment is never copied beside a node, and
+  remove_child takes the comment line above a node with it. List.copy walks an explicit stack, so
+  it takes every tree parse takes. `_connectivity`'s byte prefilter reads whitespace as the CST
+  does and lets a string spelled with escapes through to a parse, since a prefilter that misses a
+  spelling the CST reads as a reference drops that reference silently. Judges: the lexer port
+  (`tests/kicad_ref/dsn_lexer.py`) against the CST's token spans and against kicad-cli on
+  hand-edited files, in `test_ladder_r1_tokens.py` and `test_ladder_r1_codec.py`.
+
+  Numbers. KiCad holds a coordinate or a distance as a whole count of internal units (100 nm in a
+  schematic and a symbol library, 1 nm on a board and a footprint; include/base_units.h:70 and 72
+  at 9.0.8) and prints it with FormatInternalUnits (common/eda_units.cpp:170-200 at 9.0.8), an
+  angle with FormatAngle. `_num(v)` wrote repr(v), so float noise (0.1 + 0.2), digits below the
+  file's resolution and exponents (1e-05) reached the files. `_num(v)` now writes
+  FormatInternalUnits' spelling where that reads back as v. `_num(v, iu)`, `_snap` and
+  `_fill_at(..., iu=...)` write the position KiCad holds for a file of iu units per millimetre
+  (KiROUND, half away from zero, now in `_cst`), and `_angle_text`, moved there from pcb.py, is
+  FormatAngle's text and never "-0". Every schematic, symbol, sheet and board writer passes its
+  file's scale; the `round(v, 4)` calls that only stripped noise are gone; a result that echoes a
+  coordinate reports the snapped value, and a position is snapped before the page bound reads it.
+  `set_page_size` is the exception, since KiCad holds a User page in whole mils.
+  `test_ladder_r2_writers.py` calls each of its 40 cases, a writer on a KiCad 9 and a KiCad 10
+  board where the formats differ, with off-grid and float-noise requests and judges every number
+  the call adds or changes, and every number its result reports, by KiCad's own reading and
+  printing (the parse_units and eda_units ports).
+
+  Names and paths. `_pad_net_bytes`, `_ensure_net_rows` and `_set_fp_path` escaped by hand, the
+  path not at all. Each now fills a template with set_text: `(net 0 "x")` for a KiCad 9 net row or
+  pad net, `(net "x")` for a KiCad 10 net (`_set_item_net` takes it too), `(path "x")`. Every net
+  row, pad net and footprint path in the 18 readable demo boards of KiCad 9.0.8 (formats 20241030
+  and 20241229) has the first and the third shape once its values are replaced (measured
+  2026-10-11); the KiCad 10 shape is read from 10.0.7's writer (pcb_io_kicad_sexpr.cpp:1858). A
+  name holding a NUL is refused before anything is inserted.
+
+  create_sym_lib_table fills a template of the table KiCad 9 writes (SYMBOL_LIB_TABLE::Format around
+  LIB_TABLE_ROW::Format rows, eeschema/symbol_lib_table.cpp:300-309 and common/lib_table_base.cpp:
+  125-146 at 9.0.8; every version 7 table KiCad 9.0.8 ships matches the port in
+  `tests/kicad_ref/lib_table.py`, and pcbnew 9.0.8 exposes no table writer to compare it with).
+  KiCad 10 writes version 7 in a layout of its own, a tab indent and a space between the members
+  of a row (common/libraries/library_table.cpp:197 and 354 at 10.0.7; the templates it ships), and
+  the port skips those tables. Its reader takes the KiCad 9 layout: on the KiCad 10 legs of CI
+  (Linux, macOS and Windows, 2026-10-17) kicad-cli resolved libraries through tables written in
+  it (`test_ladder_r3_lib_table.py`). KiCad 9 decodes escapes in a table value and KiCad 10 decodes none
+  (include/libraries/library_table_grammar.h:60 at 10.0.7), so a value reads alike in both only
+  when it needs no escape. The call is refused, naming the entry and with an existing
+  table and the directory untouched, for an empty nickname, a nickname holding a character below
+  U+0020, a backslash or a colon (LIB_ID's rule, common/lib_id.cpp:255-274 at 9.0.8), a repeated
+  nickname, an empty URI, a double quote in either, and a line end or NUL in a URI. A URI's
+  backslashes are written as '/', as LIB_TABLE_ROW::Format writes them. Judges: the port,
+  kicad-cli's ERC on a project that uses the table (`test_ladder_r3_lib_table.py`), and the
+  cross-version reading rule of `test_ladder_r1_helpers.py`. Gates: the ladder's tests for bugs 4,
+  28, 29, 59, 61, 64, 65, 66, 67 and 86, and the KiCad 10 legs of `kicad-suite.yml`,
+  `macos-discovery.yml` and `windows.yml`.
+
+  The fp-lib-table reader takes a row's URI both ways the two majors read it. Atom.text is KiCad 9's
+  reading, escapes decoded; KiCad 10 keeps the bytes between a table value's quotes
+  (library_table_grammar.h:60 and library_table_parser.cpp:96-104 at 10.0.7). A hand-written
+  `${KIPRJMOD}\footprints\X.pretty` is therefore a path through a form feed to KiCad 9 and the
+  path as written to KiCad 10, and a row dropped for the first reading lets place_footprint copy the
+  footprint of a same-named library further down the resolution order. `pcb._read_fp_lib_table`
+  serves a row by the decoded URI when that names a directory (a file, for a nested table) and by
+  the URI as written when it does not (`_uri_readings`). Judges: the lexer port for KiCad 9's
+  reading and the bytes as written for KiCad 10's, in `test_ladder_r3_lib_table.py`.

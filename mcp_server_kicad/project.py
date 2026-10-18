@@ -15,7 +15,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 import mcp_server_kicad._connectivity as _connectivity
 import mcp_server_kicad._cst as _cst
-from mcp_server_kicad._cst import _fill_at, _node_text, _num, _numish
+from mcp_server_kicad._cst import SCH_IU_PER_MM, _fill_at, _node_text, _num, _numish, _snap
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -227,30 +227,100 @@ def create_symbol_library(symbol_lib_path: str) -> str:
     return f"Created symbol library at {p}"
 
 
+# A sym-lib-table as KiCad 9 writes it, with one row (SYMBOL_LIB_TABLE::Format,
+# eeschema/symbol_lib_table.cpp:300-309 at 9.0.8). Names and URIs go in through set_text, which
+# quotes as KiCad's Quotew does.
+_SYM_LIB_TABLE_TPL = (
+    b"(sym_lib_table\n  (version 7)\n"
+    b'  (lib (name "x")(type "KiCad")(uri "x")(options "")(descr ""))\n)\n'
+)
+
+#: What a table value cannot hold. KiCad 9 decodes escapes in a table value and KiCad 10
+#: decodes none (library_table_grammar.h:60 at 10.0.7), so a value that needs an escape reads
+#: differently in the two: a double quote, a line end, and a NUL, which KiCad 9 takes as the
+#: end of a value.
+_TABLE_UNSPELLABLE = '"\n\r\x00'
+
+
+def _lib_row_problem(name: str, uri: str) -> tuple[str, str] | None:
+    """The (field, reason) of the first thing a table row cannot hold, or None. ``uri`` is
+    the text as written, its backslashes already turned into '/'. A nickname is not empty
+    and holds no character below U+0020, no backslash and no colon (LIB_ID's rule); a URI is
+    not empty; neither holds a character of _TABLE_UNSPELLABLE."""
+    if not name:
+        return "name", "a library nickname cannot be empty"
+    illegal = next((c for c in name if ord(c) < 0x20 or c in "\\:"), None)
+    if illegal is not None:
+        return "name", f"{name!r} holds {illegal!r}, which a library nickname cannot hold"
+    if not uri:
+        return "uri", "a library path cannot be empty"
+    for field, text in (("name", name), ("uri", uri)):
+        bad = next((c for c in text if c in _TABLE_UNSPELLABLE), None)
+        if bad is not None:
+            return field, (
+                f"{text!r} holds {bad!r}, which KiCad 9 and KiCad 10 do not read alike in a table"
+            )
+    return None
+
+
+def _lib_table_rows(entries: list[LibTableEntry]) -> list[tuple[str, str]]:
+    """The (nickname, uri) row each entry becomes, or a ToolError naming the first entry the
+    table cannot hold, before anything is written. A URI's backslashes become '/', as KiCad's
+    own writer stores them. A nickname an earlier entry has is refused too."""
+    rows: list[tuple[str, str]] = []
+    first_at: dict[str, int] = {}
+    for index, entry in enumerate(entries):
+        name = entry["name"]
+        uri = entry["uri"].replace("\\", "/")
+        problem = _lib_row_problem(name, uri)
+        if problem is None and name in first_at:
+            problem = "name", f"{name!r} is also the nickname of entries[{first_at[name]}]"
+        if problem is not None:
+            field, reason = problem
+            raise ToolError(
+                f"entries[{index}] {field}: {reason}. Nothing was written; a sym-lib-table"
+                " already in the directory is unchanged."
+            )
+        first_at[name] = index
+        rows.append((name, uri))
+    return rows
+
+
 @mcp.tool(annotations=_DESTRUCTIVE)
 def create_sym_lib_table(directory: str, entries: list[LibTableEntry]) -> str:
     """Create a sym-lib-table file in the given directory.
 
-    Each entry dict needs 'name' and 'uri' keys.
-    Overwrites existing sym-lib-table if present.
+    Each entry dict needs 'name' (the library nickname) and 'uri' (its path, usually
+    "${KIPRJMOD}/..."). Overwrites existing sym-lib-table if present. A backslash in a uri
+    is written as '/', as KiCad stores it.
+
+    The whole list is checked first. An entry that cannot be written as given refuses the
+    call, names the entry, and leaves any existing table as it was: an empty name; a name
+    holding a character below U+0020, a backslash or a colon (a library nickname cannot);
+    a name an earlier entry has; an empty uri; a double quote in a name or uri, or a line
+    end or NUL in a uri (KiCad 9 and KiCad 10 read these differently in a table).
 
     Args:
         directory: Directory to write sym-lib-table in
         entries: List of dicts with 'name' and 'uri' keys
     """
+    rows = _lib_table_rows(entries)
+    tree = _cst.parse(_SYM_LIB_TABLE_TPL)
+    table = tree.lists[0]
+    row_tpl = table.find("lib")
+    table.remove_child(row_tpl)
+    anchor = table.find("version")
+    for name, uri in rows:
+        row = row_tpl.copy()
+        row.find("name").atoms[1].set_text(name)
+        row.find("uri").atoms[1].set_text(uri)
+        table.insert_after(anchor, row)
+        anchor = row
+    data = _cst.serialize(tree)
+
     d = _ensure_dir(directory, "directory")
-
-    lines = ["(sym_lib_table", "  (version 7)"]
-    for entry in entries:
-        name = entry["name"]
-        uri = entry["uri"]
-        lines.append(f'  (lib (name "{name}")(type "KiCad")(uri "{uri}")(options "")(descr ""))')
-    lines.append(")")
-
     table_path = d / "sym-lib-table"
-    # .encode() is UTF-8, where write_text was the platform default. KiCad reads
-    # these as UTF-8, so a non-ASCII library path was already wrong on Windows.
-    _atomic_write(table_path, ("\n".join(lines) + "\n").encode())
+    _atomic_write(table_path, data)
     return f"Created sym-lib-table with {len(entries)} entries at {table_path}"
 
 
@@ -294,19 +364,19 @@ def add_hierarchical_sheet(
 
     # Build sheet block
     sheet = _SHEET_TPL.copy()
-    _fill_at(sheet, x, y)
+    _fill_at(sheet, x, y, iu=SCH_IU_PER_MM)
     size = sheet.find("size")
-    size.atoms[1].set_text(_num(sheet_width))
-    size.atoms[2].set_text(_num(sheet_height))
+    size.atoms[1].set_text(_num(sheet_width, SCH_IU_PER_MM))
+    size.atoms[2].set_text(_num(sheet_height, SCH_IU_PER_MM))
     sheet_uuid = _gen_uuid()
     sheet.find("uuid").atoms[1].set_text(sheet_uuid)
     sheet_props = {pr.atoms[1].text: pr for pr in sheet.find_all("property")}
     name_prop = sheet_props["Sheetname"]
     name_prop.atoms[2].set_text(sheet_name)
-    _fill_at(name_prop, x, round(y - 1.27, 4))
+    _fill_at(name_prop, x, y - 1.27, iu=SCH_IU_PER_MM)
     file_prop = sheet_props["Sheetfile"]
     file_prop.atoms[2].set_text(child_path.name)
-    _fill_at(file_prop, x, round(y + sheet_height + 1.27, 4))
+    _fill_at(file_prop, x, y + sheet_height + 1.27, iu=SCH_IU_PER_MM)
 
     # Pins on the sheet block (left edge) plus stubs and labels in the parent
     inst_anchor = sheet.find("instances")
@@ -315,7 +385,7 @@ def add_hierarchical_sheet(
         pin = _SHEET_PIN_TPL.copy()
         pin.atoms[1].set_text(pin_def["name"])
         pin.atoms[2].set_text(pin_def["direction"])
-        _fill_at(pin, x, pin_y, 180)
+        _fill_at(pin, x, pin_y, 180, SCH_IU_PER_MM)
         pin.find("uuid").atoms[1].set_text(_gen_uuid())
         sheet.insert_before(inst_anchor, pin)
 
@@ -324,7 +394,7 @@ def add_hierarchical_sheet(
         _splice_wire(parent_root, x, pin_y, stub_end_x, pin_y)
         label = _LABEL_TPL.copy()
         label.atoms[1].set_text(pin_def["name"])
-        _fill_at(label, stub_end_x, pin_y, 180)
+        _fill_at(label, stub_end_x, pin_y, 180, SCH_IU_PER_MM)
         label.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(parent_root, "label", label)
 
@@ -348,7 +418,7 @@ def add_hierarchical_sheet(
         hl = _HLABEL_TPL.copy()
         hl.atoms[1].set_text(pin_def["name"])
         hl.find("shape").atoms[1].set_text(pin_def["direction"])
-        _fill_at(hl, label_x, label_y, 180)
+        _fill_at(hl, label_x, label_y, 180, SCH_IU_PER_MM)
         hl.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(child_root, "hierarchical_label", hl)
 
@@ -357,7 +427,7 @@ def add_hierarchical_sheet(
         _splice_wire(child_root, label_x, label_y, stub_end_x, label_y)
         lab = _LABEL_TPL.copy()
         lab.atoms[1].set_text(pin_def["name"])
-        _fill_at(lab, stub_end_x, label_y, 0)
+        _fill_at(lab, stub_end_x, label_y, 0, SCH_IU_PER_MM)
         lab.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(child_root, "label", lab)
 
@@ -586,10 +656,12 @@ def modify_hierarchical_sheet(
         props["Sheetfile"].atoms[2].set_text(file_name)
         changes.append(f"file='{file_name}'")
     if width is not None:
-        size.atoms[1].set_text(_num(width))
+        width = _snap(width, SCH_IU_PER_MM)
+        size.atoms[1].set_text(_num(width, SCH_IU_PER_MM))
         changes.append(f"width={width}")
     if height is not None:
-        size.atoms[2].set_text(_num(height))
+        height = _snap(height, SCH_IU_PER_MM)
+        size.atoms[2].set_text(_num(height, SCH_IU_PER_MM))
         changes.append(f"height={height}")
     _atomic_write(schematic_path, _cst.serialize(tree))
     return f"Modified sheet: {', '.join(changes)}"
@@ -629,7 +701,7 @@ def add_sheet_pin(
     pin = _SHEET_PIN_TPL.copy()
     pin.atoms[1].set_text(pin_name)
     pin.atoms[2].set_text(connection_type)
-    _fill_at(pin, pin_x, pin_y, 180 if side == "left" else 0)
+    _fill_at(pin, pin_x, pin_y, 180 if side == "left" else 0, SCH_IU_PER_MM)
     pin.find("uuid").atoms[1].set_text(_gen_uuid())
     if existing_pins:
         target.insert_after(existing_pins[-1], pin)
@@ -1327,17 +1399,18 @@ def move_hierarchical_sheet(
     tree, root, *_ = _open_sch_cst(schematic_path)
     target = _find_sheet_cst(root, sheet_uuid)
     at = target.find("at")
+    new_x, new_y = _snap(new_x, SCH_IU_PER_MM), _snap(new_y, SCH_IU_PER_MM)
     dx = new_x - float(at.atoms[1].text)
     dy = new_y - float(at.atoms[2].text)
-    at.atoms[1].set_text(_num(new_x))
-    at.atoms[2].set_text(_num(new_y))
+    at.atoms[1].set_text(_num(new_x, SCH_IU_PER_MM))
+    at.atoms[2].set_text(_num(new_y, SCH_IU_PER_MM))
 
     def _shift(node) -> None:
         n_at = node.find("at")
         if n_at is None:
             return
-        n_at.atoms[1].set_text(_num(round(float(n_at.atoms[1].text) + dx, 4)))
-        n_at.atoms[2].set_text(_num(round(float(n_at.atoms[2].text) + dy, 4)))
+        n_at.atoms[1].set_text(_num(float(n_at.atoms[1].text) + dx, SCH_IU_PER_MM))
+        n_at.atoms[2].set_text(_num(float(n_at.atoms[2].text) + dy, SCH_IU_PER_MM))
 
     # Move pins and property positions by the same delta
     for pin in target.find_all("pin"):
@@ -1492,24 +1565,24 @@ def duplicate_sheet(
     new_sheet = _SHEET_TPL.copy()
     new_uuid = _gen_uuid()
     new_sheet.find("uuid").atoms[1].set_text(new_uuid)
-    _fill_at(new_sheet, round(src_x + dx, 4), src_y)
+    _fill_at(new_sheet, src_x + dx, src_y, iu=SCH_IU_PER_MM)
     new_size = new_sheet.find("size")
-    new_size.atoms[1].set_text(_num(src_w))
-    new_size.atoms[2].set_text(_num(src_h))
+    new_size.atoms[1].set_text(_num(src_w, SCH_IU_PER_MM))
+    new_size.atoms[2].set_text(_num(src_h, SCH_IU_PER_MM))
     new_props = {pr.atoms[1].text: pr for pr in new_sheet.find_all("property")}
     name_prop = new_props["Sheetname"]
     name_prop.atoms[2].set_text(new_sheet_name)
-    _fill_at(name_prop, round(src_x + dx, 4), round(src_y - 1.27, 4))
+    _fill_at(name_prop, src_x + dx, src_y - 1.27, iu=SCH_IU_PER_MM)
     file_prop = new_props["Sheetfile"]
     file_prop.atoms[2].set_text(new_file_name)
-    _fill_at(file_prop, round(src_x + dx, 4), round(src_y + src_h + 1.27, 4))
+    _fill_at(file_prop, src_x + dx, src_y + src_h + 1.27, iu=SCH_IU_PER_MM)
 
     # Copy pins with offset and fresh uuids
     inst_anchor = new_sheet.find("instances")
     for pin in source.find_all("pin"):
         new_pin = pin.copy()
         pin_at = new_pin.find("at")
-        pin_at.atoms[1].set_text(_num(round(float(pin_at.atoms[1].text) + dx, 4)))
+        pin_at.atoms[1].set_text(_num(float(pin_at.atoms[1].text) + dx, SCH_IU_PER_MM))
         pu = new_pin.find("uuid")
         if pu is not None:
             pu.atoms[1].set_text(_gen_uuid())
@@ -1634,8 +1707,8 @@ def flatten_hierarchy(
         n_at = node.find("at")
         if n_at is None:
             return
-        n_at.atoms[1].set_text(_num(float(n_at.atoms[1].text) + ox))
-        n_at.atoms[2].set_text(_num(float(n_at.atoms[2].text) + oy))
+        n_at.atoms[1].set_text(_num(float(n_at.atoms[1].text) + ox, SCH_IU_PER_MM))
+        n_at.atoms[2].set_text(_num(float(n_at.atoms[2].text) + oy, SCH_IU_PER_MM))
 
     # Find the max Y extent of root content for offset
     max_y = 0.0
@@ -1704,8 +1777,10 @@ def flatten_hierarchy(
                 pts = new_gi.find("pts")
                 if pts is not None:
                     for xy in pts.find_all("xy"):
-                        xy.atoms[1].set_text(_num(float(xy.atoms[1].text) + x_offset))
-                        xy.atoms[2].set_text(_num(float(xy.atoms[2].text) + y_offset))
+                        x_text = _num(float(xy.atoms[1].text) + x_offset, SCH_IU_PER_MM)
+                        y_text = _num(float(xy.atoms[2].text) + y_offset, SCH_IU_PER_MM)
+                        xy.atoms[1].set_text(x_text)
+                        xy.atoms[2].set_text(y_text)
                 _splice_sch_node(flat_root, token, new_gi)
 
         # Merge labels, junctions, and no-connects with offset

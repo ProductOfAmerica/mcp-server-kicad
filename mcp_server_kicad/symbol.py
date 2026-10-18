@@ -6,7 +6,7 @@ from pathlib import Path
 from mcp.server.mcpserver.exceptions import ToolError
 
 import mcp_server_kicad._cst as _cst
-from mcp_server_kicad._cst import _fill_at, _num, _numish
+from mcp_server_kicad._cst import SCH_IU_PER_MM, _fill_at, _num, _numish, _snap
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -347,11 +347,14 @@ def add_symbol(
     node.atoms[1].set_text(name)
     if not is_power:
         node.remove_child(node.find("power"))
+    pin_names_offset = _snap(pin_names_offset, SCH_IU_PER_MM)
     if pin_names_offset == _DEFAULT_PIN_NAMES_OFFSET:
         # KiCad omits the token at its own default; anything else it writes.
         node.remove_child(node.find("pin_names"))
     else:
-        node.find("pin_names").find("offset").atoms[1].set_text(_num(pin_names_offset))
+        node.find("pin_names").find("offset").atoms[1].set_text(
+            _num(pin_names_offset, SCH_IU_PER_MM)
+        )
     node.find("in_bom").atoms[1].set_text("yes" if in_bom else "no")
     node.find("on_board").atoms[1].set_text("yes" if on_board else "no")
 
@@ -375,10 +378,10 @@ def add_symbol(
         rects = [RectangleSpec(x1=auto_x1, y1=auto_y1, x2=auto_x2, y2=auto_y2)]
     for rect_node, r in zip(_repeat(unit0, unit0.find("rectangle"), len(rects)), rects):
         start, end = rect_node.find("start"), rect_node.find("end")
-        start.atoms[1].set_text(_num(r["x1"]))
-        start.atoms[2].set_text(_num(r["y1"]))
-        end.atoms[1].set_text(_num(r["x2"]))
-        end.atoms[2].set_text(_num(r["y2"]))
+        start.atoms[1].set_text(_num(r["x1"], SCH_IU_PER_MM))
+        start.atoms[2].set_text(_num(r["y1"], SCH_IU_PER_MM))
+        end.atoms[1].set_text(_num(r["x2"], SCH_IU_PER_MM))
+        end.atoms[2].set_text(_num(r["y2"], SCH_IU_PER_MM))
         rect_node.find("fill").find("type").atoms[1].set_text(r.get("fill", "background"))
 
     # Symbol pin angles are the same closed set as schematic rotations, and
@@ -394,8 +397,9 @@ def add_symbol(
             float(p.get("x", 0)),
             float(p.get("y", 0)),
             float(p.get("rotation", 0)),
+            SCH_IU_PER_MM,
         )
-        pin_node.find("length").atoms[1].set_text(_num(float(p.get("length", 2.54))))
+        pin_node.find("length").atoms[1].set_text(_num(float(p.get("length", 2.54)), SCH_IU_PER_MM))
         pin_node.find("name").atoms[1].set_text(p["name"])
         pin_node.find("number").atoms[1].set_text(p["number"])
 

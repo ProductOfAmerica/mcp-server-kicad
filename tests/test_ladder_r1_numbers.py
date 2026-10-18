@@ -1,7 +1,9 @@
 """Rung 1: the number text the CST writes and reads.
 
-_cst._num writes the text of every coordinate and angle a tool emits (through _fill_at
-and the writers); _cst._numish turns number text, or a number, into what a tool prints.
+_cst._num writes the text of every coordinate and distance a tool emits (through _fill_at
+and the writers), exactly without a scale and as the position KiCad holds with one;
+_cst._angle_text writes every angle; _cst._numish turns number text, or a number, into what
+a tool prints.
 
 Judges, none of them the code under test: arithmetic (text read back with float() is the
 number written); KiCad's lexer port, because KiCad needs a NUMBER token wherever it reads
@@ -22,6 +24,7 @@ from hypothesis import example, given
 from hypothesis import strategies as st
 from kicad_ref import dsn_lexer as L
 from kicad_ref import eda_units as U
+from kicad_ref import parse_units as P
 
 from mcp_server_kicad import _cst
 
@@ -57,21 +60,95 @@ def test_num_never_writes_point_zero_or_minus_zero(x):
     assert text != "-0", (x, text)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 61: _num writes number text KiCad never writes (an exponent below 0.0001 mm);"
-        " fixed by step 11"
-    ),
-)
 @example(value=-45, scale=U.PCB_IU_PER_MM)
 @given(value=st.integers(U.INT_MIN, U.INT_MAX), scale=_SCALES)
 def test_num_writes_kicads_text_at_the_files_resolution(value, scale):
     """A coordinate KiCad holds as ``value`` internal units is, in millimetres,
     value / scale; written by _num it must be the text KiCad writes for it. -45 nm on a
-    board is -0.000045 to KiCad and -4.5e-05 to _num."""
+    board is -0.000045 to KiCad (_num used to write -4.5e-05)."""
     assert _cst._num(value / scale) == U.format_internal_units(value, scale)
+
+
+# ---------------------------------------------------------------------------
+# a number written for a file: _num with a scale, _snap, _angle_text
+# ---------------------------------------------------------------------------
+
+#: Millimetres KiCad's int coordinates reach at either scale without KiROUND clamping.
+_MM = st.floats(-2147.0, 2147.0, allow_nan=False, allow_infinity=False)
+
+
+def _reading(scale: int):
+    return P.parse_sch_internal_units if scale == U.SCH_IU_PER_MM else P.parse_board_units
+
+
+@example(v=100.123456, scale=U.SCH_IU_PER_MM)
+@example(v=0.1 + 0.2, scale=U.PCB_IU_PER_MM)
+@example(v=-4.5e-05, scale=U.PCB_IU_PER_MM)
+@example(v=1e-05, scale=U.PCB_IU_PER_MM)
+@example(v=0.5 / U.SCH_IU_PER_MM, scale=U.SCH_IU_PER_MM)
+@example(v=-0.5 / U.SCH_IU_PER_MM, scale=U.SCH_IU_PER_MM)
+@example(v=-1e-09, scale=U.PCB_IU_PER_MM)
+@given(v=_MM, scale=_SCALES)
+def test_num_with_a_scale_writes_kicads_text_for_the_value_it_holds(v, scale):
+    """In a file of ``scale`` units per millimetre KiCad holds KiROUND( v * scale ) units,
+    half away from zero, and writes them with FormatInternalUnits: that is _num(v, scale),
+    and both majors read the text back as the count it was written for."""
+    held = U.kiround(v * scale, major=9)
+    text = _cst._num(v, scale)
+    assert text == U.format_internal_units(held, scale)
+    assert _reading(scale)(text, major=9) == _reading(scale)(text, major=10) == held, text
+
+
+@example(n=0, scale=U.SCH_IU_PER_MM)
+@example(n=U.INT_MAX, scale=U.PCB_IU_PER_MM)
+@given(n=st.integers(U.INT_MIN, U.INT_MAX), scale=_SCALES)
+def test_snap_leaves_a_value_on_the_grid_as_it_is(n, scale):
+    """A count of units over the scale is already what KiCad holds, so _snap hands back that
+    very float; an int on the grid stays an int, so a message that echoes it reads as the
+    request did."""
+    v = n / scale
+    assert _cst._snap(v, scale) is v
+    whole = n // scale
+    assert type(_cst._snap(whole, scale)) is int and _cst._snap(whole, scale) == whole
+
+
+@example(v=0.1 + 0.2, scale=U.SCH_IU_PER_MM)
+@example(v=100.123456, scale=U.SCH_IU_PER_MM)
+@given(v=_MM, scale=_SCALES)
+def test_snap_lands_on_the_nearest_unit_and_stays_there(v, scale):
+    """The snapped value is within half a unit of the request (and a hair for the product
+    v * scale), and is a count of units over the scale, so snapping it again changes nothing."""
+    snapped = _cst._snap(v, scale)
+    assert abs(snapped - v) <= 0.5 / scale + 1e-9, (v, snapped)
+    assert snapped == U.kiround(v * scale, major=9) / scale
+    assert _cst._snap(snapped, scale) == snapped
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_number_that_is_no_number_is_refused_not_written(bad):
+    """NaN and infinity raise instead of becoming text KiCad's parser refuses."""
+    for scale in (None, U.SCH_IU_PER_MM, U.PCB_IU_PER_MM):
+        with pytest.raises((ValueError, OverflowError)):
+            _cst._num(bad, scale)
+    with pytest.raises(ValueError):
+        _cst._angle_text(bad)
+
+
+@example(-0.0)
+@example(0.1 + 0.2)
+@example(1e-05)
+@example(359.9 - 360.0)
+@example(12.3456789012)
+@example(1e300)
+@given(st.floats(-1e300, 1e300, allow_nan=False, allow_subnormal=False))
+def test_angle_text_is_formatangles_text_and_never_minus_zero(angle):
+    """FormatAngle prints ten significant digits (the port in eda_units); an angle with more
+    comes out rounded, so the text is a fixed point of KiCad's read then write, and the one
+    value FormatAngle would write "-0" for is written 0."""
+    text = _cst._angle_text(angle)
+    assert U.format_angle(P.parse_double(text)) == text
+    want = U.format_angle(angle)
+    assert text == ("0" if want == "-0" else want)
 
 
 # ---------------------------------------------------------------------------
