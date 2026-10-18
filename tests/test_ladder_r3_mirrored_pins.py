@@ -870,7 +870,7 @@ def test_a_flag_on_a_hierarchical_label_is_not_reported(tmp_path, oracle):
     """A flag at Q1:1's old point is reported; with a hierarchical label at the same point it
     is not. kicad-cli's ERC marks the flag alone as no_connect_dangling and says nothing of
     it once the label shares its point (ercCheckNoConnects accepts a hierarchical pin or label
-    at the flag's position, connection_graph.cpp:3735-3745 at 9.0.8)."""
+    at the flag's position, connection_graph.cpp:3735-3750 at 9.0.8)."""
     p, at, _end = _q_sheet(tmp_path, "port")
     no_connect(p, *at)
     assert [i["type"] for i in _new_issues(p)] == ["no_connect_off_pin"]

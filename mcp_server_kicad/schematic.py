@@ -1385,7 +1385,7 @@ def _off_pin_items(root, path: str) -> list[dict]:
 
     Only a point where KiCad draws no pin is checked: where it draws one, as at the other pin
     of a two-pin part, the item is on that pin. A flag there is reported unless a sheet pin or
-    a hierarchical label is there too (ercCheckNoConnects, connection_graph.cpp:3735-3745 at
+    a hierarchical label is there too (ercCheckNoConnects, connection_graph.cpp:3735-3750 at
     9.0.8). A wire end is left alone when an end of another item lies on it, a bus's apart:
     KiCad leaves a wire end dangling only where none does (SCH_LINE::UpdateDanglingState,
     sch_line.cpp:616 at 9.0.8). A flag there and the label 0.20.1's connect_pins put there,
@@ -1509,7 +1509,7 @@ def _left_at(model, root, at: Point, pins: list, path: str) -> list[dict]:
 
     out = []
     # ERC takes a no-connect at a sheet pin or a hierarchical label as that port's
-    # (ercCheckNoConnects, connection_graph.cpp:3735-3745 at 9.0.8).
+    # (ercCheckNoConnects, connection_graph.cpp:3735-3750 at 9.0.8).
     port = any(
         it.kind == "sheetpin" or (it.kind == "label" and it.sub == "hierarchical label")
         for it in here
