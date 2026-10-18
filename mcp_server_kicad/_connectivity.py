@@ -317,12 +317,12 @@ def symbol_transform(sym, ref: str) -> tuple[Point, Matrix]:
 def _old_order_transform(sym, ref: str) -> tuple[Point, Matrix]:
     """symbol_transform with the order reversed: each mirror applied before the rotation.
 
-    Deliberately the old, wrong order. Releases before 0.21.0 mirrored a pin before rotating
-    it, KiCad rotates first, so at rotation 90 or 270 with a mirror the point this gives is
-    the pin's end reflected through the symbol's origin. It exists only so validate_hierarchy
-    can find the flags and wires those releases left there (test_ladder_r3_mirrored_pins.py
-    measures 0.20.1 writing at it); nothing may place or read a pin through it."""
-    pos, _kicad = symbol_transform(sym, ref)  # refuses an angle KiCad cannot load
+    Deliberately the old, wrong order: _transform_pin_pos mirrored a pin before rotating it
+    from v0.5.8 to v0.20.1. At rotation 90 or 270 with a mirror the point this gives is the
+    pin's end reflected through the symbol's origin (test_ladder_r3_mirrored_pins.py
+    measures 0.20.1 writing at it). It exists only so validate_hierarchy can find what those
+    releases left there; nothing may place or read a pin through it."""
+    pos, _kicad = symbol_transform(sym, ref)  # raises Refusal for an angle it refuses
     t = _ROT[0]
     for ch in sym.lists:
         if ch.head == "at":

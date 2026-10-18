@@ -1370,35 +1370,36 @@ def _cuts_inside_lines(root, path: str) -> list[dict]:
     return issues
 
 
-#: The releases the notes name as having put pins at the old points.
-_OLD_RELEASES = "before 0.21.0"
+#: The releases whose _transform_pin_pos mirrored a pin before rotating it (git history: v0.5.8
+#: to v0.20.1; v0.2.0 to v0.5.7 turned the other way, v0.21.0 has no such function).
+_OLD_RELEASES = "0.5.8 to 0.20.1"
 
 
 def _off_pin_items(root, path: str) -> list[dict]:
     """validate_hierarchy's issues for the no-connect flags (no_connect_off_pin) and wire ends
-    (wire_end_off_pin) that releases before 0.21.0 left on one parsed sheet where they put a
-    pin. They mirrored a pin before rotating it and KiCad rotates first, so at rotation 90 or
-    270 with a mirror their point is the pin's end reflected through the symbol's origin
+    (wire_end_off_pin) that releases 0.5.8 to 0.20.1 left on one parsed sheet where they put a
+    pin. They mirrored a pin before rotating it, so at rotation 90 or 270 with a mirror their
+    point is the pin's end reflected through the symbol's origin
     (_connectivity._old_order_transform); 0.20.1's no_connect_pin, wire_pins_to_net and
     connect_pins all wrote there (measured: tests/test_ladder_r3_mirrored_pins.py).
 
-    Only a point where KiCad draws no pin is checked. On another pin's end, which is where
-    the other pin of a two-pin part lies, those releases wrote the bytes an edit of that pin
-    writes, so nothing tells the two apart. A flag at the point is reported unless a sheet pin
-    or a hierarchical label is there too, which KiCad accepts a flag on. A wire end is left
-    alone when anything else ends at the point but such a flag and the label 0.20.1's
-    connect_pins put there, Net-(<ref>-<pin>) with the pin as the call named it: KiCad then
-    reads the end as connected (SCH_LINE::UpdateDanglingState, sch_line.cpp:596-640 at
-    9.0.8), and the wire ends KiCad's own demos hold at such points all meet something. Either
-    is left alone where any reader may join it to the pin already (the model's possible view):
-    the flag then marks the pin, and the wire gives it what it was meant to, as once its repair
-    is made.
+    Only a point where KiCad draws no pin is checked: where it draws one, as at the other pin
+    of a two-pin part, the item is on that pin. A flag there is reported unless a sheet pin or
+    a hierarchical label is there too (ercCheckNoConnects, connection_graph.cpp:3735-3745 at
+    9.0.8). A wire end is left alone when an end of another item lies on it, a bus's apart:
+    KiCad leaves a wire end dangling only where none does (SCH_LINE::UpdateDanglingState,
+    sch_line.cpp:616 at 9.0.8). A flag there and the label 0.20.1's connect_pins put there,
+    Net-(<ref>-<pin>) with the pin as the call named it, do not count as such an end. Either
+    is left alone where any reader may join it to a pin KiCad draws for the point already (the
+    model's possible view), as a flag wired to that pin is, or a wire after its repair.
 
-    A flag carries a note, since no tool removes a flag by its position. A wire end's repair is
+    Where several pins were put at the point, each flag and wire end gets one issue that lists
+    them all, with a note and no repair, since which pin it was written for is not known. A
+    flag carries a note, since no tool removes a flag by its position. A wire end's repair is
     wire_pins_to_net with the one local label name on the wire's net, if planning that call
     refuses nothing; else a note, which carries the plan's refusal or, where the net has no
     single local label name, names the pin a run of wires from the end reaches. A sheet the
-    model refuses gets nothing: KiCad cannot load it either."""
+    model refuses gets nothing."""
     if not any(_connectivity.effective_mirror(s) for s in root.find_all("symbol")):
         return []
     try:
@@ -1436,7 +1437,7 @@ def _remove_call(w) -> str:
 
 def _pads_at(pins: list) -> list[tuple]:
     """(symbol, number, name, KiCad's end) once per pad of the (symbol, library pin, end)
-    triples: units placed on one sheet as separate symbols may draw a pad twice."""
+    triples, since two symbols of one reference can each draw a pad."""
     by_pad = {}
     for s, pin, end in pins:
         num = _connectivity._child_text(pin, "number")
@@ -1516,8 +1517,8 @@ def _left_at(model, root, at: Point, pins: list, path: str) -> list[dict]:
         return any(possible.find(p.id) == possible.find(it.id) for p in drawn)
 
     out = []
-    # KiCad accepts a no-connect at a sheet pin or a hierarchical label as marking that port
-    # (ercCheckNoConnects, connection_graph.cpp:3735-3750 at 9.0.8).
+    # ERC takes a no-connect at a sheet pin or a hierarchical label as that port's
+    # (ercCheckNoConnects, connection_graph.cpp:3735-3745 at 9.0.8).
     port = any(
         it.kind == "sheetpin" or (it.kind == "label" and it.sub == "hierarchical label")
         for it in here

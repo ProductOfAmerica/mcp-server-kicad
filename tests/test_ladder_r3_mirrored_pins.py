@@ -1,10 +1,10 @@
-"""Rung 3: validate_hierarchy lists what releases before 0.21.0 left at mirrored pin points.
+"""Rung 3: validate_hierarchy lists what releases 0.5.8 to 0.20.1 left at mirrored pin points.
 
-Releases up to 0.20.1 put a pin of a placed symbol where mirroring first and rotating second
-puts it. KiCad rotates first: its parser sets the rotation from (at) and composes a later
-(mirror) onto it (kicad_ref.transform, from sch_io_kicad_sexpr_parser.cpp:3071-3098 and
-SCH_SYMBOL::SetOrientation, sch_symbol.cpp:1766-1916 at 9.0.8). So at rotation 90 or 270 with
-a mirror their point is the pin's end reflected through the symbol's origin, and
+From v0.5.8 to v0.20.1 _transform_pin_pos put a pin of a placed symbol where mirroring first
+and rotating second puts it (git history: v0.2.0 to v0.5.7 turned the other way, and v0.21.0
+has no such function). KiCad rotates first (routing_fixtures.ORIENTED, KiCad's pin ends,
+measured and checked against the transform port by test_ladder_r2_judges). So at rotation 90
+or 270 with a mirror their point is the pin's end reflected through the symbol's origin, and
 no_connect_pin, wire_pins_to_net and connect_pins wrote there.
 
 Measured 2026-10-16 with mcp-server-kicad 0.20.1 from PyPI, whose sources are the v0.20.1
@@ -22,7 +22,8 @@ Judges, none of them the code under test: OLD, the measured points; routing_fixt
 KiCad's pin ends (measured, and checked against the transform port by test_ladder_r2_judges);
 kicad-cli 9's netlist of a copy stripped to its symbols, with a label at each point in
 question, which names the pins KiCad draws there (_pins_kicad_draws_at); kicad-cli's reading
-of each pin after its repair; and the demo sheets KiCad ships.
+of each pin after the report is acted on; kicad-cli's ERC for dangling wire ends and
+flags; and the demo sheets KiCad ships.
 """
 
 from __future__ import annotations
@@ -171,8 +172,9 @@ def _pins_kicad_draws_at(path, points) -> dict:
     """{point: the (reference, pin) KiCad draws there} for points in internal units.
 
     kicad-cli exports the netlist of a copy of the sheet holding only its symbols and one
-    label per point: KiCad joins a label to exactly the pins whose end is its point, so the
-    label's net lists them. The copy is cut with the lexer port's byte offsets, not the CST."""
+    label per point; the label's net lists the pins whose end is its point (the sweep in
+    test_kicad_draws_a_pin_at_every_old_point_not_reported checks that where a pin's own end
+    is the point). The copy is cut with the lexer port's byte offsets, not the CST."""
     data = Path(path).read_bytes()
     (root,) = L.tree(data, knows_bar=L.knows_bar_of(data))
     pieces, last = [], 0
@@ -197,6 +199,24 @@ def _pins_kicad_draws_at(path, points) -> dict:
             if bare_name(name) in names:
                 found[names[bare_name(name)]] = nodes
     return found
+
+
+def _erc_items(path, anchor: tuple[int, int]) -> list[tuple[str, tuple[int, int]]]:
+    """(violation type, position in internal units) of every item kicad-cli's ERC lists. A
+    position is that of the item (a wire is placed at its start), and kicad-cli 9.0.8 writes
+    it as mm divided by 100 (measured), so ``anchor``, a point where the sheet has a pin
+    that ERC certainly lists, picks the factor from the two it may be written in."""
+    rows = [
+        (violation["type"], item["pos"]["x"], item["pos"]["y"])
+        for sheet in run_erc(path)["sheets"]
+        for violation in sheet["violations"]
+        for item in violation["items"]
+    ]
+    for factor in (1e6, 1e4):
+        scaled = [(kind, (round(x * factor), round(y * factor))) for kind, x, y in rows]
+        if any(point == anchor for _kind, point in scaled):
+            return scaled
+    raise RuntimeError(f"premise: ERC lists no item at {anchor}")
 
 
 # ---------------------------------------------------------------------------------------------
@@ -358,21 +378,15 @@ def test_kicad_draws_no_pin_where_the_report_points(tmp_path):
 @requires_cli
 def test_kicad_erc_marks_the_flags_and_stubs_the_report_lists_and_no_route(tmp_path):
     """kicad-cli's ERC on the 0.20.1 sheet: no_connect_dangling at each of the four flags the
-    report lists, unconnected_wire_endpoint on each of the four stubs it lists (ERC places a
-    wire at its start) and on nothing else, so on no route: the Net-(REF-PIN) label
-    connect_pins wrote sits on each route's first end. The report lists the routes too."""
+    report lists, unconnected_wire_endpoint on each of the four stubs it lists and on nothing
+    else, so on no route: the Net-(REF-PIN) label connect_pins wrote sits on each route's
+    first end. The report lists the routes too."""
     p = _copy_fixture(tmp_path)
     by_key = {_key(i): i for i in _new_issues(p)}
-    report = run_erc(p)
+    items = _erc_items(p, _STRAYED[0].end)
 
     def listed(kind):
-        return {
-            (round(item["pos"]["x"] * 1e6), round(item["pos"]["y"] * 1e6))
-            for sheet in report["sheets"]
-            for violation in sheet["violations"]
-            if violation["type"] == kind
-            for item in violation["items"]
-        }
+        return {point for found, point in items if found == kind}
 
     flags = {call.old for call in _STRAYED if call.tool == "no_connect_pin"}
     stubs = {
@@ -387,8 +401,7 @@ def test_kicad_erc_marks_the_flags_and_stubs_the_report_lists_and_no_route(tmp_p
 
 
 def _delete_flag(path, at) -> None:
-    """Delete the no-connect flag at ``at`` (internal units), as the user does in KiCad's
-    editor: its list goes from the file, every other byte stays."""
+    """Delete the no-connect flag at ``at`` (internal units): its list goes from the file."""
     data = Path(path).read_bytes()
     (root,) = L.tree(data, knows_bar=L.knows_bar_of(data))
     spans = []
@@ -418,6 +431,7 @@ def _act_on_report(p, issues) -> None:
             schematic.no_connect_pin(issue["reference"], issue["pin"], schematic_path=p)
         else:
             call = by_key[_key(issue)]
+            assert call.anchor is not None
             schematic.connect_pins(call.ref, call.pin, call.anchor, "1", schematic_path=p)
 
 
@@ -466,13 +480,13 @@ def _named_route(tmp_path, anchor: str) -> tuple[str, _Call]:
     net had no name, so a route to a named net holds none, and the label goes first."""
     p = _copy_fixture(tmp_path)
     call = next(c for c in _STRAYED if c.tool == "connect_pins")
+    assert call.anchor is not None
     schematic.remove_label(
         f"Net-({call.ref}-{call.pin})", call.old[0] / 1e4, call.old[1] / 1e4, schematic_path=p
     )
     schematic.wire_pins_to_net([{"reference": call.ref, "pin": call.pin}], "M", schematic_path=p)
     if anchor == "N":
-        pins = [{"reference": call.anchor, "pin": "1"}]
-        schematic.wire_pins_to_net(pins, anchor, schematic_path=p)
+        schematic.wire_pins_to_net([{"reference": call.anchor, "pin": "1"}], "N", schematic_path=p)
     else:
         x, y, _out = ORIENTED["R"][(0, "")][0]
         schematic.add_global_label(
@@ -495,6 +509,7 @@ def test_no_wire_end_repair_joins_two_named_nets(tmp_path, anchor):
     refusal of the wire_pins_to_net call that would put the pin on N, for G, which that
     call cannot name, the pin the wires run to."""
     p, call = _named_route(tmp_path, anchor)
+    assert call.anchor is not None
     before = nets(p)
     (issue,) = [
         i for i in _new_issues(p) if i["type"] == "wire_end_off_pin" and i["reference"] == call.ref
@@ -709,12 +724,12 @@ def _stub(p, at: tuple[float, float]) -> None:
 
 
 def _corner(p, at: tuple[float, float]) -> None:
-    wire(p, *at, at[0], at[1] + 2.54)
+    wire(p, at[0], at[1] + 2.54, *at)
 
 
 def _tee(p, at: tuple[float, float]) -> None:
     wire(p, at[0] - 2.54, at[1], *at)
-    wire(p, *at, at[0], at[1] + 2.54)
+    wire(p, at[0], at[1] + 2.54, *at)
     schematic.add_junctions([{"x": at[0], "y": at[1]}], schematic_path=p)
 
 
@@ -727,15 +742,15 @@ def _junction_dot(p, at: tuple[float, float]) -> None:
 
 
 def _bus_end(p, at: tuple[float, float]) -> None:
-    bus(p, *at, at[0], at[1] + 2.54)
+    bus(p, at[0], at[1] + 2.54, *at)
 
 
 def _graphic_line(p, at: tuple[float, float]) -> None:
-    polyline(p, *at, at[0], at[1] + 2.54)
+    polyline(p, at[0], at[1] + 2.54, *at)
 
 
 def _bus_entry_end(p, at: tuple[float, float]) -> None:
-    bus_entry(p, *at, 2.54, 2.54)
+    bus_entry(p, at[0] - 2.54, at[1] - 2.54, 2.54, 2.54)
 
 
 #: What else may end at a stub's end at an old point no pin occupies, and whether that end then
@@ -753,11 +768,11 @@ _NEIGHBOURS = [
 
 
 def _stub_sheet(tmp_path, build):
-    p, at, _end = _q_sheet(tmp_path, "met")
+    p, at, end = _q_sheet(tmp_path, "met")
     _stub(p, at)
     if build is not None:
         build(p, at)
-    return p, at
+    return p, at, end
 
 
 @pytest.mark.parametrize("build, dangling", _NEIGHBOURS)
@@ -769,7 +784,7 @@ def test_a_wire_end_is_reported_where_it_dangles(tmp_path, build, dangling):
     points where a pin's end reflected through its symbol's origin finds no pin, whatever the
     symbol's state, 27 hold wire ends, 77 in all, every one meeting another wire's end, a
     junction or a label and none dangling (measured 2026-10-17)."""
-    p, _at = _stub_sheet(tmp_path, build)
+    p, _at, _end = _stub_sheet(tmp_path, build)
     assert ([i["type"] for i in _new_issues(p)] == ["wire_end_off_pin"]) == dangling
 
 
@@ -781,18 +796,9 @@ def test_kicad_leaves_a_wire_end_dangling_unless_an_end_but_a_buss_meets_it(
     """The judge of the test above: kicad-cli's ERC lists the stub, whose other end carries a
     label, as an unconnected wire endpoint exactly when its end at the old point dangles, as
     the table says (SCH_LINE::UpdateDanglingState, sch_line.cpp:616 at 9.0.8). ERC places a
-    wire at its start, and the stub starts at the old point; it is the one horizontal wire
-    that does."""
-    p, at = _stub_sheet(tmp_path, build)
-    want = S.iu_point(at)
-    listed = any(
-        item["description"].startswith("Horizontal Wire")
-        and (round(item["pos"]["x"] * 1e6), round(item["pos"]["y"] * 1e6)) == want
-        for sheet in run_erc(p)["sheets"]
-        for violation in sheet["violations"]
-        if violation["type"] == "unconnected_wire_endpoint"
-        for item in violation["items"]
-    )
+    wire at its start, and the stub is the one wire that starts at the old point."""
+    p, at, end = _stub_sheet(tmp_path, build)
+    listed = (("unconnected_wire_endpoint", S.iu_point(at))) in _erc_items(p, end)
     assert listed == dangling
 
 
@@ -846,11 +852,32 @@ def test_a_flag_on_a_hierarchical_label_is_not_reported(tmp_path, oracle):
 @pytest.mark.parametrize(
     "oracle", [pytest.param(False, id="model"), pytest.param(True, id="kicad", marks=requires_cli)]
 )
+def test_a_flag_on_a_sheet_pin_is_not_reported(tmp_path, oracle):
+    """The same with a sheet pin: Sub's one pin sits on Q1:1's old point, and kicad-cli's ERC
+    marks the flag there as no_connect_dangling alone and not with the sheet pin."""
+    p, at, _end = _q_sheet(tmp_path, "sheetpin")
+    no_connect(p, *at)
+    assert [i["type"] for i in _new_issues(p)] == ["no_connect_off_pin"]
+    if oracle:
+        assert "no_connect_dangling" in _erc_types(p)
+    child = str(Path(p).parent / "child.kicad_sch")
+    project.create_schematic(schematic_path=child)
+    sheet_y = round(at[1] - 2.54, 4)
+    project.add_hierarchical_sheet(
+        p, "Sub", child, [{"name": "P", "direction": "input"}], x=at[0], y=sheet_y
+    )
+    assert _new_issues(p) == []
+    if oracle:
+        assert "no_connect_dangling" not in _erc_types(p)
+
+
+@pytest.mark.parametrize(
+    "oracle", [pytest.param(False, id="model"), pytest.param(True, id="kicad", marks=requires_cli)]
+)
 def test_a_flag_wired_to_its_pin_is_not_reported(tmp_path, oracle):
     """A flag at Q1:1's old point is reported; once a wire runs from the pin KiCad draws to
-    the flag it is not: the flag then marks that pin, the one pin on its net, which KiCad's
-    ERC accepts (ercCheckNoConnects, connection_graph.cpp:3762-3798 at 9.0.8) and kicad-cli
-    reads as a no-connect pin. Pin 1's end and its old point lie on one vertical line."""
+    the flag it is not, and kicad-cli reads Q1:1 as a no-connect pin. Pin 1's end and its old
+    point lie on one vertical line."""
     p, at, end = _q_sheet(tmp_path, "wired")
     no_connect(p, *at)
     assert [i["type"] for i in _new_issues(p)] == ["no_connect_off_pin"]
@@ -875,7 +902,7 @@ def test_remove_no_connect_finds_no_flag_at_the_old_point(tmp_path):
 def test_a_flag_note_says_whether_the_pin_is_flagged_already(tmp_path):
     """A flag at Q1:1's old point: its note names the no_connect_pin call that flags the pin
     KiCad draws, and once a flag sits there (no_connect_pin's), says so instead. Either way the
-    flag at the old point is still reported: only KiCad's editor can delete it."""
+    flag at the old point is still reported: no tool removes it."""
     p, at, end = _q_sheet(tmp_path, "flags")
     no_connect(p, *at)
     (issue,) = _new_issues(p)
@@ -1017,11 +1044,10 @@ def test_kicad_reads_a_junction_with_no_at_at_the_origin(tmp_path):
     assert ("R4", "1") in tee("noat", plain.format(""))
 
 
-def _erc_points(path) -> set[tuple[int, int]]:
-    """Where kicad-cli's ERC puts its violations, in internal units (its JSON gives them in
-    mm divided by 100)."""
+def _erc_points(path) -> set[tuple[float, float]]:
+    """Where kicad-cli's ERC puts its violations, as it writes them."""
     return {
-        (round(item["pos"]["x"] * 1e6), round(item["pos"]["y"] * 1e6))
+        (item["pos"]["x"], item["pos"]["y"])
         for sheet in run_erc(path)["sheets"]
         for violation in sheet["violations"]
         for item in violation["items"]
@@ -1276,9 +1302,8 @@ def test_the_demo_premise_skips_where_the_install_ships_no_demos(monkeypatch):
 @pytest.mark.parametrize("path", _demo_params(K.PER_PUSH_CAP))
 def test_kicads_demo_sheets_report_nothing(path):
     """KiCad's demos (files up to kicad_corpus.PER_PUSH_CAP), each run as a root, report no
-    flag and no wire end: KiCad saved them. Over all 93 demo sheets of 9.0.8, 160 pins sit on
-    symbols at 90 or 270 with a mirror, 28 of them with an old point no pin occupies
-    (measured 2026-10-16)."""
+    flag and no wire end. Over all 93 demo sheets of 9.0.8, 160 pins sit on symbols at 90 or
+    270 with a mirror, 28 of them with an old point no pin occupies (measured 2026-10-17)."""
     assert _new_issues(path) == []
 
 

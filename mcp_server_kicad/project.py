@@ -911,22 +911,22 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     either), or it is a bus entry end where KiCad allows no junction.
 
     Per file too: the no-connect flags ("no_connect_off_pin") and wire ends
-    ("wire_end_off_pin") that releases before 0.21.0 left where they put a pin of a symbol at
-    rotation 90 or 270 with a mirror. They mirrored before rotating and KiCad rotates first,
-    so their point is the pin's end reflected through the symbol's origin; 0.20.1's
-    no_connect_pin, wire_pins_to_net and connect_pins wrote there (measured). Each issue names
-    the symbol ("reference"), the "pin", the point ("x", "y") and where KiCad draws the pin
-    ("pin_x", "pin_y"), and a wire end its "wire". Only a point where KiCad draws no pin is
-    checked: where the old point is another pin's end, as on a two-pin part, those releases
-    wrote what an edit of that pin writes, and nothing tells the two apart. A flag is not
-    reported where a sheet pin or a hierarchical label is too, which KiCad accepts a flag on;
-    a wire end is not where anything else ends at the point but such a flag or the
-    Net-(<ref>-<pin>) label connect_pins wrote there; neither is where any reader may join it
-    to the pin already. A flag carries a note: no tool removes one by its position, so delete
-    it in KiCad's editor, then no_connect_pin flags the pin. A wire end's "repair" joins the pin
-    to what the wire reaches, wire_pins_to_net with its net's local label name or
-    connect_pins to the pin its wires run to, each checked first; a note where neither
-    applies. Nothing is written.
+    ("wire_end_off_pin") that releases 0.5.8 to 0.20.1 left where they put a pin of a symbol
+    at rotation 90 or 270 with a mirror. They mirrored before rotating, so that point is the
+    pin's end reflected through the symbol's origin, and 0.20.1's no_connect_pin,
+    wire_pins_to_net and connect_pins wrote there (measured). Only a point where KiCad draws
+    no pin is checked. Each issue names the symbol ("reference"), the "pin", the point ("x",
+    "y") and where KiCad draws the pin ("pin_x", "pin_y"), and a wire end its "wire". Where
+    the old transform put several pins at the point, the issue lists them under "pins" in
+    place of those four, with a note and no repair, since which pin the flag or wire was
+    written for is not known. A flag is not reported where a sheet pin or a hierarchical label
+    is too; a wire end is not where an end of another item but a bus's lies on it, a flag and
+    the Net-(<ref>-<pin>) label connect_pins wrote there apart; neither is where any reader
+    may join it to a pin KiCad draws for the point already. A flag carries a note: no tool
+    removes one by its position, so delete it in KiCad's editor, then no_connect_pin flags the
+    pin. A wire end's "repair" is wire_pins_to_net with its net's one local label name,
+    planned first; else a note, with the plan's refusal or, where the net has no single local
+    label name, the pin the wire reaches. Nothing is written.
 
     Args:
         schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
