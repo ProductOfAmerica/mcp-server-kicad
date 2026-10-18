@@ -954,6 +954,152 @@ def test_a_wire_end_at_the_origin_meets_an_item_with_no_at(tmp_path, kind):
 
 
 # ---------------------------------------------------------------------------------------------
+# One old point, several pins
+# ---------------------------------------------------------------------------------------------
+
+#: Transistors placed so that the old point of one pin of each, (state, pin number), is one
+#: point: Q1 at _Q_AT, the others where OLD puts that pin's point on Q1's.
+_SHARED = {
+    "one_state": [((90, "x"), "1"), ((90, "x"), "3")],
+    "two_states": [((90, "x"), "1"), ((90, "y"), "2")],
+    "three": [((90, "x"), "1"), ((90, "x"), "3"), ((90, "y"), "2")],
+}
+
+
+def _shared_sheet(tmp_path, case: str, stray: str):
+    """The parts of _SHARED[case], Q1 first, and a stray at their one old point P: 'stub' (a
+    wire 5.08 mm left of P, labelled N at its far end) or 'flag'. P is no pin end of any part
+    (RuntimeError otherwise). Returns the path, P in mm and, per part, (reference, pin number,
+    KiCad's end of that pin in internal units)."""
+    p = fresh(tmp_path, "shared")
+    state, pin = _SHARED[case][0]
+    dx, dy = OLD["Q_NPN_BCE"][state][int(pin) - 1]
+    point = (round(_Q_AT[0] + dx, 4), round(_Q_AT[1] + dy, 4))
+    parts = []
+    for i, (state, pin) in enumerate(_SHARED[case]):
+        dx, dy = OLD["Q_NPN_BCE"][state][int(pin) - 1]
+        origin = (round(point[0] - dx, 4), round(point[1] - dy, 4))
+        ref = f"Q{i + 1}"
+        place(p, "Q_NPN_BCE", ref, *origin, rot=state[0], mirror=state[1])
+        ends = [_at(origin, (x, y)) for x, y, _out in ORIENTED["Q_NPN_BCE"][state]]
+        if S.iu_point(point) in ends:
+            raise RuntimeError(f"premise: {ref} draws a pin at {point}")
+        parts.append((ref, pin, ends[int(pin) - 1]))
+    if stray == "stub":
+        wire(p, *point, point[0] - 5.08, point[1])
+        label(p, "N", point[0] - 5.08, point[1])
+    else:
+        no_connect(p, *point)
+    return p, point, parts
+
+
+def _named_pins(issue) -> list:
+    """(reference, pin number, KiCad's end of the pin in internal units) of each pin an issue
+    of several names, sorted. Such an issue carries none of a single pin's fields."""
+    assert not {"reference", "pin", "pin_x", "pin_y"} & issue.keys(), issue
+    return sorted(
+        (q["reference"], q["pin"], S.iu_point((q["pin_x"], q["pin_y"]))) for q in issue["pins"]
+    )
+
+
+@pytest.mark.parametrize("case", _SHARED)
+def test_a_stub_at_the_old_point_of_several_pins_gets_one_note(tmp_path, case):
+    """Parts whose pins 0.20.1 put at one point (OLD) and a stub from there: one
+    wire_end_off_pin, naming every such pin with where KiCad draws it (ORIENTED), its wire and
+    a note that names each pin, and no repair, since which pin the stub was written for is not
+    known. A repair per pin wired every one of them onto the stub's net, and the re-run then
+    reported nothing."""
+    p, point, parts = _shared_sheet(tmp_path, case, "stub")
+    (issue,) = _new_issues(p)
+    assert issue["type"] == "wire_end_off_pin" and "wire" in issue, issue
+    assert S.iu_point((issue["x"], issue["y"])) == S.iu_point(point), issue
+    assert _named_pins(issue) == sorted(parts), issue
+    assert "repair" not in issue, issue
+    assert all(f"{ref} pin {pin}" in issue["note"] for ref, pin, _end in parts), issue
+
+
+@pytest.mark.parametrize("case", _SHARED)
+def test_a_flag_at_the_old_point_of_several_pins_gets_one_note(tmp_path, case):
+    """The same parts and a no-connect flag at the point: one no_connect_off_pin naming every
+    pin, with a note that names each and no repair."""
+    p, point, parts = _shared_sheet(tmp_path, case, "flag")
+    (issue,) = _new_issues(p)
+    assert issue["type"] == "no_connect_off_pin", issue
+    assert S.iu_point((issue["x"], issue["y"])) == S.iu_point(point), issue
+    assert _named_pins(issue) == sorted(parts), issue
+    assert "repair" not in issue, issue
+    assert all(f"{ref} pin {pin}" in issue["note"] for ref, pin, _end in parts), issue
+
+
+@requires_cli
+@pytest.mark.parametrize("case", _SHARED)
+def test_kicad_draws_none_of_the_shared_pins_at_their_shared_point(tmp_path, case):
+    """kicad-cli judges the sheets of the two tests above: it draws no pin at the one old
+    point, and at each named end it draws the named pin."""
+    p, point, parts = _shared_sheet(tmp_path, case, "stub")
+    drawn = _pins_kicad_draws_at(p, [S.iu_point(point)] + [end for _ref, _pin, end in parts])
+    assert drawn[S.iu_point(point)] == frozenset(), drawn
+    for ref, pin, end in parts:
+        assert (ref, pin) in drawn[end], (ref, pin, drawn[end])
+
+
+@requires_cli
+@pytest.mark.parametrize("which", [0, 1])
+def test_wiring_one_shared_pin_to_the_stubs_net_clears_the_report(tmp_path, which):
+    """Q1:1 and Q2:3 share a stub's point. Putting either of them on the stub's net N clears
+    the report, since the stub then joins a pin KiCad draws, and kicad-cli's netlist puts
+    that pin on N alone, nothing else merged, split or renamed."""
+    p, _point, parts = _shared_sheet(tmp_path, "one_state", "stub")
+    ref, pin, _end = parts[which]
+    before = nets(p)
+    schematic.wire_pins_to_net([{"reference": ref, "pin": pin}], "N", schematic_path=p)
+    assert _new_issues(p) == []
+    after = nets(p)
+    verdict = judge(before, after, [{(ref, pin)}], "N")
+    assert not verdict.wrong, verdict.problems()
+    (on_n,) = [nodes for _code, name, _cls, nodes in after if bare_name(name) == "N"]
+    assert on_n == {(ref, pin)}, on_n
+
+
+def test_removing_the_stub_clears_the_report(tmp_path):
+    """The remove_wire call the note names, made with the issue's wire, clears the report."""
+    p, _point, _parts = _shared_sheet(tmp_path, "three", "stub")
+    (issue,) = _new_issues(p)
+    schematic.remove_wire(**issue["wire"], schematic_path=p)
+    assert _new_issues(p) == []
+
+
+def test_deleting_the_flag_clears_the_report(tmp_path):
+    """The flag deleted, as the note asks, the report clears."""
+    p, point, _parts = _shared_sheet(tmp_path, "three", "flag")
+    assert len(_new_issues(p)) == 1
+    _delete_flag(p, S.iu_point(point))
+    assert _new_issues(p) == []
+
+
+def test_a_flag_wired_to_one_shared_pin_is_not_reported(tmp_path):
+    """A wire from Q1:1's end (on the vertical line through the point) to the flag joins the
+    flag to a pin KiCad draws, as in test_a_flag_wired_to_its_pin_is_not_reported."""
+    p, point, parts = _shared_sheet(tmp_path, "one_state", "flag")
+    _ref, _pin, end = parts[0]
+    assert len(_new_issues(p)) == 1
+    wire(p, end[0] / 1e4, end[1] / 1e4, *point)
+    assert _new_issues(p) == []
+
+
+@requires_cli
+def test_a_shared_point_where_kicad_draws_a_pin_is_not_reported(tmp_path):
+    """R1 with pin 2's end at the point the old transform gave Q1:1 and Q2:3: kicad-cli draws
+    that pin there, and nothing is reported, as for one pin."""
+    p, point, _parts = _shared_sheet(tmp_path, "one_state", "stub")
+    assert len(_new_issues(p)) == 1
+    place(p, "R", "R1", point[0], round(point[1] - 3.81, 4))
+    drawn = _pins_kicad_draws_at(p, [S.iu_point(point)])
+    assert drawn[S.iu_point(point)] == {("R1", "2")}, drawn
+    assert _new_issues(p) == []
+
+
+# ---------------------------------------------------------------------------------------------
 # KiCad's own sheets
 # ---------------------------------------------------------------------------------------------
 
