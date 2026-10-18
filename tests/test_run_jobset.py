@@ -87,9 +87,10 @@ def _kicad_clis_own_run(jobset: Path) -> tuple[int, list[str], bytes | None]:
     """What ``kicad-cli jobset run --file J P`` does with the jobset: the exit code, the
     summary lines it prints, and the bytes the jobset holds afterwards (None when it is gone).
 
-    Run on a copy of the jobset and of its project file in a folder of its own, because a
-    jobset kicad-cli cannot read does not survive the run. A premise for the tests that
-    compare with it: RuntimeError when kicad-cli cannot be run at all.
+    Run on a copy of the jobset, of its project file and of the project's root schematic in a
+    folder of its own, because a jobset kicad-cli cannot read does not survive the run, and a
+    relative output folder lands there. A premise for the tests that compare with it:
+    RuntimeError when kicad-cli cannot be run at all.
     """
     cli = _find_kicad_cli()
     pro = next(jobset.parent.glob("*.kicad_pro"))
@@ -98,6 +99,9 @@ def _kicad_clis_own_run(jobset: Path) -> tuple[int, list[str], bytes | None]:
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
         work = Path(scratch)
         shutil.copy2(pro, work / pro.name)
+        root = pro.with_suffix(".kicad_sch")
+        if root.is_file():
+            shutil.copy2(root, work / root.name)
         copy = work / jobset.name
         shutil.copy2(jobset, copy)
         run = subprocess.run(
@@ -186,22 +190,49 @@ def test_a_jobset_that_runs_nothing_is_an_error(tmp_path, name, content):
     assert jobset.read_bytes() == written
 
 
+_BS = chr(92)  # a backslash, to write the surrogate escapes out
 _EMPTY_JOBSET = json.dumps({"jobs": [], "meta": {"version": 1}, "outputs": []})
+
+
+def _described(text: str) -> bytes:
+    """A jobset that would run, its first job described by *text* spelled into the JSON."""
+    valid = json.dumps(
+        {"jobs": [_erc_job()], "meta": {"version": 1}, "outputs": [_folder("fab")]}, indent=2
+    )
+    return valid.replace('"description": ""', f'"description": "{text}"', 1).encode()
+
+
 #: A jobset kicad-cli cannot parse: it is not JSON, it stops short, it is empty, it is saved as
-#: UTF-16 (PowerShell's default), it holds a NaN.
+#: UTF-16 (PowerShell's default), it holds a NaN, or a string in it holds a surrogate escape
+#: with no partner, which Python's json reads and nlohmann's parser refuses (json.dumps writes
+#: one for a byte that is not UTF-8).
 _UNREADABLE = [
     pytest.param(b"this is not json {", id="not-json"),
     pytest.param(b'{"meta": {"version": 1}', id="cut-short"),
     pytest.param(b"", id="empty"),
     pytest.param(b"\xff\xfe" + _EMPTY_JOBSET.encode("utf-16-le"), id="utf-16"),
     pytest.param(b'{"jobs": [], "meta": {"version": 1, "x": NaN}, "outputs": []}', id="nan"),
+    pytest.param(_described("ERC " + _BS + "udc80"), id="lone-low-surrogate"),
+    pytest.param(_described("ERC " + _BS + "ud800"), id="lone-high-surrogate"),
+    pytest.param(
+        _described("ERC " + _BS + "ud800" + _BS + "u0041"), id="high-surrogate-then-a-letter"
+    ),
+]
+
+#: The same valid jobset, commented the way nlohmann's parser takes comments (kicad-cli reads
+#: the jobset with comments ignored), which Python's json refuses.
+_COMMENTED = [
+    pytest.param(lambda t: "// ERC for the fab house\n" + t, id="line-comment-first"),
+    pytest.param(lambda t: "/* ERC for the fab house */\n" + t, id="block-comment-first"),
+    pytest.param(lambda t: t + "\n// end", id="trailing-comment-without-a-newline"),
+    pytest.param(lambda t: t.replace('"jobs"', '/* c */ "jobs"', 1), id="comment-between-tokens"),
+    pytest.param(lambda t: chr(0xFEFF) + "// c\r" + t, id="byte-order-mark-then-a-comment"),
 ]
 
 
 @requires_cli
 def test_a_jobset_with_a_byte_order_mark_still_runs(tmp_path):
-    """kicad-cli reads a UTF-8 jobset with a byte order mark and leaves it as it is, so the
-    check for an unreadable jobset must not refuse one."""
+    """kicad-cli reads a UTF-8 jobset with a byte order mark and leaves it as it is."""
     directory = _project(tmp_path)
     reports = tmp_path / "reports"
     jobset = _jobset(directory / "jp.kicad_jobset", [_erc_job()], [_folder(str(reports))])
@@ -213,27 +244,75 @@ def test_a_jobset_with_a_byte_order_mark_still_runs(tmp_path):
 
 
 @requires_cli
+@pytest.mark.parametrize("comment", _COMMENTED)
+def test_a_jobset_with_comments_runs_because_kicad_cli_reads_it(tmp_path, comment):
+    """kicad-cli parses a jobset with // and /* */ comments ignored, runs it and leaves the
+    file alone (a premise, measured here on a copy). The tool does not judge the grammar: a
+    jobset it refused as 'not valid JSON' was one kicad-cli runs."""
+    directory = _project(tmp_path)
+    valid = _jobset(directory / "valid.kicad_jobset", [_erc_job()], [_folder("fab")])
+    jobset = directory / "commented.kicad_jobset"
+    jobset.write_bytes(comment(valid.read_text(encoding="utf-8")).encode("utf-8"))
+    written = jobset.read_bytes()
+    code, summaries, left = _kicad_clis_own_run(jobset)
+    if code != 0 or summaries != ["1 jobs succeeded, 0 job failed"] or left != written:
+        raise RuntimeError(f"premise: kicad-cli did not just run it: {code}, {summaries}, {left!r}")
+
+    result = project.run_jobset(str(jobset))
+
+    assert "1 jobs succeeded, 0 job failed" in result
+    assert (directory / "fab" / "erc.json").is_file()
+    assert jobset.read_bytes() == written
+
+
+@requires_cli
 @pytest.mark.parametrize("content", _UNREADABLE)
-def test_a_jobset_kicad_cli_cannot_read_is_refused_and_left_as_it_is(
-    tmp_path, monkeypatch, content
-):
+def test_a_jobset_kicad_cli_cannot_read_is_an_error_and_left_as_it_is(tmp_path, content):
     """kicad-cli answers a jobset it cannot parse by replacing it with an empty jobset, or by
-    deleting it (a premise, measured here on a copy), and exits 0 either way. So the tool does
-    not give it one: it says the jobset is not valid JSON, starts no process, and the file
-    is what it was."""
+    deleting it, and exits 0 either way (a premise, measured here on a copy). The tool gives
+    it a copy, so the jobset is what it was, and says that nothing ran."""
     directory = _project(tmp_path)
     jobset = directory / "broken.kicad_jobset"
     jobset.write_bytes(content)
     code, _, left = _kicad_clis_own_run(jobset)
     if left == content:
         raise RuntimeError(f"premise: kicad-cli left the unreadable jobset alone: {code}, {left!r}")
-    _spawn_is_a_failure(monkeypatch)
 
     with pytest.raises(ToolError) as refused:
         project.run_jobset(str(jobset))
 
-    assert "broken.kicad_jobset is not valid JSON" in str(refused.value)
     assert jobset.read_bytes() == content
+    message = str(refused.value)
+    assert "broken.kicad_jobset ran nothing" in message
+    assert "cannot parse" in message
+
+
+def test_whatever_the_process_does_to_the_file_it_is_given_the_jobset_survives(
+    tmp_path, monkeypatch
+):
+    """The tool does not stand in for kicad-cli's reader, whose grammar is not Python's: it
+    never gives the process the jobset. A process that empties the file it is given leaves
+    the jobset as it was, and the copy is gone afterwards."""
+    directory = _project(tmp_path)
+    jobset = _jobset(directory / "jp.kicad_jobset", [_erc_job()], [_folder("out")])
+    written = jobset.read_bytes()
+    given: list[Path] = []
+
+    def empties_its_file(args, check=True, cwd=None):
+        path = Path(args[args.index("--file") + 1])
+        given.append(path)
+        assert path.read_bytes() == written  # a copy of the jobset, not some other file
+        path.write_bytes(b"")
+        return subprocess.CompletedProcess(args, 0, stdout="", stderr="")
+
+    monkeypatch.setattr(project, "_run_cli", empties_its_file)
+
+    with pytest.raises(ToolError, match="ran nothing"):
+        project.run_jobset(str(jobset))
+
+    assert jobset.read_bytes() == written
+    assert [p.name for p in given] == ["jp.kicad_jobset"]
+    assert given[0] != jobset and not given[0].exists()
 
 
 @requires_cli

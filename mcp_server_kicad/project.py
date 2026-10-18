@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -1948,35 +1949,15 @@ def _project_beside(jobset: Path) -> Path:
     )
 
 
-def _refuse_unreadable_jobset(jobset: Path, data: bytes) -> None:
-    """Raise a ToolError unless *data* is JSON of the kind kicad-cli reads.
-
-    kicad-cli replaces a jobset it cannot parse with an empty one, or deletes it, and exits 0.
-    Measured on 9.0.8 and 10.0.6: it reads UTF-8 with or without a byte order mark, and not
-    UTF-16 or a NaN.
-    """
-
-    def no_constant(name: str):
-        raise ValueError(f"{name} is not allowed")
-
-    try:
-        json.loads(data.decode("utf-8-sig"), parse_constant=no_constant)
-    except ValueError as exc:  # a JSON syntax error, bytes that are not UTF-8, or a constant
-        raise ToolError(
-            f"{jobset.name} is not valid JSON ({exc}), so it was not run and is unchanged."
-            " kicad-cli replaces a jobset it cannot read, or deletes it."
-        ) from exc
-
-
 @mcp.tool(annotations=_EXPORT)
 def run_jobset(jobset_path: str) -> str:
     """Run a KiCad jobset file: every output it defines.
 
     The jobset runs against the one .kicad_pro in its own folder, and a relative
-    output folder in it is relative to that folder. It is an error when nothing
-    ran or a job failed, and the error carries the counts kicad-cli reported. A
-    jobset that is not valid JSON is not run: kicad-cli replaces a jobset it
-    cannot read, or deletes it.
+    output folder in it is relative to that folder. kicad-cli is given a copy of
+    the jobset, never the file, because it rewrites or deletes a jobset it cannot
+    parse. It is an error when nothing ran or a job failed, and the error carries
+    the counts kicad-cli reported.
 
     Args:
         jobset_path: Path to .kicad_jobset file
@@ -1984,10 +1965,17 @@ def run_jobset(jobset_path: str) -> str:
     data = _read_kicad_bytes(jobset_path, "jobset")
     jobset = Path(os.path.abspath(jobset_path))
     pro = _project_beside(jobset)
-    _refuse_unreadable_jobset(jobset, data)
-    result = _run_cli(
-        ["jobset", "run", "--file", str(jobset), str(pro)], check=False, cwd=str(pro.parent)
-    )
+    # kicad-cli answers a jobset its own parser refuses by writing an empty jobset over the
+    # file or deleting it (JSON_SETTINGS::LoadFromFile, json_settings.cpp:339-346 at 9.0.8).
+    # That parser takes comments and refuses lone surrogate escapes, which Python's json does
+    # the other way round, so no check of ours says what it will refuse: it gets a copy.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+        copy = Path(scratch) / jobset.name
+        _atomic_write(copy, data)
+        result = _run_cli(
+            ["jobset", "run", "--file", str(copy), str(pro)], check=False, cwd=str(pro.parent)
+        )
+        rewritten = not copy.is_file() or copy.read_bytes() != data
     stdout = _ANSI_COLOUR.sub("", result.stdout)
     counts = _JOBSET_COUNTS.findall(stdout)
     reported = "; ".join(f"{done} jobs succeeded, {failed} job failed" for done, failed in counts)
@@ -1998,9 +1986,15 @@ def run_jobset(jobset_path: str) -> str:
             f" {reported or 'no job counts'}.{detail}"
         )
     if not any(int(done) for done, _ in counts):
+        why = (
+            "kicad-cli replaced or deleted its copy of the jobset, which it does to one it"
+            f" cannot parse. {jobset.name} itself is unchanged."
+            if rewritten
+            else "A jobset with no outputs, or a file that is not a jobset, runs nothing."
+        )
         raise ToolError(
             f"Jobset {jobset.name} ran nothing: kicad-cli reported {reported or 'no job counts'}."
-            " A jobset with no outputs, or a file that is not a jobset, runs nothing."
+            f" {why}"
         )
     return f"Jobset completed successfully.\n{stdout}"
 
