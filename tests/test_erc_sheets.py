@@ -317,6 +317,37 @@ def test_a_sheets_violations_are_picked_by_instance_path_and_by_item(tmp_path):
     ]
 
 
+@pytest.mark.kicad_placeholder("s.kicad_sch")
+def test_the_violations_without_a_sheet_path_are_found_in_the_first_entry_not_the_roots(tmp_path):
+    """With the root on page 9 and Power on page 1, kicad-cli 9.0.8 listed /Power/ first, holding
+    every sheet's dangling labels and wires, and / fifth with none (measured on tests/hier_gen.py's
+    project). A filter that read the root's entry would find nothing for the sheet here."""
+    sheet = tmp_path / "s.kicad_sch"
+    sheet.write_text(
+        '(kicad_sch (wire (uuid "aaaaaaaa-0000-0000-0000-000000000001")))', encoding="utf-8"
+    )
+    report = {
+        "sheets": [
+            {
+                "path": "/Power/",
+                "uuid_path": "/root/b9",
+                "violations": [
+                    _violation("aaaaaaaa-0000-0000-0000-000000000001"),  # no sheet path, in s
+                    _violation("bbbbbbbb-0000-0000-0000-000000000009"),  # no sheet path, not in s
+                    _violation("x-in-power"),
+                ],
+            },
+            {"path": "/", "uuid_path": "/root", "violations": []},
+            {"path": "/A/", "uuid_path": "/root/b1", "violations": [_violation("x-in-a")]},
+        ]
+    }
+    own = schematic._sheet_violations(report, (("b1",),), sheet)
+    assert [v["items"][0]["uuid"] for v in own] == [
+        "aaaaaaaa-0000-0000-0000-000000000001",
+        "x-in-a",
+    ]
+
+
 # ---------------------------------------------------------------------------
 # KiCad's own projects
 # ---------------------------------------------------------------------------
