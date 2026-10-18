@@ -25,7 +25,6 @@ from mcp_server_kicad._shared import (
     SCH_PATH,
     _atomic_write,
     _ensure_dir,
-    _find_root_schematic,
     _gen_uuid,
     _node_uuid,
     _read_kicad_bytes,
@@ -1113,6 +1112,10 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
 def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:
     """Check if a schematic is the root or a sub-sheet.
 
+    A sheet is found in its project wherever its file sits below the project's
+    folder. A file that no sheet of its project uses is a root, as KiCad opens
+    it. For a sub-sheet, root_path is the project's root schematic.
+
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
@@ -1120,11 +1123,10 @@ def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:
     # does not exist also satisfies, so a bogus path used to report itself the
     # root of a hierarchy. Read it first and let the shared opener refuse.
     _read_kicad_bytes(schematic_path, "schematic")
-    root = _find_root_schematic(schematic_path)
-    return RootSchematicResult(
-        is_root=root is None,
-        root_path=root,
-    )
+    placement = _connectivity.place(schematic_path)
+    if placement.kind != "sheet":
+        return RootSchematicResult(is_root=True, root_path=None)
+    return RootSchematicResult(is_root=False, root_path=str(placement.root))
 
 
 @mcp.tool(annotations=_READ_ONLY)

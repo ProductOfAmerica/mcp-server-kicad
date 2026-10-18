@@ -12,19 +12,23 @@ KiCad compares connection points. schematic.py imports this module, so it must n
 schematic.py.
 
 The only files it reads are the other sheets of the hierarchy, for the duplicate-reference
-check, and only facts are kept from them: a small cache keyed by each file's content.
+check, and only facts are kept from them: a small cache keyed by each file's content. place()
+reads the sheet blocks of a project's schematics to say where a file sits in the project.
 """
 
 from __future__ import annotations
 
 import hashlib
 import math
+import os
 import re
 import threading
 import unicodedata
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import _cst, _shared
 from mcp_server_kicad._shared import kiround
@@ -1173,6 +1177,116 @@ def _unreadable(bad: list[str]) -> Refusal | None:
         f"sheet {bad[0]} of this hierarchy could not be read, so the reference cannot be checked"
         " for uniqueness. Remedy: fix or remove that sheet; otherwise stop and report.",
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# Where a schematic file sits in its project
+# ---------------------------------------------------------------------------------------------
+
+#: A sheet block somewhere in the bytes. A file without one has no sub-sheets and is not parsed.
+_SHEET_BLOCK = re.compile(_head(b"sheet"))
+
+
+@dataclass(frozen=True)
+class Placement:
+    """Where a schematic file sits in the sheet hierarchy of its project.
+
+    *kind* is "sheet" when a project's hierarchy uses the file: *root* is that project's root
+    schematic and *instances* holds, for each place the hierarchy uses the file, the uuids of
+    the sheet blocks from the root down to it. It is "root" for a project's own root
+    schematic, or when no project was found, and "unused" when one was found (*root*, the
+    nearest) and none of its sheets uses the file: KiCad then opens the file as a root of its
+    own.
+    """
+
+    kind: str
+    root: Path | None = None
+    instances: tuple[tuple[str, ...], ...] = ()
+
+
+def _sheet_blocks(path: Path) -> list[tuple[str, str]] | None:
+    """(uuid, file name) of each sheet block in the schematic at *path*, in file order.
+
+    Empty for a file that is missing, empty or holds none, as KiCad loads a missing sheet file
+    empty. None for one that cannot be read or parsed.
+    """
+    try:
+        if not (path.is_file() and path.stat().st_size > 0):
+            return []
+        data = path.read_bytes()
+        if not _SHEET_BLOCK.search(data):
+            return []
+        sheets = _cst.parse(data).lists[0].find_all("sheet")
+        return [
+            (_shared._node_uuid(sh), name) for sh in sheets if (name := _shared._sheet_file_cst(sh))
+        ]
+    except Exception:  # noqa: BLE001 - any failure leaves the file unread
+        return None
+
+
+def _instances(root: Path, target: Path) -> tuple[list[tuple[str, ...]], list[str]]:
+    """Every place the hierarchy of *root* uses *target*, and the sheet files it could not read.
+
+    A sheet block's file name resolves against the folder of the file that holds the block, an
+    absolute one stays as it is, and a file that is already its own ancestor is not entered
+    (SCH_IO_KICAD_SEXPR::loadHierarchy, sch_io_kicad_sexpr.cpp:189-222 at 9.0.8). A sheet file
+    used twice is entered at each use, as KiCad's sheet list holds it.
+    """
+    want = _real(target)
+    blocks: dict[Path, list[tuple[str, str]] | None] = {}
+    found: list[tuple[str, ...]] = []
+    unread: list[str] = []
+    stack: list[tuple[Path, tuple[str, ...], tuple[Path, ...]]] = [(root, (), (_real(root),))]
+    entered = 0
+    while stack:
+        here, chain, ancestors = stack.pop()
+        if ancestors[-1] == want:
+            found.append(chain)
+            continue
+        entered += 1
+        if entered > _MAX_INSTANCES:
+            raise ToolError(
+                f"The sheet hierarchy of {root.name} has more than {_MAX_INSTANCES} sheet"
+                f" instances, too many to tell whether it uses {target.name}."
+            )
+        if ancestors[-1] not in blocks:
+            blocks[ancestors[-1]] = _sheet_blocks(here)
+        children = blocks[ancestors[-1]]
+        if children is None:
+            if here.name not in unread:
+                unread.append(here.name)
+            continue
+        for uuid, name in reversed(children):
+            child = Path(os.path.normpath(os.path.join(here.parent, name.replace("\\", "/"))))
+            if _real(child) not in ancestors:
+                stack.append((child, (*chain, uuid), (*ancestors, _real(child))))
+    return found, unread
+
+
+def place(path: str | Path, root: str | Path | None = None) -> Placement:
+    """Where the schematic at *path* sits in its project.
+
+    The project is *root*'s when that root schematic is given; otherwise the nearest one found
+    from the file's folder upwards (_project_roots) whose hierarchy uses the file. Raises
+    ToolError when the answer cannot be told: a hierarchy of more than _MAX_INSTANCES sheet
+    instances, or a sheet file that could not be read stopped the walk before it reached the file.
+    """
+    target = Path(os.path.abspath(path))
+    roots = [Path(os.path.abspath(root))] if root is not None else _project_roots(target)
+    unread: list[str] = []
+    for candidate in roots:
+        if _real(candidate) == _real(target):
+            return Placement("root", candidate)
+        instances, not_read = _instances(candidate, target)
+        if instances:
+            return Placement("sheet", candidate, tuple(instances))
+        unread += not_read
+    if unread:
+        raise ToolError(
+            f"Cannot tell whether the project at {roots[0].name} uses {target.name}:"
+            f" {unread[0]} could not be read."
+        )
+    return Placement("unused", roots[0]) if roots else Placement("root")
 
 
 def _one_part(group: list[tuple[SymRecord, tuple[int, ...]]]) -> str | None:
