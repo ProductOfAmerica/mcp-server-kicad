@@ -1195,8 +1195,7 @@ class Placement:
     schematic and *instances* holds, for each place the hierarchy uses the file, the uuids of
     the sheet blocks from the root down to it. It is "root" for a project's own root
     schematic, or when no project was found, and "unused" when one was found (*root*, the
-    nearest) and none of its sheets uses the file: KiCad then opens the file as a root of its
-    own.
+    nearest) and none of its sheets uses the file, which is then a root of its own.
     """
 
     kind: str
@@ -1207,8 +1206,8 @@ class Placement:
 def _sheet_blocks(path: Path) -> list[tuple[str, str]] | None:
     """(uuid, file name) of each sheet block in the schematic at *path*, in file order.
 
-    Empty for a file that is missing, empty or holds none, as KiCad loads a missing sheet file
-    empty. None for one that cannot be read or parsed.
+    Empty for a file that is missing, empty or holds none. None for one that cannot be read or
+    parsed.
     """
     try:
         if not (path.is_file() and path.stat().st_size > 0):
@@ -1220,7 +1219,8 @@ def _sheet_blocks(path: Path) -> list[tuple[str, str]] | None:
         return [
             (_shared._node_uuid(sh), name) for sh in sheets if (name := _shared._sheet_file_cst(sh))
         ]
-    except Exception:  # noqa: BLE001 - any failure leaves the file unread
+    except Exception:  # noqa: BLE001
+        # whatever stops the read or the parse leaves the file unread
         return None
 
 

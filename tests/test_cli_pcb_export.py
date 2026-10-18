@@ -195,9 +195,10 @@ class TestExportPositions:
         held = {ref: (x, y, deg, layer) for ref, x, y, deg, layer in loaded}
         assert _problems(_exported_rows(result.path), held) == []
 
-    def test_description_states_the_unit(self):
-        description = pcb.mcp._tool_manager._tools["export_positions"].description
-        assert "millimetre" in description
+
+def test_the_position_export_description_states_the_unit():
+    description = pcb.mcp._tool_manager._tools["export_positions"].description
+    assert "millimetre" in description
 
 
 @requires_cli

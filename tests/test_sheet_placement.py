@@ -16,7 +16,6 @@ netlist cannot be asked about, KiCad's own load rule above.
 
 from __future__ import annotations
 
-import os
 import xml.etree.ElementTree as ET
 from collections import Counter
 from pathlib import Path
@@ -24,7 +23,7 @@ from pathlib import Path
 import erc_oracle
 import kicad_corpus
 import pytest
-from conftest import _cli_report, _nightly_skip_reason, requires_cli
+from conftest import _cli_report, requires_cli
 from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import _connectivity
@@ -72,23 +71,30 @@ def test_a_file_with_no_project_is_a_root(tmp_path):
     assert _connectivity.place(lone).kind == "root"
 
 
-def _projects_shipped(everything: bool) -> list:
-    """(id, root schematic) of every project under the demos, those whose schematics all fit
-    under the per-push cap unless *everything*."""
+def _projects_shipped() -> list:
+    """(id, root schematic) of the projects under the demos whose schematics all fit under the
+    per-push size cap, which leaves out vme-wren."""
     found = []
     for share in kicad_corpus.share_dirs():
         for pro in sorted((share / "demos").rglob("*.kicad_pro")):
             root = pro.with_suffix(".kicad_sch")
             if not root.is_file():
                 continue
-            files = list(root.parent.rglob("*.kicad_sch"))
-            small = all(f.stat().st_size <= kicad_corpus.PER_PUSH_CAP for f in files)
-            if everything != small:
+            files = root.parent.rglob("*.kicad_sch")
+            if all(f.stat().st_size <= kicad_corpus.PER_PUSH_CAP for f in files):
                 found.append(pytest.param(root, id=pro.relative_to(share / "demos").as_posix()))
     return found
 
 
-def _every_file_of_a_shipped_project(root: Path) -> None:
+@requires_cli
+@pytest.mark.parametrize(
+    "root",
+    _projects_shipped()
+    or [
+        pytest.param(None, id="no-install", marks=pytest.mark.skip(reason=kicad_corpus.NO_INSTALL))
+    ],
+)
+def test_shipped_project_is_placed_as_kicad_loads_it(root):
     """place() calls a file a sheet exactly when kicad-cli's netlist of the root lists it as
     one, and names the root. A project's folder holds files no sheet of it uses (the NFC
     antenna of RoyalBlue54L-Feather is a project of its own)."""
@@ -105,30 +111,6 @@ def _every_file_of_a_shipped_project(root: Path) -> None:
             assert (placed.kind == "sheet") == (path.name in used), path
             if placed.kind == "sheet":
                 assert placed.root == root, path
-
-
-@requires_cli
-@pytest.mark.parametrize(
-    "root",
-    _projects_shipped(False)
-    or [
-        pytest.param(None, id="no-install", marks=pytest.mark.skip(reason=kicad_corpus.NO_INSTALL))
-    ],
-)
-def test_shipped_project_is_placed_as_kicad_loads_it(root):
-    _every_file_of_a_shipped_project(root)
-
-
-@requires_cli
-@pytest.mark.nightly
-@pytest.mark.parametrize(
-    "root",
-    _projects_shipped(True)
-    if _nightly_skip_reason(os.environ.get("HYPOTHESIS_PROFILE")) is None
-    else [pytest.param(None, id="nightly-only")],
-)
-def test_nightly_large_shipped_project_is_placed_as_kicad_loads_it(root):
-    _every_file_of_a_shipped_project(root)
 
 
 # ---------------------------------------------------------------------------

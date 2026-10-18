@@ -1,10 +1,10 @@
 """A project whose sheet hierarchy has plain, reused, nested and subdirectory sheets.
 
-Built with the package's own project tools and then rearranged the way a KiCad user lays out
-a project: sheet files moved into folders, each Sheetfile naming its file relative to the
-sheet that holds the block, which is how KiCad resolves it (SCH_IO_KICAD_SEXPR::loadHierarchy,
-eeschema/sch_io/kicad_sexpr/sch_io_kicad_sexpr.cpp:178-199 at 9.0.8). kicad-cli judges the
-result in the tests that use it; nothing here is the oracle.
+Built with the package's own project tools and then rearranged: sheet files moved into
+folders, each Sheetfile naming its file relative to the sheet that holds the block, which is
+how KiCad resolves it (SCH_IO_KICAD_SEXPR::loadHierarchy, eeschema/sch_io/kicad_sexpr/
+sch_io_kicad_sexpr.cpp:178-199 at 9.0.8). kicad-cli judges the result in the tests that use
+it; nothing here is the oracle.
 
     proj.kicad_sch            root
       Power  power.kicad_sch  one unwired resistor, a dangling label and wire

@@ -1499,8 +1499,7 @@ def project_hierarchy(tmp_path_factory):
 
     Never modify it, and pass an output_dir of your own to a tool that writes a report. It
     sits outside tmp_path, so the autouse oracle does not see it; every sheet file is
-    loaded on its own here, once, because kicad-cli loads a root whose sheets fail and
-    says nothing.
+    loaded on its own here, once, by assert_kicad_parseable.
     """
     import hier_gen
 

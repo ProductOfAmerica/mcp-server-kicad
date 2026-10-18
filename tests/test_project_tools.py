@@ -876,7 +876,8 @@ class TestSubSheetErcRedirect:
         assert result.note is not None, "Expected a 'note' indicating root redirect"
         assert "root schematic" in result.note
         # The child's own violations, as kicad-cli's report of the root files them. They were
-        # 0 here until the tool matched sheets by file name, which kicad-cli's paths never hold.
+        # 0 here while the tool matched sheet paths against a file name; those paths hold the
+        # sheets' names.
         want = erc_oracle.Project(proj_dir / "erc_proj.kicad_sch").own(child_path)
         assert want, "premise: kicad-cli reports violations that live in the child"
         assert erc_oracle.keys(result.violations) == erc_oracle.keys(want)
@@ -1116,7 +1117,7 @@ class TestIsRootSchematic:
 
     def test_a_file_no_sheet_uses_is_a_root(self, tmp_path: Path):
         """Bug 79: this file sits beside a project's root and no sheet of the project names it,
-        so KiCad opens it as a root of its own; it was reported as a sub-sheet."""
+        so it is a root of its own; it was reported as a sub-sheet."""
         proj_dir = tmp_path / "proj"
         project.create_project(directory=str(proj_dir), name="proj")
         stray = proj_dir / "stray.kicad_sch"

@@ -1,9 +1,9 @@
 """run_erc and list_unconnected_pins on one sheet of a hierarchy report that sheet's own violations.
 
 Bug 9: both tools ran ERC on the project's root and kept the entries whose sheet path held the
-sheet's file name, but kicad-cli names a sheet path by the sheets' names, so every sub-sheet
-came back with nothing. Bug 79: a sheet in a folder below its project found no root at all, and
-a file no sheet uses was taken for a sheet.
+sheet's file name, but kicad-cli names a sheet path by the sheets' names, so a sheet beside
+its project's root came back with nothing. Bug 79: a sheet in a folder below its project
+found no root at all, and a file no sheet uses was taken for a sheet.
 
 A sheet's own violations are the entries kicad-cli files under the sheet's instance paths and
 those it files under the root whose item lives in the sheet's file. tests/erc_oracle.py reads
@@ -95,7 +95,7 @@ def test_list_unconnected_pins_on_a_sheet_returns_its_own_pins(
 def test_list_unconnected_pins_returns_only_pin_not_connected(project_hierarchy, tmp_path):
     """Bug 9, second half: the power sheet holds an unwired resistor, a dangling label and a
     dangling wire. Filtering on the message took the label and the wire too ('not connected to
-    anything'), and would take nothing in a language KiCad translates."""
+    anything')."""
     result = schematic.list_unconnected_pins(str(project_hierarchy.power), str(tmp_path))
     assert [pin["detail"] for pin in result.pins] == [
         "Symbol R1 Pin 1 [Passive, Line]",
@@ -172,8 +172,8 @@ def _violation(uuid: str, kind: str = "wire_dangling") -> dict:
 def test_a_sheets_violations_are_picked_by_instance_path_and_by_item(tmp_path):
     """A report as kicad-cli writes it: the root's entry holds the violations without a sheet
     path, whatever sheet their item is on, and one entry for each instance of a sheet holds the
-    rest. The sheet file here writes one uuid quoted and one bare, which KiCad reads alike, and
-    the report writes them in upper case."""
+    rest. The sheet file here writes one uuid quoted and one bare, as kiutils does, and the
+    report writes them in upper case."""
     sheet = tmp_path / "s.kicad_sch"
     sheet.write_text(
         '(kicad_sch (wire (uuid "aaaaaaaa-0000-0000-0000-000000000001"))'

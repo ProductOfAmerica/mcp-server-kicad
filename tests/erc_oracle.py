@@ -2,7 +2,7 @@
 
 kicad-cli files an ERC violation under the sheet path of its main item, except that a few
 kinds (a dangling label or wire) carry no sheet path and are filed under the root, whatever
-sheet the item is on (eeschema/erc/erc_report.cpp:165-174 at 9.0.8, 194-196 at 10.0.7).
+sheet the item is on (eeschema/erc/erc_report.cpp:169-172 at 9.0.8, 193-196 at 10.0.7).
 A sheet's own violations are therefore:
 
 - the entries kicad-cli files under the sheet's paths, found by name: the netlist

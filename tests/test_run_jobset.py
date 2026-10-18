@@ -1,8 +1,9 @@
 """run_jobset gives kicad-cli the jobset the way kicad-cli takes it, and says what ran.
 
 ``kicad-cli jobset run`` takes the jobset by its --file option and the project as its
-positional input. The tool used to pass the jobset as the input, which kicad-cli reads as a
-project it cannot find a job in: it ran nothing, exited 0, and the tool reported success.
+positional input. The tool used to pass the jobset as the input, so kicad-cli read it as the
+project: for a jobset named after its project it ran nothing and exited 0, and the tool
+reported success.
 
 Judges, none of them the code under test: the files KiCad's own jobs write, and the lines
 kicad-cli itself prints, which these tests read from a run of kicad-cli on the same jobset.
@@ -24,7 +25,7 @@ from mcp_server_kicad import project
 from mcp_server_kicad._shared import _find_kicad_cli
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
-#: One line per output kicad-cli runs, spelled by a wxT literal that no locale translates.
+#: One line per output kicad-cli runs (kicad/jobs_runner.cpp:324-328 at 9.0.8).
 _SUMMARY = re.compile(r"\d+ jobs succeeded, \d+ job failed")
 
 
@@ -102,8 +103,8 @@ def _kicad_clis_own_run(jobset: Path) -> tuple[int, list[str]]:
 def test_the_jobs_of_the_jobset_run(tmp_path):
     """The jobset reaches kicad-cli by --file with the project as its input, so the ERC
     job runs on the project's root schematic and the folder output receives its report.
-    Named after its project, as the project manager names one, the jobset used to be read
-    as the project: kicad-cli exited 0 having run nothing, and the tool said it succeeded."""
+    Named after its project, the jobset used to be read as the project: kicad-cli exited 0
+    having run nothing, and the tool said it succeeded."""
     directory = _project(tmp_path)
     reports = tmp_path / "reports"
     jobset = _jobset(directory / "jp.kicad_jobset", [_erc_job()], [_folder(str(reports))])

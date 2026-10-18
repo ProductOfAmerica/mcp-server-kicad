@@ -1113,8 +1113,8 @@ def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:
     """Check if a schematic is the root or a sub-sheet.
 
     A sheet is found in its project wherever its file sits below the project's
-    folder. A file that no sheet of its project uses is a root, as KiCad opens
-    it. For a sub-sheet, root_path is the project's root schematic.
+    folder. A file that no sheet of its project uses is a root. For a sub-sheet,
+    root_path is the project's root schematic.
 
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
@@ -1925,8 +1925,8 @@ def export_hierarchical_netlist(
         raise ToolError(f"Failed to parse netlist at {output_path}: {e}") from e
 
 
-# kicad-cli prints this line once for each output it runs, as literals that no locale
-# changes (kicad/jobs_runner.cpp:324-328 at 9.0.8), and colours it.
+# kicad-cli prints this line, coloured, once for each output it runs; its words are wxT
+# literals, not translated (kicad/jobs_runner.cpp:324-328 at 9.0.8).
 _JOBSET_COUNTS = re.compile(r"(\d+) jobs succeeded, (\d+) job failed")
 _ANSI_COLOUR = re.compile(r"\x1b\[[0-9;]*m")
 

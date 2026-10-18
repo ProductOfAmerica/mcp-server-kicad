@@ -3350,8 +3350,8 @@ def _run_erc_json(erc_target: str, output_dir: str) -> tuple[dict, str | None]:
 def _parse_unconnected_pins(violations: list[dict]) -> list[dict]:
     """The pin_not_connected violations of *violations*, as list_unconnected_pins returns them.
 
-    Selected by the violation's type, which KiCad does not translate: its message is also
-    "not connected" for a dangling label or wire. A violation naming no item names no pin.
+    Selected by the violation's type, not its message, which also says "not connected" for a
+    dangling label or wire. A violation naming no item names no pin.
     """
     results = []
     for v in violations:
@@ -3394,8 +3394,9 @@ def _sheet_violations(
     """The violations of a root's ERC *report* that belong to the sheet file *path*.
 
     kicad-cli files a violation under the sheet path of its main item, and a few kinds, such
-    as a dangling label or wire, under the root whatever sheet the item is on (erc_report.cpp,
-    WriteJsonReport: the root's entry takes every violation without a sheet path). So:
+    as a dangling label or wire, under the root whatever sheet the item is on (WriteJsonReport,
+    erc_report.cpp:169-172 at 9.0.8: the root's entry takes every violation without a sheet
+    path). So:
 
     - an entry for a sheet path takes the sheet's *instances* (the block uuids from the root,
       which its uuid_path holds after the root's own) and all its violations are the sheet's;
