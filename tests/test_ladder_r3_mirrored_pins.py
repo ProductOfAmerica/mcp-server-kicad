@@ -1022,26 +1022,29 @@ def test_kicad_reads_a_label_or_flag_with_no_at_at_the_origin(tmp_path, kind):
 
 @requires_cli
 def test_kicad_reads_a_junction_with_no_at_at_the_origin(tmp_path):
-    """A wire from (-5.08, 0) to (5.08, 0) labelled LH at its left end, R3:1 on its right
-    end, and a wire from the origin down to R4:1, so that R4:1 reaches LH only through a
-    junction at the origin. kicad-cli's netlist joins them with a junction written with no
-    (at), as with one at (0 0), and not without one."""
+    """A wire from (-5.08, 0) to (5.08, 0) labelled LH at its left end with R3:1 on its right
+    end, and a wire from (0, -5.08) to (0, 5.08) with R4:1 on its lower end, cross at the
+    origin. A junction there changes kicad-cli's netlist (a plain crossing joins nothing); a
+    junction written with no (at) changes it as one at (0 0) does, and one at (12.7 12.7) does
+    not."""
 
-    def tee(name, junction_text):
+    def crossing(name, junction_text):
         p = fresh(tmp_path, name)
         place(p, "R", "R3", 8.89, 0, rot=90)
         place(p, "R", "R4", 0, 8.89)
         wire(p, -5.08, 0, 5.08, 0)
-        wire(p, 0, 0, 0, 5.08)
+        wire(p, 0, -5.08, 0, 5.08)
         label(p, "LH", -5.08, 0)
         if junction_text:
             splice(p, junction_text)
-        return netlist_nodes(p)["LH"]
+        return netlist_nodes(p)
 
     plain = '(junction {} (diameter 0) (color 0 0 0 0) (uuid "x"))'
-    assert ("R4", "1") not in tee("none", None)
-    assert ("R4", "1") in tee("origin", plain.format("(at 0 0)"))
-    assert ("R4", "1") in tee("noat", plain.format(""))
+    without = crossing("none", None)
+    at_origin = crossing("origin", plain.format("(at 0 0)"))
+    assert at_origin != without
+    assert crossing("noat", plain.format("")) == at_origin
+    assert crossing("elsewhere", plain.format("(at 12.7 12.7)")) == without
 
 
 def _erc_points(path) -> set[tuple[float, float]]:

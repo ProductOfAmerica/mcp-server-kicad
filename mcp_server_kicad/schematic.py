@@ -1566,7 +1566,7 @@ def _left_at(model, root, at: Point, pins: list, path: str) -> list[dict]:
 
 
 def _get_pin_or_none(root, reference: str, pin_name: str) -> Point | None:
-    """Where connect_pins and no_connect_pin find a pin, in internal units, or None."""
+    """Where no_connect_pin finds a pin, in internal units, or None."""
     try:
         x, y, _ = _get_pin_pos_cst(root, reference, pin_name)
     except ValueError:
