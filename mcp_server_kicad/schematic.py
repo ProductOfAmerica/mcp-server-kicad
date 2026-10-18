@@ -1435,16 +1435,6 @@ def _remove_call(w) -> str:
     return f"remove_wire({mm(w.x)}, {mm(w.y)}, {mm(w.x2)}, {mm(w.y2)}) removes this wire."
 
 
-def _pads_at(pins: list) -> list[tuple]:
-    """(symbol, number, name, KiCad's end) once per pad of the (symbol, library pin, end)
-    triples, since two symbols of one reference can each draw a pad."""
-    by_pad = {}
-    for s, pin, end in pins:
-        num = _connectivity._child_text(pin, "number")
-        by_pad.setdefault((s.ref, num, end), (s, num, _connectivity._child_text(pin, "name"), end))
-    return list(by_pad.values())
-
-
 def _gave(pads: list[tuple]) -> str:
     """The sentence that names the several pins the old transform put at one point."""
     pt = _connectivity.pt
@@ -1490,7 +1480,8 @@ def _left_at(model, root, at: Point, pins: list, path: str) -> list[dict]:
     here = model._pts.get(at, [])
     if not here:
         return []
-    pads = _pads_at(pins)
+    child = _connectivity._child_text
+    pads = [(s, child(pin, "number"), child(pin, "name"), end) for s, pin, end in pins]
     mm = _connectivity.IU_PER_MM
     where = {"x": at[0] / mm, "y": at[1] / mm}
     if len(pads) == 1:
