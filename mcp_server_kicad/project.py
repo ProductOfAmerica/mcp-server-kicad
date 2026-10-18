@@ -1948,19 +1948,43 @@ def _project_beside(jobset: Path) -> Path:
     )
 
 
+def _refuse_unreadable_jobset(jobset: Path, data: bytes) -> None:
+    """Raise a ToolError unless *data* is JSON of the kind kicad-cli reads.
+
+    kicad-cli replaces a jobset it cannot parse with an empty one, or deletes it, and exits 0.
+    Measured on 9.0.8 and 10.0.6: it reads UTF-8 with or without a byte order mark, and not
+    UTF-16 or a NaN.
+    """
+
+    def no_constant(name: str):
+        raise ValueError(f"{name} is not allowed")
+
+    try:
+        json.loads(data.decode("utf-8-sig"), parse_constant=no_constant)
+    except ValueError as exc:  # a JSON syntax error, bytes that are not UTF-8, or a constant
+        raise ToolError(
+            f"{jobset.name} is not valid JSON ({exc}), so it was not run and is unchanged."
+            " kicad-cli replaces a jobset it cannot read, or deletes it."
+        ) from exc
+
+
 @mcp.tool(annotations=_EXPORT)
 def run_jobset(jobset_path: str) -> str:
     """Run a KiCad jobset file: every output it defines.
 
     The jobset runs against the one .kicad_pro in its own folder, and a relative
     output folder in it is relative to that folder. It is an error when nothing
-    ran or a job failed, and the error carries the counts kicad-cli reported.
+    ran or a job failed, and the error carries the counts kicad-cli reported. A
+    jobset that is not valid JSON is not run: kicad-cli replaces a jobset it
+    cannot read, or deletes it.
 
     Args:
         jobset_path: Path to .kicad_jobset file
     """
-    jobset = Path(os.path.abspath(_require_kicad_path(jobset_path, "jobset")))
+    data = _read_kicad_bytes(jobset_path, "jobset")
+    jobset = Path(os.path.abspath(jobset_path))
     pro = _project_beside(jobset)
+    _refuse_unreadable_jobset(jobset, data)
     result = _run_cli(
         ["jobset", "run", "--file", str(jobset), str(pro)], check=False, cwd=str(pro.parent)
     )

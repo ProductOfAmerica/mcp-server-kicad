@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 import subprocess
+import tempfile
 import uuid
 from pathlib import Path
 
@@ -81,22 +83,32 @@ def _project(tmp_path: Path, name: str = "jp") -> Path:
     return directory
 
 
-def _kicad_clis_own_run(jobset: Path) -> tuple[int, list[str]]:
-    """Exit code and summary lines of ``kicad-cli jobset run --file J P`` on the jobset,
-    run from the project folder as kicad-cli takes it. A premise for the tests that
-    compare with it: RuntimeError when kicad-cli cannot be run at all."""
+def _kicad_clis_own_run(jobset: Path) -> tuple[int, list[str], bytes | None]:
+    """What ``kicad-cli jobset run --file J P`` does with the jobset: the exit code, the
+    summary lines it prints, and the bytes the jobset holds afterwards (None when it is gone).
+
+    Run on a copy of the jobset and of its project file in a folder of its own, because a
+    jobset kicad-cli cannot read does not survive the run. A premise for the tests that
+    compare with it: RuntimeError when kicad-cli cannot be run at all.
+    """
     cli = _find_kicad_cli()
     pro = next(jobset.parent.glob("*.kicad_pro"))
     if cli is None:
         raise RuntimeError("no kicad-cli")
-    run = subprocess.run(
-        [cli, "jobset", "run", "--file", str(jobset), str(pro)],
-        capture_output=True,
-        text=True,
-        errors="replace",
-        cwd=jobset.parent,
-    )
-    return run.returncode, _SUMMARY.findall(_ANSI.sub("", run.stdout))
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+        work = Path(scratch)
+        shutil.copy2(pro, work / pro.name)
+        copy = work / jobset.name
+        shutil.copy2(jobset, copy)
+        run = subprocess.run(
+            [cli, "jobset", "run", "--file", str(copy), str(work / pro.name)],
+            capture_output=True,
+            text=True,
+            errors="replace",
+            cwd=work,
+        )
+        left = copy.read_bytes() if copy.exists() else None
+    return run.returncode, _SUMMARY.findall(_ANSI.sub("", run.stdout)), left
 
 
 @requires_cli
@@ -143,16 +155,13 @@ def test_a_relative_jobset_path_still_finds_its_jobset(tmp_path, monkeypatch):
     assert (directory / "out" / "erc.json").is_file()
 
 
-_NOT_A_JOBSET = b"this is not json {"
-
-
 @requires_cli
 @pytest.mark.parametrize(
     ("name", "content"),
     [
         ("no-outputs", {"jobs": [_erc_job()], "outputs": []}),
         ("no-jobs", {"jobs": [], "outputs": [_folder("unused")]}),
-        ("not-json", _NOT_A_JOBSET),
+        ("not-a-jobset", {"unrelated": 1}),
     ],
 )
 def test_a_jobset_that_runs_nothing_is_an_error(tmp_path, name, content):
@@ -161,13 +170,11 @@ def test_a_jobset_that_runs_nothing_is_an_error(tmp_path, name, content):
     or says it printed none."""
     directory = _project(tmp_path)
     jobset = directory / f"{name}.kicad_jobset"
-    if isinstance(content, bytes):
-        jobset.write_bytes(content)
-    else:
-        _jobset(jobset, content["jobs"], content["outputs"])
-    code, summaries = _kicad_clis_own_run(jobset)
+    jobset.write_text(json.dumps(content), encoding="utf-8")
+    code, summaries, left = _kicad_clis_own_run(jobset)
     if code != 0 or any(not s.startswith("0 jobs succeeded, 0 job failed") for s in summaries):
         raise RuntimeError(f"premise: kicad-cli ran something for {name}: {code}, {summaries}")
+    written = jobset.read_bytes()
 
     with pytest.raises(ToolError) as refused:
         project.run_jobset(str(jobset))
@@ -176,6 +183,57 @@ def test_a_jobset_that_runs_nothing_is_an_error(tmp_path, name, content):
     assert jobset.name in message
     assert "ran nothing" in message
     assert (summaries[0] if summaries else "no job counts") in message
+    assert jobset.read_bytes() == written
+
+
+_EMPTY_JOBSET = json.dumps({"jobs": [], "meta": {"version": 1}, "outputs": []})
+#: A jobset kicad-cli cannot parse: it is not JSON, it stops short, it is empty, it is saved as
+#: UTF-16 (PowerShell's default), it holds a NaN.
+_UNREADABLE = [
+    pytest.param(b"this is not json {", id="not-json"),
+    pytest.param(b'{"meta": {"version": 1}', id="cut-short"),
+    pytest.param(b"", id="empty"),
+    pytest.param(b"\xff\xfe" + _EMPTY_JOBSET.encode("utf-16-le"), id="utf-16"),
+    pytest.param(b'{"jobs": [], "meta": {"version": 1, "x": NaN}, "outputs": []}', id="nan"),
+]
+
+
+@requires_cli
+def test_a_jobset_with_a_byte_order_mark_still_runs(tmp_path):
+    """kicad-cli reads a UTF-8 jobset with a byte order mark and leaves it as it is, so the
+    check for an unreadable jobset must not refuse one."""
+    directory = _project(tmp_path)
+    reports = tmp_path / "reports"
+    jobset = _jobset(directory / "jp.kicad_jobset", [_erc_job()], [_folder(str(reports))])
+    jobset.write_bytes(b"\xef\xbb\xbf" + jobset.read_bytes())
+
+    project.run_jobset(str(jobset))
+
+    assert (reports / "erc.json").is_file()
+
+
+@requires_cli
+@pytest.mark.parametrize("content", _UNREADABLE)
+def test_a_jobset_kicad_cli_cannot_read_is_refused_and_left_as_it_is(
+    tmp_path, monkeypatch, content
+):
+    """kicad-cli answers a jobset it cannot parse by replacing it with an empty jobset, or by
+    deleting it (a premise, measured here on a copy), and exits 0 either way. So the tool does
+    not give it one: it says the jobset is not valid JSON, starts no process, and the file
+    is what it was."""
+    directory = _project(tmp_path)
+    jobset = directory / "broken.kicad_jobset"
+    jobset.write_bytes(content)
+    code, _, left = _kicad_clis_own_run(jobset)
+    if left == content:
+        raise RuntimeError(f"premise: kicad-cli left the unreadable jobset alone: {code}, {left!r}")
+    _spawn_is_a_failure(monkeypatch)
+
+    with pytest.raises(ToolError) as refused:
+        project.run_jobset(str(jobset))
+
+    assert "broken.kicad_jobset is not valid JSON" in str(refused.value)
+    assert jobset.read_bytes() == content
 
 
 @requires_cli
@@ -186,7 +244,7 @@ def test_a_failed_job_is_an_error_with_kicad_clis_counts(tmp_path):
         [_copy_job("no/such/file.txt")],
         [_folder(str(tmp_path / "out"))],
     )
-    code, summaries = _kicad_clis_own_run(jobset)
+    code, summaries, _ = _kicad_clis_own_run(jobset)
     if code == 0 or summaries != ["0 jobs succeeded, 1 job failed"]:
         raise RuntimeError(f"premise: kicad-cli did not fail the job: {code}, {summaries}")
 
@@ -205,7 +263,7 @@ def test_an_output_that_cannot_run_is_an_error(tmp_path):
     prints no counts."""
     directory = _project(tmp_path)
     jobset = _jobset(directory / "blank.kicad_jobset", [_erc_job()], [_folder("")])
-    code, summaries = _kicad_clis_own_run(jobset)
+    code, summaries, _ = _kicad_clis_own_run(jobset)
     if code == 0 or summaries:
         raise RuntimeError(f"premise: kicad-cli ran the blank output: {code}, {summaries}")
 
@@ -216,10 +274,14 @@ def test_an_output_that_cannot_run_is_an_error(tmp_path):
 
 
 def _spawn_is_a_failure(monkeypatch):
+    """The tool starts no process. Patched where the tool looks the runner up, not in
+    subprocess: the autouse oracle runs kicad-cli at teardown while this patch is still in
+    place, through a runner of its own."""
+
     def boom(*args, **kwargs):
         raise AssertionError("a process was started")
 
-    monkeypatch.setattr(subprocess, "run", boom)
+    monkeypatch.setattr(project, "_run_cli", boom)
 
 
 def test_a_jobset_without_a_project_beside_it_is_refused(tmp_path, monkeypatch):
