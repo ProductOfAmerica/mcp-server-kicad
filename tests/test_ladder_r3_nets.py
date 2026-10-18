@@ -921,10 +921,7 @@ def test_a_copper_shape_on_a_net_that_left_goes_to_no_net(tmp_path, version):
 def test_a_copper_shape_on_a_net_that_left_reads_on_no_net_in_pcbnew(tmp_path):
     """The KiCad 9 half of the test above, judged by pcbnew: the shape reads on /SIG before
     the update (the premise, RuntimeError otherwise) and on no net after it, with no /SIG net
-    in the board. It reads on no net today too, by accident: the shape keeps (net 3) after the
-    row is pruned, a number past the table, which pcbnew 9 logs as an invalid net ID and reads
-    on none (measured 2026-10-17), so this guards the reading the fix must keep and the test
-    above judges the number."""
+    in the board."""
     _need_pcbnew()
     board = _board(
         tmp_path,

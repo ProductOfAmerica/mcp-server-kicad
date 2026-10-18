@@ -726,7 +726,7 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   stays is on it: the update marks the net of every pad of every footprint it does not delete current
   before it removes the rest (board_netlist_updater.cpp:1475-1485 and 1506 at 9.0.8, 2406-2416 and 2438
   at 10.0.7), so a stale footprint kept by the default delete_stale, a locked one and one marked board
-  only keep their nets, and everything on them. The orphan pass ran before the stale footprints were
+  only keep their nets. The orphan pass ran before the stale footprints were
   settled and sent everything on such a net to no net while the pad stayed on it; the stale pass now
   runs first, and the orphan pass and the prune leave a net a remaining pad is on. A shape the pass left
   on a pruned row kept a number no row had, and a later update that added a net gave that number to a
@@ -792,9 +792,8 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   swap file's board only and zone tests, on KiCad 9 locally and in CI on the Linux 9.0 and 10.0 legs,
   macOS and Windows. The legs have run the pcbnew 10 halves: on 4103915 one test failed there, the zone
   of the bare-number test, whose pcbnew 10 reading differed from the one the tools gave. The zone rule
-  above is judged there by that test, by the test of the order a zone lists its net and layers in, by
-  the updates' reading of a zone numbered for a net that left, and by the KiCad 9 zone and shape checks,
-  which no longer skip on pcbnew 10.
+  above is judged there by that test, by the test of the order a zone lists its net and layers in, and
+  by the updates' reading of a zone numbered for a net that left.
 - 2026-10-17: the CST reads KiCad's tokens and escapes, the writers write the numbers KiCad holds,
   and names reach the file through set_text (step 11, #114, bugs 4, 28, 29, 59, 61, 64, 65, 66, 67
   and 86). It supersedes the codec and malformed-input bullets of ADR-1, which state the contract
