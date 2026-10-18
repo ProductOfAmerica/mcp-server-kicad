@@ -711,7 +711,10 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   binds a bare number only to a zone that is on copper when it reads the number, in file order:
   SetNetCode puts a number on net 0 for a zone that is not (pcbnew/board_connected_item.cpp:92-93 at
   10.0.7), so a zone that lists its net first is on no net and one that lists a copper layer first is on
-  the net the number binds (measured 2026-10-18 on pcbnew 10.0.6). A quoted net atom is a name even when
+  the net the number binds (measured 2026-10-18 on pcbnew 10.0.6), unless, after the zone's last child,
+  it is not on copper or a (keepout ...) or (placement ...) made it a rule area: parseZONE then puts it
+  on net 0 (pcb_io_kicad_sexpr_parser.cpp:8290-8291, 8346-8348 and 8665-8671 at 10.0.7; measured
+  2026-10-18 on pcbnew 10.0.6). A quoted net atom is a name even when
   it is all digits: KiCad's lexer reads a quoted token as a string and a bare one as a number only when
   all of it is one (isNumber, common/dsnlexer.cpp:495-542 at 9.0.8 and 491-538 at 10.0.7; a quoted
   token, 643-725 at 10.0.7), and KiCad 10 quotes every net name (bug 20). `_net_code` decides on the
@@ -772,7 +775,7 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   number to the net with it (parseNet and the pad's branch, 296-342 and 6185-6244; getNetCode,
   pcb_io_kicad_sexpr_parser.h:176-184; NETINFO_LIST::AppendNet and getFreeNetCode,
   netinfo_list.cpp:149-165 and 266-275, all at 10.0.7). A zone's bare number is bound only as above,
-  once a copper layer is listed ahead of it (`_on_copper_when_read`), and never on a board of KiCad 9's
+  where KiCad 10 keeps it (`_zone_keeps_number`), and never on a board of KiCad 9's
   format. Two cases are not modelled: KiCad makes the nets as it parses, so a number past the nets made
   so far finds none yet where the derived numbering, built over the whole board, finds one made later in
   the file; and a net a KiCad 9 zone's net_name makes is one a later bare number can find, where the

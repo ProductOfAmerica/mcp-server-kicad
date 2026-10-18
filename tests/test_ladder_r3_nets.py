@@ -20,7 +20,7 @@ and prune passes see the copper shapes that carry a net; bug 100, a name a board
 spells gets a row; bug 101, a new row never takes a number an item already refers to. Review
 fixes: a net a pad of a footprint that stays is on has not left the schematic (a via or a zone
 on such a net that was renamed stays on it); and a bare net number is read through
-_bound_names, a zone's once a copper layer is listed ahead of it, read by the update before it
+_bound_names, a zone's only where KiCad 10 keeps it, read by the update before it
 swaps a footprint or moves a pad. The judges are KiCad's own parser and writer, read at 9.0.8
 and 10.0.7 and cited where each is used; pcbnew, where this machine has it; the lexer port in
 tests/kicad_ref for what a file holds; and the files KiCad ships.
@@ -57,7 +57,9 @@ and binds a bare number in a (net ...) to the net with that number, as it has no
 it through (parseNet, 296-312, and getNetCode, pcb_io_kicad_sexpr_parser.h:176-184): the
 silent rebind of ADR-2 guardrail 5. A zone's number is the exception when its (net ...)
 comes before its (layer ...), as in the boards here: SetNetCode puts a number on net 0 for a
-zone not on copper yet (pcbnew/board_connected_item.cpp:92-93). A pad that holds a number
+zone not on copper yet (pcbnew/board_connected_item.cpp:92-93); and after the last child
+parseZONE puts a zone that is not on copper, or that a (keepout ...) or (placement ...) made
+a rule area, on net 0 (pcb_io_kicad_sexpr_parser.cpp:8665-8671). A pad that holds a number
 alone it refuses, whatever the board (Expecting( "net name" ), 6185-6212). pcb._set_item_net
 looked net 0 up among the nets it numbers from 1 off a KiCad 10 board's references and refused
 it (bug 21): the update aborted when a net left the schematic, and the three tools refused net 0.
@@ -1422,8 +1424,9 @@ def test_a_bare_net_number_binds_as_the_kicad_that_loads_the_format_binds_it(tmp
     assert [z.net_name for z in pcb.list_pcb_zones(str(board))] == [""]
 
 
-#: How the zone of a KiCad 10 _numbered_board lists its (net 2) and its layer: the lines that
-#: replace the zone's own (net 2) and (layer "F.Cu"), and the net KiCad 10 puts the zone on.
+#: How the zone of a KiCad 10 _numbered_board lists its (net 2), its layers and any rule area:
+#: the lines that replace the zone's own (net 2) and (layer "F.Cu"), and the net KiCad 10 puts
+#: the zone on.
 _ZONE_ORDERS = {
     "net first": ('\t\t(net 2)\n\t\t(layer "F.Cu")\n', ""),
     "copper layer first": ('\t\t(layer "F.Cu")\n\t\t(net 2)\n', "/A"),
@@ -1433,6 +1436,23 @@ _ZONE_ORDERS = {
     "non-copper layer first": ('\t\t(layer "F.SilkS")\n\t\t(net 2)\n', ""),
     "a later non-copper layer": ('\t\t(layer "F.Cu")\n\t\t(layer "F.SilkS")\n\t\t(net 2)\n', ""),
     "an empty layers list after": ('\t\t(layer "F.Cu")\n\t\t(layers)\n\t\t(net 2)\n', "/A"),
+    "a non-copper layer after it": (
+        '\t\t(layer "F.Cu")\n\t\t(net 2)\n\t\t(layer "F.SilkS")\n',
+        "",
+    ),
+    "a copper layer after it": ('\t\t(layer "F.Cu")\n\t\t(net 2)\n\t\t(layer "B.Cu")\n', "/A"),
+    "copper only after it": ('\t\t(layer "F.SilkS")\n\t\t(net 2)\n\t\t(layer "F.Cu")\n', ""),
+    "a keepout rule area": (
+        '\t\t(layer "F.Cu")\n\t\t(net 2)\n\t\t(keepout\n\t\t\t(tracks not_allowed)\n'
+        "\t\t\t(vias not_allowed)\n\t\t\t(pads not_allowed)\n\t\t\t(copperpour allowed)\n"
+        "\t\t\t(footprints allowed)\n\t\t)\n",
+        "",
+    ),
+    "a placement rule area": (
+        '\t\t(layer "F.Cu")\n\t\t(net 2)\n\t\t(placement\n\t\t\t(enabled yes)\n'
+        '\t\t\t(sheetname "/")\n\t\t)\n',
+        "",
+    ),
 }
 
 
@@ -1446,15 +1466,18 @@ def _zone_listed(text: str, order: str) -> str:
 
 
 @pytest.mark.parametrize("order", list(_ZONE_ORDERS))
-def test_a_zones_bare_number_binds_only_when_the_zone_is_on_copper_by_then(tmp_path, order):
+def test_a_zones_bare_number_binds_only_where_kicad_10_keeps_it(tmp_path, order):
     """A zone written (net 2) on the KiCad 10 board of the test above, whose second net is /A.
-    KiCad 10 reads a zone's children in file order, and SetNetCode puts a number on net 0 for a
-    zone that is not on copper yet (pcbnew/board_connected_item.cpp:92-93 at 10.0.7), so the
-    zone is on /A when the last layers listed before its (net 2) include a copper one, and on
-    no net when they do not: its net first, or only a layer that is not copper (a later list
-    replaces an earlier, an empty one changes nothing). Where this machine has pcbnew 10 it
-    judges the net the zone is on, a premise whose failure is a RuntimeError naming what it
-    read (measured 2026-10-18 on pcbnew 10.0.6); list_pcb_zones must report it."""
+    KiCad 10 reads a zone's children in file order. SetNetCode puts a number on net 0 for a
+    zone that is not on copper yet (pcbnew/board_connected_item.cpp:92-93), and after the last
+    child parseZONE puts a zone on net 0 when it is not on copper or a (keepout ...) or
+    (placement ...) made it a rule area (pcb_io_kicad_sexpr_parser.cpp:8665-8671), both at
+    10.0.7. So the zone is on /A when the last layers listed before its (net 2) include a
+    copper one, as do the last listed at all, and it is no rule area, and on no net otherwise
+    (a later list replaces an earlier, an empty one changes nothing). Where this machine has
+    pcbnew 10 it judges the net the zone is on, a premise whose failure is a RuntimeError
+    naming what it read (measured 2026-10-18 on pcbnew 10.0.6); list_pcb_zones must report
+    it."""
     expected = _ZONE_ORDERS[order][1]
     board = _numbered_board(tmp_path, "k10")
     text = _zone_listed(board.read_text(encoding="utf-8"), order)
