@@ -343,13 +343,13 @@ Each slice appends an entry when it lands.
   rotation 90 and 270 with a mirror from v0.5.8 to v0.20.1, and at 90 and 270 without one from
   v0.2.0 to v0.5.7; this check looks for the first only. mcp-server-kicad 0.20.1 from PyPI, whose
   sources are the v0.20.1 tag's, ran no_connect_pin, wire_pins_to_net (direction auto) and
-  connect_pins once on every pin of R, D and Q_NPN_BCE in all 12 states, 252 calls (2026-10-16).
-  Each wrote at the point its get_pin_positions reported: the flag, the stub's first end, the
-  route's first end and the Net-(REF-PIN) label there. At rotation 90 or 270 with a mirror that
-  point is KiCad's pin end reflected through the symbol's origin, in the other eight states it is
-  the end, which confirms the inference recorded above. kicad-cli 9.0.8 read every write at those
-  four states as missing its pin: on R and D it flagged or wired the other pin, on the transistor
-  nothing.
+  connect_pins once on every pin of R, D and Q_NPN_BCE in all 12 states, 252 calls (2026-10-16, run
+  again 2026-10-17). Each wrote at the point its get_pin_positions reported: the flag, the stub's
+  first end, the route's first end and the Net-(REF-PIN) label there. At rotation 90 or 270 with a
+  mirror that point is KiCad's pin end reflected through the symbol's origin, in the other eight
+  states it is the end, which confirms the inference recorded above. kicad-cli 9.0.8 read every
+  write at those four states as missing its pin: on R and D it flagged or wired the other pin, on
+  the transistor nothing.
 
   The check lists per file each flag (no_connect_off_pin) and wire end (wire_end_off_pin) at such a
   point where KiCad draws no pin, with the symbol, the pin and both points. Where KiCad draws a pin

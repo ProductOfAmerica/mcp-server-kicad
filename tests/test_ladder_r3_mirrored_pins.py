@@ -7,13 +7,13 @@ measured and checked against the transform port by test_ladder_r2_judges). So at
 or 270 with a mirror their point is the pin's end reflected through the symbol's origin, and
 no_connect_pin, wire_pins_to_net and connect_pins wrote there.
 
-Measured 2026-10-16 with mcp-server-kicad 0.20.1 from PyPI, whose sources are the v0.20.1
-tag's: R, D and Q_NPN_BCE (routing_fixtures) in all 12 states, every pin, each of those three
-tools once per pin, 252 calls. Every call wrote at the point its get_pin_positions reported
-for the pin: the flag, the stub's first end, the route's first end and the Net-(REF-PIN)
-label it put there. OLD below is that point. kicad-cli 9.0.8 read each write at 90 or 270
-with a mirror as missing its pin: on R and D it flagged or wired the other pin, on the
-transistor nothing.
+Measured 2026-10-16, and again 2026-10-17, with mcp-server-kicad 0.20.1 from PyPI, whose
+sources are the v0.20.1 tag's: R, D and Q_NPN_BCE (routing_fixtures) in all 12 states, every
+pin, each of those three tools once per pin, 252 calls. Every call wrote at the point its
+get_pin_positions reported for the pin: the flag, the stub's first end, the route's first end
+and the Net-(REF-PIN) label it put there. OLD below is that point. kicad-cli 9.0.8 read each
+write at 90 or 270 with a mirror as missing its pin: on R and D it flagged or wired the other
+pin, on the transistor nothing.
 
 tests/fixtures/mirrored_0_20_1.kicad_sch is a sheet 0.20.1 wrote, from the library in
 tests/fixtures/routing.kicad_sym (_FIXTURE says with which calls).
