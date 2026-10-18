@@ -702,6 +702,7 @@ def _port_loads(x: str, y: str, angle: str) -> bool:
 _TOKEN_VARIANTS = [
     ("+100", "100", "0"),  # from_chars takes no leading '+'
     ("100", "100", "+90"),
+    ("100", "100", "9_0"),  # no NUMBER: isNumber stops at the underscore
     ("100", "100", "90.5"),  # read as 90
     ("100", "100", "-0.5"),  # read as 0
     ("200000", "100", "0"),  # past the clamp: clamped, loads
@@ -711,6 +712,7 @@ _TOKEN_VARIANTS = [
     ("100", "100", "0.9e2"),  # read as 90
     ("1e400", "100", "0"),  # out of a double's range
     ("1e-400", "100", "0"),  # a nonzero literal that underflows to zero: out of range too
+    ("100", "100", "1e-400"),  # the same underflow, as an angle
     ("1e-300", "100", "0"),  # far below one unit, yet a normal double: loads at 0
 ]
 
