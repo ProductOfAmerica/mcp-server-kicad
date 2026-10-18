@@ -658,17 +658,18 @@ Bytes the user did not ask us to change reach the disk unchanged, and any edit w
   symbol about its own position, sch_edit_tool.cpp:814 at 9.0.8) and no page check, since nothing
   moves, so a symbol KiCad loads off the page can still be turned or have its angle repaired; a
   call that changes nothing writes nothing. A symbol with no `(at)` is refused with the file
-  intact; one placed where KiCad cannot load it is refused without a rotation and repaired with
-  one, its fields keeping the places the file gives them. KiCad reads the angle unconditionally
+  intact; one whose angle `_connectivity._angle` cannot read as 0, 90, 180 or 270, or that has
+  none, is refused without a rotation and repaired with one, its fields keeping the places the
+  file gives them. KiCad reads the angle unconditionally
   (`parseDouble( "symbol orientation" )`, sch_io_kicad_sexpr_parser.cpp:3074 at 9.0.8, 3191 at
   10.0.7), so that covers an `(at x y)` with no angle, `inf` and `nan`, which are no NUMBER, and
   `1e400`, which `from_chars` reports out of range, as well as a number that is no quarter turn;
   kicad-cli 9.0.8 refused each, measured on 2026-10-17. `_connectivity._angle` answers None for
   `inf` and `1e400`, where `int(float())` raised an `OverflowError` that an MCP client sees only
   as "Error executing tool". `symbol_frames` still reads a missing angle as 0, and the
-  number readers still accept tokens KiCad refuses without an exception (a leading `+`, `9_0`):
-  bug 70, step 12b, whose strict xfails in `test_ladder_r2_transform.py` are untouched. The
-  contact report only advises, so what the model cannot read or compare (a refusal, or an
+  number readers still accept tokens KiCad refuses without an exception (a leading `+`, `9_0`,
+  `1e-400`): bug 70, step 12b, whose strict xfails in `test_ladder_r2_transform.py` are untouched.
+  The contact report only advises, so what the model cannot read or compare (a refusal, or an
   exception) gets "Connections were not checked" and the move goes ahead. KiCad's GUI
   re-places auto-placed fields after a turn when its autoplace preference is on; this tool keeps
   KiCad's core rule, since the autoplacer needs font metrics (step 23). Evidence (kicad-cli

@@ -2286,8 +2286,8 @@ def move_component(
         x: New X position
         y: New Y position
         rotation: The absolute angle in degrees (None = keep current); a mirrored symbol keeps
-            its mirror. Also repairs a symbol placed at an angle KiCad cannot load, or with
-            none, which a call without it refuses.
+            its mirror. Also repairs a symbol whose angle this tool cannot read as 0, 90, 180
+            or 270, or that has none, which a call without it refuses.
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     tree, root, page_w, page_h, page_name = _open_sch_cst(schematic_path)
@@ -2462,7 +2462,7 @@ def _sym_iu(text: str, reference: str) -> int:
 
 def _placed_angle(at) -> tuple[str | None, int | None]:
     """The angle atom of a placed symbol's ``(at)`` as written, None where it gives none, and
-    as KiCad reads it, None where KiCad refuses it.
+    as ``_connectivity._angle`` reads it, None where that is not 0, 90, 180 or 270.
 
     KiCad reads the angle unconditionally: NeedNUMBER meets the closing paren of an
     ``(at x y)`` and refuses the sheet (sch_io_kicad_sexpr_parser.cpp:3074 at 9.0.8, 3191 at
