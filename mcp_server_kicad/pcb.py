@@ -301,7 +301,8 @@ def _row_names(root) -> dict[int, str]:
 
 def _bound_names(root) -> dict[int, str]:
     """The name of the net each bare number of a (net N) binds to on this board; a
-    number that finds no net is absent.
+    number that finds no net is absent. A zone's bare number binds only when the zone is
+    on copper by then (_read_net_name).
 
     The rows of the board's table bind them: KiCad reads a number through the map the
     rows fill and finds no net for one they leave out (getNetCode and SetNetCode,
@@ -330,21 +331,38 @@ def _bound_names(root) -> dict[int, str]:
     return _by_number(_net_table(root))
 
 
+def _on_copper_when_read(zone, net) -> bool:
+    """Whether the zone's layers, as the (layer ...) and (layers ...) listed ahead of its
+    ``net`` leave them, include a copper one: a later list replaces an earlier, an empty
+    one changes nothing."""
+    copper = False
+    for child in zone.lists:
+        if child is net:
+            break
+        names = [a.text for a in child.atoms[1:]] if child.head in ("layer", "layers") else []
+        if names:
+            copper = any(name.endswith(".Cu") for name in names)
+    return copper
+
+
 def _read_net_name(node, version: int, bound: Mapping[int, str]) -> str:
     """The name of the net an item's (net ...) puts it on, "" for no net.
 
     A quoted or non-numeric atom is a name. A bare number is the net ``bound`` gives
-    it (_bound_names). A pad's (net N "NAME") is its name. A pad that holds a number
-    alone is a board KiCad refuses to load (its parser needs a name after the number,
-    pcb_io_kicad_sexpr_parser.cpp:5225 at 9.0.8 and 6210 at 10.0.7), so it has no KiCad
-    reading, and here reads like any other item holding a number.
+    it (_bound_names), except a zone's (below). A pad's (net N "NAME") is its name. A
+    pad that holds a number alone is a board KiCad refuses to load (its parser needs a
+    name after the number, pcb_io_kicad_sexpr_parser.cpp:5225 at 9.0.8 and 6210 at
+    10.0.7), so it has no KiCad reading, and here reads like any other item holding a
+    number.
 
     A zone is read the way the KiCad that writes its format reads it. KiCad 9
     puts a copper zone on the net its net_name names and, with none or an empty
     one, on no net, whatever its number says (pcb_io_kicad_sexpr_parser.cpp:
-    7387-7412 at 9.0.8). KiCad 10 does the same for a non-empty net_name and
-    otherwise reads the (net ...) child as for any item (8037-8041 and 8673-8697
-    at 10.0.7).
+    7387-7412 at 9.0.8). KiCad 10 does the same for a non-empty net_name (8037-8041
+    and 8673-8697 at 10.0.7), and binds a bare number only to a zone that is on copper
+    when it reads the number, in file order: SetNetCode puts a number on net 0 for a
+    zone that is not (pcbnew/board_connected_item.cpp:92-93 at 10.0.7). So a zone that
+    lists its net first is on no net.
 
     ``version`` is the board's format, ``bound`` the board's _bound_names; a caller
     reading many items computes both once, since finding either walks the whole board.
@@ -362,6 +380,8 @@ def _read_net_name(node, version: int, bound: Mapping[int, str]) -> str:
         return net.atoms[1].text
     if len(net.atoms) > 2:
         return net.atoms[2].text
+    if node.head == "zone" and not _on_copper_when_read(node, net):
+        return ""
     return bound.get(code, "")
 
 

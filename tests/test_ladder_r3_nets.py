@@ -56,10 +56,12 @@ zone sent to no net loses its net_name as well. It makes a net where it first me
 makes them (NETINFO_LIST::AppendNet and getFreeNetCode, netinfo_list.cpp:149-165 and 266-275)
 and binds a bare number in a (net ...) to the net with that number, as it has no table to map
 it through (parseNet, 296-312, and getNetCode, pcb_io_kicad_sexpr_parser.h:176-184): the
-silent rebind of ADR-2 guardrail 5. A pad that holds a number alone it refuses, whatever the
-board (Expecting( "net name" ), 6185-6212). pcb._set_item_net looked net 0 up among the
-nets it numbers from 1 off a KiCad 10 board's references and refused it (bug 21): the update
-aborted when a net left the schematic, and the three tools refused net 0.
+silent rebind of ADR-2 guardrail 5. A zone's number is the exception when its (net ...)
+comes before its (layer ...), as in the boards here: SetNetCode puts a number on net 0 for a
+zone not on copper yet (pcbnew/board_connected_item.cpp:92-93). A pad that holds a number
+alone it refuses, whatever the board (Expecting( "net name" ), 6185-6212). pcb._set_item_net
+looked net 0 up among the nets it numbers from 1 off a KiCad 10 board's references and refused
+it (bug 21): the update aborted when a net left the schematic, and the three tools refused net 0.
 
 Judges, none of them the code under test: those rules, with kicad_ref.richio's port of Quotew
 for the bytes KiCad writes, and tests/edit_judge.py on KiCad's own lexer for what an edit
@@ -1386,40 +1388,98 @@ def _numbered_board(tmp_path: Path, version: str) -> Path:
 @pytest.mark.parametrize("version", ["k9", "k10"])
 def test_a_bare_net_number_binds_as_the_kicad_that_loads_the_format_binds_it(tmp_path, version):
     """Segments written (net 0) to (net 4) and a zone written (net 2), on a board that holds no
-    table and whose pads name /B, /A and /B again. A bare number is read as the KiCad that
-    loads the board's format reads it. KiCad 9 makes a net only from a row of the table (and
-    from a zone's net_name): a pad's net name only checks the name of the net its number finds,
-    so on a board with no table, and no zone that names a net, every number but 0 finds none
-    (pcb_io_kicad_sexpr_parser.cpp:2713-2720, 5216-5243 and 7387-7412 at 9.0.8), which pcbnew
-    9.0.8 reads here (measured 2026-10-17). KiCad 10 makes a net where it first meets a name
-    (parseNet, 321-339, and a pad, 6233-6244, at 10.0.7) and numbers them from 1 in the order
-    it makes them (NETINFO_LIST::AppendNet and getFreeNetCode, pcbnew/netinfo_list.cpp:149-165
-    and 266-275). It reads a bare number as a legacy code and binds FindNet( code ), the code
-    unchanged when the board held no table (parseNet, 296-312, and getNetCode,
+    table and whose pads name /B, /A and /B again. The tools read a bare number on a segment as
+    the KiCad that loads the board's format reads it, and on a zone that lists its net first as
+    no net.
+
+    KiCad 9 makes a net only from a row of the table (and from a zone's net_name): a pad's net
+    name only checks the name of the net its number finds, so on a board with no table, and no
+    zone that names a net, every number but 0 finds none (pcb_io_kicad_sexpr_parser.cpp:
+    2713-2720, 5216-5243 and 7387-7412 at 9.0.8), which pcbnew 9.0.8 reads here (measured
+    2026-10-17). KiCad 10 makes a net where it first meets a name (parseNet, 321-339, and a pad,
+    6233-6244, at 10.0.7) and numbers them from 1 in the order it makes them
+    (NETINFO_LIST::AppendNet and getFreeNetCode, pcbnew/netinfo_list.cpp:149-165 and 266-275).
+    It reads a bare number as a legacy code and binds FindNet( code ), the code unchanged when
+    the board held no table (parseNet, 296-312, and getNetCode,
     pcb_io_kicad_sexpr_parser.h:176-184): the net it made that many-th, none for a number past
     them, net 0 for 0. That is the silent rebind of ADR-2 guardrail 5, and here /B is 1 and /A
-    is 2, so a segment written (net 2) is on /A. The pcbnew of the KiCad 10 legs reads these
-    boards that way, and only pcbnew 9 judges the KiCad 9 board, since pcbnew 10 loads it by its
-    own rules. The tools read every number on a KiCad 10 board as no net, KiCad 9's reading, so
-    for them the segment written (net 2) was on no net."""
+    is 2, so a segment written (net 2) is on /A.
+
+    A zone's (net 2) comes before its (layer ...), and SetNetCode puts a number on net 0 for a
+    zone not on copper yet (pcbnew/board_connected_item.cpp:92-93 at 10.0.7), so the zone is on
+    no net; the test below lists them in other orders.
+
+    Where this machine's pcbnew can load the board it judges the reading, and a premise that
+    fails is a RuntimeError naming what it read: pcbnew 9 for the KiCad 9 board, whose
+    expectations are KiCad 9's (pcbnew 10.0.6 reads its segment (net 1) on /B, measured
+    2026-10-18), and pcbnew 10 for the KiCad 10 one."""
     board = _numbered_board(tmp_path, version)
     data = board.read_bytes()
     created = list(dict.fromkeys(_THREE_NETS.values()))
     expected = [
         created[n - 1] if version == "k10" and 1 <= n <= len(created) else "" for n in _BARE
     ]
-    zone_expected = expected[_BARE.index(2)]
     loads = PJ.skip_reason() is None and (PJ.major() == 9 if version == "k9" else PJ.major() >= 10)
     if loads:
         read = _pcbnew_nets(board)["items"]
         segments = J.find_paths(data, lambda loc, item: item.head == "segment")
         judged = [read[_uuid_of(J.item_at(data, loc))][1] for loc in segments]
         zone = J.item_at(data, _the(data, "kicad_pcb", "zone"))
-        if judged != expected or read[_uuid_of(zone)][1] != zone_expected:
-            raise RuntimeError(f"the premise fails: pcbnew reads the segments on {judged}")
+        judged_zone = read[_uuid_of(zone)][1]
+        if judged != expected or judged_zone != "":
+            raise RuntimeError(
+                f"the premise fails: pcbnew reads the segments on {judged}"
+                f" and the zone on {judged_zone!r}"
+            )
     root = _cst.parse(data).lists[0]
     assert [pcb._net_name_of(root, seg) for seg in root.find_all("segment")] == expected
-    assert [z.net_name for z in pcb.list_pcb_zones(str(board))] == [zone_expected]
+    assert [z.net_name for z in pcb.list_pcb_zones(str(board))] == [""]
+
+
+#: How the zone of a KiCad 10 _numbered_board lists its (net 2) and its layer: the lines that
+#: replace the zone's own (net 2) and (layer "F.Cu"), and the net KiCad 10 puts the zone on.
+_ZONE_ORDERS = {
+    "net first": ('\t\t(net 2)\n\t\t(layer "F.Cu")\n', ""),
+    "copper layer first": ('\t\t(layer "F.Cu")\n\t\t(net 2)\n', "/A"),
+    "copper layers first": ('\t\t(layers "F.Cu" "B.Cu")\n\t\t(net 2)\n', "/A"),
+    "the F&B.Cu layer set first": ('\t\t(layers "F&B.Cu")\n\t\t(net 2)\n', "/A"),
+    "the *.Cu layer set first": ('\t\t(layers "*.Cu")\n\t\t(net 2)\n', "/A"),
+    "non-copper layer first": ('\t\t(layer "F.SilkS")\n\t\t(net 2)\n', ""),
+    "a later non-copper layer": ('\t\t(layer "F.Cu")\n\t\t(layer "F.SilkS")\n\t\t(net 2)\n', ""),
+    "an empty layers list after": ('\t\t(layer "F.Cu")\n\t\t(layers)\n\t\t(net 2)\n', "/A"),
+}
+
+
+def _zone_listed(text: str, order: str) -> str:
+    """``text``, a KiCad 10 _numbered_board or a board with a zone written like its own, with
+    the zone's net and layer listed as _ZONE_ORDERS spells ``order``."""
+    first = _ZONE_ORDERS["net first"][0]
+    if text.count(first) != 1:
+        raise RuntimeError("the board does not hold one zone listing its net before its layer")
+    return text.replace(first, _ZONE_ORDERS[order][0])
+
+
+@pytest.mark.parametrize("order", list(_ZONE_ORDERS))
+def test_a_zones_bare_number_binds_only_when_the_zone_is_on_copper_by_then(tmp_path, order):
+    """A zone written (net 2) on the KiCad 10 board of the test above, whose second net is /A.
+    KiCad 10 reads a zone's children in file order, and SetNetCode puts a number on net 0 for a
+    zone that is not on copper yet (pcbnew/board_connected_item.cpp:92-93 at 10.0.7), so the
+    zone is on /A when the last layers listed before its (net 2) include a copper one, and on
+    no net when they do not: its net first, or only a layer that is not copper (a later list
+    replaces an earlier, an empty one changes nothing). Where this machine has pcbnew 10 it
+    judges the net the zone is on, a premise whose failure is a RuntimeError naming what it
+    read (measured 2026-10-18 on pcbnew 10.0.6); list_pcb_zones must report it."""
+    expected = _ZONE_ORDERS[order][1]
+    board = _numbered_board(tmp_path, "k10")
+    text = _zone_listed(board.read_text(encoding="utf-8"), order)
+    board.write_text(text, encoding="utf-8", newline="\n")
+    data = board.read_bytes()
+    if PJ.skip_reason() is None and PJ.major() >= 10:
+        zone = J.item_at(data, _the(data, "kicad_pcb", "zone"))
+        judged = _pcbnew_nets(board)["items"][_uuid_of(zone)][1]
+        if judged != expected:
+            raise RuntimeError(f"the premise fails: pcbnew 10 reads the zone on {judged!r}")
+    assert [z.net_name for z in pcb.list_pcb_zones(str(board))] == [expected]
 
 
 def test_k10_update_sends_an_item_numbered_for_a_net_that_left_to_no_net(tmp_path):
@@ -1575,6 +1635,51 @@ def test_k10_update_through_a_swap_leaves_an_item_numbered_for_a_net_that_stays(
     assert _kicad10_nets_made(after)[1:2] == ["/B"], "(net 2) binds to another net now"
     if on_pcbnew_10:
         assert _pcbnew_nets(board)["items"][seg_uuid][1] == "/B", "pcbnew 10 reads it off /B"
+
+
+def test_k10_update_leaves_a_zone_numbered_for_a_net_that_left_as_it_is(tmp_path):
+    """The board of test_k10_update_sends_an_item_numbered_for_a_net_that_left_to_no_net, with a
+    copper zone written (net 2) in place of the segment, its net listed before its layer. That
+    number names no net, so the zone is on none before the update and after it: /VCC leaving
+    the schematic orphans nothing, orphaned_zones stays 0 and not one byte of the zone changes
+    (pcbnew 10, where the legs have it, reads it on no net both times). The pass read (net 2)
+    as /VCC, the second net the board makes, and cut the zone's (net ...) as a zone orphaned."""
+    zone = _zone("", net_name=False).replace('(net "")', "(net 2)")
+    board = _board(tmp_path, [_u1(_PAD_NETS), zone], version="k10")
+    before = board.read_bytes()
+    zone_uuid = _uuid_of(J.item_at(before, _the(before, "kicad_pcb", "zone")))
+    on_pcbnew_10 = PJ.skip_reason() is None and PJ.major() >= 10
+    if on_pcbnew_10 and _pcbnew_nets(board)["items"][zone_uuid][1] != "":
+        raise RuntimeError("the premise fails: pcbnew 10 reads the zone written (net 2) on a net")
+    summary = _apply(board, {"1": "/NEW", "2": "/GND"})
+    assert summary["orphaned_zones"] == 0, summary
+    moved = [e for e in _edits(before, board.read_bytes()) if e[1][:2] == ("kicad_pcb", "zone")]
+    assert moved == []
+    if on_pcbnew_10:
+        assert _pcbnew_nets(board)["items"][zone_uuid][1] == "", "pcbnew 10 reads it on a net"
+
+
+def test_k10_update_sends_a_zone_that_lists_its_layer_first_to_no_net_with_its_net_gone(tmp_path):
+    """The board of test_k10_update_leaves_a_zone_numbered_for_a_net_that_left_as_it_is with the
+    zone's layer listed before its (net 2). KiCad 10 binds that number as a segment's, to /VCC,
+    the second net the board makes (pcbnew 10, where the legs have it, reads it so, a premise).
+    /VCC leaves the schematic, so the zone goes to no net and orphaned_zones counts it: the one
+    change to the zone is the loss of its (net 2), after which pcbnew 10 reads it on none."""
+    zone = _zone_listed(
+        _zone("", net_name=False).replace('(net "")', "(net 2)"), "copper layer first"
+    )
+    board = _board(tmp_path, [_u1(_PAD_NETS), zone], version="k10")
+    before = board.read_bytes()
+    zone_uuid = _uuid_of(J.item_at(before, _the(before, "kicad_pcb", "zone")))
+    on_pcbnew_10 = PJ.skip_reason() is None and PJ.major() >= 10
+    if on_pcbnew_10 and _pcbnew_nets(board)["items"][zone_uuid][1] != "/VCC":
+        raise RuntimeError("the premise fails: pcbnew 10 reads the zone written (net 2) off /VCC")
+    summary = _apply(board, {"1": "/NEW", "2": "/GND"})
+    assert summary["orphaned_zones"] == 1, summary
+    moved = [e for e in _edits(before, board.read_bytes()) if e[1][:2] == ("kicad_pcb", "zone")]
+    assert moved == [("delete", ("kicad_pcb", "zone", "net"), b"(net 2)", None)]
+    if on_pcbnew_10:
+        assert _pcbnew_nets(board)["items"][zone_uuid][1] == "", "pcbnew 10 reads it on a net"
 
 
 def _info_nets(board: Path) -> int:
