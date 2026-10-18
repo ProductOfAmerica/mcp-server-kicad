@@ -56,6 +56,7 @@ from mcp_server_kicad.schematic import (
     _HLABEL_TPL,
     _LABEL_TPL,
     _cuts_inside_lines,
+    _off_pin_items,
     _open_sch_cst,
     _splice_sch_node,
     _splice_wire,
@@ -907,7 +908,25 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     "repair" as given: add_junctions at the point, which splits the line, or remove_junction.
     Such an issue carries a "note" in place of a repair in two cases only: its sheet is one the
     connectivity model refuses (a symbol or pin at an angle KiCad cannot load; no reading
-    either), or it is a bus entry end where KiCad allows no junction. Nothing is written.
+    either), or it is a bus entry end where KiCad allows no junction.
+
+    Per file too: the no-connect flags ("no_connect_off_pin") and wire ends
+    ("wire_end_off_pin") at the point releases 0.5.8 to 0.20.1 gave a pin of a symbol at
+    rotation 90 or 270 with a mirror. They mirrored before rotating, so that point is the
+    pin's end reflected through the symbol's origin, and 0.20.1's no_connect_pin,
+    wire_pins_to_net and connect_pins wrote there (measured). Only a point where KiCad draws
+    no pin is checked. Each issue names the symbol ("reference"), the "pin", the point ("x",
+    "y") and where KiCad draws the pin ("pin_x", "pin_y"), and a wire end its "wire". Where
+    the old transform put several pins at the point, the issue lists them under "pins" in
+    place of those four, with a note and no repair, since which pin the flag or wire was
+    written for is not known. A flag is not reported where a sheet pin or a hierarchical label
+    is too; a wire end is not where an end of another item but a bus's lies on it, a flag and
+    the Net-(<ref>-<pin>) label connect_pins wrote there apart; neither is where any reader
+    may join it to a pin KiCad draws for the point already. A flag carries a note: no tool
+    removes one by its position, so delete it in KiCad's editor, then no_connect_pin flags the
+    pin. A wire end's "repair" is wire_pins_to_net with the one local label name on its net
+    that the tool accepts, planned first; else a note, with the plan's refusal or, where the
+    net has no single such name, the pin the wire reaches. Nothing is written.
 
     Args:
         schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
@@ -922,6 +941,7 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     # Per parsed file, its sheets whose files parsed: (sheet uuid, resolved file, label).
     kids: dict[Path, list[tuple[str, Path, str]]] = {}
     issues.extend(_cuts_inside_lines(root, str(top)))
+    issues.extend(_off_pin_items(root, str(top)))
     # Depth first, in file order: (file holding the sheet, the sheet, resolved files from the
     # root down to the one holding it).
     todo = [(top, sheet, (top_real,)) for sheet in reversed(root.find_all("sheet"))]
@@ -1007,6 +1027,7 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
 
         if new:
             issues.extend(_cuts_inside_lines(child_root, str(child_path)))
+            issues.extend(_off_pin_items(child_root, str(child_path)))
             below = (*chain, real)
             todo += [(child_path, s, below) for s in reversed(child_root.find_all("sheet"))]
 

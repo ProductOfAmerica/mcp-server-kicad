@@ -1370,6 +1370,260 @@ def _cuts_inside_lines(root, path: str) -> list[dict]:
     return issues
 
 
+#: The releases whose _transform_pin_pos mirrored a pin before rotating it (git history: v0.5.8
+#: to v0.20.1; v0.2.0 to v0.5.7 turned the other way, v0.21.0 has no such function).
+_OLD_RELEASES = "0.5.8 to 0.20.1"
+
+
+def _off_pin_items(root, path: str) -> list[dict]:
+    """validate_hierarchy's issues for the no-connect flags (no_connect_off_pin) and wire ends
+    (wire_end_off_pin) on one parsed sheet at the point releases 0.5.8 to 0.20.1 gave a pin.
+    They mirrored a pin before rotating it, so at rotation 90 or 270 with a mirror their point
+    is the pin's end reflected through the symbol's origin
+    (_connectivity._old_order_transform); 0.20.1's no_connect_pin, wire_pins_to_net and
+    connect_pins all wrote there (measured: tests/test_ladder_r3_mirrored_pins.py).
+
+    Only a point where KiCad draws no pin is checked: where it draws one, as at the other pin
+    of a two-pin part, the item is on that pin. A flag there is reported unless a sheet pin or
+    a hierarchical label is there too (ercCheckNoConnects, connection_graph.cpp:3735-3750 at
+    9.0.8). A wire end is left alone when an end of another item lies on it, a bus's apart:
+    KiCad leaves a wire end dangling only where none does (SCH_LINE::UpdateDanglingState,
+    sch_line.cpp:616 at 9.0.8). A flag there and the label 0.20.1's connect_pins put there,
+    Net-(<ref>-<pin>) with the pin as the call named it, do not count as such an end. Either
+    is left alone where any reader may join it to a pin KiCad draws for the point already (the
+    model's possible view), as a flag wired to that pin is, or a wire after its repair.
+
+    Where several pins were put at the point, each flag and wire end gets one issue that lists
+    them all, with a note and no repair, since which pin it was written for is not known. A
+    flag carries a note, since no tool removes a flag by its position. A wire end's repair is
+    wire_pins_to_net with the one local label name on the wire's net that the tool accepts, if
+    planning that call refuses nothing; else a note, which carries the plan's refusal or, where
+    the net has no single such name, names the pin a run of wires from the end reaches. A sheet
+    the model refuses gets nothing."""
+    if not any(_connectivity.effective_mirror(s) for s in root.find_all("symbol")):
+        return []
+    try:
+        model = _connectivity.Model(root)
+    except _connectivity.Refusal:
+        return []
+    model.ensure()
+    drawn = {(it.x, it.y) for it in model.items if it.kind == "pin"}
+    spots: dict[Point, list] = {}  # old point -> (symbol, library pin, KiCad's end) per pin there
+    for s in model.syms:
+        if s.lib is None or s.derived or _connectivity.effective_mirror(s.node) is None:
+            continue
+        pos, t = _connectivity.symbol_transform(s.node, s.ref)
+        old_pos, old_t = _connectivity._old_order_transform(s.node, s.ref)
+        subs = {id(sub): sub for u in s.units for sub in _instance_units(s.lib, u, s.style)}
+        for sub in subs.values():
+            for pin in sub.find_all("pin"):
+                if pin.find("at") is None:
+                    continue
+                end = _connectivity.pin_end(pos, t, pin, s.ref)[:2]
+                at = _connectivity.pin_end(old_pos, old_t, pin, s.ref)[:2]
+                if at != end and at not in drawn:
+                    spots.setdefault(at, []).append((s, pin, end))
+    issues = []
+    for at, pins in spots.items():
+        issues += _left_at(model, root, at, pins, path)
+    return issues
+
+
+def _remove_call(w) -> str:
+    """The sentence that names the remove_wire call for wire item w."""
+    mm = _connectivity.mm
+    return f"remove_wire({mm(w.x)}, {mm(w.y)}, {mm(w.x2)}, {mm(w.y2)}) removes this wire."
+
+
+def _gave(pads: list[tuple]) -> str:
+    """The sentence that names the several pins the old transform put at one point."""
+    pt = _connectivity.pt
+    where = "; ".join(f"{s.ref} pin {num} at {pt(end)}" for s, num, _name, end in pads)
+    return (
+        f"Releases {_OLD_RELEASES} gave {len(pads)} pins this point, mirrored before rotated,"
+        f" and KiCad draws them elsewhere ({where})."
+    )
+
+
+def _flag_note(model, root, pads: list[tuple]) -> str:
+    """The note of a no_connect_off_pin issue for the pins pads, which the flag misses."""
+    delete = (
+        " No tool removes a no-connect flag by its position (remove_no_connect looks at the pin"
+        " KiCad draws): delete it in KiCad's editor"
+    )
+    if len(pads) > 1:
+        return (
+            f"{_gave(pads)} Which of them the flag was meant for is not known here, and KiCad"
+            " draws none of them at the point, so the flag misses all of"
+            f" them.{delete}, then no_connect_pin flags each of them that should be flagged."
+        )
+    s, num, _name, end = pads[0]
+    if any(it.kind == "nc" for it in model._pts.get(end, ())):
+        then = "; the pin is flagged already."
+    elif _get_pin_or_none(root, s.ref, num) == end:
+        then = f", then no_connect_pin({s.ref!r}, {num!r}) flags the pin."
+    else:
+        then = ", and flag the pin there too."
+    return (
+        f"This flag is at the point releases {_OLD_RELEASES} gave {s.ref} pin {num}, mirrored"
+        f" before rotated; KiCad draws the pin at {_connectivity.pt(end)}, so the flag misses"
+        f" it.{delete}{then}"
+    )
+
+
+def _left_at(model, root, at: Point, pins: list, path: str) -> list[dict]:
+    """_off_pin_items' issues for the point at, where KiCad draws no pin: what lies there, for
+    the pins the old transform put there, each (placed symbol, library pin, KiCad's end of
+    it). One pin gives issues with its own fields and, for a wire end, a repair where there is
+    one. Two or more give one issue per item naming every pin in "pins", with a note and no
+    repair, since which of them the item was written for is not known."""
+    here = model._pts.get(at, [])
+    if not here:
+        return []
+    child = _connectivity._child_text
+    pads = [(s, child(pin, "number"), child(pin, "name"), end) for s, pin, end in pins]
+    mm = _connectivity.IU_PER_MM
+    where = {"x": at[0] / mm, "y": at[1] / mm}
+    if len(pads) == 1:
+        s, num, _name, end = pads[0]
+        pin_at = {"pin_x": end[0] / mm, "pin_y": end[1] / mm}
+        base = {"file": path, "reference": s.ref, "pin": num, **where, **pin_at}
+    else:
+        listed = [
+            {"reference": s.ref, "pin": num, "pin_x": end[0] / mm, "pin_y": end[1] / mm}
+            for s, num, _name, end in pads
+        ]
+        base = {"file": path, **where, "pins": listed}
+    drawn = [
+        it
+        for s, num, _name, end in pads
+        for it in model._pts.get(end, ())
+        if it.kind == "pin" and it.ref == s.ref and it.num == num
+    ]
+
+    def joined(it) -> bool:
+        """Whether any reader may join it to a pin KiCad draws for this point already: the
+        model's possible view, which the model builds once."""
+        possible = model.coarse().uf
+        return any(possible.find(p.id) == possible.find(it.id) for p in drawn)
+
+    out = []
+    # ERC takes a no-connect at a sheet pin or a hierarchical label as that port's
+    # (ercCheckNoConnects, connection_graph.cpp:3735-3750 at 9.0.8).
+    port = any(
+        it.kind == "sheetpin" or (it.kind == "label" and it.sub == "hierarchical label")
+        for it in here
+    )
+    flags = [] if port else [it for it in here if it.kind == "nc" and not joined(it)]
+    if flags:
+        note = _flag_note(model, root, pads)
+        out += [{"type": "no_connect_off_pin", **base, "note": note} for _flag in flags]
+    own = {f"Net-({s.ref}-{label})" for s, num, name, _end in pads for label in (num, name)}
+    # dict.fromkeys: a wire of no length is listed at its point twice.
+    for w in dict.fromkeys(it for it in here if it.kind == "wire"):
+        others = [
+            it
+            for it in here
+            if it is not w
+            and it.kind not in ("nc", "bus")
+            and not (
+                it.kind == "label"
+                and it.sub == "label"
+                and _connectivity.unescape(it.text or "") in own
+            )
+        ]
+        if others or joined(w):
+            continue
+        issue = {"type": "wire_end_off_pin", **base, "wire": _stretch((w.x, w.y), (w.x2, w.y2))}
+        if len(pads) > 1:
+            issue["note"] = (
+                f"{_gave(pads)} Which of them the wire was meant for is not known here, and"
+                " KiCad draws none of them at the point, so the wire misses all of them."
+                f" Wire the pins as meant; {_remove_call(w)}"
+            )
+        else:
+            s, num, _name, end = pads[0]
+            repair, why = _join_repair(model, root, s.ref, num, w, at, path)
+            if repair is not None:
+                issue["repair"] = repair
+            else:
+                issue["note"] = (
+                    f"This wire ends at the point releases {_OLD_RELEASES} gave {s.ref} pin"
+                    f" {num}, mirrored before rotated; KiCad draws the pin at"
+                    f" {_connectivity.pt(end)}, so the wire misses it. {why}"
+                )
+        out.append(issue)
+    return out
+
+
+def _get_pin_or_none(root, reference: str, pin_name: str) -> Point | None:
+    """Where no_connect_pin finds a pin, in internal units, or None."""
+    try:
+        x, y, _ = _get_pin_pos_cst(root, reference, pin_name)
+    except ValueError:
+        return None
+    return _req_point(x, y)
+
+
+def _join_repair(model, root, ref: str, num: str, w, at: Point, path: str):
+    """(repair, None) calling wire_pins_to_net to put pin num of ref on the one local label name
+    of wire w's net that the tool accepts, when planning that call refuses nothing; or (None,
+    why not). The wire ends at the point at. See _off_pin_items."""
+    labels = (
+        it
+        for its in model.narrow_names(w).values()
+        for it in its
+        if it.kind == "label" and it.sub == "label"
+    )
+    usable: dict[str, str] = {}
+    for text in sorted({it.text for it in labels if it.text}):
+        try:
+            _connectivity.check_args(text, "auto", 2.54)
+        except _connectivity.Refusal:
+            continue  # wire_pins_to_net refuses this name as label_text
+        usable.setdefault(_connectivity.netname(text), text)
+    remove = _remove_call(w)
+    if len(usable) == 1:
+        (text,) = usable.values()
+        pins = [{"reference": ref, "pin": num}]
+        plan = _connectivity.plan_wire_pins(root, pins, text, "auto", 2.54, path)
+        if not plan.refused:
+            arguments = {"pins": pins, "label_text": text, "schematic_path": path}
+            return {"tool": "wire_pins_to_net", "arguments": arguments}, None
+        return None, (
+            f"wire_pins_to_net would put the pin on {text!r}, the wire's net, but refuses: "
+            + "; ".join(plan.lines)
+            + f" Act on that, or wire the pin as meant; {remove}"
+        )
+    far = _run_end(model, w, at)
+    if far is not None and far.ref and far.num:
+        reaches = f"Its wires run to {far.ref} pin {far.num}."
+    else:
+        reaches = "Its wires run to no single pin, so what it was meant to join is not known here."
+    return None, (
+        f"Its net carries no single local label name that wire_pins_to_net accepts. {reaches}"
+        f" Wire the pin as meant; {remove}"
+    )
+
+
+def _run_end(model, w, at: Point):
+    """The one pin a run of wires from wire w ends at: from w's end that is not at, along the
+    one other wire ending at each point where nothing else does, to a point holding pins.
+    None where the run branches, meets anything else, or ends at no pin or at two."""
+    seen = {w.id}
+    q = (w.x2, w.y2) if (w.x, w.y) == at else (w.x, w.y)
+    while True:
+        here = [it for it in model._pts.get(q, ()) if it.id not in seen]
+        pins = [it for it in here if it.kind == "pin"]
+        if pins:
+            return pins[0] if len(pins) == 1 else None
+        if len(here) != 1 or here[0].kind != "wire":
+            return None
+        w = here[0]
+        seen.add(w.id)
+        q = (w.x2, w.y2) if (w.x, w.y) == q else (w.x, w.y)
+
+
 def _plain_stroke(node) -> bool:
     """Whether a line is drawn as the call's own wires are, (width 0) (type default): equal
     width and colour, and a default or solid style (SCH_LINE::IsStrokeEquivalent,
