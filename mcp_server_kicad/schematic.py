@@ -192,7 +192,7 @@ def list_schematic_components(schematic_path: str = SCH_PATH) -> list[ComponentI
     _, root, *_ = _open_sch_cst(schematic_path)
     items = []
     for sym in root.find_all("symbol"):
-        at = sym.find("at")
+        at = sym.find_all("at")[-1]  # of two (at), KiCad keeps the last, as move_component does
         lib_id = sym.find("lib_id")
         items.append(
             ComponentItem(

@@ -1064,6 +1064,26 @@ class TestSymbolFamilyPreservation:
             f"returned {message!r}, and KiCad reads R1 at {new.position}"
         )
 
+    def test_a_turn_at_the_listed_position_stays_where_kicad_reads_it(self, tmp_path):
+        """R1 written with two (at) lists, (100, 100) and then (127.33, 127), off the grid:
+        list_schematic_components reports R1 where KiCad's parser places it, at the last,
+        and a turn called at that position, as move_component's docstring tells a caller,
+        leaves KiCad reading R1 where it was."""
+        path = _r1_variant(
+            tmp_path, "two_at.kicad_sch", b"(at 100 100 0) (at 127.33 127 0) (unit 1)"
+        )
+        _, old = S.placed_symbol(path.read_bytes(), "R1")
+        if old.position != (1_273_300, 1_270_000):
+            raise RuntimeError(f"the premise is KiCad reading the last (at); read {old.position}")
+        (r1,) = [c for c in schematic.list_schematic_components(str(path)) if c.reference == "R1"]
+        listed = tuple(P.parse_sch_internal_units(repr(v), major=9) for v in (r1.x, r1.y))
+        assert listed == old.position, f"listed at {listed} IU, KiCad reads R1 at {old.position}"
+        schematic.move_component("R1", r1.x, r1.y, rotation=90, schematic_path=str(path))
+        _, new = S.placed_symbol(path.read_bytes(), "R1")
+        assert new.position == old.position, (
+            f"turned where listed, KiCad reads R1 at {new.position}"
+        )
+
     def test_move_refuses_a_symbol_without_at(self, tmp_path):
         """R1 written with no (at), which kicad-cli 9.0.8 loads (measured 2026-10-14):
         move_component refuses with a ToolError, the file byte for byte as it was, rather
