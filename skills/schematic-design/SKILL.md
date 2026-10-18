@@ -75,8 +75,9 @@ about how the plan was created. Read the plan, execute the plan.
     For hierarchical designs, pass `project_path` to avoid cross-sheet
     ref conflicts.
 11. Validate hierarchy — run `validate_hierarchy` from root to check
-    for orphaned labels, direction mismatches, duplicate refs and
-    junctions and bus entry ends left inside wires; for each issue
+    for orphaned labels, direction mismatches, duplicate refs,
+    junctions and bus entry ends left inside wires, and flags and wire
+    ends left off the pins of mirrored, rotated parts; for each issue
     with a `repair`, make that call (one with a `note` instead: see
     the verification skill).
 12. Run ERC
@@ -274,8 +275,9 @@ the wiring lands in every instance, and the note names each one.
 - `modify_hierarchical_sheet` — change sheet name, file, dimensions
 - `add_sheet_pin` / `remove_sheet_pin` — manage pins on sheet blocks
 - `validate_hierarchy` — check for orphaned labels/pins, direction mismatches
-  and junctions and bus entry ends left inside wires, with the call
-  that repairs each
+  and junctions and bus entry ends left inside wires, and flags and
+  wire ends left off the pins of mirrored, rotated parts, with the call
+  that repairs each where a tool can
 - `list_hierarchy` / `get_sheet_info` — inspect hierarchy structure
 - `is_root_schematic` — check if a schematic is root or sub-sheet
 - `move_hierarchical_sheet` — reposition a sheet block on the canvas

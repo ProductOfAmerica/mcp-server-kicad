@@ -62,7 +62,8 @@ These are the kicad MCP tools you should be using during verification:
 - `get_net_connections` — trace a net to debug connectivity issues
 - `validate_hierarchy` — check for unannotated refs, duplicate refs,
   orphaned labels/pins, direction mismatches, junctions and bus entry
-  ends left inside wires (run from root schematic)
+  ends left inside wires, and no-connect flags and wire ends left off
+  the pins of mirrored, rotated parts (run from root schematic)
 - `trace_hierarchical_net` — trace a net across sheet boundaries to
   debug cross-sheet connectivity issues
 
@@ -146,6 +147,18 @@ wire, and kicad-cli 9 (ERC, netlist, PCB update) cuts the wire there.
 Make the call each issue names in `repair`, exactly as given, then
 re-run `validate_hierarchy` to confirm.
 
+**If `no_connect_off_pin` or `wire_end_off_pin`:** versions 0.5.8 to
+0.20.1 of this package computed the pin of a part rotated 90 or 270
+degrees and mirrored at a point where KiCad draws no pin, so a flag or
+a wire end placed there misses it: KiCad draws the pin at `pin_x`,
+`pin_y`. For a wire end with a `repair`, make that call exactly as
+given: it joins the pin to what the wire reaches, and leaves the old
+wire where it is. A flag always carries a `note` (below), since no tool
+removes a flag by its position. An issue that lists `pins` in place of
+`reference`, `pin`, `pin_x` and `pin_y` is a point where those versions
+put several pins: which one the flag or wire was written for is not
+known, so it carries a note and no repair.
+
 **If an issue carries a `note` and no `repair`:** no tool call fixes it,
 and the note says why. Do not work around it with other tools (removing,
 redrawing or moving wires, junctions or bus entries). Report the note to
@@ -160,6 +173,15 @@ the user and wait, as in stuck escalation below:
   nothing to a schematic already in KiCad 9's format.
 - `references_unchecked`: the hierarchy has too many sheet instances
   for the reference check; tell the user it was not completed.
+- `no_connect_off_pin`: the user deletes the flag at `x`, `y` in
+  KiCad's editor. After that, make the `no_connect_pin` call the note
+  names, if it names one; for an issue that lists `pins`, the user says
+  which of them to flag.
+- `wire_end_off_pin` with a note: the call that would join the pin
+  refuses, or the wire's net has no single local label name that
+  `wire_pins_to_net` accepts (the note then names the pin the wire
+  reaches, if any), or the issue lists `pins`; the note says which. The
+  user decides how the pin is wired.
 After the user acts, re-run `validate_hierarchy`.
 
 **Debug cross-sheet nets:** Use `trace_hierarchical_net` to follow a net

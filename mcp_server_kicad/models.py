@@ -76,7 +76,9 @@ class SheetPinSpec(TypedDict):
 
 
 class LibTableEntry(TypedDict):
-    """One library row in a sym-lib-table."""
+    """One library row in a sym-lib-table: a nickname (not empty, none of a character below
+    U+0020, a backslash, a colon or a double quote, and not one an earlier row has) and the
+    library's path."""
 
     name: str
     uri: str

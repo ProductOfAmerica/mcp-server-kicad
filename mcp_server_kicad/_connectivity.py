@@ -366,6 +366,25 @@ def carry(p: Point, before: Frame, after: Frame) -> Point:
     return s1[0] + dx, s1[1] + dy
 
 
+def _old_order_transform(sym, ref: str) -> tuple[Point, Matrix]:
+    """symbol_transform with the order reversed: each mirror applied before the rotation.
+
+    Deliberately the old, wrong order: _transform_pin_pos mirrored a pin before rotating it
+    from v0.5.8 to v0.20.1. At rotation 90 or 270 with a mirror the point this gives is the
+    pin's end reflected through the symbol's origin (test_ladder_r3_mirrored_pins.py
+    measures 0.20.1 writing at it). It exists only so validate_hierarchy can find what those
+    releases left there; nothing may place or read a pin through it."""
+    pos, _kicad = symbol_transform(sym, ref)  # raises Refusal for an angle it refuses
+    t = _ROT[0]
+    for ch in sym.lists:
+        if ch.head == "at":
+            ang = _angle(ch.atoms[3].text) if len(ch.atoms) > 3 else 0
+            t = _ROT[ang or 0]  # never None here: symbol_transform refused such an angle
+        elif ch.head == "mirror" and len(ch.atoms) > 1 and ch.atoms[1].text in _MIR:
+            t = _compose(_MIR[ch.atoms[1].text], t)  # the mirror first, then the rotation
+    return pos, t
+
+
 #: Outward direction in degrees as the float interface reports it: 0 right, 90 down (+Y),
 #: 180 left, 270 up.
 _OUT_DEG: dict[Point, int] = {(1, 0): 0, (0, 1): 90, (-1, 0): 180, (0, -1): 270}
@@ -655,6 +674,16 @@ def _xys(node) -> list[Point]:
     return [(iu(p.atoms[1].text), iu(p.atoms[2].text)) for p in pts.find_all("xy")]
 
 
+def _at_point(node) -> Point:
+    """Where a junction, no-connect flag, label or bus entry sits: its (at), else the origin,
+    where kicad-cli 9.0.8 reads an item written with no (at)
+    (tests/test_ladder_r3_mirrored_pins.py measures each kind)."""
+    at = node.find("at")
+    if at is None:
+        return (0, 0)
+    return iu(at.atoms[1].text), iu(at.atoms[2].text)
+
+
 def _pin_hidden(p) -> bool:
     if any(a.text == "hide" for a in p.atoms[3:]):
         return True
@@ -921,16 +950,25 @@ _MAX_INSTANCES = 4096
 _PROJECT_LEVELS = 3
 
 
+#: Whitespace as _cst reads it between two atoms: space, TAB, CR, LF and NUL, and after a line
+#: break a comment line, a '#' first on its line with the rest of the line.
+_WS = rb"(?:[ \t\r\n\x00]|\n[ \t\r\x00]*#[^\n]*(?=\n|\Z))*"
+#: A string with an escape in it. _cst decodes \x41 and \101 and the other escapes KiCad's
+#: lexer does, so such a string may spell any text; matching it costs a parse at most.
+_ESCAPED = rb'"[^"\\\n]*\\[^\n](?:[^"\\\n]|\\[^\n])*"'
+
+
 def _atom(text: bytes) -> bytes:
-    """A regex for one s-expression atom with this text, quoted or bare, the way _cst.TOKEN
-    reads it: a bare atom runs to whitespace, a parenthesis, a quote or the end."""
+    """A regex for one s-expression atom with this text, the way _cst reads it: quoted, or
+    bare and running to whitespace, a parenthesis or the end; or any string spelled with
+    escapes, which may decode to it."""
     e = re.escape(text)
-    return rb'(?:"' + e + rb'"|' + e + rb'(?=[\s()"]|\Z))'
+    return rb'(?:"' + e + rb'"|' + e + rb"(?=[ \t\r\n\x00()]|\Z)|" + _ESCAPED + rb")"
 
 
 def _head(*words: bytes) -> bytes:
     """A regex for the start of a list whose leading atoms are *words*, any whitespace between."""
-    return rb"\(\s*" + rb"\s*".join(_atom(w) for w in words)
+    return rb"\(" + _WS + _WS.join(_atom(w) for w in words)
 
 
 #: A sheet block or a KiCad 6 instance table somewhere in the bytes. A match inside a quoted
@@ -953,13 +991,7 @@ def refs_pattern(refs) -> re.Pattern | None:
         return None
     ref = b"(?:" + b"|".join(_atom(t) for t in texts) + b")"
     return re.compile(
-        _head(b"reference")
-        + rb"\s*"
-        + ref
-        + b"|"
-        + _head(b"property", b"Reference")
-        + rb"\s*"
-        + ref
+        _head(b"reference") + _WS + ref + b"|" + _head(b"property", b"Reference") + _WS + ref
     )
 
 
@@ -1300,24 +1332,16 @@ class Model:
             if xys:
                 self.areas.append(xys)
         elif h == "bus_entry":
-            at, size = ch.find("at"), ch.find("size")
-            x, y = iu(at.atoms[1].text), iu(at.atoms[2].text)
+            size = ch.find("size")
+            x, y = _at_point(ch)
             dx, dy = (
                 (iu(size.atoms[1].text), iu(size.atoms[2].text)) if size is not None else (0, 0)
             )
             self.add(Item("be", x, y, x + dx, y + dy))
         elif h in ("junction", "no_connect"):
-            at = ch.find("at")
-            self.add(
-                Item(
-                    "junction" if h == "junction" else "nc",
-                    iu(at.atoms[1].text),
-                    iu(at.atoms[2].text),
-                )
-            )
+            self.add(Item("junction" if h == "junction" else "nc", *_at_point(ch)))
         elif h in _LABEL_KINDS:
-            at = ch.find("at")
-            it = self.add(Item("label", iu(at.atoms[1].text), iu(at.atoms[2].text)))
+            it = self.add(Item("label", *_at_point(ch)))
             it.sub = _LABEL_KINDS[h]
             it.text = ch.atoms[1].text if len(ch.atoms) > 1 else ""
             it.name = None if h in ("netclass_flag", "directive_label") else netname(it.text)
