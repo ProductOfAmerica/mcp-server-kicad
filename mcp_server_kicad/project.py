@@ -924,9 +924,9 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     the Net-(<ref>-<pin>) label connect_pins wrote there apart; neither is where any reader
     may join it to a pin KiCad draws for the point already. A flag carries a note: no tool
     removes one by its position, so delete it in KiCad's editor, then no_connect_pin flags the
-    pin. A wire end's "repair" is wire_pins_to_net with its net's one local label name,
-    planned first; else a note, with the plan's refusal or, where the net has no single local
-    label name, the pin the wire reaches. Nothing is written.
+    pin. A wire end's "repair" is wire_pins_to_net with the one local label name on its net
+    that the tool accepts, planned first; else a note, with the plan's refusal or, where the
+    net has no single such name, the pin the wire reaches. Nothing is written.
 
     Args:
         schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.

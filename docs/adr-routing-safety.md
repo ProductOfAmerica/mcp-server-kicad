@@ -369,9 +369,10 @@ Each slice appends an entry when it lands.
   (2026-10-17).
 
   A flag carries a note, since no tool removes one by its position: remove_no_connect looks at the
-  pin KiCad draws and finds none there. A wire end's repair is wire_pins_to_net with its net's one
-  local label name, planned first. Where the plan refuses, or the net has no single local label
-  name, the issue has a note instead, with the plan's refusal or the pin the wire's run reaches.
+  pin KiCad draws and finds none there. A wire end's repair is wire_pins_to_net with the one local
+  label name on its net that the tool accepts, planned first. Where the plan refuses, or the net has
+  no single such name (the Net-(REF-PIN) label connect_pins wrote is one the tool refuses), the
+  issue has a note instead, with the plan's refusal or the pin the wire's run reaches.
   connect_pins checks no names: on the 0.20.1 sheet with the pin on M and the route's anchor on a
   local N or a global G, calling it joins M with N, and M with G (kicad-cli's netlist, 2026-10-17);
   making it refuse that is a later slice. An item written with no (at) is read at the origin, by the

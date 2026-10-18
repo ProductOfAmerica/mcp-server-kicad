@@ -46,7 +46,7 @@ from hypothesis import strategies as st
 from kicad_ref import dsn_lexer as L
 from kicad_ref import transform as T
 from mcp.server.mcpserver.exceptions import ToolError
-from netlist_oracle import bare_name, judge, nets
+from netlist_oracle import bare_name, is_named, judge, nets, sheets_of
 from routing_fixtures import (
     ORIENTED,
     bus,
@@ -353,6 +353,39 @@ def test_the_report_names_each_wire_and_how_to_join_its_pin(tmp_path):
         else:
             assert "repair" not in issue, issue
             assert f"{call.anchor} pin 1" in issue["note"], issue
+
+
+@pytest.mark.parametrize(
+    "oracle", [pytest.param(False, id="model"), pytest.param(True, id="kicad", marks=requires_cli)]
+)
+def test_a_routes_note_says_its_label_is_a_name_the_tool_refuses(tmp_path, oracle):
+    """Each 0.20.1 route's net carries one local label, the Net-(<ref>-<pin>) connect_pins
+    wrote at its first end, and wire_pins_to_net refuses that name (called with it, it writes
+    nothing). So the route has no repair, and its note says the net has no single local label
+    name the tool accepts, not that it has no name. The kicad variant has kicad-cli's netlist
+    name the net holding the route's anchor after that label."""
+    p = _copy_fixture(tmp_path)
+    before = Path(p).read_bytes()
+    by_key = {_key(i): i for i in _new_issues(p)}
+    netlist = nets(p) if oracle else []
+    holder = {node: (printed, nodes) for _code, printed, _cls, nodes in netlist for node in nodes}
+    routes = [c for c in _STRAYED if c.tool == "connect_pins"]
+    assert len(routes) == 4
+    for call in routes:
+        name = f"Net-({call.ref}-{call.pin})"
+        assert before.count(f'(label "{name}"'.encode()) == 1, name
+        if oracle:
+            printed, nodes = holder[(call.anchor, "1")]
+            assert nodes == {(call.anchor, "1")}, (name, printed, nodes)
+            assert is_named(printed, name, sheets_of(netlist)), (name, printed)
+        with pytest.raises(ToolError, match=r"\[validation\]"):
+            schematic.wire_pins_to_net(
+                [{"reference": call.ref, "pin": call.pin}], name, schematic_path=p
+            )
+        issue = by_key[_expected(call)]
+        assert "repair" not in issue, issue
+        assert "no single local label name that wire_pins_to_net accepts" in issue["note"], issue
+    assert Path(p).read_bytes() == before
 
 
 @requires_cli
@@ -927,6 +960,40 @@ def test_a_repair_the_tool_would_refuse_is_a_note_with_its_refusal(tmp_path):
     with pytest.raises(ToolError, match=r"\[names\]"):
         schematic.wire_pins_to_net([{"reference": "Q1", "pin": "1"}], "N", schematic_path=p)
     assert Path(p).read_bytes() == before
+
+
+@pytest.mark.parametrize(
+    "names, accepted",
+    [
+        pytest.param(["Net-(R9-1)"], None, id="auto_name"),
+        pytest.param(["D[0..7]"], None, id="bus_syntax"),
+        pytest.param(["${REV}"], None, id="text_variable"),
+        pytest.param([" VCC"], None, id="padded"),
+        pytest.param(["/VCC"], None, id="sheet_path"),
+        pytest.param(["Net-(R9-1)", "VCC"], "VCC", id="accepted_beside_a_refused"),
+    ],
+)
+def test_a_wire_ends_repair_uses_the_one_label_name_the_tool_accepts(tmp_path, names, accepted):
+    """A stub from Q1:1's old point whose net carries these local labels. wire_pins_to_net
+    refuses each of them but VCC (called with one, it writes nothing). The issue's repair puts
+    the pin on the one name the tool accepts; where it accepts none, the issue has no repair
+    and its note says the net has no single local label name the tool accepts, not that it has
+    no name."""
+    p, at, _end = _q_sheet(tmp_path, "names")
+    wire(p, *at, at[0] + 2.54, at[1])
+    for text in names:
+        label(p, text, at[0] + 2.54, at[1])
+    before = Path(p).read_bytes()
+    for text in set(names) - {accepted}:
+        with pytest.raises(ToolError, match=r"\[validation\]"):
+            schematic.wire_pins_to_net([{"reference": "Q1", "pin": "1"}], text, schematic_path=p)
+    assert Path(p).read_bytes() == before
+    (issue,) = _new_issues(p)
+    if accepted is None:
+        assert "repair" not in issue, issue
+        assert "no single local label name that wire_pins_to_net accepts" in issue["note"], issue
+    else:
+        assert issue["repair"]["arguments"]["label_text"] == accepted, issue
 
 
 def test_a_wire_end_on_the_pins_net_is_not_reported(tmp_path):

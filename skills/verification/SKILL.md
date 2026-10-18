@@ -178,10 +178,10 @@ the user and wait, as in stuck escalation below:
   names, if it names one; for an issue that lists `pins`, the user says
   which of them to flag.
 - `wire_end_off_pin` with a note: the call that would join the pin
-  refuses, or the wire's net has no single local label name to put the
-  pin on (the note then names the pin the wire reaches, if any), or the
-  issue lists `pins`; the note says which. The user decides how the pin
-  is wired.
+  refuses, or the wire's net has no single local label name that
+  `wire_pins_to_net` accepts (the note then names the pin the wire
+  reaches, if any), or the issue lists `pins`; the note says which. The
+  user decides how the pin is wired.
 After the user acts, re-run `validate_hierarchy`.
 
 **Debug cross-sheet nets:** Use `trace_hierarchical_net` to follow a net

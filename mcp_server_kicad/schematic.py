@@ -1396,10 +1396,10 @@ def _off_pin_items(root, path: str) -> list[dict]:
     Where several pins were put at the point, each flag and wire end gets one issue that lists
     them all, with a note and no repair, since which pin it was written for is not known. A
     flag carries a note, since no tool removes a flag by its position. A wire end's repair is
-    wire_pins_to_net with the one local label name on the wire's net, if planning that call
-    refuses nothing; else a note, which carries the plan's refusal or, where the net has no
-    single local label name, names the pin a run of wires from the end reaches. A sheet the
-    model refuses gets nothing."""
+    wire_pins_to_net with the one local label name on the wire's net that the tool accepts, if
+    planning that call refuses nothing; else a note, which carries the plan's refusal or, where
+    the net has no single such name, names the pin a run of wires from the end reaches. A sheet
+    the model refuses gets nothing."""
     if not any(_connectivity.effective_mirror(s) for s in root.find_all("symbol")):
         return []
     try:
@@ -1566,9 +1566,9 @@ def _get_pin_or_none(root, reference: str, pin_name: str) -> Point | None:
 
 
 def _join_repair(model, root, ref: str, num: str, w, at: Point, path: str):
-    """(repair, None) putting pin num of ref on the one local label name of wire w's net, as
-    wire_pins_to_net, when planning that call refuses nothing; or (None, why not). The wire
-    ends at the point at. See _off_pin_items."""
+    """(repair, None) calling wire_pins_to_net to put pin num of ref on the one local label name
+    of wire w's net that the tool accepts, when planning that call refuses nothing; or (None,
+    why not). The wire ends at the point at. See _off_pin_items."""
     labels = (
         it
         for its in model.narrow_names(w).values()
@@ -1580,7 +1580,7 @@ def _join_repair(model, root, ref: str, num: str, w, at: Point, path: str):
         try:
             _connectivity.check_args(text, "auto", 2.54)
         except _connectivity.Refusal:
-            continue
+            continue  # wire_pins_to_net refuses this name as label_text
         usable.setdefault(_connectivity.netname(text), text)
     remove = _remove_call(w)
     if len(usable) == 1:
@@ -1601,7 +1601,7 @@ def _join_repair(model, root, ref: str, num: str, w, at: Point, path: str):
     else:
         reaches = "Its wires run to no single pin, so what it was meant to join is not known here."
     return None, (
-        f"Its net carries no single local label name to put the pin on. {reaches}"
+        f"Its net carries no single local label name that wire_pins_to_net accepts. {reaches}"
         f" Wire the pin as meant; {remove}"
     )
 
