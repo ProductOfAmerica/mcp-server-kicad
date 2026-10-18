@@ -316,6 +316,25 @@ class TestWhatCannotBeTold:
         placed = _connectivity.place(tmp_path / "experiments" / "other.kicad_sch")
         assert placed == _connectivity.Placement("root")
 
+    @pytest.mark.kicad_placeholder(
+        "p.kicad_sch", "inner/p.kicad_sch", "inner/broken.kicad_sch", "inner/sub/deep.kicad_sch"
+    )
+    def test_a_project_further_up_does_not_stand_in_for_one_not_read_through(self, tmp_path):
+        """The outer project reads through and uses nothing, but the nearer one, which is the
+        likelier owner of deep.kicad_sch, stopped at broken.kicad_sch. Calling the file unused
+        would speak for the outer project only, so it is a root of no project."""
+        _project(tmp_path, {"p.kicad_sch": _sch()})
+        _project(
+            tmp_path / "inner",
+            {
+                "p.kicad_sch": _sch(("u-a", "broken.kicad_sch")),
+                "broken.kicad_sch": _BROKEN,
+                "sub/deep.kicad_sch": _sch(),
+            },
+        )
+        placed = _connectivity.place(tmp_path / "inner" / "sub" / "deep.kicad_sch")
+        assert placed == _connectivity.Placement("root")
+
     @pytest.mark.kicad_placeholder(*_ABOVE)
     def test_an_unreadable_sheet_stops_the_walk_of_a_project_that_is_named(self, tmp_path):
         """The caller asked about p's hierarchy, so what it cannot read is not skipped."""

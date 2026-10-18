@@ -1195,9 +1195,9 @@ class Placement:
     *kind* is "sheet" when a project's hierarchy uses the file: *root* is the top-level sheet
     that hierarchy starts from and *instances* holds, for each place the hierarchy uses the
     file, the uuids of the sheet blocks from the root down to it. It is "root" for a
-    top-level sheet of a project, or when no project was read through to say otherwise, and
-    "unused" when one was (*root*, the nearest) and none of its sheets uses the file, which is
-    then a root of its own.
+    top-level sheet of a project, or when the nearest project was not read through to say
+    otherwise, and "unused" when it was (*root*) and none of its sheets uses the file, which
+    is then a root of its own.
     """
 
     kind: str
@@ -1308,8 +1308,8 @@ def place(path: str | Path, root: str | Path | None = None) -> Placement:
         else _project_roots(target, len(target.parents))
     )
     stopped: tuple[Path, str] | None = None  # the project and the file that stopped its walk
-    read_through: Path | None = None  # the nearest project whose sheets were all read
-    for project_root in roots:
+    nearest_read = False  # whether every sheet of the nearest project was read
+    for index, project_root in enumerate(roots):
         unread: list[str] = []
         for top in _top_level_sheets(project_root):
             if _real(top) == _real(target):
@@ -1318,18 +1318,17 @@ def place(path: str | Path, root: str | Path | None = None) -> Placement:
             if instances:
                 return Placement("sheet", top, tuple(instances))
             unread += not_read
-        if not unread:
-            read_through = read_through or project_root
-        elif stopped is None and (
-            root is not None or _real(project_root.parent) == _real(target.parent)
-        ):
-            stopped = (project_root, unread[0])
+        if index == 0:
+            nearest_read = not unread
+        if unread and stopped is None:
+            if root is not None or _real(project_root.parent) == _real(target.parent):
+                stopped = (project_root, unread[0])
     if stopped:
         raise ToolError(
             f"Cannot tell whether the project at {stopped[0].name} uses {target.name}:"
             f" {stopped[1]} could not be read."
         )
-    return Placement("unused", read_through) if read_through else Placement("root")
+    return Placement("unused", roots[0]) if nearest_read else Placement("root")
 
 
 def _one_part(group: list[tuple[SymRecord, tuple[int, ...]]]) -> str | None:
