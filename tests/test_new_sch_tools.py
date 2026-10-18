@@ -14,7 +14,7 @@ from test_ladder_r2_pins import lexed_root, port_pin_ends, report_iu
 
 from mcp_server_kicad import schematic
 
-#: A printed point "(x, y)", as KiCad's reports and the routing tools print one.
+#: A point as the tools print one: "(x, y)", in mm (_connectivity.pt).
 _POINT = re.compile(r"\((-?[0-9.]+), (-?[0-9.]+)\)")
 #: KiCad's own names for a net no label names (netlist_oracle's rule).
 _AUTO_NET = re.compile(r"(^|/)(Net|unconnected)-\(")

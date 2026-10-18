@@ -23,9 +23,8 @@ anchors(path, texts, text_height=...) exports the root sheet with kicad-cli (no 
 sheet) into a scratch directory and returns {text: [Anchor]} for the texts asked for, in
 internal units. Every text asked for must be plotted that high: a turned one's offset is
 checked against half of it. A structure other than the above (a mirrored text, a turn that
-is not a quarter, a turned text off its anchor) raises RuntimeError: the SVG's shape is
-unverified on kicad-cli 10, so a change there shows as an error, never as a pass or a
-defect.
+is not a quarter, a turned text off its anchor) raises RuntimeError, so a change in the SVG's
+shape shows as an error, never as a pass or a defect.
 
 This module imports nothing from mcp_server_kicad but the kicad-cli runner.
 """

@@ -1650,8 +1650,7 @@ def placed_symbol_text(sym: SynSymbol, *, project: str) -> str:
 
 def symbol_sheet_text(symbols: Sequence[SynSymbol], *, project: str, paper: str = "A3") -> str:
     """A KiCad 9 schematic (format 20250114) holding ``symbols``, each placed from the stock
-    Device:R, with ``project`` as the name its symbols' instances give the project (a
-    standalone sheet's is its file's stem)."""
+    Device:R, with ``project`` as the name its symbols' instances give the project."""
     return (
         '(kicad_sch\n\t(version 20250114)\n\t(generator "eeschema")\n'
         f'\t(generator_version "9.0")\n\t(uuid "{SHEET_UUID}")\n\t(paper "{paper}")\n'

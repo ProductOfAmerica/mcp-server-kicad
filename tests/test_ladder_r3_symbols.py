@@ -381,8 +381,8 @@ def test_nightly_fields_follow_the_symbol_where_kicad_draws_them(case):
 # a symbol KiCad cannot load, and one it loads off the page
 # ---------------------------------------------------------------------------
 
-#: tests/fixtures/kicad_native.kicad_sch, written by KiCad: an A4 sheet (297 x 210 mm) with R1
-#: at (100, 100), angle 0.
+#: tests/fixtures/kicad_native.kicad_sch, a hand-written sheet under a KiCad 9 header: an A4
+#: sheet (297 x 210 mm) with R1 at (100, 100), angle 0.
 _NATIVE = Path(__file__).parent / "fixtures" / "kicad_native.kicad_sch"
 _R1_AT = b"(at 100 100 0) (unit 1)"
 
@@ -745,7 +745,7 @@ def test_a_symbol_at_a_coordinate_kicad_clamps_is_moved(tmp_path):
     }, "the symbol moved and its fields did not keep their place on it"
 
 
-#: Places the 297 x 210 mm native sheet does not hold, each on the 0.01 mm grid KiCad writes.
+#: Places the 297 x 210 mm native sheet does not hold: left of it, right of it, above and below.
 _OFF_THE_PAGE = [
     pytest.param(-10.16, 50.8, id="left"),
     pytest.param(304.8, 50.8, id="right"),
