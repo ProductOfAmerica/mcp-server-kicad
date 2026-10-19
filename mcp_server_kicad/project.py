@@ -690,17 +690,26 @@ def _entries_at(block, parent_path: str) -> list:
     ]
 
 
+def _page_as_read(label: str) -> str:
+    """A page label as KiCad's parser keeps it: CR, LF, tab and space removed, and "#" for an
+    empty one (sch_io_kicad_sexpr_parser.cpp:3616-3641 at 9.0.8, 3857-3882 at 10.0.7)."""
+    return re.sub(r"[\r\n\t ]", "", label) if label else "#"
+
+
 def _page_number(label: str) -> int | None:
     """The whole number KiCad reads a page label as, or None. ComparePageNum reads one with
     wxString::ToLong, which is strtol in base 10 taking the whole string (wxWidgets 3.2.6
-    src/common/string.cpp:1667-1727), so "+2" and "02" are 2. Not modelled: ToLong refuses a
-    number past the platform's long, 32 bits on Windows, which this still reads as a number."""
+    src/common/string.cpp:1667-1727), so "+2", " 2" and "02" are 2. Not modelled: ToLong
+    refuses a number past the platform's long, 32 bits on Windows, which this still reads as a
+    number."""
+    label = _page_as_read(label)
     return int(label) if re.fullmatch(r"[+-]?[0-9]+", label) else None
 
 
 def _page_key(label: str):
     """SCH_SHEET::ComparePageNum as a sort key (sch_sheet.cpp:1609-1642 at 9.0.8): whole numbers
     first and numerically, then the other labels in natural string order."""
+    label = _page_as_read(label)
     if (number := _page_number(label)) is not None:
         return (0, number, ())
     return (1, 0, tuple(int(t) if i % 2 else t for i, t in enumerate(re.split(r"(\d+)", label))))
