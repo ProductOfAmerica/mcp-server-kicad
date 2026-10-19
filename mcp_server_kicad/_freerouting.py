@@ -3,17 +3,26 @@
 
 from __future__ import annotations
 
-import json
+import hashlib
 import os
 import re
 import subprocess
+import urllib.request
 import zipfile
 from pathlib import Path
-from urllib.request import Request, urlopen
 
 from mcp_server_kicad._shared import _atomic_write, _find_on_path, _kicad_root, _run_pcbnew
 
-_GITHUB_RELEASES_URL = "https://api.github.com/repos/freerouting/freerouting/releases/latest"
+#: The one Freerouting build autoroute_pcb downloads when FREEROUTING_JAR names
+#: no jar: an exact release asset, never whichever release is newest, so the
+#: bytes that run change only when this pin does. The digest is the one GitHub
+#: publishes for the asset, matched by hashing a download of it.
+_FREEROUTING_VERSION = "2.5.0"
+_FREEROUTING_URL = (
+    "https://github.com/freerouting/freerouting/releases/download/"
+    f"v{_FREEROUTING_VERSION}/freerouting-{_FREEROUTING_VERSION}.jar"
+)
+_FREEROUTING_SHA256 = "f6f51bb02245e8e717f9359bd260cc9c5c0b1bc0acc8b7cb2cd5b8ffeb5de3c7"
 
 _KICAD_PYTHON_PATHS = [
     "/usr/lib/kicad/lib/python3/dist-packages",
@@ -25,9 +34,10 @@ _pcbnew_cache: tuple[str | None, dict | None] | None = None
 _pcbnew_major_cache: tuple[int | None] | None = None
 
 
-#: Fallback when the jar cannot be read. Freerouting's own floor for years, and
-#: only ever a lower bound: jar_java_requirement is the authority when it answers.
-_JAVA_FLOOR = 17
+#: What the pinned jar needs: its classes under app/freerouting/ are all class
+#: file major 69. The fallback when a jar cannot be read; jar_java_requirement
+#: is the authority when it answers, as it does for the pinned jar.
+_JAVA_FLOOR = 25
 
 #: Class file major 45 is Java 1.1, and it has incremented by one per release
 #: since, so Java N is 44 + N. Java 17 is 61, Java 25 is 69.
@@ -46,12 +56,13 @@ _NO_CWD_IMPORTS = "import sys; sys.path[:] = [p for p in sys.path if p]; "
 def jar_java_requirement(jar_path: str) -> int | None:
     """Java major version *jar_path* needs, read from its own class files.
 
-    Asking the jar rather than hardcoding a constant, because the constant
-    cannot be right: _download_jar fetches releases/latest with no pin, so what
-    the jar needs floats while a literal does not. Measured 2026-08-14 on the
-    cached freerouting.jar (build 2026-08-07): class file major 69, meaning Java
-    25, against a check that was passing anything 17 or above. Every machine
-    between the two passed the preflight and then died in the router.
+    Asking the jar rather than trusting a constant, because FREEROUTING_JAR can
+    name any Freerouting build, and only its class files say what it needs. The
+    download floated as well until it was pinned: it fetched whatever release
+    was newest, and on 2026-08-14 the cached freerouting.jar (build 2026-08-07)
+    was class file major 69, meaning Java 25, against a check that was passing
+    anything 17 or above. Every machine between the two passed the preflight and
+    then died in the router.
 
     Entries under META-INF/versions/ are skipped: a multi-release jar carries
     higher-versioned copies for runtimes that can use them, and requiring the
@@ -91,9 +102,15 @@ def check_java(jar_path: str | None = None, *, java: str | None) -> str | None:
     _JAVA_FLOOR otherwise.
     """
     needed = (jar_java_requirement(jar_path) if jar_path else None) or _JAVA_FLOOR
+    # Each source named here offered Java 25 or newer when checked on 2026-10-19.
+    # Not named: a distribution's default JRE, which can be older than the jar
+    # needs, and Homebrew's openjdk formula, which is keg-only, so not on PATH.
     how = (
-        "Install a JRE of at least that version: "
-        "https://adoptium.net, `brew install openjdk`, or `apt install default-jre`."
+        "Eclipse Temurin has installers for Windows and macOS at"
+        " https://adoptium.net/temurin/releases/ and Linux packages at"
+        " https://adoptium.net/installation/linux/; on macOS,"
+        " `brew install --cask temurin` installs the newest. Restart your MCP client"
+        " afterwards."
     )
     missing = f"Java runtime not found. Autorouting needs Java {needed}+. {how}"
     if java is None:
@@ -130,48 +147,68 @@ def _cache_dir() -> Path:
     return Path.home() / ".local" / "share" / "mcp-server-kicad"
 
 
+def _cached_jar() -> Path:
+    """Where the pinned jar is cached.
+
+    The version is in the name, so two installed releases of this package that
+    pin different builds keep one jar each instead of replacing each other's on
+    every call, and the unpinned freerouting.jar that releases before the pin
+    cached here is never read.
+    """
+    return _cache_dir() / f"freerouting-{_FREEROUTING_VERSION}.jar"
+
+
+def _is_pinned(path: Path) -> bool:
+    """Whether *path* holds exactly the pinned jar's bytes."""
+    try:
+        with open(path, "rb") as f:
+            return hashlib.file_digest(f, "sha256").hexdigest() == _FREEROUTING_SHA256
+    except OSError:
+        return False
+
+
 def find_jar() -> str | None:
     """Find the Freerouting JAR. Returns path or None.
 
-    A relative FREEROUTING_JAR is ignored, as a relative KICAD_CLI_PATH is:
-    is_file() resolved it against the working directory and java then loaded
-    whatever jar of that name sat in the directory the server started in.
+    FREEROUTING_JAR is the user's own jar, used as given and never hash-checked.
+    A relative one is ignored, as a relative KICAD_CLI_PATH is: is_file()
+    resolved it against the working directory and java then loaded whatever jar
+    of that name sat in the directory the server started in.
+
+    The cached jar is hashed again on every call rather than trusted for its
+    name, because a name cannot tell the pinned jar from one altered after it
+    was saved. Hashing the pinned jar took 0.12 to 0.15 s on a desktop
+    (measured 2026-10-19).
     """
     env_jar = os.environ.get("FREEROUTING_JAR")
     if env_jar and os.path.isabs(env_jar) and Path(env_jar).is_file():
         return env_jar
 
-    cached = _cache_dir() / "freerouting.jar"
-    if cached.is_file():
+    cached = _cached_jar()
+    if _is_pinned(cached):
         return str(cached)
-
     return None
 
 
 def _download_jar() -> str:
-    """Download the latest Freerouting JAR from GitHub releases. Returns path."""
-    req = Request(_GITHUB_RELEASES_URL, headers={"Accept": "application/vnd.github+json"})
-    with urlopen(req, timeout=30) as resp:
-        release = json.loads(resp.read())
+    """Download the pinned Freerouting JAR into the cache. Returns its path.
 
-    jar_asset = None
-    for asset in release.get("assets", []):
-        name = asset["name"]
-        if name.endswith(".jar") and "javadoc" not in name and "sources" not in name:
-            jar_asset = asset
-            break
-
-    if not jar_asset:
-        raise RuntimeError("No JAR asset found in latest Freerouting release")
-
-    download_url = jar_asset["browser_download_url"]
-    dest = _cache_dir() / "freerouting.jar"
+    The whole download is hashed before anything is written, and it lands
+    through _atomic_write, so the cache never holds a partial or unchecked jar.
+    """
+    # Through the module, never a name imported from it: the suite's _no_network
+    # guard patches urllib.request.urlopen, which a name bound at import never sees.
+    with urllib.request.urlopen(_FREEROUTING_URL, timeout=120) as resp:
+        data = resp.read()
+    digest = hashlib.sha256(data).hexdigest()
+    if digest != _FREEROUTING_SHA256:
+        raise RuntimeError(
+            f"the download's SHA-256 is {digest}, not the pinned {_FREEROUTING_SHA256},"
+            " so it was neither saved nor run"
+        )
+    dest = _cached_jar()
     dest.parent.mkdir(parents=True, exist_ok=True)
-
-    req = Request(download_url)
-    with urlopen(req, timeout=120) as resp:
-        _atomic_write(dest, resp.read())
-
+    _atomic_write(dest, data)
     return str(dest)
 
 
@@ -185,18 +222,14 @@ def ensure_jar() -> tuple[str | None, str | None]:
         return jar, None
 
     try:
-        _download_jar()
+        return _download_jar(), None
     except Exception as exc:
         return None, (
-            f"Failed to download Freerouting: {exc}. "
-            "Download manually from https://github.com/freerouting/freerouting/releases "
-            "and set the FREEROUTING_JAR environment variable to its absolute path."
+            f"Failed to download Freerouting {_FREEROUTING_VERSION}: {exc}. "
+            f"Download {_FREEROUTING_URL} yourself, check that its SHA-256 is "
+            f"{_FREEROUTING_SHA256}, and set the FREEROUTING_JAR environment variable "
+            "to its absolute path."
         )
-
-    jar = find_jar()
-    if jar:
-        return jar, None
-    return None, "JAR download appeared to succeed but file not found."
 
 
 def _kicad_python_candidates() -> list[str]:
@@ -452,12 +485,19 @@ def run_freerouting(
 
     *java* is the binary check_java approved, by absolute path.
 
+    Freerouting runs headless and with its usage analytics off, through the two
+    settings its docs/settings.md documents at v2.5.0. Without the first it
+    opens its window on the user's desktop, and its analytics are on by
+    default. Its startup check of GitHub for a newer release has no setting.
+
     Returns error message or None on success.
     """
     cmd = [
         java,
         "-jar",
         jar_path,
+        "--gui.enabled=false",
+        "--usage_and_diagnostic_data.disable_analytics=true",
         "-de",
         dsn_path,
         "-do",

@@ -74,7 +74,7 @@ These are the kicad MCP tools you should be using during PCB layout:
 **Routing:**
 - `add_trace` — add a trace segment with layer, width, coordinates
 - `add_via` — add a via at a coordinate
-- `autoroute_pcb` — run Freerouting autorouter (requires Java 17+, auto-downloads JAR)
+- `autoroute_pcb`: run Freerouting autorouter (requires Java 25+, auto-downloads JAR)
 
 **Post-routing refinement:**
 - `add_copper_zone` — create a copper zone (ground plane, power fill) with polygon outline

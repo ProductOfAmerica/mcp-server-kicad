@@ -1,8 +1,12 @@
 """Tests for Freerouting helper module."""
 
+import hashlib
+import io
 import os
+import re
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 from unittest.mock import patch
 
@@ -31,7 +35,7 @@ from mcp_server_kicad._freerouting import (
     wx_app_prelude,
 )
 from mcp_server_kicad._shared import _keepout_dict, _xy
-from mcp_server_kicad.pcb import _promote_footprint_keepouts, run_drc
+from mcp_server_kicad.pcb import _promote_footprint_keepouts, autoroute_pcb, run_drc
 
 
 class TestCheckJava:
@@ -40,7 +44,7 @@ class TestCheckJava:
             args=["java", "-version"],
             returncode=0,
             stdout="",
-            stderr='openjdk version "21.0.1" 2023-10-17',
+            stderr='openjdk version "25.0.2" 2026-01-20',
         )
         with patch("subprocess.run", return_value=mock_result) as run:
             result = check_java(java="/fake/java")
@@ -53,7 +57,10 @@ class TestCheckJava:
             result = check_java(java="/fake/java")
             assert result is not None
             assert "Java" in result
-            assert "apt install" in result
+            assert "https://adoptium.net/temurin/releases/" in result
+            # It named `apt install default-jre`, which can install a Java older
+            # than the jar needs.
+            assert "default-jre" not in result
 
     def test_no_java_on_path_is_reported_without_spawning(self):
         """None is what the PATH lookup hands over when there is no java at all."""
@@ -72,7 +79,7 @@ class TestCheckJava:
         with patch("subprocess.run", return_value=mock_result):
             result = check_java(java="/fake/java")
             assert result is not None
-            assert "17" in result
+            assert f"Java {_fr_module._JAVA_FLOOR}+" in result
 
 
 class TestFindJar:
@@ -90,14 +97,6 @@ class TestFindJar:
             patch("mcp_server_kicad._freerouting._cache_dir", return_value=empty_dir),
         ):
             assert find_jar() is None
-
-    def test_cached_jar(self, tmp_path):
-        cache_dir = tmp_path / ".local" / "share" / "mcp-server-kicad"
-        cache_dir.mkdir(parents=True)
-        jar = cache_dir / "freerouting.jar"
-        jar.touch()
-        with patch("mcp_server_kicad._freerouting._cache_dir", return_value=cache_dir):
-            assert find_jar() == str(jar)
 
     def test_no_jar(self, tmp_path):
         empty_dir = tmp_path / "empty"
@@ -132,7 +131,7 @@ class TestEnsureJar:
         jar_path = str(cache_dir / "freerouting.jar")
 
         with (
-            patch("mcp_server_kicad._freerouting.find_jar", side_effect=[None, jar_path]),
+            patch("mcp_server_kicad._freerouting.find_jar", return_value=None),
             patch("mcp_server_kicad._freerouting._download_jar", return_value=jar_path),
         ):
             path, err = ensure_jar()
@@ -164,6 +163,133 @@ class TestEnsureJar:
             path, err = ensure_jar()
         assert path is None
         assert err is not None and "absolute path" in err
+
+
+class TestPinnedJar:
+    """The download is one release asset, checked against its pinned SHA-256
+    before it is cached or run.
+
+    Nothing here touches the network: urlopen is faked, and where the right
+    bytes are needed the pin is pointed at a small stand-in jar's digest,
+    because the real jar is 65 MB. Every flow also checks the URLs it
+    requested, so a path that asked for anything but the pinned asset fails.
+    """
+
+    @pytest.fixture
+    def cache(self, tmp_path, monkeypatch):
+        """An existing, empty cache directory, so a write would land."""
+        cache = tmp_path / "cache"
+        cache.mkdir()
+        monkeypatch.setattr(_fr_module, "_cache_dir", lambda: cache)
+        monkeypatch.delenv("FREEROUTING_JAR", raising=False)
+        return cache
+
+    @pytest.fixture
+    def stand_in(self, tmp_path, monkeypatch):
+        """A small jar's bytes, with the pin pointed at their digest."""
+        jar = Path(TestJarJavaRequirement._jar(tmp_path, 69)).read_bytes()
+        monkeypatch.setattr(_fr_module, "_FREEROUTING_SHA256", hashlib.sha256(jar).hexdigest())
+        return jar
+
+    @pytest.fixture
+    def serve(self, monkeypatch):
+        """serve(body) makes urlopen answer with *body*; returns the URLs requested."""
+        requested: list[str] = []
+
+        def serve(body: bytes) -> list[str]:
+            def fake_urlopen(url, *args, **kwargs):
+                requested.append(url)
+                return io.BytesIO(body)
+
+            monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+            return requested
+
+        return serve
+
+    def _cached(self, cache: Path) -> Path:
+        return cache / f"freerouting-{_fr_module._FREEROUTING_VERSION}.jar"
+
+    def test_a_hash_mismatch_is_refused_and_nothing_is_cached(self, cache, serve):
+        requested = serve(b"PK\x03\x04 not the pinned jar")
+        path, err = ensure_jar()
+        assert path is None
+        assert err is not None
+        assert "SHA-256" in err and "neither saved nor run" in err
+        assert "FREEROUTING_JAR" in err and "absolute path" in err
+        # No jar, and no temp file either.
+        assert list(cache.iterdir()) == []
+        assert requested == [_fr_module._FREEROUTING_URL]
+
+    def test_the_pinned_bytes_are_accepted_and_cached(self, cache, stand_in, serve):
+        requested = serve(stand_in)
+        path, err = ensure_jar()
+        assert (path, err) == (str(self._cached(cache)), None)
+        assert self._cached(cache).read_bytes() == stand_in
+        assert list(cache.iterdir()) == [self._cached(cache)]
+        # Served from the cache the second time.
+        assert ensure_jar() == (path, None)
+        assert requested == [_fr_module._FREEROUTING_URL]
+
+    def test_a_stale_unpinned_jar_is_not_used(self, cache, stand_in, serve):
+        """Releases before the pin cached freerouting.jar from whatever release
+        was newest. That it exists is no reason to run it."""
+        (cache / "freerouting.jar").write_bytes(b"PK\x03\x04 an unpinned build")
+        assert find_jar() is None
+        requested = serve(stand_in)
+        assert ensure_jar() == (str(self._cached(cache)), None)
+        assert requested == [_fr_module._FREEROUTING_URL]
+
+    def test_a_tampered_cached_jar_is_not_used(self, cache, stand_in, serve):
+        """The pinned name is no proof of the pinned bytes."""
+        cached = self._cached(cache)
+        tampered = stand_in + b"appended after the download"
+        cached.write_bytes(tampered)
+        assert find_jar() is None
+
+        requested = serve(b"not the pinned jar either")
+        path, err = ensure_jar()
+        assert path is None and err is not None
+        assert cached.read_bytes() == tampered  # the refused download wrote nothing
+
+        serve(stand_in)
+        assert ensure_jar() == (str(cached), None)
+        assert cached.read_bytes() == stand_in
+        assert requested == [_fr_module._FREEROUTING_URL] * 2
+
+    def test_freerouting_jar_is_used_as_given(self, cache, tmp_path, serve, monkeypatch):
+        """The user's own jar: no hash check, and no download."""
+        own = tmp_path / "my-freerouting.jar"
+        own.write_bytes(b"whichever build the user chose")
+        monkeypatch.setenv("FREEROUTING_JAR", str(own))
+        requested = serve(b"")
+        assert ensure_jar() == (str(own), None)
+        assert requested == []
+
+    def test_no_code_path_requests_the_latest_release(self):
+        """The pin names one release tag and its asset, and nothing in the
+        package asks for the newest release any more."""
+        match = re.fullmatch(
+            r"https://github\.com/freerouting/freerouting/releases/download/"
+            r"v(\d+\.\d+\.\d+)/freerouting-(\d+\.\d+\.\d+)\.jar",
+            _fr_module._FREEROUTING_URL,
+        )
+        assert match is not None, _fr_module._FREEROUTING_URL
+        assert match.group(1) == match.group(2) == _fr_module._FREEROUTING_VERSION
+        package = Path(_fr_module.__file__).parent
+        offenders = [
+            p.name for p in package.rglob("*.py") if "releases/latest" in p.read_text("utf-8")
+        ]
+        assert offenders == []
+
+    def test_the_suites_network_guard_reaches_the_download(self, cache, monkeypatch):
+        """_freerouting imported urlopen by name, which kept the real function,
+        so the autouse _no_network guard, which patches urllib.request, never
+        covered the download (probed 2026-10-19). The URL is unreachable on
+        purpose: were the guard bypassed again, this fails on a refused
+        connection and fetches nothing."""
+        monkeypatch.setattr(_fr_module, "_FREEROUTING_URL", "http://127.0.0.1:9/freerouting.jar")
+        with pytest.raises(AssertionError, match="network connection"):
+            _fr_module._download_jar()
 
 
 class TestFindPcbnewPython:
@@ -445,6 +571,26 @@ class TestRunFreerouting:
             assert err is None
         # The same binary check_java approved, not "java" searched for afresh.
         assert run.call_args.args[0][0] == "/fake/java"
+
+    def test_runs_headless_with_analytics_off(self, tmp_path):
+        """The two settings Freerouting's docs/settings.md documents at v2.5.0, in
+        its --section.property=value form: gui.enabled, whose default true opens a
+        window on the user's desktop, and usage_and_diagnostic_data.disable_analytics,
+        whose default false sends usage data. That the pinned jar accepts them was
+        checked by routing a KiCad demo board with it on 2026-10-19: it logged that
+        the GUI and analytics were off and warned of no unknown setting. This pins
+        that they are passed."""
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=ok) as run:
+            run_freerouting(
+                jar_path="/fake/freerouting.jar",
+                dsn_path=str(tmp_path / "board.dsn"),
+                ses_path=str(tmp_path / "board.ses"),
+                java="/fake/java",
+            )
+        argv = run.call_args.args[0]
+        assert "--gui.enabled=false" in argv
+        assert "--usage_and_diagnostic_data.disable_analytics=true" in argv
 
     def test_timeout(self, tmp_path):
         dsn = tmp_path / "board.dsn"
@@ -908,14 +1054,15 @@ result = {
 
 
 class TestJarJavaRequirement:
-    """The Java floor has to come from the jar, because the jar floats.
+    """The Java floor has to come from the jar, because FREEROUTING_JAR can
+    name any build.
 
-    _download_jar fetches releases/latest with no pin and no record of what it
-    got, so a literal minimum in check_java cannot stay right. Measured
-    2026-08-14 on the cached freerouting.jar (build 2026-08-07): its class files
-    are major 69, which is Java 25, against a check that accepted anything from
-    17 up. Every machine between the two passed the preflight and then died
-    inside the router, with the preflight's blessing.
+    The download floated too until it was pinned, fetching whatever release was
+    newest with no record of what it got. Measured 2026-08-14 on the cached
+    freerouting.jar (build 2026-08-07): its class files are major 69, which is
+    Java 25, against a check that accepted anything from 17 up. Every machine
+    between the two passed the preflight and then died inside the router, with
+    the preflight's blessing.
     """
 
     @staticmethod
@@ -949,15 +1096,14 @@ class TestJarJavaRequirement:
         assert jar_java_requirement(str(bad)) is None
         assert jar_java_requirement(str(tmp_path / "absent.jar")) is None
 
-    def test_the_real_cached_jar_if_present(self):
-        """Not a fixture: the actual artifact the tool would run."""
-        from mcp_server_kicad._freerouting import find_jar
-
+    def test_the_pinned_jar_needs_the_floor(self):
+        """Not a fixture: the pinned jar itself, when this machine has it cached
+        or FREEROUTING_JAR names a copy. Its class files judge _JAVA_FLOOR, which
+        is what the docs state."""
         jar = find_jar()
-        if jar is None:
-            pytest.skip("no freerouting jar cached on this machine")
-        need = jar_java_requirement(jar)
-        assert need is not None and need >= 17, need
+        if jar is None or not _fr_module._is_pinned(Path(jar)):
+            pytest.skip("the pinned freerouting jar is not on this machine")
+        assert jar_java_requirement(jar) == _fr_module._JAVA_FLOOR
 
 
 class TestCheckJavaAgainstTheJar:
@@ -983,9 +1129,10 @@ class TestCheckJavaAgainstTheJar:
             assert check_java(jar, java="/fake/java") is None
 
     def test_no_jar_falls_back_to_the_floor(self):
-        with self._java("17.0.9"):
+        """The floor is the pinned jar's own requirement, Java 25."""
+        with self._java("25.0.1"):
             assert check_java(java="/fake/java") is None
-        with self._java("11.0.2"):
+        with self._java("24.0.1"):
             assert check_java(java="/fake/java") is not None
 
     def test_a_wedged_java_is_reported_not_raised(self):
@@ -993,3 +1140,21 @@ class TestCheckJavaAgainstTheJar:
         with patch("subprocess.run", side_effect=subprocess.TimeoutExpired("java", 10)):
             msg = check_java(java="/fake/java")
         assert msg and "did not answer" in msg
+
+
+def test_every_stated_java_requirement_is_the_floor():
+    """autoroute_pcb's description and the pcb-layout skill said Java 17+ while
+    the jar the tool fetched needed 25: class file major 69 in each of 2.2.0,
+    2.2.4, 2.3.0, 2.4.1 and 2.5.0 (measured 2026-10-19). The docs state
+    _JAVA_FLOOR now, and test_the_pinned_jar_needs_the_floor holds that to the
+    jar itself."""
+    root = Path(__file__).resolve().parent.parent
+    texts = {"autoroute_pcb": autoroute_pcb.__doc__ or ""}
+    docs = [root / "README.md", root / "CLAUDE.md", *sorted((root / "skills").glob("*/SKILL.md"))]
+    for doc in docs:
+        texts[doc.relative_to(root).as_posix()] = doc.read_text(encoding="utf-8")
+    stated = sorted(
+        (where, int(n)) for where, text in texts.items() for n in re.findall(r"\bJava (\d+)", text)
+    )
+    assert stated, "nothing states the Java requirement any more"
+    assert {n for _, n in stated} == {_fr_module._JAVA_FLOOR}, stated

@@ -66,7 +66,7 @@ claude plugin install kicad
 
 Download `kicad-<version>.mcpb` from the [latest release][latest] and install it
 from Settings, then Extensions. Claude Desktop fetches Python and the package
-itself; you need KiCad installed, plus Java for `autoroute_pcb`.
+itself; you need KiCad installed, plus Java 25 or newer for `autoroute_pcb`.
 
 Desktop does not run from your project directory, so fill in the schematic,
 board, and export paths it asks for. Leave the `kicad-cli` field blank unless
@@ -80,8 +80,9 @@ KiCad is installed somewhere unusual. The design skills are Claude Code only.
 pip install mcp-server-kicad
 ```
 
-Then point your MCP client at the unified server and set `cwd` to a KiCad
-project directory so paths resolve themselves:
+Then point your MCP client at the unified server, and name your schematic,
+board, and export folder in `env` by absolute path, so tools find them without
+being told on every call:
 
 ```json
 {
@@ -89,14 +90,21 @@ project directory so paths resolve themselves:
     "kicad": {
       "command": "uvx",
       "args": ["--from", "mcp-server-kicad", "mcp-server-kicad"],
-      "cwd": "/path/to/your/kicad/project"
+      "env": {
+        "KICAD_SCH_PATH": "/path/to/project/project.kicad_sch",
+        "KICAD_PCB_PATH": "/path/to/project/project.kicad_pcb",
+        "KICAD_OUTPUT_DIR": "/path/to/project"
+      }
     }
   }
 }
 ```
 
-That single entry registers all 109 tools. Prefer to split them across five
-smaller servers? See [Configuration](#configuration).
+That single entry registers all 109 tools. A client that starts the server in
+your project's folder can leave `env` out: the server then takes the paths from
+the single `.kicad_pro` there (see [How paths resolve](#how-paths-resolve)).
+Prefer to split the tools across five smaller servers? See
+[Configuration](#configuration).
 
 ## What you get
 
@@ -146,32 +154,31 @@ surface:
   "mcpServers": {
     "kicad-schematic": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-schematic"],
-      "cwd": "/path/to/your/kicad/project"
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-schematic"]
     },
     "kicad-pcb": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-pcb"],
-      "cwd": "/path/to/your/kicad/project"
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-pcb"]
     },
     "kicad-symbol": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-symbol"],
-      "cwd": "/path/to/your/kicad/project"
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-symbol"]
     },
     "kicad-footprint": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-footprint"],
-      "cwd": "/path/to/your/kicad/project"
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-footprint"]
     },
     "kicad-project": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-project"],
-      "cwd": "/path/to/your/kicad/project"
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-project"]
     }
   }
 }
 ```
+
+Give each entry the `env` block from [Everything else](#everything-else), with
+`KICAD_SYM_LIB` or `KICAD_FP_LIB` for the library servers, unless your client
+starts them in the project's folder.
 
 Each is also runnable directly:
 
@@ -205,13 +212,37 @@ Highest priority wins:
   - `kicad-cli`: ERC, DRC, exports, jobsets, `get_version`, the library
     upgrades and `update_pcb_from_schematic`
   - `pcbnew` Python bindings: `fill_zones` and `autoroute_pcb` (which also
-    needs Java)
+    needs Java 25 or newer; see [The Freerouting download](#the-freerouting-download))
   - KiCad's stock libraries: placing a stock symbol or footprint
 
   Every other tool parses files directly and needs no KiCad.
 
 CI covers Linux (KiCad 9 and 10), macOS and Windows (KiCad 10), and Python
 3.11 to 3.14.
+
+### The Freerouting download
+
+`autoroute_pcb` runs [Freerouting](https://github.com/freerouting/freerouting).
+Unless `FREEROUTING_JAR` names a jar, its first call downloads Freerouting 2.5.0,
+`freerouting-2.5.0.jar` (65 MB, needs Java 25 or newer), from
+<https://github.com/freerouting/freerouting/releases/download/v2.5.0/freerouting-2.5.0.jar>
+and caches it as `~/.local/share/mcp-server-kicad/freerouting-2.5.0.jar`
+(`%USERPROFILE%\.local\share\mcp-server-kicad\` on Windows). Its SHA-256 is
+checked against the value pinned in this package before the download is saved
+and every time the cached copy is used. A download that does not match is not
+saved; a cached copy that does not match is not run, and is downloaded again.
+
+Freerouting is run with `--gui.enabled=false` and
+`--usage_and_diagnostic_data.disable_analytics=true`, the settings its
+documentation gives for running headless and for not sending usage data, so it
+opens no window and its analytics stay off. When it starts, Freerouting still
+asks GitHub for its newest release; it has no setting to turn that off.
+
+To skip the download, set `FREEROUTING_JAR` to the absolute path of a Freerouting
+jar you trust. That jar is used as given, with no hash check. A relative path, or
+one that names no file, is ignored and the download goes ahead. Earlier releases
+cached an unpinned `freerouting.jar` in the same folder; it is no longer read and
+can be deleted.
 
 ### Finding your KiCad install
 
@@ -466,7 +497,7 @@ Drive the servers by hand with the
 [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
 
 ```bash
-npx @modelcontextprotocol/inspector uvx --from mcp-server-kicad mcp-server-kicad
+npx -y @modelcontextprotocol/inspector uvx --from mcp-server-kicad mcp-server-kicad
 ```
 
 ## Contributing
