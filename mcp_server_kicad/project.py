@@ -83,7 +83,7 @@ mcp = build_server(
         "- When a tool returns an error, try different parameters. Do NOT"
         " fall back to manual file editing.\n\n"
         "PROJECT SETUP WORKFLOW:\n"
-        "1. create_project — creates .kicad_pro, .kicad_prl, root .kicad_sch\n"
+        "1. create_project: creates .kicad_pro and the root .kicad_sch (no .kicad_prl)\n"
         "2. create_schematic — creates sub-sheet .kicad_sch files\n"
         "3. create_symbol_library + write symbols for custom parts\n"
         "4. create_sym_lib_table — registers libraries with the project\n"
