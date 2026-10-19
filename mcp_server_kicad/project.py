@@ -554,6 +554,12 @@ def _set_xy(node, x: int, y: int) -> bool:
     return changed
 
 
+def _autoplaced(sheet) -> bool:
+    """Whether a sheet block carries ``(fields_autoplaced yes)``, a bare flag meaning yes."""
+    flag = sheet.find("fields_autoplaced")
+    return flag is not None and not (len(flag.atoms) > 1 and flag.atoms[1].text == "no")
+
+
 def _autoplace_fields(sheet, default_pen: int) -> None:
     """Put the Sheetname above the sheet and the Sheetfile below it, or beside it when every
     pin is on the top or bottom edge: SCH_SHEET::AutoplaceFields (sch_sheet.cpp:665-706 at
@@ -679,6 +685,30 @@ def _page_key(label: str):
     if label.isascii() and label.isdigit():
         return (0, int(label), ())
     return (1, 0, tuple(int(t) if i % 2 else t for i, t in enumerate(re.split(r"(\d+)", label))))
+
+
+def _set_sheet_instances(sheet, project_name: str, live_paths: list[str], taken: set[int]) -> None:
+    """Give a sheet block one instance entry for each place its parent is used, at the parent's
+    path (where KiCad reads a sheet's page), each with the lowest page number not in ``taken``,
+    which grows by the numbers handed out."""
+    node = _SHEET_TPL.find("instances").copy()
+    project_node = node.find("project")
+    project_node.atoms[1].set_text(project_name)
+    first = project_node.find("path")
+    entries = [first] + [first.copy() for _ in live_paths[1:]]
+    for k, (entry, live) in enumerate(zip(entries, live_paths, strict=True)):
+        page = min(set(range(1, len(taken) + 2)) - taken)
+        taken.add(page)
+        entry.atoms[1].set_text(live)
+        entry.find("page").atoms[1].set_text(str(page))
+        if k:
+            project_node.insert_after(entries[k - 1], entry)
+    old = sheet.find("instances")
+    if old is None:
+        sheet.append_child(node, b"\n\t\t")
+    else:
+        node.sep = old.sep
+        sheet.children[sheet.children.index(old)] = node
 
 
 def _add_symbol_instances(sym, project_name: str, paths: list[str]) -> None:
@@ -823,17 +853,7 @@ def add_hierarchical_sheet(
 
     # One instance entry per place the parent is used, each with a page of its own
     project_name = Path(project_path).stem if project_path else parent_path.stem
-    inst_project = inst_anchor.find("project")
-    inst_project.atoms[1].set_text(project_name)
-    first_path = inst_project.find("path")
-    entries = [first_path] + [first_path.copy() for _ in parent_live[1:]]
-    for k, (entry, live) in enumerate(zip(entries, parent_live, strict=True)):
-        page = min(set(range(1, len(pages_used) + 2)) - pages_used)
-        pages_used.add(page)
-        entry.atoms[1].set_text(live)
-        entry.find("page").atoms[1].set_text(str(page))
-        if k:
-            inst_project.insert_after(entries[k - 1], entry)
+    _set_sheet_instances(sheet, project_name, parent_live, pages_used)
     _splice_sch_node(parent_root, "sheet", sheet)
 
     # Add matching hierarchical labels to child schematic
@@ -1038,8 +1058,7 @@ def _resize_sheet(root, sheet, old: _Box, new: _Box, pins: list[_SheetPin], pen:
         size.atoms[1].set_text(_connectivity.mm(new.w))
     if new.h != old.h:
         size.atoms[2].set_text(_connectivity.mm(new.h))
-    flag = sheet.find("fields_autoplaced")
-    if flag is not None and not (len(flag.atoms) > 1 and flag.atoms[1].text == "no"):
+    if _autoplaced(sheet):
         _autoplace_fields(sheet, pen)
     moved: dict[tuple[int, int], tuple[int, int]] = {}
     for pin in pins:
@@ -2047,71 +2066,9 @@ def reorder_sheet_pages(
     return f"Reordered {len(page_order)} sheets. Pages now: {numbering}"
 
 
-@mcp.tool(annotations=_DESTRUCTIVE)
-def duplicate_sheet(
-    sheet_uuid: str,
-    new_sheet_name: str,
-    schematic_path: str = SCH_PATH,
-    project_path: str = "",
-    new_file_name: str = "",
-) -> str:
-    """Duplicate a hierarchical sheet, copying the child file with new UUIDs.
-
-    Args:
-        sheet_uuid: UUID of the sheet to duplicate
-        new_sheet_name: Display name for the new sheet
-        schematic_path: Path to parent .kicad_sch. Optional; omit to use the configured default.
-        project_path: Path to .kicad_pro (for hierarchy metadata)
-        new_file_name: Name for the copied file (auto-generated if empty)
-    """
-    import shutil
-    import uuid as _uuid_mod
-
-    tree, root, *_ = _open_sch_cst(schematic_path)
-    sch_dir = Path(schematic_path).parent
-
-    source = _find_sheet_cst(root, sheet_uuid)
-    src_at = source.find("at")
-    src_x, src_y = float(src_at.atoms[1].text), float(src_at.atoms[2].text)
-    src_size = source.find("size")
-    src_w = float(src_size.atoms[1].text)
-    src_h = float(src_size.atoms[2].text)
-    source_file = _sheet_file_cst(source) or ""
-
-    # Determine new file name
-    if not new_file_name:
-        base = Path(source_file).stem
-        new_file_name = f"{base}_{new_sheet_name.replace(' ', '_').lower()}.kicad_sch"
-
-    # Copy the child file
-    src_path = sch_dir / source_file
-    dst_path = sch_dir / new_file_name
-    # source_file is the document's Sheetfile. copy2 streams a device such as /dev/zero
-    # until the disk is full and leaves the partial copy behind, and a procfs pseudo-file
-    # like /proc/self/pagemap is a regular file of size 0 that streams the same way. An
-    # empty source is no schematic either, so all of them are refused before any write.
-    if not _sheet_file_nonempty(src_path):
-        raise ToolError(
-            f"Source file not found, empty, or not a regular file: {src_path}. Nothing was"
-            f" copied and {Path(schematic_path).name} was not changed."
-        )
-    if dst_path.exists():
-        # Called twice with the same name, this silently replaced the first
-        # copy with the source sheet. Every other create in this module guards
-        # (create_project, create_schematic, create_symbol_library); this one
-        # did not.
-        raise ToolError(f"{dst_path} already exists. Pass a different new_file_name.")
-
-    shutil.copy2(str(src_path), str(dst_path))
-
-    # Regenerate UUIDs in the copy: the root uuid plus each top-level item's
-    # own uuid; nested uuids (e.g. symbol pin uuids) keep kiutils parity.
-    copy_tree = _cst.parse(dst_path.read_bytes())
-    copy_root = copy_tree.lists[0]
-    root_uuid_node = copy_root.find("uuid")
-    if root_uuid_node is not None:
-        root_uuid_node.atoms[1].set_text(str(_uuid_mod.uuid4()))
-    uuid_tokens = {
+#: The items of a schematic file whose own uuid a copy of the file regenerates.
+_COPY_UUID_ITEMS = frozenset(
+    {
         "symbol",
         "label",
         "global_label",
@@ -2123,53 +2080,208 @@ def duplicate_sheet(
         "junction",
         "no_connect",
     }
-    for item in copy_root.lists:
-        if item.head in uuid_tokens:
-            iu = item.find("uuid")
-            if iu is not None:
-                iu.atoms[1].set_text(str(_uuid_mod.uuid4()))
-    _atomic_write(dst_path, _cst.serialize(copy_tree))
+)
 
-    # Create new sheet block in parent (geometry from source, fresh identity)
-    dx = src_w + 5
-    new_sheet = _SHEET_TPL.copy()
+
+def _references_in_use(parent_path: Path, parent_root) -> set[tuple[str, int]]:
+    """(prefix, number) of every reference the hierarchy of ``parent_path`` uses, each read at
+    the live paths of the sheet that holds the symbol. When the project is not found, every
+    reference a symbol could carry counts."""
+    here = _connectivity.sheet_facts(parent_root)
+    hier = _connectivity.hierarchy(parent_path, here)
+    if hier.error is not None:
+        raise ToolError(f"{hier.error.text} Nothing was changed.")
+    found: set[str] = set()
+    files = [(here.records, hier.live)]
+    for other in hier.others:
+        try:
+            facts = other.facts or _connectivity._file_facts(other.data or b"")
+        except Exception:  # noqa: BLE001 - whatever stops the read leaves the sheet unknown
+            raise ToolError(f"{other.name} could not be read. Nothing was changed.") from None
+        files.append((facts.records, other.paths))
+    for records, paths in files:
+        for rec in records:
+            found |= {rec.at(p)[0] for p in paths} if paths else set(rec.every_ref())
+    numbered = (re.fullmatch(r"(.*?)(\d+)", ref) for ref in found)
+    return {(m.group(1), int(m.group(2))) for m in numbered if m}
+
+
+def _renumber_copy(copy_root, src_live: str, new_paths: list[str], project_name: str, used):
+    """Give each symbol of a copied sheet file one instance entry per new path, with the first
+    free number of its prefix for a new reference (units of one part sharing one) and the unit
+    it has at ``src_live``; its Reference property says the first. A reference without a number
+    stays as it is. Returns the new references in order."""
+    symbols = copy_root.find_all("symbol")
+    records = _connectivity.sheet_facts(copy_root).records
+
+    def spot(sym):
+        at = sym.find("at")
+        return (_connectivity.iu(at.atoms[1].text), _connectivity.iu(at.atoms[2].text))
+
+    order = sorted(range(len(symbols)), key=lambda i: spot(symbols[i]))
+    new_refs: dict[tuple[str, str], str] = {}  # (path, old reference) -> new reference
+    for i in order:
+        old = records[i].at(src_live)[0]
+        for path in new_paths:
+            if (path, old) in new_refs:
+                continue
+            m = re.fullmatch(r"(.*?)(\d+)", old)
+            if m is None:
+                new_refs[(path, old)] = old
+                continue
+            prefix = m.group(1)
+            number = next(n for n in range(1, len(used) + 2) if (prefix, n) not in used)
+            used.add((prefix, number))
+            new_refs[(path, old)] = f"{prefix}{number}"
+    for sym, rec in zip(symbols, records, strict=True):
+        old, unit = rec.at(src_live)
+        node = _SYM_INSTANCES_TPL.copy()
+        project_node = node.find("project")
+        project_node.atoms[1].set_text(project_name)
+        first = project_node.find("path")
+        entries = [first] + [first.copy() for _ in new_paths[1:]]
+        for k, (entry, path) in enumerate(zip(entries, new_paths, strict=True)):
+            entry.atoms[1].set_text(path)
+            entry.find("reference").atoms[1].set_text(new_refs[(path, old)])
+            entry.find("unit").atoms[1].set_text(str(unit))
+            if k:
+                project_node.insert_after(entries[k - 1], entry)
+        previous = sym.find("instances")
+        if previous is None:
+            sym.insert_after(sym.lists[-1], node)
+        else:
+            node.sep = previous.sep
+            sym.children[sym.children.index(previous)] = node
+        for prop in sym.find_all("property"):
+            if prop.atoms[1].text == "Reference":
+                prop.atoms[2].set_text(new_refs[(new_paths[0], old)])
+    return list(dict.fromkeys(new_refs[(new_paths[0], records[i].at(src_live)[0])] for i in order))
+
+
+@mcp.tool(annotations=_DESTRUCTIVE)
+def duplicate_sheet(
+    sheet_uuid: str,
+    new_sheet_name: str,
+    schematic_path: str = SCH_PATH,
+    project_path: str = "",
+    new_file_name: str = "",
+) -> str:
+    """Duplicate a hierarchical sheet, copying the child file with new UUIDs.
+
+    The new block is a copy of the source block, moved to its right, with its fields placed
+    again when the source's were autoplaced, and its page the lowest number no sheet uses,
+    stored at the parent's path where KiCad reads it. The copied file's symbols get references
+    of their own, so the two sheets are two sets of parts: each prefix takes its first free
+    number across the hierarchy, in the order of the symbols' x then y position, and the
+    units of one part keep one reference. A reference with no number stays as it is.
+
+    A source file that holds sheets of its own is refused, with nothing written, because its
+    sub-sheets would need new instance paths in other files. Give project_path when the
+    parent is itself a sub-sheet, so its place in the hierarchy can be found.
+
+    Args:
+        sheet_uuid: UUID of the sheet to duplicate
+        new_sheet_name: Display name for the new sheet
+        schematic_path: Path to parent .kicad_sch. Optional; omit to use the configured default.
+        project_path: Path to .kicad_pro (for hierarchy metadata)
+        new_file_name: Name for the copied file (auto-generated if empty)
+    """
+    tree, root, *_ = _open_sch_cst(schematic_path)
+    parent = Path(schematic_path)
+    sch_dir = parent.parent
+
+    source = _find_sheet_cst(root, sheet_uuid)
+    source_file = _sheet_file_cst(source) or ""
+
+    # Determine new file name
+    if not new_file_name:
+        base = Path(source_file).stem
+        new_file_name = f"{base}_{new_sheet_name.replace(' ', '_').lower()}.kicad_sch"
+
+    src_path = sch_dir / source_file
+    dst_path = sch_dir / new_file_name
+    # source_file is the document's Sheetfile. A device such as /dev/zero would stream until
+    # the disk is full, and a procfs pseudo-file like /proc/self/pagemap is a regular file of
+    # size 0 that streams the same way. An empty source is no schematic either, so all of them
+    # are refused before any write.
+    if not _sheet_file_nonempty(src_path):
+        raise ToolError(
+            f"Source file not found, empty, or not a regular file: {src_path}. Nothing was"
+            f" copied and {parent.name} was not changed."
+        )
+    if dst_path.exists():
+        # Called twice with the same name, this silently replaced the first
+        # copy with the source sheet. Every other create in this module guards
+        # (create_project, create_schematic, create_symbol_library); this one
+        # did not.
+        raise ToolError(f"{dst_path} already exists. Pass a different new_file_name.")
+    copy_tree, copy_root, *_ = _open_sch_cst(str(src_path))
+    if copy_root.find("sheet") is not None:
+        raise ToolError(
+            f"{src_path.name} holds sheets of its own. Duplicating it would need new instance"
+            " paths for its sub-sheets in other files, which this tool does not write, so"
+            f" nothing was copied and {parent.name} was not changed."
+        )
+    root_sch = Path(project_path).with_suffix(".kicad_sch") if project_path else None
+    if root_sch is not None and root_sch.exists():
+        _open_sch_cst(str(root_sch))  # a root that is no schematic is refused before any write
+    parent_live, tops = _parent_paths(parent, project_path)
+    project_name = Path(project_path).stem if project_path else parent.stem
     new_uuid = _gen_uuid()
+    new_paths = [f"{live}/{new_uuid}" for live in parent_live]
+
+    # The copy: fresh uuids, and its symbols numbered apart from every part already placed.
+    # Pin uuids inside symbols stay as they are.
+    file_uuid = copy_root.find("uuid")
+    if file_uuid is not None:
+        file_uuid.atoms[1].set_text(_gen_uuid())
+    for item in copy_root.lists:
+        if item.head in _COPY_UUID_ITEMS:
+            uuid_node = item.find("uuid")
+            if uuid_node is not None:
+                uuid_node.atoms[1].set_text(_gen_uuid())
+    new_refs = _renumber_copy(
+        copy_root,
+        f"{parent_live[0]}/{sheet_uuid}",
+        new_paths,
+        project_name,
+        _references_in_use(parent, root),
+    )
+
+    # The new block: a copy of the source, to its right, with its own uuid, name and file
+    box = _sheet_box(source)
+    dx = box.w + 50800
+    new_sheet = source.copy()
     new_sheet.find("uuid").atoms[1].set_text(new_uuid)
-    _fill_at(new_sheet, src_x + dx, src_y, iu=SCH_IU_PER_MM)
-    new_size = new_sheet.find("size")
-    new_size.atoms[1].set_text(_num(src_w, SCH_IU_PER_MM))
-    new_size.atoms[2].set_text(_num(src_h, SCH_IU_PER_MM))
-    new_props = {pr.atoms[1].text: pr for pr in new_sheet.find_all("property")}
-    name_prop = new_props["Sheetname"]
-    name_prop.atoms[2].set_text(new_sheet_name)
-    _fill_at(name_prop, src_x + dx, src_y - 1.27, iu=SCH_IU_PER_MM)
-    file_prop = new_props["Sheetfile"]
-    file_prop.atoms[2].set_text(new_file_name)
-    _fill_at(file_prop, src_x + dx, src_y + src_h + 1.27, iu=SCH_IU_PER_MM)
-
-    # Copy pins with offset and fresh uuids
-    inst_anchor = new_sheet.find("instances")
-    for pin in source.find_all("pin"):
-        new_pin = pin.copy()
-        pin_at = new_pin.find("at")
-        pin_at.atoms[1].set_text(_num(float(pin_at.atoms[1].text) + dx, SCH_IU_PER_MM))
-        pu = new_pin.find("uuid")
-        if pu is not None:
-            pu.atoms[1].set_text(_gen_uuid())
-        new_sheet.insert_before(inst_anchor, new_pin)
-
-    # Instances block
-    project_name = Path(project_path).stem if project_path else Path(schematic_path).stem
-    page = str(len(root.find_all("sheet")) + 2)
-    pj = inst_anchor.find("project")
-    pj.atoms[1].set_text(project_name)
-    pp = pj.find("path")
-    pp.atoms[1].set_text(f"/{_node_uuid(root)}/{new_uuid}")
-    pp.find("page").atoms[1].set_text(page)
-
+    for node in (new_sheet.find("at"), *(p.find("at") for p in new_sheet.find_all("property"))):
+        x, y = _connectivity.iu(node.atoms[1].text), _connectivity.iu(node.atoms[2].text)
+        _set_xy(node, x + dx, y)
+    for pin in new_sheet.find_all("pin"):
+        x, y = (
+            _connectivity.iu(pin.find("at").atoms[1].text),
+            _connectivity.iu(pin.find("at").atoms[2].text),
+        )
+        _set_xy(pin, x + dx, y)
+        pin.find("uuid").atoms[1].set_text(_gen_uuid())
+    for prop in new_sheet.find_all("property"):
+        key = prop.atoms[1].text.lower()
+        if key in ("sheetname", "sheet name"):
+            prop.atoms[2].set_text(new_sheet_name)
+        elif key in ("sheetfile", "sheet file"):
+            prop.atoms[2].set_text(new_file_name)
+    if _autoplaced(new_sheet):
+        _autoplace_fields(new_sheet, _drawing_settings(schematic_path)[0])
+    pages_used = {int(page) for page in _used_pages(tops) if page.isascii() and page.isdigit()}
+    _set_sheet_instances(new_sheet, project_name, parent_live, pages_used)
     _splice_sch_node(root, "sheet", new_sheet)
+
+    # The copy, then the parent
+    _atomic_write(dst_path, _cst.serialize(copy_tree))
     _atomic_write(schematic_path, _cst.serialize(tree))
-    return f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}"
+    return (
+        f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}."
+        f" New references: {', '.join(new_refs) or 'none'}"
+    )
 
 
 # Distinct sheet files flatten_hierarchy walks when checking an existing output_path. Past

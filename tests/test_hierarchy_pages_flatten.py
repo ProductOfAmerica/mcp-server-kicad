@@ -390,8 +390,8 @@ def test_the_copy_numbers_from_the_reference_a_symbol_has_at_its_live_path(tmp_p
     uid = p.sheet(p.root, child, "C")
 
     def go(root):
-        entry = root.find("symbol").find("instances").find("project").find("path")
-        entry.find("reference").atoms[1].set_text("R5")
+        for entry in root.find("symbol").find("instances").find("project").find_all("path"):
+            entry.find("reference").atoms[1].set_text("R5")
 
     edit(child, go)
     project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
