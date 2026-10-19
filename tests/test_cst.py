@@ -1361,8 +1361,8 @@ class TestProjectToolsPreservation:
         sheet = next(s for s in reparse(parent).sheets if s.uuid == uuids[0])
         assert (sheet.position.X, sheet.position.Y) == (101.6, 50.8)
 
-        # KiCad orders sheets by their page numbers, not by their blocks' places in the file
-        # (sch_sheet_path.cpp SortByPageNumbers), so the blocks stay and the two pages swap.
+        # Pages decide the order kicad-cli lists sheets in, not their blocks' places in the
+        # file (test_hierarchy_pages_flatten.py), so the blocks stay and the two pages swap.
         before = parent.read_bytes()
         project.reorder_sheet_pages([uuids[1], uuids[0]], schematic_path=str(parent))
         assert [

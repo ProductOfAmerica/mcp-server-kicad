@@ -1464,8 +1464,8 @@ class TestReorderSheetPages:
             project.reorder_sheet_pages(page_order=[c, a], schematic_path=str(root))
         assert root.read_bytes() == before
 
-        # Left out of page_order, the shared UUID is no obstacle and both blocks stay. KiCad
-        # orders sheets by page, so only the page numbers change: C's moves ahead of both.
+        # Left out of page_order, the shared UUID is no obstacle and both blocks stay.
+        # Sheets are ordered by page, so only the page numbers change: C's moves ahead of both.
         before = root.read_bytes()
         project.reorder_sheet_pages(page_order=[c], schematic_path=str(root))
         assert [s.uuid for s in Schematic.from_file(str(root)).sheets] == [a, a, c]

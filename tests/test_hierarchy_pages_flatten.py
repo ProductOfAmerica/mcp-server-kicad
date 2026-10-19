@@ -446,7 +446,7 @@ def test_the_copys_fields_are_where_kicad_autoplaces_them(tmp_path):
 
 
 def test_the_copy_keeps_what_the_source_block_carries(tmp_path):
-    """KiCad's duplicate clones the block: a field the user added comes along."""
+    """A field the user added to the source block comes along."""
     p, _child, uid = two_resistor_sheet(tmp_path)
 
     def go(root):
@@ -878,7 +878,7 @@ def test_a_root_label_named_like_a_global_net_of_another_sheet_is_refused(tmp_pa
     refused(p, r"'G'.*global")
 
 
-@pytest.mark.no_kicad_validation  # a local power symbol is KiCad 10 syntax
+@pytest.mark.no_kicad_validation  # the power symbol's definition is edited by hand
 @pytest.mark.parametrize("where", ["root", "sub-sheet"])
 def test_a_local_power_symbol_is_refused(tmp_path, where):
     p = Proj(tmp_path)

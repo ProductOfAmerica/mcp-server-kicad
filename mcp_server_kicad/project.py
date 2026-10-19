@@ -565,7 +565,7 @@ def _set_xy(node, x: int, y: int) -> bool:
 
 
 def _autoplaced(sheet) -> bool:
-    """Whether a sheet block carries ``(fields_autoplaced yes)``, a bare flag meaning yes."""
+    """Whether a sheet block carries ``(fields_autoplaced)`` and it is not set to ``no``."""
     flag = sheet.find("fields_autoplaced")
     return flag is not None and not (len(flag.atoms) > 1 and flag.atoms[1].text == "no")
 
@@ -2423,8 +2423,8 @@ def _flat_label(text: str, source_at):
 
 def _keep_one_instance(sym, record, live: str, flat_path: str, project_name: str) -> None:
     """Leave a placed symbol with one instance entry, at ``flat_path``: the entry it has at
-    ``live`` (with whatever it carries), else one made from the reference and unit KiCad
-    reads for it there."""
+    ``live`` (with whatever it carries), else one made from the reference and unit
+    ``record.at(live)`` gives."""
     previous = sym.find("instances")
     found = None
     for pj in previous.find_all("project") if previous is not None else ():
@@ -2582,8 +2582,8 @@ def flatten_hierarchy(
             f"output_path {out.name} is part of the hierarchy being flattened."
             " Choose a different output file."
         )
-    # Read the hierarchy as KiCad's loader does: a sheet's file against its parent's folder,
-    # every use of a file as an instance of its own, a file that is its own ancestor dropped.
+    # Read the hierarchy: a sheet's file against its parent's folder, every use of a file as an
+    # instance of its own, a file that is its own ancestor not entered (as _instances does).
     # Everything that would stop the flat file keeping the hierarchy's netlist is refused here,
     # before anything is written.
     root_path = Path(schematic_path)

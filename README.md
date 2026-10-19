@@ -404,8 +404,8 @@ app through Controlled folder access.
 | `move_hierarchical_sheet` | Move a sheet block to a new position, pins included |
 | `add_sheet_pin` | Add a pin to the left or right edge of a sheet block, at the first free slot |
 | `remove_sheet_pin` | Remove a pin from a hierarchical sheet block |
-| `duplicate_sheet` | Duplicate a sheet, copying the child file with new UUIDs |
-| `reorder_sheet_pages` | Reorder sheets by specifying the desired UUID order |
+| `duplicate_sheet` | Duplicate a sheet: a copy of the block and of the child file, with the lowest free page and parts numbered apart from the originals; a sheet with sub-sheets of its own is refused |
+| `reorder_sheet_pages` | Put sheets in the page order given by rewriting their page numbers, the order KiCad lists them in; call it on the root schematic |
 
 **Hierarchy inspection**
 
@@ -430,7 +430,7 @@ app through Controlled folder access.
 |------|-------------|
 | `annotate_schematic` | Auto-assign reference designators, respecting hierarchy |
 | `export_hierarchical_netlist` | Export a netlist with hierarchy info (requires `kicad-cli`) |
-| `flatten_hierarchy` | Flatten a hierarchical schematic into a single sheet |
+| `flatten_hierarchy` | Flatten a hierarchical schematic into a new single-sheet file whose netlist is the hierarchy's; refuses, writing nothing, where it could not keep it (bus names across sheets, for one) |
 | `run_jobset` | Run a KiCad jobset against the project beside it; an error when nothing ran or a job failed |
 | `get_version` | Get KiCad version information |
 
