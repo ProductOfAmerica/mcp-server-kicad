@@ -991,7 +991,7 @@ def test_a_library_symbol_named_twice_refuses_the_whole_call(tmp_path):
     duplicate_r_swapped(p)
     plan = _plan(p, [("R1", "1")])
     assert plan.codes == ["derived"]
-    assert "holds 2 entries named 'R'" in plan.refusal()
+    assert "holds 2 entries named 'Device:R'" in plan.refusal()
 
 
 @pytest.mark.parametrize(("lib_name", "entry"), [("A{slash}B", "A/B"), ("A/B", "A{slash}B")])
@@ -1002,10 +1002,15 @@ def test_a_slash_escape_in_a_library_name_reads_as_kicad_reads_it(tmp_path, lib_
     [derived]."""
     p = _r1(tmp_path)
     data = Path(p).read_bytes()
-    for old in (b'(symbol "R"', b'(symbol "R_0_1"', b'(symbol "R_1_1"'):
+    for old, new in (
+        (b'(symbol "Device:R"', b'(symbol "Device:%s"' % entry.encode()),
+        (b'(symbol "R_0_1"', b'(symbol "%s_0_1"' % entry.encode()),
+        (b'(symbol "R_1_1"', b'(symbol "%s_1_1"' % entry.encode()),
+    ):
         assert data.count(old) == 1, old
-        data = data.replace(old, old.replace(b'"R', b'"' + entry.encode()))
-    data = data.replace(b'(lib_name "R")', b'(lib_name "%s")' % lib_name.encode(), 1)
+        data = data.replace(old, new)
+    assert data.count(b'(lib_name "Device:R")') == 1
+    data = data.replace(b'(lib_name "Device:R")', b'(lib_name "Device:%s")' % lib_name.encode(), 1)
     Path(p).write_bytes(data)
     plan = _plan(p, [("R1", "1")])
     assert not plan.refused, plan.refusal()

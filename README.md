@@ -314,7 +314,7 @@ app through Controlled folder access.
 | `list_schematic_junctions` | List all junctions on a sheet |
 | `list_schematic_no_connects` | List all no-connect flags on a sheet |
 | `list_schematic_bus_entries` | List all bus entries on a sheet |
-| `get_symbol_pins` | Get pin info for a symbol in the schematic's `lib_symbols` |
+| `get_symbol_pins` | Get pin info for a symbol in the schematic's `lib_symbols`, by its library name (`Device:R`) |
 | `get_pin_positions` | Get absolute pin positions for a placed component, accounting for rotation and mirror |
 | `get_net_connections` | Get all connections for a named net (multi-hop BFS wire tracing) |
 | `list_unconnected_pins` | List the pins ERC reports as not connected, positions in millimetres; a sub-sheet gets its own, from its project's root |
@@ -327,7 +327,7 @@ app through Controlled folder access.
 | `remove_component` | Remove a component by reference designator |
 | `move_component` | Move or turn a placed component. Its fields travel with it; wires stay where they are, as with KiCad's own Move, and the result names every pin whose connections changed. Called at the symbol's own position it turns the symbol in place, without snapping |
 | `set_component_property` | Set any property (Value, Reference, Footprint, ...) on a placed component |
-| `add_lib_symbol` | Load a symbol definition from a `.kicad_sym` library into the schematic |
+| `add_lib_symbol` | Load a symbol definition from a `.kicad_sym` library into the schematic, under its bare name |
 | `add_wires` | Add one or more wires between points as KiCad's wire tool does: a junction where three or more wires or pins meet, the wires split there |
 | `remove_wire` | Remove a wire segment |
 | `add_junctions` | Add one or more junction dots where three or more wires or pins meet, splitting the wires through them; refused anywhere else |

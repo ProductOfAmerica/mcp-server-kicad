@@ -1,8 +1,8 @@
 """Library keys: an embedded symbol is known by its full lib_id, never by its bare name.
 
 KiCad draws a placed symbol from the lib_symbols entry named by its lib_name, else its lib_id
-(sch_symbol.cpp GetSchSymbolLibraryName), and embeds a symbol it places under ``nickname:name``
-(sch_screen.cpp Append). So ``A:R`` and ``B:R`` are two entries, and a tool that matches on the
+(sch_symbol.cpp:242-248 at 9.0.8), and keys the entry it adds for a placed symbol the same way
+(sch_screen.cpp:171). So ``A:R`` and ``B:R`` are two entries, and a tool that matches on the
 part after the colon reads one library's pins for the other.
 
 The libraries here are written by this module, so their pin coordinates are the judge: A's R has

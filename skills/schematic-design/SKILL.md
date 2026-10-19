@@ -234,7 +234,7 @@ the wiring lands in every instance, and the note names each one.
 - `list_schematic_junctions` — list junctions on a sheet
 - `list_schematic_no_connects` — list no-connect flags on a sheet
 - `list_schematic_bus_entries` — list bus entries on a sheet
-- `get_symbol_pins` — get pin names and types for a placed symbol
+- `get_symbol_pins`: get pin names and types for a symbol in the schematic's lib_symbols, by its name there (`Device:R`)
 - `get_pin_positions` — get placed pin coordinates (for wiring)
 - `get_net_connections` — trace a net to see what's connected
 - `list_unconnected_pins` — find pins that need wiring or no-connect
@@ -354,7 +354,9 @@ symbol using MCP tools — NEVER by writing .kicad_sym files directly:
    (if it doesn't exist yet)
 2. `add_symbol` — define the symbol with pin names, pin types, pin
    numbers, footprint, and datasheet
-3. `add_lib_symbol` — load the custom symbol into the schematic
+3. `place_component` with `lib_id` `<library>:<symbol>` and `symbol_lib_path` set to
+   the library file, which embeds the definition under that lib_id
+   (`add_lib_symbol` embeds under the bare name, for a lib_id with no library prefix)
 
 ## Verification
 

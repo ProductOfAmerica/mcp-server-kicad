@@ -380,12 +380,27 @@ def list_schematic_bus_entries(schematic_path: str = SCH_PATH) -> list[BusEntryI
 def get_symbol_pins(symbol_name: str, schematic_path: str = SCH_PATH) -> str:
     """Get pin info for a symbol in the schematic's lib_symbols.
 
+    lib_symbols keys a symbol by library, so give the full name as it holds it (e.g.
+    "Device:R"). A name without a library prefix is accepted when exactly one entry ends in
+    it; otherwise the error lists the candidates.
+
     Args:
-        symbol_name: Symbol name (e.g. "LM7805", "C", "Fuse")
+        symbol_name: Symbol name (e.g. "Device:R", "LM7805", "Fuse")
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
     _, root, *_ = _open_sch_cst(schematic_path)
     ls = _find_lib_symbol_cst(root, symbol_name)
+    if ls is None and ":" not in symbol_name:
+        bare = _connectivity._lib_name(symbol_name)
+        named = [
+            (n, e) for n, e in _connectivity.lib_index(root).items() if n.split(":")[-1] == bare
+        ]
+        if len(named) > 1:
+            raise ToolError(
+                f"'{symbol_name}' is ambiguous: lib_symbols holds {', '.join(n for n, _ in named)}."
+                " Call again with the full name."
+            )
+        ls = named[0][1] if named else None
     if ls is not None:
         lines = [f"Symbol: {symbol_name}"]
         for unit in ls.find_all("symbol"):
@@ -586,8 +601,9 @@ def place_component(
         y: Y position in schematic units (mm)
         rotation: Rotation angle in degrees (0, 90, 180, 270)
         symbol_lib_path: Path to a .kicad_sym file that defines the symbol, for a
-            library outside KiCad's stock set. Optional; omit to load the symbol
-            from the stock library named by the lib_id prefix.
+            library outside KiCad's stock set. Its definition is embedded under the
+            lib_id, so two libraries' same-named symbols stay two entries. Optional;
+            omit to load the symbol from the stock library named by the lib_id prefix.
         mirror: Mirror axis ("x", "y", or "" for none)
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         project_path: Path to .kicad_pro file (for correct hierarchy resolution in sub-sheets)
@@ -640,7 +656,7 @@ def place_component(
     lib_sym = _find_lib_symbol_cst(root, lib_id)
     if lib_sym is None:
         if symbol_lib_path:
-            _copy_lib_symbol_from_file_cst(root, symbol_lib_path, symbol_name, symbol_name)
+            _copy_lib_symbol_from_file_cst(root, symbol_lib_path, symbol_name, lib_id)
         elif lib_prefix:
             _copy_system_lib_symbol_cst(root, lib_prefix, symbol_name)
         lib_sym = _find_lib_symbol_cst(root, lib_id)
@@ -1977,15 +1993,10 @@ def _find_sym_cst(root, reference: str):
 
 
 def _find_lib_symbol_cst(root, lib_id: str):
-    """The lib_symbols entry for *lib_id*, or None: bare and prefixed names both match."""
-    bare = lib_id.split(":")[-1] if ":" in lib_id else lib_id
-    libs = root.find("lib_symbols")
-    for ls in libs.find_all("symbol") if libs is not None else []:
-        raw = ls.atoms[1].text
-        entry = raw.split(":")[-1] if ":" in raw else raw
-        if entry == bare or entry == lib_id or raw == lib_id:
-            return ls
-    return None
+    """The lib_symbols entry named *lib_id*, or None. The name matches exactly, as KiCad
+    matches the key a placed symbol draws from (``_connectivity.lib_key``): ``A:R`` and
+    ``B:R`` are two entries, and neither is found by ``R``."""
+    return _connectivity.lib_index(root).get(_connectivity._lib_name(lib_id))
 
 
 def _drawn_pin_pos_cst(root, target, pin_name: str, reference: str):
@@ -2129,9 +2140,8 @@ def _no_definition_message(
             f"'{lib_id}' not found: no {lib_prefix}.kicad_sym in {searched}.{unknown}"
             " A lib_id prefix only resolves against KiCad's stock symbol libraries; a"
             " project sym-lib-table is not read. Pass symbol_lib_path to the .kicad_sym"
-            f" that defines {symbol_name}, set KICAD_SYMBOL_DIR to the folder holding"
-            f" {lib_prefix}.kicad_sym, or load the definition first with add_lib_symbol."
-            " Nothing was written."
+            f" that defines {symbol_name}, or set KICAD_SYMBOL_DIR to the folder holding"
+            f" {lib_prefix}.kicad_sym. Nothing was written."
         )
     return (
         f"'{lib_id}' not found: no symbol of that name is defined in this schematic,"
@@ -2258,6 +2268,10 @@ def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> st
 @mcp.tool(annotations=_ADDITIVE)
 def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str = SCH_PATH) -> str:
     """Load a symbol definition from a .kicad_sym library into the schematic.
+
+    The entry is named symbol_name as given, with no library prefix, so only a placed symbol
+    whose lib_id is that bare name draws from it. To place a symbol as Library:Name, pass
+    symbol_lib_path to place_component, which embeds the definition under that lib_id.
 
     Args:
         symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.

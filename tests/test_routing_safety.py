@@ -1038,7 +1038,10 @@ def test_two_different_parts_sharing_a_reference_are_refused(tmp_path, pad, orac
     p = _mixed_parts(tmp_path)
     status, msg = wired(p, [("U1", pad)], "N", oracle=oracle)
     assert status == "REFUSED" and msg.startswith("[dup_ref] "), msg
-    assert "disagree on pad 2 ('74LS00': units 1 as input; '74LS04': units 1 as output)" in msg
+    assert (
+        "disagree on pad 2 ('74xx:74LS00': units 1 as input; '74xx:74LS04': units 1 as output)"
+        in msg
+    )
 
 
 @ORACLE
