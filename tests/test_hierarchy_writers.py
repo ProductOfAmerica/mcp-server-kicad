@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 import svg_judge
 from conftest import netlist_nodes, requires_cli
-from kicad_corpus import NO_INSTALL, PER_PUSH_CAP, share_dirs, shipped
+from kicad_corpus import PER_PUSH_CAP, shipped
 from kicad_ref import dsn_lexer as L
 from kicad_ref import sch_sheet as SS
 from mcp.server.mcpserver.exceptions import ToolError
@@ -31,7 +31,10 @@ from mcp_server_kicad._shared import _run_cli
 
 IU = SS.IU_PER_MM
 CRLF = bytes([13, 10])  # the shipped demos are written with CRLF line ends
-no_install = pytest.mark.skipif(not share_dirs(), reason=NO_INSTALL)
+# The macOS cask ships templates but no demos, and ci.yml installs no KiCad at all.
+no_demos = pytest.mark.skipif(
+    not shipped(("demos",), (".kicad_sch",), ()), reason="no shipped demos in this KiCad install"
+)
 
 # ---------------------------------------------------------------------------------------------
 # Reading files with KiCad's lexer
@@ -185,7 +188,7 @@ def _demo_sheets():
             yield name, path, group
 
 
-@no_install
+@no_demos
 def test_port_pins_are_fixed_points_of_the_load_rule():
     """Every pin of a sheet KiCad saved sits where the load rule would leave it, with the
     justify its side prints."""
@@ -199,7 +202,7 @@ def test_port_pins_are_fixed_points_of_the_load_rule():
     assert seen > 100, "the shipped demos should hold hundreds of sheet pins"
 
 
-@no_install
+@no_demos
 def test_port_autoplace_reproduces_the_fields_kicad_placed():
     """AutoplaceFields puts both fields where KiCad saved them on the flagged sheets whose
     file name sits below the box. A flag does not undo a drag, so a few sheets may differ:
@@ -258,7 +261,7 @@ def _end(data: bytes, start: int) -> int:
     raise AssertionError("unbalanced")
 
 
-@no_install
+@no_demos
 @pytest.mark.parametrize(
     ("template", "relative", "head", "text"),
     [
@@ -280,7 +283,7 @@ def test_label_templates_are_a_shipped_labels_tokens(template, relative, head, t
     assert _masked(got) == _masked(want)
 
 
-@no_install
+@no_demos
 def test_sheet_templates_are_a_shipped_sheets_tokens():
     """The sheet block template is the vme_buffers_addr block of vme_interface.kicad_sch with
     its pins removed, and the pin template one of its pins."""
@@ -400,6 +403,7 @@ def test_label_tools_draw_as_kicad_draws_its_own(tmp_path, kind, rotation):
         assert _svg_texts(bare_file) != _svg_texts(ref), "justify did not change the drawing"
 
 
+@requires_cli
 def test_connecting_writers_print_the_justify_of_their_rotation(tmp_path):
     """wire_pins_to_net (every direction), connect_pins and auto_place_decoupling_cap write
     labels at all four rotations."""
@@ -792,6 +796,7 @@ def _instances_of_symbol(sym) -> dict[str, tuple[str, str]]:
     return out
 
 
+@requires_cli
 def test_child_symbols_get_an_instance_at_the_new_sheets_path(tmp_path):
     """A symbol placed in the child before the sheet existed has an entry for the child's own
     path only; adding the sheet gives it one at the path KiCad reads it by, with the unit it
