@@ -512,6 +512,27 @@ def test_a_source_with_sub_sheets_is_refused_and_nothing_is_written(tmp_path):
     assert {f.name: f.read_bytes() for f in p.dir.iterdir()} == before
 
 
+def test_a_failed_parent_write_leaves_no_copy_behind(tmp_path, monkeypatch):
+    """The copy is written first; when the parent's write then fails, the copy goes too, so
+    the same call can be made again."""
+    p = Proj(tmp_path)
+    uid = p.sheet(p.root, p.child("c"), "C")
+    before = {f.name: f.read_bytes() for f in p.dir.iterdir()}
+    real = project._atomic_write
+
+    def fail_on_parent(path, data):
+        if Path(path) == p.root:
+            raise OSError("simulated failure on the parent's write")
+        return real(path, data)
+
+    monkeypatch.setattr(project, "_atomic_write", fail_on_parent)
+    with pytest.raises(OSError, match="simulated"):
+        project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
+    monkeypatch.undo()
+    assert {f.name: f.read_bytes() for f in p.dir.iterdir()} == before
+    project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
+
+
 # ---------------------------------------------------------------------------------------------
 # flatten_hierarchy: the flat file's netlist is the hierarchy's
 # ---------------------------------------------------------------------------------------------

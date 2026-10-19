@@ -6,6 +6,7 @@ sym-lib-tables, hierarchical sheets, jobset execution, and version info.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import math
 import os
@@ -2292,9 +2293,15 @@ def duplicate_sheet(
     _set_sheet_instances(new_sheet, project_name, parent_live, pages_used)
     _splice_sch_node(root, "sheet", new_sheet)
 
-    # The copy, then the parent
+    # The copy, then the parent. A copy the parent never names is removed, so the call can be
+    # repeated: dst_path did not exist before this call (checked above).
     _atomic_write(dst_path, _cst.serialize(copy_tree))
-    _atomic_write(schematic_path, _cst.serialize(tree))
+    try:
+        _atomic_write(schematic_path, _cst.serialize(tree))
+    except BaseException:
+        with contextlib.suppress(OSError):
+            dst_path.unlink()
+        raise
     return (
         f"Duplicated sheet as '{new_sheet_name}' -> {new_file_name}."
         f" New references: {', '.join(new_refs) or 'none'}"
