@@ -49,8 +49,10 @@ from mcp_server_kicad import _connectivity, _cst, project, schematic
 
 def page_key(label: str):
     """SCH_SHEET::ComparePageNum as a sort key (sch_sheet.cpp:1609-1642 at 9.0.8): integers
-    numerically, before every other label; those by natural string order (StrNumCmp)."""
-    if re.fullmatch(r"[0-9]+", label):
+    numerically, before every other label; those by natural string order (StrNumCmp). An
+    integer is what wxString::ToLong takes whole, strtol in base 10, so a sign is allowed
+    (wxWidgets 3.2.6 src/common/string.cpp:1667-1727)."""
+    if re.fullmatch(r"[+-]?[0-9]+", label):
         return (0, int(label), ())
     return (1, 0, tuple(int(t) if t.isdigit() else t for t in re.split(r"(\d+)", label)))
 
@@ -222,14 +224,15 @@ def test_reorder_does_not_hand_out_a_page_a_deeper_sheet_holds(tmp_path):
 
 
 @requires_cli
+@pytest.mark.parametrize("spelling", [("01", "001"), ("+2", "2")])
 @pytest.mark.parametrize("order", [("A", "B", "C"), ("B", "A", "C")])
-def test_reorder_renumbers_labels_that_are_one_number_spelled_twice(tmp_path, order):
+def test_reorder_renumbers_labels_that_are_one_number_spelled_twice(tmp_path, order, spelling):
     """KiCad compares two whole-number labels by value, so '01', '001' and the root's '1' are
-    one page to it, and ComparePageNum orders no two of them (sch_sheet.cpp:1609-1642 at
-    9.0.8): kept, they would leave the order to chance."""
+    one page to it, as are '+2' and '2', and ComparePageNum orders no two of them
+    (sch_sheet.cpp:1609-1642 at 9.0.8): kept, they would leave the order to chance."""
     p = Proj(tmp_path)
     u = three_sheets(p)
-    set_pages(p.root, {"A": "01", "B": "001", "C": "3"})
+    set_pages(p.root, {"A": spelling[0], "B": spelling[1], "C": "3"})
     project.reorder_sheet_pages([u[n] for n in order], schematic_path=str(p.root))
     labels = page_labels(p.root)
     assert len({int(label) for label in labels.values()} | {1}) == 4, labels
@@ -469,6 +472,21 @@ def test_kicad_cli_lists_the_copy_at_the_page_it_was_given(tmp_path):
     assert sheet_order(p.root) == ["/", "/A/", "/B/"], "premise"
     project.duplicate_sheet(b, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
     assert sheet_order(p.root) == ["/", "/A/", "/Copy/", "/B/"]
+
+
+@requires_cli
+@pytest.mark.parametrize("tool", ["duplicate_sheet", "add_hierarchical_sheet"])
+def test_a_new_sheet_does_not_take_a_page_held_under_another_spelling(tmp_path, tool):
+    """KiCad reads '+2' as page 2 (see page_key), so 2 is not free."""
+    p = Proj(tmp_path)
+    a = p.sheet(p.root, p.child("a"), "A", x=127.0, y=25.4)
+    set_pages(p.root, {"A": "+2"})
+    if tool == "duplicate_sheet":
+        project.duplicate_sheet(a, "New", schematic_path=str(p.root), project_path=str(p.pro))
+    else:
+        p.sheet(p.root, p.child("new"), "New", x=25.4, y=25.4)
+    assert page_labels(p.root)["New"] == "3"
+    assert sheet_order(p.root) == ["/", "/A/", "/New/"]
 
 
 def test_the_copys_fields_are_where_kicad_autoplaces_them(tmp_path):

@@ -690,11 +690,19 @@ def _entries_at(block, parent_path: str) -> list:
     ]
 
 
+def _page_number(label: str) -> int | None:
+    """The whole number KiCad reads a page label as, or None. ComparePageNum reads one with
+    wxString::ToLong, which is strtol in base 10 taking the whole string (wxWidgets 3.2.6
+    src/common/string.cpp:1667-1727), so "+2" and "02" are 2. Not modelled: ToLong refuses a
+    number past the platform's long, 32 bits on Windows, which this still reads as a number."""
+    return int(label) if re.fullmatch(r"[+-]?[0-9]+", label) else None
+
+
 def _page_key(label: str):
     """SCH_SHEET::ComparePageNum as a sort key (sch_sheet.cpp:1609-1642 at 9.0.8): whole numbers
     first and numerically, then the other labels in natural string order."""
-    if label.isascii() and label.isdigit():
-        return (0, int(label), ())
+    if (number := _page_number(label)) is not None:
+        return (0, number, ())
     return (1, 0, tuple(int(t) if i % 2 else t for i, t in enumerate(re.split(r"(\d+)", label))))
 
 
@@ -820,7 +828,7 @@ def add_hierarchical_sheet(
     if root_sch is not None and root_sch.exists():
         _open_sch_cst(str(root_sch))  # a root that is no schematic is refused before any write
     parent_live, tops = _parent_paths(parent_path, project_path)
-    pages_used = {int(page) for page in _used_pages(tops) if page.isascii() and page.isdigit()}
+    pages_used = {n for page in _used_pages(tops) if (n := _page_number(page)) is not None}
 
     x, y = _snap_grid(x), _snap_grid(y)
     x_iu, y_iu = _iu(x), _iu(y)
@@ -2065,7 +2073,7 @@ def reorder_sheet_pages(
     if len(held_keys) == len(held) and not held_keys & {_page_key(page) for page in deeper}:
         new_labels = sorted(held, key=_page_key)
     else:
-        taken, new_labels = {int(p) for p in deeper if p.isascii() and p.isdigit()}, []
+        taken, new_labels = {n for p in deeper if (n := _page_number(p)) is not None}, []
         for _ in new_order:
             page = next(n for n in range(1, len(taken) + len(new_order) + 2) if n not in taken)
             taken.add(page)
@@ -2291,7 +2299,7 @@ def duplicate_sheet(
             prop.atoms[2].set_text(new_file_name)
     if _autoplaced(new_sheet):
         _autoplace_fields(new_sheet, _drawing_settings(schematic_path)[0])
-    pages_used = {int(page) for page in _used_pages(tops) if page.isascii() and page.isdigit()}
+    pages_used = {n for page in _used_pages(tops) if (n := _page_number(page)) is not None}
     _set_sheet_instances(new_sheet, project_name, parent_live, pages_used)
     _splice_sch_node(root, "sheet", new_sheet)
 
