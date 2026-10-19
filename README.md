@@ -66,7 +66,7 @@ claude plugin install kicad
 
 Download `kicad-<version>.mcpb` from the [latest release][latest] and install it
 from Settings, then Extensions. Claude Desktop fetches Python and the package
-itself; you need KiCad installed, plus Java for `autoroute_pcb`.
+itself; you need KiCad installed, plus Java 25 or newer for `autoroute_pcb`.
 
 Desktop does not run from your project directory, so fill in the schematic,
 board, and export paths it asks for. Leave the `kicad-cli` field blank unless
@@ -205,13 +205,31 @@ Highest priority wins:
   - `kicad-cli`: ERC, DRC, exports, jobsets, `get_version`, the library
     upgrades and `update_pcb_from_schematic`
   - `pcbnew` Python bindings: `fill_zones` and `autoroute_pcb` (which also
-    needs Java)
+    needs Java 25 or newer; see [The Freerouting download](#the-freerouting-download))
   - KiCad's stock libraries: placing a stock symbol or footprint
 
   Every other tool parses files directly and needs no KiCad.
 
 CI covers Linux (KiCad 9 and 10), macOS and Windows (KiCad 10), and Python
 3.11 to 3.14.
+
+### The Freerouting download
+
+`autoroute_pcb` runs [Freerouting](https://github.com/freerouting/freerouting).
+Unless `FREEROUTING_JAR` names a jar, its first call downloads Freerouting 2.5.0,
+`freerouting-2.5.0.jar` (65 MB, needs Java 25 or newer), from
+<https://github.com/freerouting/freerouting/releases/download/v2.5.0/freerouting-2.5.0.jar>
+and caches it as `~/.local/share/mcp-server-kicad/freerouting-2.5.0.jar`
+(`%USERPROFILE%\.local\share\mcp-server-kicad\` on Windows). Its SHA-256 is
+checked against the value pinned in this package before the download is saved
+and every time the cached copy is used. A download that does not match is not
+saved; a cached copy that does not match is not run, and is downloaded again.
+
+To skip the download, set `FREEROUTING_JAR` to the absolute path of a Freerouting
+jar you trust. That jar is used as given, with no hash check. A relative path, or
+one that names no file, is ignored and the download goes ahead. Earlier releases
+cached an unpinned `freerouting.jar` in the same folder; it is no longer read and
+can be deleted.
 
 ### Finding your KiCad install
 

@@ -5449,10 +5449,10 @@ def _fix_displaced_fp_text(pcb_path: str) -> int:
 
 # autoroute_pcb fits no preset, so it carries its own hints.
 #
-# openWorldHint is true because _ensure_jar reaches api.github.com for the
-# latest Freerouting release, downloads that JAR, and then runs it. A client
-# using the hint to decide whether a tool may run offline or without egress
-# approval has to be told the truth about that.
+# openWorldHint is true because _ensure_jar downloads a pinned Freerouting JAR
+# from github.com when none is cached, and then runs it. A client using the
+# hint to decide whether a tool may run offline or without egress approval has
+# to be told the truth about that.
 #
 # destructiveHint and idempotentHint are deliberately left unset rather than
 # asserted. The spec defaults are true and false respectively, which are both
@@ -5477,9 +5477,11 @@ def autoroute_pcb(
     trace routing, and imports the results into a new PCB file. The original
     board is never modified.
 
-    Requires Java 17+ and KiCad's pcbnew Python bindings, whose major version
-    has to match the board's format era. On first run, the Freerouting JAR is
-    auto-downloaded (~20MB).
+    Requires KiCad's pcbnew Python bindings, whose major version has to match
+    the board's format era, and Java 25+ for the Freerouting build it
+    downloads. Unless FREEROUTING_JAR names a Freerouting jar, the first run
+    downloads Freerouting 2.5.0 (65 MB) from GitHub, checks its SHA-256 and
+    caches it.
 
     Args:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
@@ -5497,8 +5499,9 @@ def autoroute_pcb(
     pcb_path = str(Path(pcb_path).resolve())
 
     # Pre-flight: the JAR first, because it is what says which Java it needs.
-    # The reverse order asserted a constant 17 while _download_jar fetches
-    # whatever release is current, and the current one needs 25.
+    # The reverse order asserted a constant 17 while the download, unpinned
+    # then, fetched a release that needed 25; FREEROUTING_JAR can still name
+    # any build.
     jar_path, jar_err = _ensure_jar()
     if jar_err or not jar_path:
         raise ToolError(

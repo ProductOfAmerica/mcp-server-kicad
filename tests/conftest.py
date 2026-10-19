@@ -1683,9 +1683,10 @@ def scratch_pcb(tmp_path: Path) -> Path:
 def _no_network(monkeypatch, request):
     """No test reaches the internet. Opt out with @pytest.mark.allow_network.
 
-    _download_jar calls api.github.com, and a test that reaches it is a test
-    that fails when GitHub rate-limits a shared CI address. Measured
-    2026-08-14: reordering autoroute's preflight so the jar resolves before the
+    _download_jar fetches a 65 MB jar from github.com, and a test that reaches
+    it passes or fails on whatever GitHub answers that minute. Measured
+    2026-08-14, when the download still asked api.github.com for the newest
+    release: reordering autoroute's preflight so the jar resolves before the
     Java check made test_no_java reach the download, and it failed with "HTTP
     Error 403: rate limit exceeded" on one Python version of one matrix, hours
     after the change had gone green everywhere else.
