@@ -491,7 +491,7 @@ Drive the servers by hand with the
 [MCP Inspector](https://github.com/modelcontextprotocol/inspector):
 
 ```bash
-npx @modelcontextprotocol/inspector uvx --from mcp-server-kicad mcp-server-kicad
+npx -y @modelcontextprotocol/inspector uvx --from mcp-server-kicad mcp-server-kicad
 ```
 
 ## Contributing
