@@ -25,6 +25,7 @@ from kicad_corpus import shipped
 from kicad_ref import sch_sheet as SS
 from mcp.server.mcpserver.exceptions import ToolError
 from test_hierarchy_writers import (
+    CRLF,
     Proj,
     file_uuid,
     instance_paths,
@@ -118,14 +119,14 @@ def pins_by_ref(path: Path) -> dict[str, set[str]]:
     return out
 
 
-def copy_demo(tmp_path: Path, name: str) -> Path:
+def copy_demo(tmp_path: Path, name: str, into: str = "demo") -> Path:
     """A scratch copy of a shipped demo project, schematics and libraries only."""
     src = next(
         p
         for n, p in shipped(("demos",), (".kicad_pro",), ())
         if n.startswith(f"demos/{name}/") and n.count("/") == name.count("/") + 2
     )
-    dst = tmp_path / "demo"
+    dst = tmp_path / into
     shutil.copytree(
         src.parent,
         dst,
@@ -380,8 +381,8 @@ def test_the_copy_has_one_entry_at_its_own_path_and_a_matching_property(tmp_path
 
 
 def test_the_copy_numbers_from_the_reference_a_symbol_has_at_its_live_path(tmp_path):
-    """R1's entry at the sheet's path says R5, though its Reference property says R1: KiCad
-    reads the entry, so R1 is free for the copy."""
+    """R1's entry at the sheet's path says R5, though its Reference property says R1, so R1
+    is free for the copy."""
     p = Proj(tmp_path)
     child = p.child()
     schematic.place_component(
@@ -637,6 +638,61 @@ def build_units_across_sheets(p: Proj) -> None:
     as_unit_of(p.dir / "b.kicad_sch", 0, "U1", 2)
 
 
+def build_local_label_beside_a_global_one(p: Proj) -> None:
+    """Sheet B has a global label G and a local label G, which join; sheet A has a local
+    label G alone, which joins neither."""
+    for ref, name, x in (("R1", "A", 152.4), ("R2", "B", 203.2)):
+        child = p.child(name.lower())
+        resistor(child, p, ref, 50.8, "G", "M" + ref)
+        p.sheet(p.root, child, name, x=x, y=25.4)
+    b = p.dir / "b.kicad_sch"
+    schematic.place_component(
+        "Device:R", "R3", "1k", 76.2, 60.96, schematic_path=str(b), project_path=str(p.pro)
+    )
+    schematic.add_global_label("G", 76.2, 57.15, 0, "input", schematic_path=str(b))
+
+
+def build_local_label_beside_a_power_symbol(p: Proj) -> None:
+    """A local label named like the power net on its own sheet, and another on a sheet
+    that has no such power symbol."""
+    for ref, name, x in (("R1", "A", 152.4), ("R2", "B", 203.2)):
+        child = p.child(name.lower())
+        resistor(child, p, ref, 50.8, "GND", "M" + ref)
+        p.sheet(p.root, child, name, x=x, y=25.4)
+    b = p.dir / "b.kicad_sch"
+    schematic.place_component(
+        "Device:R", "R3", "1k", 76.2, 60.96, schematic_path=str(b), project_path=str(p.pro)
+    )
+    schematic.place_component(
+        "power:GND", "#PWR01", "GND", 76.2, 57.15, schematic_path=str(b), project_path=str(p.pro)
+    )
+
+
+def build_hierarchical_label_beside_a_global_one(p: Proj) -> None:
+    """A pin wired to a root part, its hierarchical label P on a part of the child, and a
+    global label P on another part of the child: one net."""
+    child = p.child("c")
+    uid = p.sheet(p.root, child, "C", x=152.4, y=50.8)
+    project.add_sheet_pin(uid, "P", "input", str(p.root))
+    px, py = pin_edge(p.root, uid, "P")
+    schematic.place_component(
+        "Device:R",
+        "R1",
+        "1k",
+        101.6,
+        py - 3.81,
+        schematic_path=str(p.root),
+        project_path=str(p.pro),
+    )
+    schematic.add_wires([{"x1": 101.6, "y1": py, "x2": px, "y2": py}], schematic_path=str(p.root))
+    for ref, x in (("R2", 50.8), ("R3", 76.2)):
+        schematic.place_component(
+            "Device:R", ref, "1k", x, 60.96, schematic_path=str(child), project_path=str(p.pro)
+        )
+    schematic.add_hierarchical_label("P", "input", 50.8, 57.15, 0, schematic_path=str(child))
+    schematic.add_global_label("P", 76.2, 57.15, 0, "input", schematic_path=str(child))
+
+
 BUILDERS = [
     pytest.param(build_unconnected, id="unconnected-pins"),
     pytest.param(build_pin_wired_both_sides, id="pin-wired-both-sides"),
@@ -646,6 +702,9 @@ BUILDERS = [
     pytest.param(build_four_rotations, id="four-rotations"),
     pytest.param(build_global_and_power, id="global-and-power"),
     pytest.param(build_units_across_sheets, id="units-across-sheets"),
+    pytest.param(build_local_label_beside_a_global_one, id="local-beside-global"),
+    pytest.param(build_local_label_beside_a_power_symbol, id="local-beside-power"),
+    pytest.param(build_hierarchical_label_beside_a_global_one, id="hierarchical-beside-global"),
 ]
 
 
@@ -654,8 +713,8 @@ BUILDERS = [
 def test_the_flat_file_has_the_hierarchys_netlist(tmp_path, build):
     p = Proj(tmp_path)
     build(p)
-    files = {f.name: f.read_bytes() for f in p.dir.iterdir()}
     assert node_sets(p.root), "premise: the hierarchy has nets"
+    files = {f.name: f.read_bytes() for f in p.dir.iterdir()}  # after kicad-cli's own files
     flat, message = flatten(p.root)
     assert "components" in message
     assert {f.name: f.read_bytes() for f in p.dir.iterdir() if f != flat} == files
@@ -714,7 +773,7 @@ def test_a_bus_on_a_sheet_pin_is_refused(tmp_path):
     p = Proj(tmp_path)
     uid = p.sheet(p.root, p.child("c"), "C")
     project.add_sheet_pin(uid, "D[0..3]", "input", str(p.root))
-    refused(p, r"bus.*D\[0\.\.3\]")
+    refused(p, r"D\[0\.\.3\].*bus")
 
 
 def test_a_bus_label_in_a_sub_sheet_is_refused(tmp_path):
@@ -722,16 +781,17 @@ def test_a_bus_label_in_a_sub_sheet_is_refused(tmp_path):
     child = p.child("c")
     p.sheet(p.root, child, "C")
     schematic.add_label("D{A0 A1}", 40.64, 40.64, 0, schematic_path=str(child))
-    refused(p, r"bus.*c\.kicad_sch")
+    refused(p, r"c\.kicad_sch.*bus")
 
 
+@requires_cli
 def test_an_overbar_name_is_not_a_bus(tmp_path):
     p = Proj(tmp_path)
     child = p.child("c")
     p.sheet(p.root, child, "C", pins=[{"name": "~{RESET}", "direction": "input"}])
-    schematic.add_label("~{RESET}", 40.64, 40.64, 0, schematic_path=str(child))
-    out, _ = flatten(p.root)
-    assert out.is_file()
+    resistor(child, p, "R1", 50.8, "~{RESET}", "M")
+    flat, _ = flatten(p.root)
+    assert_same_netlist(p.root, flat)
 
 
 def test_a_sheet_file_from_before_instances_moved_onto_symbols_is_refused(tmp_path):
@@ -755,25 +815,94 @@ def test_a_bus_alias_in_a_sub_sheet_is_refused(tmp_path):
     refused(p, r"bus_alias.*c\.kicad_sch|c\.kicad_sch.*bus_alias")
 
 
-def test_two_definitions_of_one_library_symbol_are_refused(tmp_path):
+def two_definitions(p: Proj, other: str, edit_definition) -> None:
+    """R in two files, the second file's Device:R changed by edit_definition(lib symbol)."""
+    first = p.root if other == "root" else p.child("a")
+    second = p.child("c")
+    for path, ref in ((first, "R1"), (second, "R2")):
+        schematic.place_component(
+            "Device:R", ref, "1k", 50.8, 50.8, schematic_path=str(path), project_path=str(p.pro)
+        )
+    if first != p.root:
+        p.sheet(p.root, first, "A", x=127.0, y=25.4)
+    p.sheet(p.root, second, "C", x=203.2, y=25.4)
+
+    def go(root):
+        edit_definition(
+            next(
+                s
+                for s in root.find("lib_symbols").find_all("symbol")
+                if s.atoms[1].text == "Device:R"
+            )
+        )
+
+    edit(second, go)
+
+
+def renumber_first_pin(lib) -> None:
+    pin = next(q for sub in lib.find_all("symbol") for q in sub.find_all("pin"))
+    pin.find("number").atoms[1].set_text("9")
+
+
+def reword(lib) -> None:
+    prop = next(q for q in lib.find_all("property") if q.atoms[1].text == "Description")
+    prop.atoms[2].set_text("a resistor the library has since changed")
+
+
+@pytest.mark.parametrize("other", ["root", "sibling"])
+def test_two_definitions_of_one_library_symbol_with_different_pins_are_refused(tmp_path, other):
+    p = Proj(tmp_path)
+    two_definitions(p, other, renumber_first_pin)
+    refused(p, r"Device:R")
+
+
+@requires_cli
+@pytest.mark.parametrize("other", ["root", "sibling"])
+def test_a_library_symbol_that_differs_only_in_its_fields_flattens(tmp_path, other):
+    """A part whose library has been updated since one sheet was saved: the pins are the
+    same, so the nets are."""
+    p = Proj(tmp_path)
+    two_definitions(p, other, reword)
+    flat, _ = flatten(p.root)
+    assert_same_netlist(p.root, flat)
+
+
+def test_a_root_label_named_like_a_global_net_of_another_sheet_is_refused(tmp_path):
+    """On the flat file's one sheet the root's local label G would join the global net G that
+    only the child had."""
     p = Proj(tmp_path)
     child = p.child("c")
-    for path in (p.root, child):
-        schematic.place_component(
-            "Device:R", "R1" if path == p.root else "R2", "1k", 50.8, 50.8,
-            schematic_path=str(path), project_path=str(p.pro),
-        )  # fmt: skip
     p.sheet(p.root, child, "C", x=152.4, y=25.4)
+    schematic.add_global_label("G", 40.64, 40.64, 0, "input", schematic_path=str(child))
+    schematic.add_label("G", 40.64, 40.64, 0, schematic_path=str(p.root))
+    refused(p, r"'G'.*global")
+
+
+@pytest.mark.no_kicad_validation  # a local power symbol is KiCad 10 syntax
+@pytest.mark.parametrize("where", ["root", "sub-sheet"])
+def test_a_local_power_symbol_is_refused(tmp_path, where):
+    p = Proj(tmp_path)
+    child = p.child("c")
+    p.sheet(p.root, child, "C", x=152.4, y=25.4)
+    target = p.root if where == "root" else child
+    schematic.place_component(
+        "power:GND",
+        "#PWR01",
+        "GND",
+        50.8,
+        50.8,
+        schematic_path=str(target),
+        project_path=str(p.pro),
+    )
 
     def go(root):
         lib = next(
-            s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == "Device:R"
+            s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == "power:GND"
         )
-        prop = next(q for q in lib.find_all("property") if q.atoms[1].text == "Description")
-        prop.atoms[2].set_text("a different resistor")
+        lib.find("power").append_child(_cst.Atom(b"local"), b" ")
 
-    edit(child, go)
-    refused(p, r"Device:R")
+    edit(target, go)
+    refused(p, "local power")
 
 
 @pytest.mark.parametrize("attribute", ["dnp", "in_bom", "on_board", "exclude_from_sim"])
@@ -808,3 +937,35 @@ def test_too_many_sheet_instances_are_refused(tmp_path, monkeypatch):
     p.sheet(p.root, child, "C2", x=203.2)
     monkeypatch.setattr(_connectivity, "_MAX_INSTANCES", 1)
     refused(p, "instances")
+
+
+def hierarchical_demos() -> list[str]:
+    """The shipped demo projects whose root schematic has sheets, as folders under demos/,
+    without vme-wren, which is too large to flatten and judge in a test."""
+    names = []
+    for name, path in shipped(("demos",), (".kicad_pro",), ()):
+        root = path.with_suffix(".kicad_sch")
+        folder = name.split("/", 1)[1].rsplit("/", 1)[0]
+        if root.is_file() and b"(sheet" + bytes([10]) in root.read_bytes().replace(
+            CRLF, bytes([10])
+        ):
+            names.append(folder)
+    return [n for n in names if n != "vme-wren"]
+
+
+@pytest.mark.nightly
+@no_demos
+@requires_cli
+def test_nightly_every_shipped_hierarchy_flattens_to_its_netlist_or_is_refused(tmp_path):
+    flattened = 0
+    for k, name in enumerate(hierarchical_demos()):
+        root = copy_demo(tmp_path, name, into=f"demo{k}")
+        try:
+            flat, _ = flatten(root)
+        except ToolError as refusal:
+            assert "bus" in str(refusal), (name, str(refusal))
+            assert not root.with_name("flat.kicad_sch").exists(), name
+            continue
+        assert_same_netlist(root, flat)
+        flattened += 1
+    assert flattened >= 3

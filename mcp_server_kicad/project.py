@@ -7,18 +7,27 @@ sym-lib-tables, hierarchical sheets, jobset execution, and version info.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import tempfile
 from collections import Counter
 from pathlib import Path
-from typing import Literal, NamedTuple
+from typing import Any, Literal, NamedTuple
 
 from mcp.server.mcpserver.exceptions import ToolError
 
 import mcp_server_kicad._connectivity as _connectivity
 import mcp_server_kicad._cst as _cst
-from mcp_server_kicad._cst import SCH_IU_PER_MM, _fill_at, _node_text, _num, _numish, _snap
+from mcp_server_kicad._cst import (
+    SCH_IU_PER_MM,
+    _anchor_ws,
+    _fill_at,
+    _node_text,
+    _num,
+    _numish,
+    _snap,
+)
 from mcp_server_kicad._shared import (
     _ADDITIVE,
     _DESTRUCTIVE,
@@ -63,6 +72,7 @@ from mcp_server_kicad.schematic import (
     _line_xys,
     _off_pin_items,
     _open_sch_cst,
+    _page_size_cst,
     _splice_sch_node,
     _splice_wire,
     _xy_iu,
@@ -2289,22 +2299,218 @@ def duplicate_sheet(
 _MAX_HIERARCHY_FILES = 4096
 
 
+_FLAT_COORDINATE_ITEMS = frozenset({"at", "xy", "start", "mid", "end", "center"})
+#: What a sheet file holds once for the file, not as content a flat file takes from a sub-sheet.
+_FLAT_FILE_LEVEL = frozenset(
+    {
+        "version",
+        "generator",
+        "generator_version",
+        "uuid",
+        "paper",
+        "title_block",
+        "lib_symbols",
+        "sheet_instances",
+        "symbol_instances",
+        "embedded_fonts",
+        "embedded_files",
+        "bus_alias",
+    }
+)
+#: The gap between two sheets laid out in the flat file, and the grid their places keep to.
+_FLAT_GAP = 254000
+_FLAT_GRID = 25400
+_NET_ESCAPES = re.compile(
+    r"\{(?:dblquote|quote|lt|gt|backslash|slash|bar|comma|colon|space|dollar|tab|return|brace)\}"
+)
+#: Sheet block attributes that, set against the default, apply to everything the sheet holds.
+_SHEET_ATTRIBUTES = (
+    ("dnp", "yes"),
+    ("in_bom", "no"),
+    ("on_board", "no"),
+    ("exclude_from_sim", "yes"),
+)
+
+
+class _Instance(NamedTuple):
+    """One use of a sheet file in the hierarchy."""
+
+    file: str
+    node: Any
+    page: tuple[int, int]  # the page's width and height in internal units
+    live: str  # its KIID path
+    prefix: str  # its human path, each name net-escaped, each followed by {slash}
+
+
+def _net_escape(name: str) -> str:
+    """A sheet name as it reads in a net name: '/' as {slash}, CR and LF dropped
+    (EscapeString CTX_NETNAME, string_utils.cpp:188-196 at 9.0.8)."""
+    return name.replace("/", "{slash}").replace("\n", "").replace("\r", "")
+
+
+def _bus_shaped(text: str) -> bool:
+    """Whether a label or pin name might be a bus: it still holds a bracket or a brace once the
+    escapes and the overbar, subscript and superscript braces are taken out. Conservative on
+    purpose: an 'A[1]' that is no bus is refused too."""
+    plain = _NET_ESCAPES.sub("", re.sub(r"[~^_$]\{", "", text))
+    return "[" in plain or "{" in plain
+
+
+def _coordinate_lists(node):
+    """Every (at), (xy), (start), (mid), (end) and (center) list below ``node``."""
+    stack = [node]
+    while stack:
+        for child in stack.pop().children or ():
+            if child.kind == "list":
+                if child.head in _FLAT_COORDINATE_ITEMS and len(child.atoms) >= 3:
+                    yield child
+                stack.append(child)
+
+
+def _shift(node, dx: int, dy: int) -> None:
+    for item in _coordinate_lists(node):
+        _set_xy(
+            item,
+            _connectivity.iu(item.atoms[1].text) + dx,
+            _connectivity.iu(item.atoms[2].text) + dy,
+        )
+
+
+def _fresh_uuids(node) -> None:
+    stack = [node]
+    while stack:
+        for child in stack.pop().children or ():
+            if child.kind == "list":
+                if child.head == "uuid" and len(child.atoms) >= 2:
+                    child.atoms[1].set_text(_gen_uuid())
+                stack.append(child)
+
+
+def _pin_signature(lib) -> tuple:
+    """The part of a library symbol flatten_hierarchy compares: each pin's number, type, place
+    and flags in its unit, and the symbol's power and extends. Pin names, graphics and fields
+    are left out."""
+    pins = []
+    for sub in lib.find_all("symbol"):
+        for pin in sub.find_all("pin"):
+            parts = [sub.atoms[1].text, *(a.text for a in pin.atoms[1:])]
+            for key in ("at", "length", "number"):
+                part = pin.find(key)
+                parts.append(tuple(a.text for a in part.atoms[1:]) if part is not None else ())
+            pins.append(tuple(map(str, parts)))
+    flags = tuple(
+        tuple(a.text for a in node.atoms) for key in ("power", "extends") if (node := lib.find(key))
+    )
+    return (tuple(sorted(pins)), flags)
+
+
+def _flat_label(text: str, source_at):
+    """A local label with ``text`` at the position of ``source_at`` (an (at) list), turned as
+    that list says."""
+    label = _LABEL_TPL.copy()
+    label.atoms[1].set_text(text)
+    _set_xy(
+        label, _connectivity.iu(source_at.atoms[1].text), _connectivity.iu(source_at.atoms[2].text)
+    )
+    try:
+        rotation = int(float(source_at.atoms[3].text)) % 360
+    except (IndexError, ValueError):
+        rotation = 0
+    _label_spin(label, rotation if rotation in (0, 90, 180, 270) else 0)
+    label.find("uuid").atoms[1].set_text(_gen_uuid())
+    return label
+
+
+def _keep_one_instance(sym, record, live: str, flat_path: str, project_name: str) -> None:
+    """Leave a placed symbol with one instance entry, at ``flat_path``: the entry it has at
+    ``live`` (with whatever it carries), else one made from the reference and unit KiCad
+    reads for it there."""
+    previous = sym.find("instances")
+    found = None
+    for pj in previous.find_all("project") if previous is not None else ():
+        for entry in pj.find_all("path"):
+            if len(entry.atoms) > 1 and entry.atoms[1].text == live:
+                found = (pj, entry)
+    node = _SYM_INSTANCES_TPL.copy()
+    project_node = node.find("project")
+    template = project_node.find("path")
+    if found is not None:
+        project_node.atoms[1].set_text(found[0].atoms[1].text)
+        entry = found[1].copy()
+    else:
+        first = previous.find("project") if previous is not None else None
+        project_node.atoms[1].set_text(first.atoms[1].text if first is not None else project_name)
+        entry = template.copy()
+        reference, unit = record.at(live)
+        entry.find("reference").atoms[1].set_text(reference)
+        entry.find("unit").atoms[1].set_text(str(unit))
+    entry.atoms[1].set_text(flat_path)
+    project_node.children[project_node.children.index(template)] = entry
+    if previous is None:
+        sym.insert_after(sym.lists[-1], node)
+    else:
+        node.sep = previous.sep
+        sym.children[sym.children.index(previous)] = node
+
+
+def _splice_many(root, token: str, nodes: list) -> None:
+    """_splice_sch_node for many nodes at once: after the last sibling of the token, else
+    before the file tail, else at the end."""
+    if not nodes:
+        return
+    children = root.children
+    lists = [(i, c) for i, c in enumerate(children) if c.kind == "list"]
+    same = [i for i, c in lists if c.head == token]
+    if same:
+        at, anchor = same[-1] + 1, children[same[-1]]
+    else:
+        tail = next((i for i, c in lists if c.head == "sheet_instances"), None)
+        if tail is None:
+            tail = next((i for i, c in lists if c.head == "embedded_fonts"), None)
+        at = len(children) if tail is None else tail
+        anchor = children[tail] if tail is not None else children[-1]
+    sep = _anchor_ws(anchor.sep) or b"\n"
+    for node in nodes:
+        node.sep = sep
+    children[at:at] = nodes
+
+
+def _definitions(node) -> list:
+    """The library symbols a sheet file defines."""
+    libs = node.find("lib_symbols")
+    return libs.find_all("symbol") if libs is not None else []
+
+
 @mcp.tool(annotations=_DESTRUCTIVE)
 def flatten_hierarchy(
     schematic_path: str = SCH_PATH,
     output_path: str = "",
 ) -> str:
-    """Flatten a hierarchical schematic into a single sheet.
+    """Flatten a hierarchical schematic into a single sheet whose netlist is the hierarchy's.
 
-    Merges all child sheet content into one schematic with offset positions.
-    Creates a new file — does NOT modify the original hierarchy.
+    The flat file is the root schematic with each sub-sheet's content copied below it, one
+    cell per use of a sheet file (a file used twice is copied twice). Each part keeps the
+    reference and unit KiCad reads for it at its sheet's path. A sheet pin becomes a local
+    label at its place, and a local or hierarchical label of a sub-sheet becomes a local label
+    named after the sheet's path, so nets keep their joins and no others; net names change
+    to those labels. A label whose own sheet has a global label or power symbol of its text
+    keeps that text, so it keeps joining it. Text variables that name the sheet are not
+    rewritten.
+
+    The tool refuses, writing nothing, where the flat file could not keep the netlist: a
+    sheet pin or sub-sheet label that may be a bus, a file older than format 20221002, a
+    local power symbol, a bus_alias in a sub-sheet, a root label named like a global net
+    that only another sheet has, a library symbol whose pins differ between two files, a
+    sheet marked DNP, out of the BOM, off the board or out of simulation,
+    two sheets of one name, more than 4096 sheet instances, or a sheet file that cannot be
+    read. A sheet file that is missing is flattened as an empty sheet, as KiCad loads it.
+
+    Creates a new file and does not modify the hierarchy.
 
     Args:
         schematic_path: Path to root .kicad_sch file. Optional; omit to use the configured default.
         output_path: Path for flattened output (defaults to *_flat.kicad_sch)
     """
-    import uuid as _uuid_mod
-
     flat_tree, flat_root, *_ = _open_sch_cst(schematic_path)
     sch_dir = Path(schematic_path).parent
 
@@ -2312,12 +2518,7 @@ def flatten_hierarchy(
         stem = Path(schematic_path).stem
         output_path = str(sch_dir / f"{stem}_flat.kicad_sch")
 
-    # The output starts as a byte-copy of the root with a fresh uuid
-    root_uuid_node = flat_root.find("uuid")
-    if root_uuid_node is not None:
-        root_uuid_node.atoms[1].set_text(str(_uuid_mod.uuid4()))
-
-    # Remember the child files, then drop hierarchy constructs from the output
+    # The files the root's sheet blocks name, for the clash check below
     child_files = [_sheet_file_cst(s) or "" for s in flat_root.find_all("sheet")]
 
     # The docstring above promises the original hierarchy is not modified, and
@@ -2381,106 +2582,303 @@ def flatten_hierarchy(
             f"output_path {out.name} is part of the hierarchy being flattened."
             " Choose a different output file."
         )
-    for token in ("sheet", "hierarchical_label", "symbol_instances", "sheet_instances"):
-        for node in flat_root.find_all(token):
-            flat_root.remove_child(node)
+    # Read the hierarchy as KiCad's loader does: a sheet's file against its parent's folder,
+    # every use of a file as an instance of its own, a file that is its own ancestor dropped.
+    # Everything that would stop the flat file keeping the hierarchy's netlist is refused here,
+    # before anything is written.
+    root_path = Path(schematic_path)
+    root_key = _connectivity._real(root_path)
+    loaded: dict[Path, tuple | None] = {}
+    missing: list[str] = []
 
-    def _offset_at(node, ox: float, oy: float) -> None:
-        n_at = node.find("at")
-        if n_at is None:
-            return
-        n_at.atoms[1].set_text(_num(float(n_at.atoms[1].text) + ox, SCH_IU_PER_MM))
-        n_at.atoms[2].set_text(_num(float(n_at.atoms[2].text) + oy, SCH_IU_PER_MM))
+    def load(path: Path):
+        key = _connectivity._real(path)
+        if key not in loaded:
+            if not _sheet_file_nonempty(path):
+                loaded[key] = None
+            else:
+                try:
+                    _tree, node, page_w, page_h, _name = _open_sch_cst(str(path))
+                except SyntaxError as exc:
+                    raise ToolError(
+                        f"{path.name} cannot be parsed ({exc}), so nothing was written."
+                    ) from None
+                check_version(path.name, node)
+                loaded[key] = (
+                    node,
+                    (
+                        _connectivity.iu(_num(page_w, SCH_IU_PER_MM)),
+                        _connectivity.iu(_num(page_h, SCH_IU_PER_MM)),
+                    ),
+                )
+        return loaded[key]
 
-    # Find the max Y extent of root content for offset
-    max_y = 0.0
-    for sym in flat_root.find_all("symbol"):
-        s_at = sym.find("at")
-        if s_at is not None:
-            max_y = max(max_y, float(s_at.atoms[2].text))
-    for token in ("wire", "bus", "polyline"):
-        for gi in flat_root.find_all(token):
-            pts = gi.find("pts")
-            if pts is not None:
-                for xy in pts.find_all("xy"):
-                    max_y = max(max_y, float(xy.atoms[2].text))
+    def check_version(file: str, node) -> None:
+        if int(_connectivity._child_text(node, "version", "0")) < _connectivity._ON_SYMBOL_VERSION:
+            raise ToolError(
+                f"{file} is in a format older than 20221002, which this tool does not flatten."
+                " Nothing was written. Open and save the project in KiCad first."
+            )
 
-    y_offset = max_y + 50  # Start child content 50mm below root content
+    def check_text(file: str, kind: str, text: str) -> None:
+        if _bus_shaped(text):
+            raise ToolError(
+                f"The {kind} '{text}' in {file} may be a bus, and this tool does not rename bus"
+                " names for the flat file, so nothing was written."
+            )
 
-    lib_symbols = flat_root.find("lib_symbols")
-    existing_lib_names = set()
-    if lib_symbols is not None:
-        for ls in lib_symbols.find_all("symbol"):
-            raw = ls.atoms[1].text
-            existing_lib_names.add(raw.split(":")[-1] if ":" in raw else raw)
+    def check_sheet(file: str, block) -> None:
+        for attribute, bad in _SHEET_ATTRIBUTES:
+            node = block.find(attribute)
+            if node is not None and len(node.atoms) > 1 and node.atoms[1].text == bad:
+                raise ToolError(
+                    f"The sheet '{_sheet_name_cst(block)}' in {file} has {attribute} {bad}, which"
+                    " applies to every part on it; the flat file has no sheet to carry it, so"
+                    " nothing was written."
+                )
 
-    sheet_index = 0
-    for child_file in child_files:
-        child_path = sch_dir / child_file
-        if not _sheet_file_nonempty(child_path):
-            continue
+    flat_page = _page_size_cst(flat_root)
+    check_version(root_path.name, flat_root)
+    instances: list[_Instance] = []
+    prefixes: set[str] = set()
+    root_live = f"/{_node_uuid(flat_root)}"
 
-        child_root = _cst.parse(child_path.read_bytes()).lists[0]
-        x_offset = sheet_index * 200  # Space sheets horizontally
+    def walk(path: Path, node, live: str, prefix: str, chain: tuple[Path, ...]) -> None:
+        for block in node.find_all("sheet"):
+            check_sheet(path.name, block)
+            name = _sheet_name_cst(block) or ""
+            child_prefix = prefix + _net_escape(name) + "{slash}"
+            if child_prefix in prefixes:
+                raise ToolError(
+                    f"Two sheets of {path.name} or its sub-sheets are named '{name}' at the same"
+                    " place, so their nets could not be told apart in the flat file. Nothing"
+                    " was written."
+                )
+            prefixes.add(child_prefix)
+            file = _sheet_file_cst(block) or ""
+            if not file:
+                continue
+            child = Path(os.path.normpath(os.path.join(path.parent, file.replace("\\", "/"))))
+            if _connectivity._real(child) in chain:
+                continue  # a sheet inside itself is not entered, as _connectivity._instances
+            content = load(child)
+            if content is None:
+                missing.append(child.name)
+                continue
+            if len(instances) >= _connectivity._MAX_INSTANCES:
+                raise ToolError(
+                    f"The hierarchy under {root_path.name} has more than"
+                    f" {_connectivity._MAX_INSTANCES} sheet instances, so nothing was written."
+                )
+            here = f"{live}/{_node_uuid(block)}"
+            instances.append(_Instance(child.name, content[0], content[1], here, child_prefix))
+            walk(child, content[0], here, child_prefix, (*chain, _connectivity._real(child)))
 
-        # Merge lib symbols (avoid duplicates, entryName semantics)
-        child_libs = child_root.find("lib_symbols")
-        if child_libs is not None and lib_symbols is not None:
-            for ls in child_libs.find_all("symbol"):
-                raw = ls.atoms[1].text
-                bare = raw.split(":")[-1] if ":" in raw else raw
-                if bare not in existing_lib_names:
-                    entries = lib_symbols.find_all("symbol")
-                    node = ls.copy()
-                    if entries:
-                        lib_symbols.insert_after(entries[-1], node)
-                    else:
-                        lib_symbols.append_child(node, b"\n\t\t")
-                    existing_lib_names.add(bare)
+    walk(root_path, flat_root, root_live, "", (root_key,))
 
-        # Merge components with offset
-        for sym in child_root.find_all("symbol"):
-            new_sym = sym.copy()
-            su = new_sym.find("uuid")
-            if su is not None:
-                su.atoms[1].set_text(str(_uuid_mod.uuid4()))
-            _offset_at(new_sym, x_offset, y_offset)
-            for prop in new_sym.find_all("property"):
-                _offset_at(prop, x_offset, y_offset)
-            _splice_sch_node(flat_root, "symbol", new_sym)
+    # Library symbols: a flat file holds one definition of a name. The first is kept, unless
+    # another file's differs in what the netlist reads from it.
+    libs = flat_root.find("lib_symbols")
+    if libs is None:
+        libs = _cst.parse(b"(lib_symbols)").lists[0]
+        flat_root.insert_after(flat_root.find("paper") or flat_root.find("uuid"), libs)
+    defined = {
+        _connectivity._lib_name(ls.atoms[1].text): _pin_signature(ls)
+        for ls in libs.find_all("symbol")
+    }
+    shapes: dict[int, tuple] = {}  # a file used twice is compared once
 
-        # Merge wires/graphical items with offset
-        for token in ("wire", "bus", "polyline", "bus_entry"):
-            for gi in child_root.find_all(token):
-                new_gi = gi.copy()
-                gu = new_gi.find("uuid")
-                if gu is not None:
-                    gu.atoms[1].set_text(str(_uuid_mod.uuid4()))
-                pts = new_gi.find("pts")
-                if pts is not None:
-                    for xy in pts.find_all("xy"):
-                        x_text = _num(float(xy.atoms[1].text) + x_offset, SCH_IU_PER_MM)
-                        y_text = _num(float(xy.atoms[2].text) + y_offset, SCH_IU_PER_MM)
-                        xy.atoms[1].set_text(x_text)
-                        xy.atoms[2].set_text(y_text)
-                _splice_sch_node(flat_root, token, new_gi)
+    # Where each sheet goes: the root stays, the others sit in cells of one size on a grid
+    # below it, so no two overlap and every offset keeps the 2.54 mm grid.
+    def extent(node, page: tuple[int, int]) -> tuple[int, int, int, int]:
+        xs, ys = [0, page[0]], [0, page[1]]
+        for item in node.lists:
+            if item.head in _FLAT_FILE_LEVEL:
+                continue
+            for at in _coordinate_lists(item):
+                xs.append(_connectivity.iu(at.atoms[1].text))
+                ys.append(_connectivity.iu(at.atoms[2].text))
+        return (
+            min(xs) // _FLAT_GRID * _FLAT_GRID,
+            min(ys) // _FLAT_GRID * _FLAT_GRID,
+            max(xs),
+            max(ys),
+        )
 
-        # Merge labels, junctions, and no-connects with offset
-        for token in ("label", "global_label", "junction", "no_connect"):
-            for item in child_root.find_all(token):
-                new_item = item.copy()
-                iu = new_item.find("uuid")
-                if iu is not None:
-                    iu.atoms[1].set_text(str(_uuid_mod.uuid4()))
-                _offset_at(new_item, x_offset, y_offset)
-                _splice_sch_node(flat_root, token, new_item)
+    root_box = extent(
+        flat_root,
+        (
+            _connectivity.iu(_num(flat_page[0], SCH_IU_PER_MM)),
+            _connectivity.iu(_num(flat_page[1], SCH_IU_PER_MM)),
+        ),
+    )
+    boxes = [extent(i.node, i.page) for i in instances]
+    cell_w = max((b[2] - b[0] for b in boxes), default=0) + _FLAT_GAP
+    cell_h = max((b[3] - b[1] for b in boxes), default=0) + _FLAT_GAP
+    cell_w, cell_h = (-(-v // _FLAT_GRID) * _FLAT_GRID for v in (cell_w, cell_h))
+    columns = math.isqrt(max(len(instances) - 1, 0)) + 1
+    top_y = -(-(root_box[3] + _FLAT_GAP) // _FLAT_GRID) * _FLAT_GRID
 
-        sheet_index += 1
+    # Build the flat file: the root's bytes with a new uuid, its parts keeping the entry they
+    # have at the root's path, and every other sheet's content copied into its cell
+    flat_uuid = _gen_uuid()
+    uuid_node = flat_root.find("uuid")
+    if uuid_node is None:
+        raise ToolError(f"{root_path.name} has no uuid, so nothing was written.")
+    uuid_node.atoms[1].set_text(flat_uuid)
+    flat_path = f"/{flat_uuid}"
+    project_name = root_path.stem
+    added: dict[str, list] = {}
+
+    # A global label or a power symbol names a net on every sheet, and a local or hierarchical
+    # label of the same text on the same sheet joins it. So a label keeps its text where its own
+    # sheet has such a net, and is renamed where it has none.
+    def global_names(node) -> set[str]:
+        names = {g.atoms[1].text for g in node.find_all("global_label") if len(g.atoms) > 1}
+        libs = _connectivity.lib_index(node)
+        for sym in node.find_all("symbol"):
+            lib = libs.get(_connectivity.lib_key(sym))
+            value = _sym_property_cst(sym, "Value")
+            if lib is not None and lib.find("power") is not None and value:
+                names.add(value)
+        return names
+
+    own_globals = {id(flat_root): global_names(flat_root)}
+    for inst in instances:
+        if id(inst.node) not in own_globals:
+            own_globals[id(inst.node)] = global_names(inst.node)
+    all_globals = set().union(*own_globals.values())
+
+    def global_clash(file: str, text: str) -> ToolError:
+        return ToolError(
+            f"The label '{text}' in {file} would join a global net of that name on the flat"
+            " file's one sheet, which the hierarchy keeps apart. Nothing was written."
+        )
+
+    def convert(file: str, node, live: str, prefix: str, dx: int, dy: int, is_root: bool) -> None:
+        records = dict(
+            zip(
+                map(id, node.find_all("symbol")),
+                _connectivity.sheet_facts(node).records,
+                strict=True,
+            )
+        )
+        lib_defs = _connectivity.lib_index(node)
+        here = own_globals[id(node)]
+        for item in list(node.lists):
+            head = item.head
+            if head in _FLAT_FILE_LEVEL:
+                continue
+            if head == "sheet":
+                child_prefix = prefix + _net_escape(_sheet_name_cst(item) or "") + "{slash}"
+                for pin in item.find_all("pin"):
+                    check_text(file, "sheet pin", pin.atoms[1].text)
+                    if child_prefix + pin.atoms[1].text in all_globals:
+                        raise global_clash(file, child_prefix + pin.atoms[1].text)
+                    label = _flat_label(child_prefix + pin.atoms[1].text, pin.find("at"))
+                    _shift(label, dx, dy)
+                    added.setdefault("label", []).append(label)
+                if is_root:
+                    node.remove_child(item)
+                continue
+            if head in ("label", "hierarchical_label"):
+                text = item.atoms[1].text
+                if is_root:
+                    if text in all_globals and text not in here:
+                        raise global_clash(file, text)
+                    if head == "label":
+                        continue
+                else:
+                    check_text(file, "label", text)
+                keeps = is_root or text in here  # joins a global net of its own sheet
+                renamed = prefix + text
+                if renamed in all_globals and not is_root:
+                    raise global_clash(file, renamed)
+                if head == "label":
+                    label = item.copy()
+                    label.atoms[1].set_text(text if keeps else renamed)
+                    _shift(label, dx, dy)
+                    _fresh_uuids(label)
+                    made = [label]
+                else:
+                    # a hierarchical label also carries the sheet pin's net, so it keeps its
+                    # own text and gets the renamed one besides
+                    made = [_flat_label(text if keeps else renamed, item.find("at"))]
+                    if keeps and not is_root:
+                        made.append(_flat_label(renamed, item.find("at")))
+                    for label in made:
+                        _shift(label, dx, dy)
+                added.setdefault("label", []).extend(made)
+                if is_root:
+                    node.remove_child(item)
+                continue
+            if head == "group":
+                continue  # a group lists its members by uuid (sch_io_kicad_sexpr.cpp:1656 at
+                # 10.0.7) and a copy gets new ones
+            if head == "symbol":
+                lib = lib_defs.get(_connectivity.lib_key(item))
+                power = lib.find("power") if lib is not None else None
+                if power is not None and any(a.text == "local" for a in power.atoms[1:]):
+                    raise ToolError(
+                        f"{file} places a local power symbol, whose reach the flat file's one"
+                        " sheet would widen. Nothing was written."
+                    )
+            if is_root:
+                if head == "symbol":
+                    _keep_one_instance(item, records[id(item)], live, flat_path, project_name)
+                continue
+            copy = item.copy()
+            _shift(copy, dx, dy)
+            _fresh_uuids(copy)
+            if head == "symbol":
+                _keep_one_instance(copy, records[id(item)], live, flat_path, project_name)
+            added.setdefault(head, []).append(copy)
+
+    convert(root_path.name, flat_root, root_live, "", 0, 0, True)
+    for n in flat_root.find_all("symbol_instances"):
+        flat_root.remove_child(n)
+    for k, (inst, box) in enumerate(zip(instances, boxes, strict=True)):
+        row, column = divmod(k, columns)
+        convert(
+            inst.file,
+            inst.node,
+            inst.live,
+            inst.prefix,
+            column * cell_w - box[0],
+            top_y + row * cell_h - box[1],
+            False,
+        )
+        if inst.node.find("bus_alias") is not None:
+            raise ToolError(
+                f"{inst.file} defines a bus_alias, which names a bus the flat file would not"
+                " keep apart. Nothing was written."
+            )
+        for ls in _definitions(inst.node):
+            name = _connectivity._lib_name(ls.atoms[1].text)
+            if name not in defined:
+                defined[name] = shapes[id(ls)] = _pin_signature(ls)
+                libs.append_child(ls.copy(), b"\n\t\t")
+            elif defined[name] != shapes.setdefault(id(ls), _pin_signature(ls)):
+                raise ToolError(
+                    f"{inst.file} defines the library symbol '{name}' with pins that differ from"
+                    " another file's, and a flat file holds one definition of a name."
+                    " Nothing was written."
+                )
+    for head, nodes in added.items():
+        _splice_many(flat_root, head, nodes)
 
     _atomic_write(output_path, _cst.serialize(flat_tree))
 
     total_components = len(flat_root.find_all("symbol"))
-    return f"Flattened hierarchy to {Path(output_path).name}: {total_components} components"
+    note = (
+        f" Sheet files not found, flattened as empty: {', '.join(dict.fromkeys(missing))}."
+        if missing
+        else ""
+    )
+    return (
+        f"Flattened hierarchy to {Path(output_path).name}: {total_components} components"
+        f" from {len(instances) + 1} sheets.{note}"
+    )
 
 
 @mcp.tool(annotations=_EXPORT, title="Export a netlist with sheet paths for the whole hierarchy")
