@@ -272,7 +272,8 @@ the wiring lands in every instance, and the note names each one.
 
 **Hierarchy management (project server):**
 - `add_hierarchical_sheet` / `remove_hierarchical_sheet` — create/remove sub-sheet blocks
-- `modify_hierarchical_sheet` — change sheet name, file, dimensions
+- `modify_hierarchical_sheet` — change sheet name, file, dimensions (pins, fields and the wires
+  on pins follow a resize; a size below what the pins need is refused)
 - `add_sheet_pin` / `remove_sheet_pin` — manage pins on sheet blocks
 - `validate_hierarchy` — check for orphaned labels/pins, direction mismatches
   and junctions and bus entry ends left inside wires, and flags and
@@ -293,6 +294,8 @@ the wiring lands in every instance, and the note names each one.
 ### Sequence: Setting up a hierarchical design
 1. `add_hierarchical_sheet` — create the sub-sheet block on the parent
 2. `add_sheet_pin` — add pins to the sheet block for each signal crossing the boundary
+   (an edge with no free slot is refused with the height that fits; grow the sheet with
+   `modify_hierarchical_sheet` first)
 3. In the child schematic: `add_hierarchical_label` for each pin
 4. `validate_hierarchy` — verify pins match labels, no orphans
 
