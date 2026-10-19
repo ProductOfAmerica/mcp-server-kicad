@@ -80,8 +80,9 @@ KiCad is installed somewhere unusual. The design skills are Claude Code only.
 pip install mcp-server-kicad
 ```
 
-Then point your MCP client at the unified server and set `cwd` to a KiCad
-project directory so paths resolve themselves:
+Then point your MCP client at the unified server, and name your schematic,
+board, and export folder in `env` by absolute path, so tools find them without
+being told on every call:
 
 ```json
 {
@@ -89,14 +90,21 @@ project directory so paths resolve themselves:
     "kicad": {
       "command": "uvx",
       "args": ["--from", "mcp-server-kicad", "mcp-server-kicad"],
-      "cwd": "/path/to/your/kicad/project"
+      "env": {
+        "KICAD_SCH_PATH": "/path/to/project/project.kicad_sch",
+        "KICAD_PCB_PATH": "/path/to/project/project.kicad_pcb",
+        "KICAD_OUTPUT_DIR": "/path/to/project"
+      }
     }
   }
 }
 ```
 
-That single entry registers all 109 tools. Prefer to split them across five
-smaller servers? See [Configuration](#configuration).
+That single entry registers all 109 tools. A client that starts the server in
+your project's folder can leave `env` out: the server then takes the paths from
+the single `.kicad_pro` there (see [How paths resolve](#how-paths-resolve)).
+Prefer to split the tools across five smaller servers? See
+[Configuration](#configuration).
 
 ## What you get
 
@@ -146,32 +154,31 @@ surface:
   "mcpServers": {
     "kicad-schematic": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-schematic"],
-      "cwd": "/path/to/your/kicad/project"
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-schematic"]
     },
     "kicad-pcb": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-pcb"],
-      "cwd": "/path/to/your/kicad/project"
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-pcb"]
     },
     "kicad-symbol": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-symbol"],
-      "cwd": "/path/to/your/kicad/project"
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-symbol"]
     },
     "kicad-footprint": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-footprint"],
-      "cwd": "/path/to/your/kicad/project"
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-footprint"]
     },
     "kicad-project": {
       "command": "uvx",
-      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-project"],
-      "cwd": "/path/to/your/kicad/project"
+      "args": ["--from", "mcp-server-kicad", "mcp-server-kicad-project"]
     }
   }
 }
 ```
+
+Give each entry the `env` block from [Everything else](#everything-else), with
+`KICAD_SYM_LIB` or `KICAD_FP_LIB` for the library servers, unless your client
+starts them in the project's folder.
 
 Each is also runnable directly:
 
