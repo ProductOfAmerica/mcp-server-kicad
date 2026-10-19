@@ -788,6 +788,22 @@ def test_the_remedy_a_pin_read_names_can_be_followed_off_the_page(tmp_path, x, y
     schematic.get_pin_positions("R1", schematic_path=str(path))
 
 
+@pytest.mark.parametrize("rotation", [0, 90])
+def test_a_quoted_angle_is_repaired_in_place_even_by_its_own_value(tmp_path, rotation):
+    """R1 placed at (at 100 100 "90"), which kicad-cli refuses (parseDouble takes no string),
+    called at its own position with rotation 0 or 90: the angle is written bare, so kicad-cli
+    loads the sheet, and KiCad reads R1 at that angle. The call must not report that nothing
+    changed because the decoded text equals the rotation asked for."""
+    path = _hand_edited(tmp_path, _at(b'"90"'))
+    _premise_unloadable(path)
+    schematic.move_component("R1", 100, 100, rotation=rotation, schematic_path=str(path))
+    assert not _refused_by_kicad(path.read_bytes(), "R1"), "the angle is still one KiCad refuses"
+    _, new = sch_judge.placed_symbol(path.read_bytes(), "R1")
+    assert (new.position, new.transform) == ((1_000_000, 1_000_000), turned((0, ""), rotation))
+    if HAS_KICAD_CLI:
+        assert_kicad_parseable(path)
+
+
 def test_a_symbol_off_the_page_is_not_moved_to_another_place_off_it(tmp_path):
     """The page still bounds a symbol that moves: R1 placed off the page is refused a move to
     another place off it, with the file byte for byte as it was, and may move back onto it."""

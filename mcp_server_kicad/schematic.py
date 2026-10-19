@@ -2377,7 +2377,7 @@ def move_component(
         s1 = (_mm_iu(x), _mm_iu(y))
     # A rotation is written unless the atom already holds it as KiCad writes it, so a spelling
     # KiCad refuses (+90, 9_0, 1e-400) is rewritten too.
-    turn = rotation is not None and old_angle != _angle_text(rotation)
+    turn = rotation is not None and (bad_angle or old_angle != _angle_text(rotation))
     where = f"({_connectivity.mm(s1[0])}, {_connectivity.mm(s1[1])})"
     if s1 == s0 and not turn:
         return f"{reference} is already at {where} at that angle: nothing changed, nothing written."
@@ -2516,7 +2516,7 @@ def _write_angle(at, rotation: int) -> None:
     retexted, and one it lacks is appended after y with the single space KiCad writes there."""
     text = _angle_text(rotation)
     if len(at.atoms) > 3:
-        at.atoms[3].set_text(text)
+        at.atoms[3].raw = text.encode()  # bare: set_text keeps a quoted angle quoted
     else:
         at.children.append(_cst.Atom(text.encode(), b" "))
 
