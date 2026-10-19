@@ -2293,10 +2293,19 @@ def duplicate_sheet(
     _set_sheet_instances(new_sheet, project_name, parent_live, pages_used)
     _splice_sch_node(root, "sheet", new_sheet)
 
-    # The copy, then the parent. A copy the parent never names is removed, so the call can be
-    # repeated: dst_path did not exist before this call (checked above).
-    _atomic_write(dst_path, _cst.serialize(copy_tree))
+    # The copy, then the parent. The name is claimed with an exclusive create first, because
+    # the check above is long past: a second call that took the name meanwhile keeps its file,
+    # and the claim makes dst_path this call's own, so a copy the parent never names can be
+    # removed and the call repeated.
     try:
+        dst_path.open("xb").close()
+    except FileExistsError:
+        raise ToolError(
+            f"{dst_path} already exists. Pass a different new_file_name."
+            f" {parent.name} was not changed."
+        ) from None
+    try:
+        _atomic_write(dst_path, _cst.serialize(copy_tree))
         _atomic_write(schematic_path, _cst.serialize(tree))
     except BaseException:
         with contextlib.suppress(OSError):

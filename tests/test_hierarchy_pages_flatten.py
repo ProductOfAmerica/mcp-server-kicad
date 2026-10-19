@@ -533,6 +533,35 @@ def test_a_failed_parent_write_leaves_no_copy_behind(tmp_path, monkeypatch):
     project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
 
 
+@pytest.mark.kicad_placeholder("p/copy.kicad_sch")
+def test_a_copy_file_another_call_made_meanwhile_is_neither_replaced_nor_removed(
+    tmp_path, monkeypatch
+):
+    """The file name is free when the call starts and taken by the time it writes, as when two
+    calls ask for one new_file_name at once: the call refuses and leaves the other's file."""
+    p = Proj(tmp_path)
+    uid = p.sheet(p.root, p.child("c"), "C")
+    theirs = p.dir / "copy.kicad_sch"
+    real = project._set_sheet_instances
+
+    def other_call_writes_first(*args, **kwargs):
+        theirs.write_bytes(b"the other call's copy")
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(project, "_set_sheet_instances", other_call_writes_first)
+    before = p.root.read_bytes()
+    with pytest.raises(ToolError, match="already exists"):
+        project.duplicate_sheet(
+            uid,
+            "Copy",
+            schematic_path=str(p.root),
+            project_path=str(p.pro),
+            new_file_name=theirs.name,
+        )
+    assert theirs.read_bytes() == b"the other call's copy"
+    assert p.root.read_bytes() == before
+
+
 # ---------------------------------------------------------------------------------------------
 # flatten_hierarchy: the flat file's netlist is the hierarchy's
 # ---------------------------------------------------------------------------------------------
