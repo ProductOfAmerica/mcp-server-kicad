@@ -24,7 +24,7 @@ from conftest import requires_cli
 from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import project
-from mcp_server_kicad._shared import _find_kicad_cli
+from mcp_server_kicad._shared import _CLI_TIMEOUT, _find_kicad_cli
 
 _ANSI = re.compile(r"\x1b\[[0-9;]*m")
 #: One line per output kicad-cli runs (kicad/jobs_runner.cpp:324-328 at 9.0.8).
@@ -90,7 +90,8 @@ def _kicad_clis_own_run(jobset: Path) -> tuple[int, list[str], bytes | None]:
     Run on a copy of the jobset, of its project file and of the project's root schematic in a
     folder of its own, because a jobset kicad-cli cannot read does not survive the run, and a
     relative output folder lands there. A premise for the tests that compare with it:
-    RuntimeError when kicad-cli cannot be run at all.
+    RuntimeError when kicad-cli cannot be run at all or does not finish in the time the tools
+    allow it.
     """
     cli = _find_kicad_cli()
     pro = next(jobset.parent.glob("*.kicad_pro"))
@@ -104,13 +105,17 @@ def _kicad_clis_own_run(jobset: Path) -> tuple[int, list[str], bytes | None]:
             shutil.copy2(root, work / root.name)
         copy = work / jobset.name
         shutil.copy2(jobset, copy)
-        run = subprocess.run(
-            [cli, "jobset", "run", "--file", str(copy), str(work / pro.name)],
-            capture_output=True,
-            text=True,
-            errors="replace",
-            cwd=work,
-        )
+        try:
+            run = subprocess.run(
+                [cli, "jobset", "run", "--file", str(copy), str(work / pro.name)],
+                capture_output=True,
+                text=True,
+                errors="replace",
+                cwd=work,
+                timeout=_CLI_TIMEOUT,
+            )
+        except subprocess.TimeoutExpired:
+            raise RuntimeError(f"kicad-cli jobset run did not finish in {_CLI_TIMEOUT} s")
         left = copy.read_bytes() if copy.exists() else None
     return run.returncode, _SUMMARY.findall(_ANSI.sub("", run.stdout)), left
 
