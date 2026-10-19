@@ -78,22 +78,17 @@ def pointed_root(request, tmp_path: Path):
 
 
 class TestCreateProject:
-    def test_creates_pro_and_prl(self, tmp_path: Path):
+    def test_creates_pro_and_no_prl(self, tmp_path: Path):
         result = project.create_project(directory=str(tmp_path / "myproj"), name="myproj")
         assert "myproj.kicad_pro" in result
 
         pro = tmp_path / "myproj" / "myproj.kicad_pro"
-        prl = tmp_path / "myproj" / "myproj.kicad_prl"
         assert pro.exists()
-        assert prl.exists()
+        assert not (tmp_path / "myproj" / "myproj.kicad_prl").exists()
 
         pro_data = json.loads(pro.read_text())
         assert pro_data["meta"]["filename"] == "myproj.kicad_pro"
         assert pro_data["meta"]["version"] == 1
-
-        prl_data = json.loads(prl.read_text())
-        assert prl_data["meta"]["filename"] == "myproj.kicad_prl"
-        assert prl_data["meta"]["version"] == 3
 
     def test_creates_directory_if_missing(self, tmp_path: Path):
         target = tmp_path / "deep" / "nested" / "proj"

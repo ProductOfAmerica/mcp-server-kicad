@@ -1366,12 +1366,6 @@ class TestProjectToolsPreservation:
         with pytest.raises(ToolError, match="Sheet UUIDs not found"):
             project.reorder_sheet_pages(["nope"], schematic_path=str(parent))
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="bug 35: modify_hierarchical_sheet leaves an autoplaced sheet's file name inside"
-        " the sheet when it grows taller; fixed by step 12a",
-    )
     def test_a_taller_sheet_keeps_its_file_name_below_it(self, tmp_path, kicad_native_sch):
         """KiCad resizes a sheet through SCH_SHEET::Resize (its point editor's call,
         sch_point_editor.cpp:900-901 at 9.0.8, 873-874 at 10.0.7), which re-places

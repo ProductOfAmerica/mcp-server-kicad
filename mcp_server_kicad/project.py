@@ -12,6 +12,7 @@ import re
 import tempfile
 from collections import Counter
 from pathlib import Path
+from typing import Literal, NamedTuple
 
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -56,11 +57,15 @@ from mcp_server_kicad.models import (
 from mcp_server_kicad.schematic import (
     _HLABEL_TPL,
     _LABEL_TPL,
+    _VALID_LABEL_SHAPES,
     _cuts_inside_lines,
+    _label_spin,
+    _line_xys,
     _off_pin_items,
     _open_sch_cst,
     _splice_sch_node,
     _splice_wire,
+    _xy_iu,
 )
 from mcp_server_kicad.symbol import _SYM_LIB_TPL
 
@@ -122,18 +127,24 @@ def _sheet_file_nonempty(path: Path) -> bool:
         return False
 
 
+# Sheet block and sheet pin templates as KiCad 9.0.8 writes them, whitespace included, with
+# placeholder values. Source, in its shipped demos: the vme_buffers_addr sheet of
+# vme-wren/vme_interface.kicad_sch, without its pins, and one of its pins.
 _SHEET_TPL = _cst.parse(
-    b"(sheet\n\t(at 0 0)\n\t(size 25.4 10.16)\n\t(fields_autoplaced yes)\n\t(stroke\n\t\t(widt"
-    b'h 0.1)\n\t\t(type default)\n\t)\n\t(fill\n\t\t(color 0 0 0 0.0000)\n\t)\n\t(uuid "x")\n'
-    b'\t(property "Sheetname" "X"\n\t\t(at 0 0 0)\n\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.'
-    b'27 1.27)\n\t\t\t)\n\t\t)\n\t)\n\t(property "Sheetfile" "x.kicad_sch"\n\t\t(at 0 0 0)\n\t'
-    b"\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t)\n\t)\n\t(instances\n\t"
-    b'\t(project "X"\n\t\t\t(path "/x"\n\t\t\t\t(page "2")\n\t\t\t)\n\t\t)\n\t)\n)'
+    b"(sheet\n\t\t(at 0 0)\n\t\t(size 25.4 10.16)\n\t\t(exclude_from_sim no)\n\t\t(in_bom yes)"
+    b"\n\t\t(on_board yes)\n\t\t(dnp no)\n\t\t(fields_autoplaced yes)\n\t\t(stroke"
+    b"\n\t\t\t(width 0.1524)\n\t\t\t(type solid)\n\t\t)\n\t\t(fill\n\t\t\t(color 0 0 0 0.0000)"
+    b'\n\t\t)\n\t\t(uuid "x")\n\t\t(property "Sheetname" "X"\n\t\t\t(at 0 0 0)\n\t\t\t(effects'
+    b"\n\t\t\t\t(font\n\t\t\t\t\t(size 1.27 1.27)\n\t\t\t\t)\n\t\t\t\t(justify left bottom)"
+    b'\n\t\t\t)\n\t\t)\n\t\t(property "Sheetfile" "x.kicad_sch"\n\t\t\t(at 0 0 0)\n\t\t\t(effects'
+    b"\n\t\t\t\t(font\n\t\t\t\t\t(size 1.27 1.27)\n\t\t\t\t)\n\t\t\t\t(justify left top)\n\t\t\t)"
+    b'\n\t\t)\n\t\t(instances\n\t\t\t(project "X"\n\t\t\t\t(path "/x"\n\t\t\t\t\t(page "2")'
+    b"\n\t\t\t\t)\n\t\t\t)\n\t\t)\n\t)"
 ).lists[0]
 
 _SHEET_PIN_TPL = _cst.parse(
-    b'(pin "X" input\n\t(at 0 0 180)\n\t(effects\n\t\t(font\n\t\t\t(size 1.27 1.27)\n\t\t)\n\t'
-    b')\n\t(uuid "x")\n)'
+    b'(pin "X" input\n\t\t\t(at 0 0 180)\n\t\t\t(uuid "x")\n\t\t\t(effects\n\t\t\t\t(font'
+    b"\n\t\t\t\t\t(size 1.27 1.27)\n\t\t\t\t)\n\t\t\t\t(justify left)\n\t\t\t)\n\t\t)"
 ).lists[0]
 
 _SYM_INSTANCES_TPL = _cst.parse(
@@ -162,7 +173,10 @@ _EMPTY_SCH_TPL = (
 
 @mcp.tool(annotations=_ADDITIVE)
 def create_project(directory: str, name: str) -> str:
-    """Create a KiCad 9 project (.kicad_pro + .kicad_prl + .kicad_sch).
+    """Create a KiCad 9 project (.kicad_pro + root .kicad_sch).
+
+    No .kicad_prl is written, and an existing .kicad_sch or .kicad_prl of that name is left
+    as it is; the result says whether the root schematic was created or kept.
 
     Args:
         directory: Directory to create the project in (created if missing)
@@ -174,20 +188,17 @@ def create_project(directory: str, name: str) -> str:
     if pro_path.exists():
         raise ToolError(f"{pro_path} already exists.")
 
+    # The root schematic first, then the project file that names it: a failure in between
+    # leaves a schematic with no project, never a project with no schematic.
+    sch_path = d / f"{name}.kicad_sch"
+    kept = sch_path.exists()
+    if not kept:
+        create_schematic(str(sch_path))
     pro_data = {"meta": {"filename": f"{name}.kicad_pro", "version": 1}}
     _atomic_write(pro_path, (json.dumps(pro_data, indent=2) + "\n").encode())
 
-    prl_data = {"meta": {"filename": f"{name}.kicad_prl", "version": 3}}
-    prl_path = d / f"{name}.kicad_prl"
-    _atomic_write(prl_path, (json.dumps(prl_data, indent=2) + "\n").encode())
-
-    # Also create the root schematic (matching real KiCad behavior).
-    # Guard is defensive — the .kicad_pro check above ensures this is
-    # only reached on a fresh project, but a stray .kicad_sch could exist.
-    sch_path = d / f"{name}.kicad_sch"
-    if not sch_path.exists():
-        create_schematic(str(sch_path))
-
+    if kept:
+        return f"Created project at {pro_path}; kept the existing root schematic {sch_path}"
     return f"Created project at {pro_path} (including root schematic)"
 
 
@@ -326,6 +337,353 @@ def create_sym_lib_table(directory: str, entries: list[LibTableEntry]) -> str:
     return f"Created sym-lib-table with {len(entries)} entries at {table_path}"
 
 
+# ---------------------------------------------------------------------------------------------
+# Sheet geometry, in internal units (10000 per mm). Pin positions are read the way KiCad's
+# parser leaves them (SCH_SHEET_PIN::ConstrainOnEdge and SetSide), so every edit starts from
+# where a pin really is, whatever its written position says.
+# ---------------------------------------------------------------------------------------------
+
+#: This tool's layout rule for sheet pins, not KiCad's: one every 2.54 mm down an edge.
+_PIN_PITCH = 25400
+_MIL = 254
+_GRID = 50 * _MIL
+_MIN_SHEET_WIDTH = 500 * _MIL
+_MIN_SHEET_HEIGHT = 150 * _MIL
+_SIDE_OF_ANGLE = {0: "right", 90: "top", 180: "left", 270: "bottom"}
+_ANGLE_OF_SIDE = {side: angle for angle, side in _SIDE_OF_ANGLE.items()}
+#: The horizontal justify of the text a pin on each side gets from SetSide's spin.
+_PIN_JUSTIFY = {"left": "left", "bottom": "left", "right": "right", "top": "right"}
+_DEFAULT_PEN = 6 * _MIL
+_DEFAULT_TEXT_OFFSET_RATIO = 0.15
+_DEFAULT_TEXT_SIZE = 12700
+
+
+def _iu(value: float) -> int:
+    """A millimetre value in internal units, as it would read back from the file."""
+    return _connectivity.iu(_num(value, SCH_IU_PER_MM))
+
+
+class _Box(NamedTuple):
+    x: int
+    y: int
+    w: int
+    h: int
+
+
+class _SheetPin(NamedTuple):
+    node: object
+    side: str
+    x: int
+    y: int
+
+
+def _sheet_box(sheet) -> _Box:
+    at, size = sheet.find("at"), sheet.find("size")
+    return _Box(
+        _connectivity.iu(at.atoms[1].text),
+        _connectivity.iu(at.atoms[2].text),
+        _connectivity.iu(size.atoms[1].text),
+        _connectivity.iu(size.atoms[2].text),
+    )
+
+
+def _nearest_side(box: _Box, px: int, py: int) -> str:
+    """The sheet edge nearest a point (top, right, bottom, left; the first wins a tie)."""
+    right, bottom = box.x + box.w, box.y + box.h
+    edges = (
+        ("top", box.x, box.y, right, box.y),
+        ("right", right, box.y, right, bottom),
+        ("bottom", box.x, bottom, right, bottom),
+        ("left", box.x, box.y, box.x, bottom),
+    )
+    best, best_d = "", -1
+    for side, x0, y0, x1, y1 in edges:
+        dx = max(x0 - px, 0, px - x1)
+        dy = max(y0 - py, 0, py - y1)
+        d = dx * dx + dy * dy
+        if best_d < 0 or d < best_d:
+            best, best_d = side, d
+    return best
+
+
+def _constrain(box: _Box, side: str, px: int, py: int) -> tuple[int, int]:
+    """The point on an edge of the sheet: onto the edge across it, clamped along it."""
+    if side in ("left", "right"):
+        return box.x + (box.w if side == "right" else 0), min(max(py, box.y), box.y + box.h)
+    return min(max(px, box.x), box.x + box.w), box.y + (box.h if side == "bottom" else 0)
+
+
+def _loaded_pins(sheet, box: _Box) -> list[_SheetPin]:
+    """The sheet's pins where KiCad's parser puts them: SCH_SHEET_PIN::SetPosition moves the pin
+    onto the nearest edge, then the angle in its (at) picks the side (sch_sheet_pin.cpp:114-223
+    and sch_sheet_pin.h:194-196 at 9.0.8)."""
+    pins = []
+    for node in sheet.find_all("pin"):
+        at = node.find("at")
+        try:
+            side = _SIDE_OF_ANGLE[int(float(at.atoms[3].text))]
+        except (IndexError, KeyError, ValueError):
+            raise ToolError(
+                f"Sheet pin '{node.atoms[1].text}' has an angle other than 0, 90, 180 or 270."
+            ) from None
+        px, py = _connectivity.iu(at.atoms[1].text), _connectivity.iu(at.atoms[2].text)
+        x, y = _constrain(box, _nearest_side(box, px, py), px, py)
+        if side in ("left", "right"):
+            x = box.x + (box.w if side == "right" else 0)
+        else:
+            y = box.y + (box.h if side == "bottom" else 0)
+        pins.append(_SheetPin(node, side, x, y))
+    return pins
+
+
+def _font(node) -> tuple[int, int, bool]:
+    """(width, height, bold) of a node's text, from its effects."""
+    effects = node.find("effects")
+    font = effects.find("font") if effects is not None else None
+    size = font.find("size") if font is not None else None
+    bold = font is not None and any(a.text == "bold" for a in font.atoms[1:])
+    if size is None or len(size.atoms) < 3:
+        return _DEFAULT_TEXT_SIZE, _DEFAULT_TEXT_SIZE, bold
+    return _connectivity.iu(size.atoms[1].text), _connectivity.iu(size.atoms[2].text), bold
+
+
+def _pin_span(pin: _SheetPin, ratio: float) -> tuple[int, int]:
+    """The pin's box along its edge: text height plus pen width plus the text offset, centred
+    on the pin (SCH_HIERLABEL::GetBodyBoundingBox, sch_label.cpp:2155-2205 at 9.0.8)."""
+    width, height, bold = _font(pin.node)
+    pen = _cst.kiround(width / (5.0 if bold else 8.0))
+    pen = min(pen, _cst.kiround(min(width, height) * 0.25))
+    extent = height + pen + _cst.kiround(ratio * height)
+    low = (pin.y if pin.side in ("left", "right") else pin.x) - extent // 2
+    return low, low + extent
+
+
+def _bump(value: int, direction: int) -> int:
+    """bumpToNextGrid: out to the next 50 mil line (sch_sheet.cpp:525-544 at 9.0.8)."""
+    base = int(value / _GRID)  # C integer division truncates toward zero
+    if direction > 0:
+        return (base + 1) * _GRID
+    return base * _GRID if abs(value - base * _GRID) > 0 else (base - 1) * _GRID
+
+
+def _min_extent(box: _Box, pins: list[_SheetPin], ratio: float, vertical: bool) -> int:
+    """GetMinHeight( true ) when vertical, else GetMinWidth( true ): the extent the pins along
+    those edges need, at least 150 mils high or 500 mils wide (sch_sheet.cpp:547-612 at 9.0.8)."""
+    lo, hi = (box.y + box.h, box.y) if vertical else (box.x + box.w, box.x)
+    sides = ("left", "right") if vertical else ("top", "bottom")
+    for pin in pins:
+        if pin.side in sides:
+            span = _pin_span(pin, ratio)
+            lo, hi = min(lo, span[0]), max(hi, span[1])
+    lo, hi = _bump(lo, -1), _bump(hi, 1)
+    origin = box.y if vertical else box.x
+    need = 0 if lo >= hi else hi - origin
+    return max(need, _MIN_SHEET_HEIGHT if vertical else _MIN_SHEET_WIDTH)
+
+
+def _drawing_settings(schematic_path: str) -> tuple[int, float]:
+    """(default line width in internal units, text offset ratio) of the schematic's project:
+    the .kicad_pro named after it, else the only one in its folder, else 6 mils and 0.15."""
+    path = Path(schematic_path)
+    pro = path.with_suffix(".kicad_pro")
+    if not pro.is_file():
+        pros = list(path.parent.glob("*.kicad_pro"))
+        pro = pros[0] if len(pros) == 1 else pro
+    pen, ratio = _DEFAULT_PEN, _DEFAULT_TEXT_OFFSET_RATIO
+    try:
+        drawing = json.loads(pro.read_bytes())["schematic"]["drawing"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return pen, ratio
+    if not isinstance(drawing, dict):
+        return pen, ratio
+    width, offset = drawing.get("default_line_thickness"), drawing.get("text_offset_ratio")
+    if isinstance(width, (int, float)) and not isinstance(width, bool) and width > 0:
+        pen = _cst.kiround(width * _MIL)
+    if isinstance(offset, (int, float)) and not isinstance(offset, bool) and 0 <= offset <= 2:
+        ratio = float(offset)
+    return pen, ratio
+
+
+def _set_justify(node, *words: str) -> bool:
+    """Make the node's (justify ...) say ``words``, adding it when it has none. True if it
+    changed anything."""
+    effects = node.find("effects")
+    if effects is None:
+        return False
+    current = effects.find("justify")
+    if current is not None and [a.text for a in current.atoms[1:]] == list(words):
+        return False
+    new = _cst.parse(("(justify " + " ".join(words) + ")").encode()).lists[0]
+    if current is not None:
+        new.sep = current.sep
+        effects.children[effects.children.index(current)] = new
+    else:
+        font = effects.find("font")
+        if font is None:
+            effects.append_child(new, b" ")
+        else:
+            effects.insert_after(font, new)
+    return True
+
+
+def _set_xy(node, x: int, y: int) -> bool:
+    """Set the x and y of a node's (at) or (xy) list, leaving the text alone when the value
+    already reads the same. True if it changed anything."""
+    at = node if node.head in ("xy", "at") else node.find("at")
+    changed = False
+    for atom, value in zip(at.atoms[1:3], (x, y), strict=True):
+        if _connectivity.iu(atom.text) != value:
+            atom.set_text(_connectivity.mm(value))
+            changed = True
+    return changed
+
+
+def _autoplace_fields(sheet, default_pen: int) -> None:
+    """Put the Sheetname above the sheet and the Sheetfile below it, or beside it when every
+    pin is on the top or bottom edge: SCH_SHEET::AutoplaceFields (sch_sheet.cpp:665-706 at
+    9.0.8). The pen is the sheet's border width, else the project's default line width."""
+    box = _sheet_box(sheet)
+    stroke = sheet.find("stroke")
+    width = stroke.find("width") if stroke is not None else None
+    border = _connectivity.iu(width.atoms[1].text) if width is not None else 0
+    pen = border if border > 0 else default_pen
+    sides = [pin.side for pin in _loaded_pins(sheet, box)]
+    vertical = bool(sides) and all(side in ("top", "bottom") for side in sides)
+    margin = _cst.kiround(pen / 2.0) + 4
+    props = {p.atoms[1].text: p for p in sheet.find_all("property")}
+    name, file = props["Sheetname"], props["Sheetfile"]
+    name_margin = margin + _cst.kiround(max(_font(name)[:2]) * 0.5)
+    file_margin = margin + _cst.kiround(max(_font(file)[:2]) * 0.4)
+    if vertical:
+        spots = ((box.x - name_margin, box.y + box.h), (box.x + box.w + file_margin, box.y + box.h))
+    else:
+        spots = ((box.x, box.y - name_margin), (box.x, box.y + box.h + file_margin))
+    for prop, (x, y), words in zip(
+        (name, file), spots, (("left", "bottom"), ("left", "top")), strict=True
+    ):
+        _set_xy(prop, x, y)
+        at = prop.find("at")
+        angle = "90" if vertical else "0"
+        if at.atoms[3].text != angle:
+            at.atoms[3].set_text(angle)
+        _set_justify(prop, *words)
+
+
+# ---------------------------------------------------------------------------------------------
+# Where a sheet's instances live
+# ---------------------------------------------------------------------------------------------
+
+
+def _file_uuid(path: Path) -> str:
+    return _node_uuid(_cst.parse(_read_kicad_bytes(path, "schematic")).lists[0])
+
+
+def _parent_paths(parent: Path, project_path: str) -> tuple[list[str], list[Path]]:
+    """The instance paths of a schematic in its project's hierarchy, and the project's
+    top-level sheets. KiCad reads the page of a sheet at its PARENT's path, so these are the
+    paths a new sheet's instance entries go under. A schematic no sheet of the project uses is
+    its own root: /<its uuid>.
+    """
+    root = Path(project_path).with_suffix(".kicad_sch") if project_path else None
+    placement = _connectivity.place(parent, root if root is not None and root.is_file() else None)
+    if placement.kind == "sheet" and placement.project is not None:
+        tops = _connectivity._top_level_sheets(placement.project)
+        paths = []
+        for top in tops:
+            chains, _unread = _connectivity._instances(top, parent)
+            paths += ["/" + "/".join((_file_uuid(top), *chain)) for chain in chains]
+        return paths, tops
+    top = placement.root if placement.kind == "root" and placement.root is not None else parent
+    return [f"/{_file_uuid(top)}"], [top]
+
+
+def _used_pages(tops: list[Path]) -> set[int]:
+    """The integer page numbers written in the hierarchy under the top-level sheets: each sheet
+    block's entry at the path of the sheet that holds it, and each top sheet's own page (1
+    when it names none)."""
+    pages: set[int] = set()
+
+    def read(path: Path):
+        try:
+            if not _sheet_file_nonempty(path):
+                return None
+            return _cst.parse(path.read_bytes()).lists[0]
+        except (OSError, SyntaxError, IndexError):
+            return None
+
+    stack: list[tuple[Path, str, tuple[Path, ...]]] = []
+    for top in tops:
+        root = read(top)
+        own = None
+        if root is not None:
+            table = root.find("sheet_instances")
+            for entry in table.find_all("path") if table is not None else []:
+                page = entry.find("page")
+                if entry.atoms[1].text == "/" and page is not None:
+                    own = page.atoms[1].text
+            stack.append((top, f"/{_node_uuid(root)}", (_connectivity._real(top),)))
+        pages.add(int(own) if own is not None and own.isdigit() else 1)
+    entered = 0
+    while stack and entered < _connectivity._MAX_INSTANCES:
+        path, live, chain = stack.pop()
+        entered += 1
+        root = read(path)
+        for block in root.find_all("sheet") if root is not None else []:
+            instances = block.find("instances")
+            for pj in instances.find_all("project") if instances is not None else []:
+                for entry in pj.find_all("path"):
+                    page = entry.find("page")
+                    if entry.atoms[1].text == live and page is not None:
+                        if page.atoms[1].text.isdigit():
+                            pages.add(int(page.atoms[1].text))
+            name = _sheet_file_cst(block)
+            if not name:
+                continue
+            child = Path(os.path.normpath(os.path.join(path.parent, name.replace("\\", "/"))))
+            if _connectivity._real(child) not in chain:
+                stack.append(
+                    (child, f"{live}/{_node_uuid(block)}", (*chain, _connectivity._real(child)))
+                )
+    return pages
+
+
+def _add_symbol_instances(sym, project_name: str, paths: list[str]) -> None:
+    """Give a placed symbol an instance entry at each of ``paths`` it lacks. The entry is a
+    copy of the first one it has, so its reference and unit carry over; a symbol
+    with none gets one made from its Reference property and its unit."""
+    instances = sym.find("instances")
+    projects = instances.find_all("project") if instances is not None else []
+    entries = [entry for pj in projects for entry in pj.find_all("path")]
+    held = {entry.atoms[1].text for entry in entries}
+    for path in paths:
+        if path in held:
+            continue
+        held.add(path)
+        if entries:
+            entry = entries[0].copy()
+        else:
+            entry = _SYM_INSTANCES_TPL.find("project").find("path").copy()
+            entry.find("reference").atoms[1].set_text(_sym_property_cst(sym, "Reference") or "?")
+            entry.find("unit").atoms[1].set_text(str(_connectivity._sym_unit_cst(sym)))
+        entry.atoms[1].set_text(path)
+        block = next((pj for pj in projects if pj.atoms[1].text == project_name), None)
+        if block is not None:
+            block.insert_after(block.find_all("path")[-1], entry)
+            continue
+        block = _SYM_INSTANCES_TPL.find("project").copy()
+        block.atoms[1].set_text(project_name)
+        block.children[block.children.index(block.find("path"))] = entry
+        if instances is None:
+            instances = _SYM_INSTANCES_TPL.copy()
+            instances.children[instances.children.index(instances.find("project"))] = block
+            sym.insert_after(sym.lists[-1], instances)
+        elif projects:
+            instances.insert_after(projects[-1], block)
+        else:
+            instances.append_child(block, b"\n\t\t")
+        projects.append(block)
+
+
 @mcp.tool(annotations=_ADDITIVE)
 def add_hierarchical_sheet(
     parent_schematic_path: str,
@@ -338,9 +696,19 @@ def add_hierarchical_sheet(
 ) -> str:
     """Add a hierarchical sheet to a parent schematic with matching labels in the child.
 
-    Creates the sheet block in the parent and corresponding hierarchical
-    labels in the child schematic. The child schematic must already exist
-    (create it with create_schematic first).
+    Creates the sheet block in the parent, with its pins on the left edge, and the
+    corresponding hierarchical labels in the child schematic. The child schematic must
+    already exist (create it with create_schematic first).
+
+    Everything is checked before the first write, so a refusal changes neither file: a pin
+    direction that is not one of the five below, an empty pin name, a child that is no
+    schematic, and a child that is the parent or has the parent somewhere below it.
+
+    The sheet's page is the lowest number no sheet of the hierarchy uses. It is written at
+    the instance path of the parent (the sheet that holds the block), which is where KiCad
+    reads a sheet's page; give project_path when the parent is itself a sub-sheet, so that
+    path can be found. Symbols already in the child get an instance entry at the new
+    sheet's path.
 
     Args:
         parent_schematic_path: Path to parent .kicad_sch
@@ -352,75 +720,97 @@ def add_hierarchical_sheet(
         y: Y position of sheet block (default 25.4)
         project_path: Path to .kicad_pro file (for sub-sheet instance tracking)
     """
+    for i, pin_def in enumerate(pins):
+        if pin_def["direction"] not in _VALID_LABEL_SHAPES:
+            raise ToolError(
+                f"Sheet pin {i} ('{pin_def['name']}') has direction '{pin_def['direction']}'."
+                f" Use: {', '.join(sorted(_VALID_LABEL_SHAPES))}. Nothing was changed."
+            )
+        if not pin_def["name"]:
+            raise ToolError(f"Sheet pin {i} has an empty name. Nothing was changed.")
     child_path = Path(sheet_file)
     if not child_path.exists():
         raise ToolError(f"{child_path} does not exist. Create it with create_schematic first.")
 
+    parent_path = Path(parent_schematic_path)
     parent_tree, parent_root, *_ = _open_sch_cst(parent_schematic_path)
-    x, y = _snap_grid(x), _snap_grid(y)
+    child_tree, child_root, *_ = _open_sch_cst(sheet_file)
+    inside, _unread = _connectivity._instances(child_path, parent_path)
+    if inside:
+        raise ToolError(
+            f"{child_path.name} is {parent_path.name} or has it somewhere below, so a sheet of"
+            f" it in {parent_path.name} would contain itself. Nothing was changed."
+        )
+    root_sch = Path(project_path).with_suffix(".kicad_sch") if project_path else None
+    if root_sch is not None and root_sch.exists():
+        _open_sch_cst(str(root_sch))  # a root that is no schematic is refused before any write
+    parent_live, tops = _parent_paths(parent_path, project_path)
+    pages_used = _used_pages(tops)
 
-    # Sheet dimensions: fixed width, height scales with pin count
-    sheet_width = 25.4
-    pin_spacing = 2.54
-    sheet_height = max(10.16, (len(pins) + 1) * pin_spacing)
+    x, y = _snap_grid(x), _snap_grid(y)
+    x_iu, y_iu = _iu(x), _iu(y)
+    sheet_height = max(101600, (len(pins) + 1) * _PIN_PITCH)
 
     # Build sheet block
     sheet = _SHEET_TPL.copy()
     _fill_at(sheet, x, y, iu=SCH_IU_PER_MM)
     size = sheet.find("size")
-    size.atoms[1].set_text(_num(sheet_width, SCH_IU_PER_MM))
-    size.atoms[2].set_text(_num(sheet_height, SCH_IU_PER_MM))
+    size.atoms[1].set_text(_connectivity.mm(254000))
+    size.atoms[2].set_text(_connectivity.mm(sheet_height))
     sheet_uuid = _gen_uuid()
     sheet.find("uuid").atoms[1].set_text(sheet_uuid)
     sheet_props = {pr.atoms[1].text: pr for pr in sheet.find_all("property")}
-    name_prop = sheet_props["Sheetname"]
-    name_prop.atoms[2].set_text(sheet_name)
-    _fill_at(name_prop, x, y - 1.27, iu=SCH_IU_PER_MM)
-    file_prop = sheet_props["Sheetfile"]
-    file_prop.atoms[2].set_text(child_path.name)
-    _fill_at(file_prop, x, y + sheet_height + 1.27, iu=SCH_IU_PER_MM)
+    sheet_props["Sheetname"].atoms[2].set_text(sheet_name)
+    sheet_props["Sheetfile"].atoms[2].set_text(child_path.name)
 
     # Pins on the sheet block (left edge) plus stubs and labels in the parent
     inst_anchor = sheet.find("instances")
+    stub_end = x_iu - _PIN_PITCH
     for i, pin_def in enumerate(pins):
-        pin_y = _snap_grid(y + (i + 1) * pin_spacing)
+        pin_y = y_iu + (i + 1) * _PIN_PITCH
         pin = _SHEET_PIN_TPL.copy()
         pin.atoms[1].set_text(pin_def["name"])
         pin.atoms[2].set_text(pin_def["direction"])
-        _fill_at(pin, x, pin_y, 180, SCH_IU_PER_MM)
+        _set_xy(pin, x_iu, pin_y)
         pin.find("uuid").atoms[1].set_text(_gen_uuid())
         sheet.insert_before(inst_anchor, pin)
 
         # Wire stub going LEFT from pin, with a net label at its end
-        stub_end_x = _snap_grid(x - 2.54)
-        _splice_wire(parent_root, x, pin_y, stub_end_x, pin_y)
+        _splice_wire(
+            parent_root, x, pin_y / SCH_IU_PER_MM, stub_end / SCH_IU_PER_MM, pin_y / SCH_IU_PER_MM
+        )
         label = _LABEL_TPL.copy()
         label.atoms[1].set_text(pin_def["name"])
-        _fill_at(label, stub_end_x, pin_y, 180, SCH_IU_PER_MM)
+        _set_xy(label, stub_end, pin_y)
+        _label_spin(label, 180)
         label.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(parent_root, "label", label)
+    _autoplace_fields(sheet, _DEFAULT_PEN)
 
-    # Instances block for the sheet
-    project_name = Path(project_path).stem if project_path else Path(parent_schematic_path).stem
-    page = str(len(parent_root.find_all("sheet")) + 2)
+    # One instance entry per place the parent is used, each with a page of its own
+    project_name = Path(project_path).stem if project_path else parent_path.stem
     inst_project = inst_anchor.find("project")
     inst_project.atoms[1].set_text(project_name)
-    ipath = inst_project.find("path")
-    ipath.atoms[1].set_text(f"/{_node_uuid(parent_root)}/{sheet_uuid}")
-    ipath.find("page").atoms[1].set_text(page)
-
+    first_path = inst_project.find("path")
+    entries = [first_path] + [first_path.copy() for _ in parent_live[1:]]
+    for k, (entry, live) in enumerate(zip(entries, parent_live, strict=True)):
+        page = min(set(range(1, len(pages_used) + 2)) - pages_used)
+        pages_used.add(page)
+        entry.atoms[1].set_text(live)
+        entry.find("page").atoms[1].set_text(str(page))
+        if k:
+            inst_project.insert_after(entries[k - 1], entry)
     _splice_sch_node(parent_root, "sheet", sheet)
-    _atomic_write(parent_schematic_path, _cst.serialize(parent_tree))
 
     # Add matching hierarchical labels to child schematic
-    child_tree, child_root, *_ = _open_sch_cst(sheet_file)
     label_x = _snap_grid(25.4)
     for i, pin_def in enumerate(pins):
         label_y = _snap_grid(25.4 + i * 5.08)
         hl = _HLABEL_TPL.copy()
         hl.atoms[1].set_text(pin_def["name"])
         hl.find("shape").atoms[1].set_text(pin_def["direction"])
-        _fill_at(hl, label_x, label_y, 180, SCH_IU_PER_MM)
+        _fill_at(hl, label_x, label_y, iu=SCH_IU_PER_MM)
+        _label_spin(hl, 180)
         hl.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(child_root, "hierarchical_label", hl)
 
@@ -429,55 +819,32 @@ def add_hierarchical_sheet(
         _splice_wire(child_root, label_x, label_y, stub_end_x, label_y)
         lab = _LABEL_TPL.copy()
         lab.atoms[1].set_text(pin_def["name"])
-        _fill_at(lab, stub_end_x, label_y, 0, SCH_IU_PER_MM)
+        _fill_at(lab, stub_end_x, label_y, iu=SCH_IU_PER_MM)
+        _label_spin(lab, 0)
         lab.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(child_root, "label", lab)
 
-    # Add parent project instances to child symbols
+    # The child's symbols are read at the new sheet's path, so each gets an entry there
+    new_paths = [f"{live}/{sheet_uuid}" for live in parent_live]
     root_entries: list[tuple[str, str, int, str, str]] = []
-    if project_path:
-        root_sch_path = Path(project_path).with_suffix(".kicad_sch")
-        if root_sch_path.exists():
-            hierarchy_root = _cst.parse(root_sch_path.read_bytes()).lists[0]
-            parent_project_name = Path(project_path).stem
-            parent_sheet_path = f"/{_node_uuid(hierarchy_root)}/{sheet_uuid}"
-            for sym in child_root.find_all("symbol"):
-                instances = sym.find("instances")
-                has_parent = instances is not None and any(
-                    pj.atoms[1].text == parent_project_name for pj in instances.find_all("project")
+    has_root = bool(project_path) and Path(project_path).with_suffix(".kicad_sch").exists()
+    for sym in child_root.find_all("symbol"):
+        _add_symbol_instances(sym, project_name, new_paths)
+        if has_root:
+            root_entries.append(
+                (
+                    _node_uuid(sym),
+                    _sym_property_cst(sym, "Reference") or "?",
+                    _connectivity._sym_unit_cst(sym),
+                    _sym_property_cst(sym, "Value") or "",
+                    _sym_property_cst(sym, "Footprint") or "",
                 )
-                if not has_parent:
-                    ref = _sym_property_cst(sym, "Reference") or "?"
-                    entry = _SYM_INSTANCES_TPL.copy()
-                    pj = entry.find("project")
-                    pj.atoms[1].set_text(parent_project_name)
-                    pp = pj.find("path")
-                    pp.atoms[1].set_text(parent_sheet_path)
-                    pp.find("reference").atoms[1].set_text(ref)
-                    if instances is None:
-                        sym.append_child(entry, b"\n\t")
-                    else:
-                        projects = instances.find_all("project")
-                        if projects:
-                            instances.insert_after(projects[-1], pj)
-                        else:
-                            instances.append_child(pj, b"\n\t\t")
-                root_entries.append(
-                    (
-                        _node_uuid(sym),
-                        _sym_property_cst(sym, "Reference") or "?",
-                        1,
-                        _sym_property_cst(sym, "Value") or "",
-                        _sym_property_cst(sym, "Footprint") or "",
-                    )
-                )
+            )
 
-    # Child before root, and the root once rather than once per symbol. The
-    # root's symbol_instances is an index into the child, so writing it first
-    # meant a failed child write left the root pointing at symbols that were
-    # never written. Neither file can tear now, but they could still disagree,
-    # and this is the ordering where the surviving disagreement is harmless.
+    # Child, then parent, then the root's table. The root's symbol_instances is an index into
+    # the child, so it goes last: a write that fails leaves it pointing at nothing new.
     _atomic_write(sheet_file, _cst.serialize(child_tree))
+    _atomic_write(parent_schematic_path, _cst.serialize(parent_tree))
     _upsert_root_symbol_instances(str(child_path), project_path, root_entries)
 
     return f"Added sheet '{sheet_name}' with {len(pins)} pins to {parent_schematic_path}"
@@ -627,6 +994,44 @@ def remove_hierarchical_sheet(
     return msg
 
 
+def _resize_sheet(root, sheet, old: _Box, new: _Box, pins: list[_SheetPin], pen: int):
+    """Resize a sheet as SCH_SHEET::Resize does (sch_sheet.cpp:1023-1037 at 9.0.8): the size,
+    the autoplaced fields, every pin kept on its own edge with the justify for it. Then each
+    wire or bus end and each no-connect that sat on a pin that moved goes to its new place.
+    Returns (pins moved, wire and bus ends moved, no-connects moved)."""
+    size = sheet.find("size")
+    if new.w != old.w:
+        size.atoms[1].set_text(_connectivity.mm(new.w))
+    if new.h != old.h:
+        size.atoms[2].set_text(_connectivity.mm(new.h))
+    flag = sheet.find("fields_autoplaced")
+    if flag is not None and not (len(flag.atoms) > 1 and flag.atoms[1].text == "no"):
+        _autoplace_fields(sheet, pen)
+    moved: dict[tuple[int, int], tuple[int, int]] = {}
+    for pin in pins:
+        x, y = _constrain(new, pin.side, pin.x, pin.y)
+        if (x, y) != (pin.x, pin.y):
+            moved[(pin.x, pin.y)] = (x, y)
+        _set_xy(pin.node, x, y)
+        _set_justify(pin.node, _PIN_JUSTIFY[pin.side])
+    ends = 0
+    for wire in [*root.find_all("wire"), *root.find_all("bus")]:
+        xys = _line_xys(wire)
+        if xys is None:
+            continue
+        for xy in xys:
+            if _xy_iu(xy) in moved:
+                _set_xy(xy, *moved[_xy_iu(xy)])
+                ends += 1
+                break
+    flags = 0
+    for flag in root.find_all("no_connect"):
+        if _xy_iu(flag.find("at")) in moved:
+            _set_xy(flag, *moved[_xy_iu(flag.find("at"))])
+            flags += 1
+    return len(moved), ends, flags
+
+
 @mcp.tool(annotations=_DESTRUCTIVE)
 def modify_hierarchical_sheet(
     sheet_uuid: str,
@@ -638,6 +1043,12 @@ def modify_hierarchical_sheet(
 ) -> str:
     """Modify properties of an existing hierarchical sheet block.
 
+    A new width or height keeps each pin on its edge and moves it with the edge, places the
+    name and file fields of an autoplaced sheet again, and moves a wire, bus end or
+    no-connect that sat on a moved pin with it, so the sheet stays connected. A size smaller
+    than the sheet's pins need is refused, naming the minimum, and a size equal to the
+    current one changes nothing.
+
     Args:
         sheet_uuid: UUID of the sheet to modify (from list_schematic_sheets)
         schematic_path: Path to parent .kicad_sch. Optional; omit to use the configured default.
@@ -646,27 +1057,57 @@ def modify_hierarchical_sheet(
         width: New width in mm (None = keep)
         height: New height in mm (None = keep)
     """
+    for label, value in (("width", width), ("height", height)):
+        if value is not None and not value > 0:
+            raise ToolError(f"The sheet {label} must be a positive number of mm, not {value}.")
     tree, root, *_ = _open_sch_cst(schematic_path)
     target = _find_sheet_cst(root, sheet_uuid)
     props = {pr.atoms[1].text: pr for pr in target.find_all("property")}
-    size = target.find("size")
     changes = []
+    changed = False
     if sheet_name:
+        changed |= props["Sheetname"].atoms[2].text != sheet_name
         props["Sheetname"].atoms[2].set_text(sheet_name)
         changes.append(f"name='{sheet_name}'")
     if file_name:
+        changed |= props["Sheetfile"].atoms[2].text != file_name
         props["Sheetfile"].atoms[2].set_text(file_name)
         changes.append(f"file='{file_name}'")
-    if width is not None:
-        width = _snap(width, SCH_IU_PER_MM)
-        size.atoms[1].set_text(_num(width, SCH_IU_PER_MM))
-        changes.append(f"width={width}")
-    if height is not None:
-        height = _snap(height, SCH_IU_PER_MM)
-        size.atoms[2].set_text(_num(height, SCH_IU_PER_MM))
-        changes.append(f"height={height}")
-    _atomic_write(schematic_path, _cst.serialize(tree))
-    return f"Modified sheet: {', '.join(changes)}"
+    moved = ""
+    if width is not None or height is not None:
+        old = _sheet_box(target)
+        new = _Box(
+            old.x,
+            old.y,
+            _iu(_snap(width, SCH_IU_PER_MM)) if width is not None else old.w,
+            _iu(_snap(height, SCH_IU_PER_MM)) if height is not None else old.h,
+        )
+        if width is not None:
+            changes.append(f"width={_snap(width, SCH_IU_PER_MM)}")
+        if height is not None:
+            changes.append(f"height={_snap(height, SCH_IU_PER_MM)}")
+        if new != old:
+            pen, ratio = _drawing_settings(schematic_path)
+            pins = _loaded_pins(target, old)
+            for label, size, was, vertical in (
+                ("width", new.w, old.w, False),
+                ("height", new.h, old.h, True),
+            ):
+                need = _min_extent(old, pins, ratio, vertical)
+                if size != was and size < need:
+                    raise ToolError(
+                        f"A {label} of {_connectivity.mm(size)} mm is less than the"
+                        f" {_connectivity.mm(need)} mm this sheet's pins need. Nothing was"
+                        " changed."
+                    )
+            n_pins, n_ends, n_flags = _resize_sheet(root, target, old, new, pins, pen)
+            changed = True
+            moved = (
+                f" (moved {n_pins} pin(s), {n_ends} wire or bus end(s) and {n_flags} no-connect(s))"
+            )
+    if changed:
+        _atomic_write(schematic_path, _cst.serialize(tree))
+    return f"Modified sheet: {', '.join(changes)}{moved}"
 
 
 @mcp.tool(annotations=_ADDITIVE)
@@ -675,9 +1116,16 @@ def add_sheet_pin(
     pin_name: str,
     connection_type: str,
     schematic_path: str = SCH_PATH,
-    side: str = "left",
+    side: Literal["left", "right"] = "left",
 ) -> str:
     """Add a pin to an existing hierarchical sheet block.
+
+    The pin goes on the chosen edge at the first slot, counting down from the sheet's top
+    edge in steps of 2.54 mm, that has no pin within 2.54 mm and lies inside the edge (this
+    layout is the tool's own, not KiCad's). When the edge has no such slot the call is
+    refused, writing nothing, and the message gives the height that takes one more pin
+    (set it with modify_hierarchical_sheet). A direction that is not one of the five below,
+    an empty name and a side other than left or right are refused too.
 
     Args:
         sheet_uuid: UUID of the sheet
@@ -686,32 +1134,49 @@ def add_sheet_pin(
         schematic_path: Path to parent .kicad_sch. Optional; omit to use the configured default.
         side: Which sheet edge to place pin on (left or right)
     """
-    _valid_types = {"input", "output", "bidirectional", "tri_state", "passive"}
-    if connection_type not in _valid_types:
+    if connection_type not in _VALID_LABEL_SHAPES:
         raise ToolError(
-            f"Invalid connection_type '{connection_type}'. Use: {', '.join(sorted(_valid_types))}"
+            f"Invalid connection_type '{connection_type}'. Use: "
+            f"{', '.join(sorted(_VALID_LABEL_SHAPES))}"
         )
+    if side not in ("left", "right"):
+        raise ToolError(f"Invalid side '{side}'. Use: left, right")
+    if not pin_name:
+        raise ToolError("A sheet pin needs a name.")
     tree, root, *_ = _open_sch_cst(schematic_path)
     target = _find_sheet_cst(root, sheet_uuid)
-    at = target.find("at")
-    size = target.find("size")
-    sx, sy = float(at.atoms[1].text), float(at.atoms[2].text)
-    # Calculate pin position on sheet edge
-    existing_pins = target.find_all("pin")
-    pin_y = sy + 2.54 * (len(existing_pins) + 1)
-    pin_x = sx + float(size.atoms[1].text) if side == "right" else sx
+    box = _sheet_box(target)
+    pins = _loaded_pins(target, box)
+    taken = [pin.y for pin in pins if pin.side == side]
+    k = 1
+    while any(abs(box.y + k * _PIN_PITCH - y) < _PIN_PITCH for y in taken):
+        k += 1
+    pin_y = box.y + k * _PIN_PITCH
+    if pin_y >= box.y + box.h:
+        raise ToolError(
+            f"The {side} edge of this sheet has no free slot for another pin: it holds"
+            f" {len(taken)} in its {_connectivity.mm(box.h)} mm height. Give the sheet a"
+            f" height of {_connectivity.mm((k + 1) * _PIN_PITCH)} mm or more with"
+            " modify_hierarchical_sheet, then add the pin."
+        )
+    pin_x = box.x + (box.w if side == "right" else 0)
     pin = _SHEET_PIN_TPL.copy()
     pin.atoms[1].set_text(pin_name)
     pin.atoms[2].set_text(connection_type)
-    _fill_at(pin, pin_x, pin_y, 180 if side == "left" else 0, SCH_IU_PER_MM)
+    _set_xy(pin, pin_x, pin_y)
+    pin.find("at").atoms[3].set_text(str(_ANGLE_OF_SIDE[side]))
     pin.find("uuid").atoms[1].set_text(_gen_uuid())
-    if existing_pins:
-        target.insert_after(existing_pins[-1], pin)
+    _set_justify(pin, _PIN_JUSTIFY[side])
+    existing = target.find_all("pin")
+    if existing:
+        target.insert_after(existing[-1], pin)
     else:
-        props = target.find_all("property")
-        target.insert_after(props[-1], pin)
+        target.insert_after(target.find_all("property")[-1], pin)
     _atomic_write(schematic_path, _cst.serialize(tree))
-    return f"Added sheet pin '{pin_name}' ({connection_type}) to sheet"
+    return (
+        f"Added sheet pin '{pin_name}' ({connection_type}) on the {side} edge at "
+        f"({_connectivity.mm(pin_x)}, {_connectivity.mm(pin_y)})"
+    )
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)

@@ -902,7 +902,17 @@ def test_validate_hierarchy_skips_a_sheet_that_contains_itself():
         project.add_hierarchical_sheet(
             str(root), "Child", str(child), [{"name": "A", "direction": "input"}]
         )
-        project.add_hierarchical_sheet(str(child), "Back", str(root), [], x=101.6)
+        # add_hierarchical_sheet refuses a sheet of the root inside the root's own child, so
+        # the block is made for a third file and pointed at the root afterwards
+        third = d / "third.kicad_sch"
+        project.create_schematic(schematic_path=str(third))
+        project.add_hierarchical_sheet(str(child), "Back", str(third), [], x=101.6)
+        child.write_bytes(
+            child.read_bytes().replace(
+                b'(property "Sheetfile" "third.kicad_sch"',
+                b'(property "Sheetfile" "proj.kicad_sch"',
+            )
+        )
         schematic.add_hierarchical_label("STRAY", "input", 152.4, 152.4, schematic_path=str(root))
         result = project.validate_hierarchy(schematic_path=str(root))
     assert (result.status, result.issues) == ("ok", [])
