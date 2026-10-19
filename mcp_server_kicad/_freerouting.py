@@ -485,12 +485,19 @@ def run_freerouting(
 
     *java* is the binary check_java approved, by absolute path.
 
+    Freerouting runs headless and with its usage analytics off, through the two
+    settings its docs/settings.md documents at v2.5.0. Without the first it
+    opens its window on the user's desktop, and its analytics are on by
+    default. Its startup check of GitHub for a newer release has no setting.
+
     Returns error message or None on success.
     """
     cmd = [
         java,
         "-jar",
         jar_path,
+        "--gui.enabled=false",
+        "--usage_and_diagnostic_data.disable_analytics=true",
         "-de",
         dsn_path,
         "-do",

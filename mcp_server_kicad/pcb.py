@@ -5450,9 +5450,10 @@ def _fix_displaced_fp_text(pcb_path: str) -> int:
 # autoroute_pcb fits no preset, so it carries its own hints.
 #
 # openWorldHint is true because _ensure_jar downloads a pinned Freerouting JAR
-# from github.com when none is cached, and then runs it. A client using the
-# hint to decide whether a tool may run offline or without egress approval has
-# to be told the truth about that.
+# from github.com when none is cached, and then runs it, and Freerouting asks
+# GitHub for its newest release each time it starts, a check with no setting to
+# turn it off. A client using the hint to decide whether a tool may run offline
+# or without egress approval has to be told the truth about that.
 #
 # destructiveHint and idempotentHint are deliberately left unset rather than
 # asserted. The spec defaults are true and false respectively, which are both

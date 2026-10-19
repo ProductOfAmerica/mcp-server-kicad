@@ -572,6 +572,26 @@ class TestRunFreerouting:
         # The same binary check_java approved, not "java" searched for afresh.
         assert run.call_args.args[0][0] == "/fake/java"
 
+    def test_runs_headless_with_analytics_off(self, tmp_path):
+        """The two settings Freerouting's docs/settings.md documents at v2.5.0, in
+        its --section.property=value form: gui.enabled, whose default true opens a
+        window on the user's desktop, and usage_and_diagnostic_data.disable_analytics,
+        whose default false sends usage data. That the pinned jar accepts them was
+        checked by routing a KiCad demo board with it on 2026-10-19: it logged that
+        the GUI and analytics were off and warned of no unknown setting. This pins
+        that they are passed."""
+        ok = subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+        with patch("subprocess.run", return_value=ok) as run:
+            run_freerouting(
+                jar_path="/fake/freerouting.jar",
+                dsn_path=str(tmp_path / "board.dsn"),
+                ses_path=str(tmp_path / "board.ses"),
+                java="/fake/java",
+            )
+        argv = run.call_args.args[0]
+        assert "--gui.enabled=false" in argv
+        assert "--usage_and_diagnostic_data.disable_analytics=true" in argv
+
     def test_timeout(self, tmp_path):
         dsn = tmp_path / "board.dsn"
         dsn.touch()

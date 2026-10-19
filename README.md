@@ -232,6 +232,12 @@ checked against the value pinned in this package before the download is saved
 and every time the cached copy is used. A download that does not match is not
 saved; a cached copy that does not match is not run, and is downloaded again.
 
+Freerouting is run with `--gui.enabled=false` and
+`--usage_and_diagnostic_data.disable_analytics=true`, the settings its
+documentation gives for running headless and for not sending usage data, so it
+opens no window and its analytics stay off. When it starts, Freerouting still
+asks GitHub for its newest release; it has no setting to turn that off.
+
 To skip the download, set `FREEROUTING_JAR` to the absolute path of a Freerouting
 jar you trust. That jar is used as given, with no hash check. A relative path, or
 one that names no file, is ignored and the download goes ahead. Earlier releases
