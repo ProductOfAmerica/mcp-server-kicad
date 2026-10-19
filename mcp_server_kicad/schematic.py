@@ -3,6 +3,7 @@
 import difflib
 import json
 import re
+import tempfile
 from pathlib import Path
 from typing import Literal, NamedTuple
 
@@ -3328,19 +3329,28 @@ def _erc_positions_in_sheet_mm(report: dict) -> bool:
 
 def _run_erc_json(erc_target: str, output_dir: str) -> tuple[dict, str | None]:
     """Run ERC on *erc_target*: its JSON report with every position in sheet millimetres,
-    and the note that says so when they had to be corrected."""
+    and the note that says so when they had to be corrected.
+
+    kicad-cli writes into a folder made for this run, so a report is this run's or none, and
+    the report is saved in *output_dir* only when there is one: a run that wrote none raises
+    and leaves that folder as it was.
+    """
     out_dir = output_dir or str(Path(erc_target).parent)
-    out_path = str(Path(out_dir) / (Path(erc_target).stem + "-erc.json"))
-    _run_cli(
-        ["sch", "erc", "--format", "json", "--severity-all", "--units", "mm"]
-        + ["--output", out_path, erc_target],
-        check=False,
-    )
-    try:
-        with open(out_path, encoding="utf-8") as f:
-            report = json.load(f)
-    except FileNotFoundError:
-        raise ToolError("ERC failed to produce output file")
+    name = Path(erc_target).stem + "-erc.json"
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+        produced = Path(scratch) / name
+        _run_cli(
+            ["sch", "erc", "--format", "json", "--severity-all", "--units", "mm"]
+            + ["--output", str(produced), erc_target],
+            check=False,
+        )
+        try:
+            data = produced.read_bytes()
+        except FileNotFoundError:
+            raise ToolError("ERC failed to produce output file")
+    report = json.loads(data)
+    _ensure_dir(out_dir)
+    _atomic_write(Path(out_dir) / name, data)
     note = None
     if _erc_positions_in_sheet_mm(report):
         note = _ERC_SCALE_NOTE.format(version=report["kicad_version"])
@@ -3431,22 +3441,23 @@ def _run_erc_for_sheet(
 ) -> tuple[dict, str | None]:
     """The ERC report to take a sheet's violations from, as _run_erc_json returns it.
 
-    It comes from the project's root schematic, so that the project's settings apply to the
-    sheet: kicad-cli takes a project from the name of the file it is given (LoadSchematic,
+    It comes from the project's root schematic only, so that the project's settings apply to
+    the sheet: kicad-cli takes a project from the name of the file it is given (LoadSchematic,
     eeschema_helpers.cpp:92-93 at 10.0.7). For a sheet below one of the project's other
-    top-level sheets it comes from that top-level sheet when the report from the project's
-    root has no entry for the sheet, or none could be made.
+    top-level sheets, a report from the root with no entry for any instance of the sheet is
+    refused: that kicad-cli did not check the sheet from the root.
     """
     assert placement.root is not None and placement.project is not None
+    report, note = _run_erc_json(str(placement.project), output_dir)
     if placement.project != placement.root:
         chains = set(placement.instances)
-        try:
-            report, note = _run_erc_json(str(placement.project), output_dir)
-            if any(_entry_chain(entry) in chains for entry in report.get("sheets", [])):
-                return report, note
-        except ToolError:
-            pass  # no report from the project's root: try the top-level sheet that holds it
-    return _run_erc_json(str(placement.root), output_dir)
+        if not any(_entry_chain(entry) in chains for entry in report.get("sheets", [])):
+            raise ToolError(
+                f"This kicad-cli did not check {placement.root.name}, the top-level sheet this"
+                f" file is under, from the project's root {placement.project.name}. run_erc on"
+                f" {placement.root.name} checks it on its own."
+            )
+    return report, note
 
 
 class _ErcRun(NamedTuple):
@@ -3459,9 +3470,8 @@ def _erc(schematic_path: str, output_dir: str, project_path: str) -> _ErcRun:
     """ERC for one schematic file, the way a user means it, with positions in sheet millimetres.
 
     A sheet of a project is checked from the project's root schematic, so that the hierarchy
-    around it is there, and only the violations of that sheet are returned (_sheet_violations).
-    A sheet below one of the project's other top-level sheets is checked from that top-level
-    sheet when the report from the project's root holds no entry for it. A file that is a root,
+    around it is there, and only the violations of that sheet are returned (_sheet_violations),
+    those of every use of it under any top-level sheet the project lists. A file that is a root,
     or that no sheet of its project uses, is given to kicad-cli as it is, and everything in its
     report comes back. *project_path* names the project whose hierarchy to look in; a file that
     hierarchy does not use is refused, since it cannot be given a place in it.
@@ -3509,7 +3519,10 @@ def list_unconnected_pins(
 
     Requires kicad-cli. Lists the violations KiCad types pin_not_connected. A
     sub-sheet is checked from its project's root, as run_erc does, and gets
-    the pins of that sheet alone.
+    the pins of that sheet alone, under every top-level sheet the project lists.
+    A sheet below a top-level sheet other than the root is refused when that
+    kicad-cli did not check it from the root. A run that makes no report
+    raises and leaves output_dir as it was.
 
     The x and y of each entry are millimetres (mm) in sheet coordinates, the
     numbers get_pin_positions prints.
@@ -3572,8 +3585,12 @@ def run_erc(
     """Run Electrical Rules Check (ERC) on a schematic.
 
     A sub-sheet is checked from its project's root, so the hierarchy around it
-    counts, and only that sheet's own violations are returned. A file that no
-    sheet of its project uses is checked on its own.
+    counts, and only that sheet's own violations are returned, those of every
+    use of it under every top-level sheet the project lists. A sheet below a
+    top-level sheet other than the root is refused when that kicad-cli did not
+    check it from the root; run_erc on that top-level sheet checks it on its
+    own. A file that no sheet of its project uses is checked on its own. A run
+    that makes no report raises and leaves output_dir as it was.
 
     Returns JSON report with violations. An item's position is in
     millimetres (mm) in sheet coordinates, the numbers get_pin_positions prints.

@@ -301,6 +301,64 @@ def test_a_project_of_thousands_of_sheet_instances_does_not_stop_the_files_it_is
     assert Counter(pin["detail"] for pin in listed.pins) == _pins(alone)
 
 
+@requires_cli
+@pytest.mark.kicad_placeholder("proj/proj.kicad_sch")
+@pytest.mark.parametrize("tool", ["run_erc", "list_unconnected_pins"])
+def test_a_report_an_earlier_run_left_is_not_this_runs_report(tmp_path, tool):
+    """ERC runs on a good file into out/, then the file is cut in half and it runs into the same
+    folder. kicad-cli writes no report for the cut file, so the tool refuses and the folder keeps
+    the earlier run's report byte for byte. The judge is kicad-cli, which writes no report."""
+    folder = tmp_path / "proj"
+    project.create_project(directory=str(folder), name="proj")
+    root = folder / "proj.kicad_sch"
+    schematic.place_component("Device:R", "R1", "10K", 50.8, 50.8, schematic_path=str(root))
+    out = tmp_path / "out"
+    run = getattr(schematic, tool)
+    run(str(root), str(out))
+    before = {f.name: f.read_bytes() for f in out.iterdir()}
+    assert before, "premise: the first run saves its report in the output folder"
+
+    data = root.read_bytes()
+    root.write_bytes(data[: len(data) // 2])
+    _no_report_from(root)
+    with pytest.raises(ToolError, match="failed to produce output"):
+        run(str(root), str(out))
+
+    assert {f.name: f.read_bytes() for f in out.iterdir()} == before
+
+
+@requires_cli
+@pytest.mark.kicad_placeholder("proj/third.kicad_sch", "proj/proj.kicad_sch")
+def test_a_report_of_an_earlier_run_does_not_stand_in_when_a_third_top_level_sheet_fails(
+    tmp_path,
+):
+    """proj, second and third are top-level sheets and sub is below both. Where kicad-cli loads
+    every one of them from the root, cutting third in half leaves it no report for the root, and
+    the report of an earlier run into the same folder must not stand in. The judge is kicad-cli,
+    which writes no report for the root."""
+    root, sub = _shared_sub_project(tmp_path, ("5", "9"))
+    if not _loads_every_top_level_sheet(root, sub):
+        pytest.skip("this kicad-cli loads only the named file of a project with several roots")
+    out = tmp_path / "out"
+    schematic.run_erc(str(sub), str(out))
+    before = {f.name: f.read_bytes() for f in out.iterdir()}
+    third = root.parent / "third.kicad_sch"
+    data = third.read_bytes()
+    third.write_bytes(data[: len(data) // 2])
+    _no_report_from(root)
+
+    with pytest.raises(ToolError):
+        schematic.run_erc(str(sub), str(out))
+    assert {f.name: f.read_bytes() for f in out.iterdir()} == before
+
+
+def _uuid_of(path: Path) -> str:
+    """The uuid of the schematic at *path*: its first (uuid ...)."""
+    found = re.search(r'\(uuid "([^"]+)"\)', path.read_text(encoding="utf-8"))
+    assert found is not None
+    return found.group(1)
+
+
 def _top_level_project(tmp_path: Path, ignore: str = "") -> tuple[Path, Path, Path]:
     """A project whose .kicad_pro lists two top-level sheets, proj.kicad_sch and
     second.kicad_sch, the second holding a sheet of its own, sub.kicad_sch. Each file has an
@@ -320,21 +378,32 @@ def _top_level_project(tmp_path: Path, ignore: str = "") -> tuple[Path, Path, Pa
         [{"x1": 127.0, "y1": 25.4, "x2": 152.4, "y2": 25.4}], schematic_path=str(sub)
     )
 
-    def uuid_of(path: Path) -> str:
-        found = re.search(r'\(uuid "([^"]+)"\)', path.read_text(encoding="utf-8"))
-        assert found is not None
-        return found.group(1)
-
     pro = folder / "proj.kicad_pro"
     data = json.loads(pro.read_text(encoding="utf-8"))
     data.setdefault("schematic", {})["top_level_sheets"] = [
-        {"uuid": uuid_of(root), "name": "Root", "filename": "proj.kicad_sch"},
-        {"uuid": uuid_of(second), "name": "Second", "filename": "second.kicad_sch"},
+        {"uuid": _uuid_of(root), "name": "Root", "filename": "proj.kicad_sch"},
+        {"uuid": _uuid_of(second), "name": "Second", "filename": "second.kicad_sch"},
     ]
     if ignore:
         data.setdefault("erc", {}).setdefault("rule_severities", {})[ignore] = "ignore"
     pro.write_text(json.dumps(data, indent=2), encoding="utf-8")
     return root, second, sub
+
+
+def _loads_every_top_level_sheet(root: Path, sub: Path) -> bool:
+    """Whether the installed kicad-cli, given the project's root, loads the other top-level
+    sheets too: its netlist of the root lists *sub*, which only they hold."""
+    return sub.name in erc_oracle.sheet_files(root).values()
+
+
+def _no_report_from(path: Path) -> None:
+    """RuntimeError unless kicad-cli, run on *path*, writes no ERC report: the premise of a test
+    about a file it cannot load."""
+    try:
+        erc_oracle.erc_of(path)
+    except RuntimeError:
+        return
+    raise RuntimeError(f"premise: kicad-cli reports on {path.name}")
 
 
 @requires_cli
@@ -343,20 +412,17 @@ def _top_level_project(tmp_path: Path, ignore: str = "") -> tuple[Path, Path, Pa
     ["", "pin_not_connected"],
     ids=["default-settings", "project-ignores-pin_not_connected"],
 )
-def test_a_sheet_below_a_second_top_level_sheet_is_checked_under_its_project(tmp_path, ignore):
-    """The .kicad_pro lists two top-level sheets. A sheet below the second is checked from the
-    project's file when that report holds the sheet, so that the project's settings apply to
-    it, and from the second otherwise, and only its own violations come back.
-
-    The judge is kicad-cli's own: its ERC and netlist of the project's file when the netlist
-    lists sub.kicad_sch, else of the second."""
+def test_a_sheet_below_a_second_top_level_sheet_is_checked_from_the_projects_root(tmp_path, ignore):
+    """The .kicad_pro lists two top-level sheets. Where kicad-cli loads both from the project's
+    root, a sheet below the second is checked from that root, so the project's settings apply
+    to it, and only its own violations come back. The judge is kicad-cli's own ERC and netlist
+    of the root."""
     root, second, sub = _top_level_project(tmp_path, ignore)
+    if not _loads_every_top_level_sheet(root, sub):
+        pytest.skip("this kicad-cli loads only the named file of a project with several roots")
     judged = erc_oracle.Project(root)
-    alone = erc_oracle.Project(second)
-    if sub.name not in judged.names.values():
-        judged = alone
     want = judged.own(sub)
-    wired = {v["type"] for v in alone.own(sub)}
+    wired = {v["type"] for v in erc_oracle.Project(second).own(sub)}
     if not {"pin_not_connected", "wire_dangling"} <= wired:
         raise RuntimeError(f"premise: sub-sheet checked from the second reports only {wired}")
 
@@ -367,28 +433,41 @@ def test_a_sheet_below_a_second_top_level_sheet_is_checked_under_its_project(tmp
     assert located.is_root is False and Path(str(located.root_path)) == second
     assert _keys(run.violations) == _keys(want)
     assert any(v["type"] == "wire_dangling" for v in run.violations)
-    assert run.source == judged.root.name
+    assert run.source == root.name
     assert "root schematic" in (run.note or "")
     assert Counter(pin["detail"] for pin in listed.pins) == _pins(want)
 
 
 @requires_cli
-@pytest.mark.kicad_placeholder("proj/proj.kicad_sch")
-def test_a_project_root_kicad_cli_cannot_load_does_not_stop_a_sheet_below_the_second(tmp_path):
-    """proj.kicad_sch is cut in half. The sheet below second.kicad_sch is still checked, from
-    the second. The judge is kicad-cli's ERC and netlist of the second."""
+def test_a_sheet_below_a_second_top_level_sheet_is_refused_where_the_root_run_lacks_it(tmp_path):
+    """Where kicad-cli, given the project's root, loads only that file, its report holds no
+    entry for the sheet below the second top-level sheet. Both tools refuse, naming the
+    second. The judge is kicad-cli's own netlist of the root, which
+    lacks the sheet."""
     root, second, sub = _top_level_project(tmp_path)
-    want = erc_oracle.Project(second).own(sub)
-    assert want, "premise: kicad-cli reports violations that live in the sub-sheet"
+    if _loads_every_top_level_sheet(root, sub):
+        pytest.skip("this kicad-cli loads every top-level sheet from the project's root")
+    out = tmp_path / "out"
+
+    for tool in (schematic.run_erc, schematic.list_unconnected_pins):
+        with pytest.raises(ToolError, match=r"did not check second\.kicad_sch.*run_erc on second"):
+            tool(str(sub), str(out))
+
+
+@requires_cli
+@pytest.mark.kicad_placeholder("proj/proj.kicad_sch")
+def test_a_project_root_kicad_cli_cannot_load_refuses_a_sheet_below_the_second(tmp_path):
+    """proj.kicad_sch is cut in half, so kicad-cli writes no report for the project's root. The
+    sheet below second.kicad_sch is not checked from the second in its place: both tools
+    refuse. The judge is kicad-cli, which writes no report for the root."""
+    root, _, sub = _top_level_project(tmp_path)
     data = root.read_bytes()
     root.write_bytes(data[: len(data) // 2])
+    _no_report_from(root)
 
-    run = schematic.run_erc(str(sub), str(tmp_path / "out"))
-    listed = schematic.list_unconnected_pins(str(sub), str(tmp_path / "out"))
-
-    assert _keys(run.violations) == _keys(want)
-    assert run.source == second.name
-    assert Counter(pin["detail"] for pin in listed.pins) == _pins(want)
+    for tool in (schematic.run_erc, schematic.list_unconnected_pins):
+        with pytest.raises(ToolError, match="failed to produce output"):
+            tool(str(sub), str(tmp_path / "out"))
 
 
 @requires_cli
@@ -403,6 +482,87 @@ def test_a_second_top_level_sheet_is_checked_as_a_root(tmp_path):
     assert project.is_root_schematic(schematic_path=str(second)).is_root is True
     assert _keys(run.violations) == _keys(judged.everything())
     assert "uses this file" not in (run.note or "")
+
+
+def _shared_sub_project(tmp_path: Path, pages: tuple[str, str]) -> tuple[Path, Path]:
+    """A project listing proj, second and third as top-level sheets, where second and third each
+    hold a sheet of sub.kicad_sch (blocks Sub0 and Sub1) and neither is the project's root.
+
+    The sheet blocks carry the project's own name, the page numbers *pages* (second's, then
+    third's) and an instance path of the parent sheet alone, which is where KiCad reads a page
+    number (SCH_SHEET::getPageNumber, sch_sheet.cpp:1660 at 10.0.7). Measured on kicad-cli
+    10.0.7: with that path, 16 of 16 runs filed sub's checks under the use with the lower page;
+    with the path add_hierarchical_sheet writes (the parent's and the block's), 10 of 16.
+    sub has an unwired resistor and a dangling wire."""
+    folder = tmp_path / "proj"
+    project.create_project(directory=str(folder), name="proj")
+    names = ("proj", "second", "third", "sub")
+    root, second, third, sub = (folder / f"{n}.kicad_sch" for n in names)
+    for path in (second, third, sub):
+        project.create_schematic(schematic_path=str(path))
+    for index, (holder, page) in enumerate(zip((second, third), pages)):
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(holder),
+            sheet_name=f"Sub{index}",
+            sheet_file=str(sub),
+            pins=[],
+            x=101.6,
+            y=101.6,
+        )
+        text = holder.read_bytes().decode("utf-8")
+        text = re.sub(r'\(project "[^"]*"', '(project "proj"', text)
+        text = re.sub(r'\(path "(/[0-9a-f-]+)/[0-9a-f-]+"(\s*\(page)', r'(path "\1"\2', text)
+        assert text.count('(page "2")') == 1
+        holder.write_bytes(text.replace('(page "2")', f'(page "{page}")').encode("utf-8"))
+    for path, ref in ((root, "R1"), (second, "R2"), (third, "R3"), (sub, "R4")):
+        schematic.place_component("Device:R", ref, "10K", 50.8, 50.8, schematic_path=str(path))
+    schematic.add_wires(
+        [{"x1": 127.0, "y1": 25.4, "x2": 152.4, "y2": 25.4}], schematic_path=str(sub)
+    )
+    pro = folder / "proj.kicad_pro"
+    data = json.loads(pro.read_text(encoding="utf-8"))
+    data.setdefault("schematic", {})["top_level_sheets"] = [
+        {"uuid": _uuid_of(path), "name": path.stem.title(), "filename": path.name}
+        for path in (root, second, third)
+    ]
+    pro.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    return root, sub
+
+
+@requires_cli
+@pytest.mark.parametrize(
+    ("pages", "filed_under"),
+    [(("5", "9"), "/Second/Sub0/"), (("9", "5"), "/Third/Sub1/")],
+    ids=["filed-under-the-sheet-below-second", "filed-under-the-sheet-below-third"],
+)
+def test_a_sheet_used_under_two_top_level_sheets_gets_its_violations_wherever_kicad_files_them(
+    tmp_path, pages, filed_under
+):
+    """sub is used below second and below third, neither of them the project's root. kicad-cli
+    files sub's checks under one of the two uses, the page numbers deciding which, and both
+    tools return them whichever it is. The judge is kicad-cli's own ERC and netlist of the root,
+    which counts every instance of sub."""
+    root, sub = _shared_sub_project(tmp_path, pages)
+    if not _loads_every_top_level_sheet(root, sub):
+        pytest.skip("this kicad-cli loads only the named file of a project with several roots")
+    judged = erc_oracle.Project(root)
+    filed = [
+        entry["path"]
+        for entry in judged.report["sheets"][1:]
+        if judged.names.get(entry["path"]) == sub.name and entry["violations"]
+    ]
+    if filed != [filed_under]:
+        raise RuntimeError(
+            f"premise: kicad-cli filed sub's checks under {filed}, not {filed_under}"
+        )
+    want = judged.own(sub)
+
+    run = schematic.run_erc(str(sub), str(tmp_path / "out"))
+    listed = schematic.list_unconnected_pins(str(sub), str(tmp_path / "out"))
+
+    assert {v["type"] for v in want} >= {"pin_not_connected", "wire_dangling"}
+    assert _keys(run.violations) == _keys(want)
+    assert Counter(pin["detail"] for pin in listed.pins) == _pins(want)
 
 
 def _violation(uuid: str, kind: str = "wire_dangling") -> dict:

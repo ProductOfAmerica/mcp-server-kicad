@@ -403,6 +403,36 @@ class TestTopLevelSheets:
         below_first = _connectivity.place(tmp_path / "a.kicad_sch")
         assert (below_first.root, below_first.project) == (tmp_path / "p.kicad_sch",) * 2
 
+    @pytest.mark.kicad_placeholder(
+        "p.kicad_sch", "second.kicad_sch", "third.kicad_sch", "sub.kicad_sch"
+    )
+    def test_a_sheet_used_under_two_top_level_sheets_has_the_instances_under_both(self, tmp_path):
+        """sub is used by second (block u-s) and by third (block u-t), neither of them the
+        project's root. Every use is an instance, in the order the project lists its sheets;
+        the root is the first top-level sheet that uses it."""
+        _project(
+            tmp_path,
+            {
+                "p.kicad_sch": _sch(),
+                "second.kicad_sch": _sch(("u-s", "sub.kicad_sch")),
+                "third.kicad_sch": _sch(("u-t", "sub.kicad_sch")),
+                "sub.kicad_sch": _sch(),
+            },
+        )
+        listed = [
+            {"filename": f"{n}.kicad_sch", "name": n, "uuid": f"0000000{i}-0000-4000-8000-0"}
+            for i, n in enumerate(("p", "second", "third"))
+        ]
+        (tmp_path / "p.kicad_pro").write_text(
+            json.dumps({"schematic": {"top_level_sheets": listed}}), encoding="utf-8"
+        )
+        placed = _connectivity.place(tmp_path / "sub.kicad_sch")
+        assert (placed.kind, placed.root, placed.instances) == (
+            "sheet",
+            tmp_path / "second.kicad_sch",
+            (("u-s",), ("u-t",)),
+        )
+
     @pytest.mark.kicad_placeholder(*_TWO_TOP_LEVEL)
     def test_each_top_level_sheet_is_a_root(self, tmp_path):
         self._two(tmp_path, _TOP_LEVEL_SHEETS)

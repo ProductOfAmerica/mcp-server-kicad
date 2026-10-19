@@ -1192,13 +1192,14 @@ _SHEET_BLOCK = re.compile(_head(b"sheet"))
 class Placement:
     """Where a schematic file sits in the sheet hierarchy of its project.
 
-    *kind* is "sheet" when a project's hierarchy uses the file: *root* is the top-level sheet
-    that hierarchy starts from, *project* the project's own root schematic (the one named after
+    *kind* is "sheet" when a project's hierarchy uses the file: *root* is the first top-level
+    sheet whose hierarchy does, *project* the project's own root schematic (the one named after
     its .kicad_pro, which is *root* unless the project lists other top-level sheets) and
-    *instances* holds, for each place the hierarchy uses the file, the uuids of the sheet
-    blocks from the root down to it. It is "root" for a top-level sheet of a project, or when
-    the nearest project was not read through to say otherwise, and "unused" when it was
-    (*root*) and none of its sheets uses the file, which is then a root of its own.
+    *instances* holds, for each place the project's hierarchy uses the file under any of its
+    top-level sheets, the uuids of the sheet blocks from that top-level sheet down to it.
+    It is "root" for a top-level sheet of a project, or when the nearest project was not read
+    through to say otherwise, and "unused" when it was (*root*) and none of its sheets uses the
+    file, which is then a root of its own.
     """
 
     kind: str
@@ -1325,7 +1326,8 @@ def place(path: str | Path, root: str | Path | None = None) -> Placement:
 
     The project is *root*'s when that root schematic is given; otherwise the nearest one, in
     the file's folder or any folder above it (_project_roots), whose hierarchy uses the file.
-    A project's hierarchy is that of each top-level sheet it lists (_top_level_sheets).
+    A project's hierarchy is that of each top-level sheet it lists (_top_level_sheets), and the
+    instances are those under all of them.
 
     Raises ToolError when the answer cannot be told: a sheet file that could not be read
     stopped a walk before it reached the file, in the project that was named or the one in the
@@ -1343,13 +1345,20 @@ def place(path: str | Path, root: str | Path | None = None) -> Placement:
     nearest_read = False  # whether every sheet of the nearest project was read
     for index, project_root in enumerate(roots):
         unread: list[str] = []
+        first: Path | None = None  # the first top-level sheet whose hierarchy uses the file
+        found: list[tuple[str, ...]] = []
         for top in _top_level_sheets(project_root):
             if _real(top) == _real(target):
-                return Placement("root", top)
+                if first is None:
+                    return Placement("root", top)
+                continue
             instances, not_read = _instances(top, target)
             if instances:
-                return Placement("sheet", top, tuple(instances), project_root)
+                first = first or top
+                found += instances
             unread += not_read
+        if first is not None:
+            return Placement("sheet", first, tuple(found), project_root)
         if index == 0:
             nearest_read = not unread
         if unread and stopped is None:
