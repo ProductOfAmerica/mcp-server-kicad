@@ -3,8 +3,9 @@
 import difflib
 import json
 import re
+import tempfile
 from pathlib import Path
-from typing import Literal
+from typing import Literal, NamedTuple
 
 from mcp.server.mcpserver.exceptions import ToolError
 
@@ -18,6 +19,7 @@ from mcp_server_kicad._connectivity import (
     pin_matches,
 )
 from mcp_server_kicad._cst import (
+    PCB_IU_PER_MM,
     SCH_IU_PER_MM,
     _angle_text,
     _fill_at,
@@ -46,7 +48,6 @@ from mcp_server_kicad._shared import (
     _remove_root_symbol_instance,
     _require_kicad_path,
     _resolve_hierarchy_path,
-    _resolve_root,
     _resolve_system_lib,
     _run_cli,
     _sheet_file_cst,
@@ -3287,33 +3288,225 @@ def remove_no_connect(
 # ---------------------------------------------------------------------------
 
 
-def _parse_unconnected_pins(erc_report: dict, sheet_filter: str | None = None) -> list[dict]:
-    """Extract unconnected pin violations from an ERC report.
+# kicad-cli's JSON ERC report prints an item's position with the board's 1e6 units per
+# millimetre where a schematic has 1e4, in every release from 9.0.0 below 10.0.7: erc_report.cpp
+# builds the JSON writer's units provider from pcbIUScale (line 161 at 10.0.6) and, from 10.0.7,
+# from schIUScale, which its text report uses on every release.
+_ERC_JSON_SCALED_FROM = (9, 0, 0)
+_ERC_JSON_FIXED_IN = (10, 0, 7)
+_ERC_REPORT_VERSION = re.compile(r"(\d+)\.(\d+)\.(\d+)(?:\.\d+)*")
+_ERC_SCALE_NOTE = (
+    "KiCad {version} writes item positions in its ERC report 100 times too small; they are"
+    " corrected here to millimetres in sheet coordinates. A length quoted inside an item"
+    " description is KiCad's own text and carries the same error."
+)
 
-    When *sheet_filter* is set, only violations from matching sheet paths
-    are included.
+
+def _erc_positions_in_sheet_mm(report: dict) -> bool:
+    """Put every item position of a kicad-cli ERC JSON *report* in the sheet's millimetres.
+
+    The report's own version says whether KiCad scaled the positions wrongly (above). An
+    unreadable version, or units other than mm, means no opinion: the report is left as it is.
+    Returns whether positions were changed.
+    """
+    found = _ERC_REPORT_VERSION.fullmatch(str(report.get("kicad_version", "")))
+    if found is None or report.get("coordinate_units") != "mm":
+        return False
+    version = tuple(int(part) for part in found.groups())
+    if not _ERC_JSON_SCALED_FROM <= version < _ERC_JSON_FIXED_IN:
+        return False
+    for sheet in report.get("sheets", []):
+        for violation in sheet.get("violations", []):
+            for item in violation.get("items", []):
+                pos = item.get("pos")
+                for axis in ("x", "y"):
+                    if isinstance(pos, dict) and isinstance(pos.get(axis), int | float):
+                        # KiCad printed iu / 1e6 for a schematic unit count iu; give back
+                        # the count, then the millimetres it is.
+                        pos[axis] = round(pos[axis] * PCB_IU_PER_MM) / SCH_IU_PER_MM
+    return True
+
+
+def _run_erc_json(erc_target: str, output_dir: str) -> tuple[dict, str | None]:
+    """Run ERC on *erc_target*: its JSON report with every position in sheet millimetres,
+    and the note that says so when they had to be corrected.
+
+    kicad-cli writes into a folder made for this run, so a report is this run's or none, and
+    the report is saved in *output_dir* only when there is one: a run that wrote none raises
+    and leaves that folder as it was.
+    """
+    out_dir = output_dir or str(Path(erc_target).parent)
+    name = Path(erc_target).stem + "-erc.json"
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+        produced = Path(scratch) / name
+        _run_cli(
+            ["sch", "erc", "--format", "json", "--severity-all", "--units", "mm"]
+            + ["--output", str(produced), erc_target],
+            check=False,
+        )
+        try:
+            data = produced.read_bytes()
+        except FileNotFoundError:
+            raise ToolError("ERC failed to produce output file")
+    report = json.loads(data)
+    _ensure_dir(out_dir)
+    _atomic_write(Path(out_dir) / name, data)
+    note = None
+    if _erc_positions_in_sheet_mm(report):
+        note = _ERC_SCALE_NOTE.format(version=report["kicad_version"])
+    return report, note
+
+
+def _parse_unconnected_pins(violations: list[dict]) -> list[dict]:
+    """The pin_not_connected violations of *violations*, as list_unconnected_pins returns them.
+
+    Selected by the violation's type, not its message, which also says "not connected" for a
+    dangling label or wire. A violation naming no item names no pin.
     """
     results = []
-    for sheet in erc_report.get("sheets", []):
-        if sheet_filter:
-            sheet_path = sheet.get("path", "")
-            if sheet_filter not in sheet_path:
-                continue
-        for v in sheet.get("violations", []):
-            desc = v.get("description", "")
-            if "not connected" not in desc.lower():
-                continue
-            entry: dict = {"description": desc, "severity": v.get("severity", "")}
-            items = v.get("items", [])
-            if items:
-                item_desc = items[0].get("description", "")
-                entry["detail"] = item_desc
-                pos = items[0].get("pos", {})
-                if pos:
-                    entry["x"] = pos.get("x")
-                    entry["y"] = pos.get("y")
-            results.append(entry)
+    for v in violations:
+        items = v.get("items") or []
+        if v.get("type") != "pin_not_connected" or not items:
+            continue
+        entry: dict = {
+            "description": v.get("description", ""),
+            "severity": v.get("severity", ""),
+            "detail": items[0].get("description", ""),
+        }
+        pos = items[0].get("pos")
+        if pos:
+            entry["x"] = pos.get("x")
+            entry["y"] = pos.get("y")
+        results.append(entry)
     return results
+
+
+def _item_uuids(path: Path) -> set[str]:
+    """The uuid of every item the schematic at *path* holds: each (uuid ...) list in it."""
+    found: set[str] = set()
+    stack = [_cst.parse(_read_kicad_bytes(path, "schematic"))]
+    while stack:
+        for child in stack.pop().children:
+            if child.kind != "list" or not child.children:
+                continue
+            head = child.children[0]
+            if head.kind == "atom" and head.raw == b"uuid":
+                if len(child.children) > 1 and child.children[1].kind == "atom":
+                    found.add(child.children[1].text.lower())
+            else:
+                stack.append(child)
+    return found
+
+
+def _entry_chain(entry: dict) -> tuple[str, ...]:
+    """The block uuids from the top-level sheet down to a report entry's sheet: its uuid_path
+    without the empty part before the first "/" and the top-level sheet's own uuid."""
+    return tuple(str(entry.get("uuid_path", "")).split("/")[2:])
+
+
+def _sheet_violations(
+    report: dict, instances: tuple[tuple[str, ...], ...], path: Path
+) -> list[dict]:
+    """The violations of a root's ERC *report* that belong to the sheet file *path*.
+
+    kicad-cli files a violation under the sheet path of its main item, and one whose main item
+    has no sheet path under the first sheet of the report (WriteJsonReport, erc_report.cpp:172
+    at 9.0.8). So:
+
+    - the first entry yields a violation whose first item is an item of *path*;
+    - a later entry whose sheet path is one of the sheet's *instances* (the block uuids from
+      the root, which its uuid_path holds after the root's own) yields all its violations.
+
+    A sheet used twice has an entry for each use, and keeps both.
+    """
+    chains = set(instances)
+    uuids: set[str] = set()
+    own: list[dict] = []
+    for index, entry in enumerate(report.get("sheets", [])):
+        violations = entry.get("violations", [])
+        if index:
+            if _entry_chain(entry) in chains:
+                own.extend(violations)
+        elif violations:
+            uuids = _item_uuids(path)
+            for v in violations:
+                items = v.get("items") or []
+                if items and str(items[0].get("uuid", "")).lower() in uuids:
+                    own.append(v)
+    return own
+
+
+def _run_erc_for_sheet(
+    placement: _connectivity.Placement, output_dir: str
+) -> tuple[dict, str | None]:
+    """The ERC report to take a sheet's violations from, as _run_erc_json returns it.
+
+    It comes from the project's root schematic only, so that the project's settings apply to
+    the sheet: kicad-cli takes a project from the name of the file it is given (LoadSchematic,
+    eeschema_helpers.cpp:92-93 at 10.0.7). For a sheet below one of the project's other
+    top-level sheets, a report from the root with no entry for any instance of the sheet is
+    refused: that kicad-cli did not check the sheet from the root.
+    """
+    assert placement.root is not None and placement.project is not None
+    report, note = _run_erc_json(str(placement.project), output_dir)
+    if placement.project != placement.root:
+        chains = set(placement.instances)
+        if not any(_entry_chain(entry) in chains for entry in report.get("sheets", [])):
+            raise ToolError(
+                f"This kicad-cli did not check {placement.root.name}, the top-level sheet this"
+                f" file is under, from the project's root {placement.project.name}. run_erc on"
+                f" {placement.root.name} checks it on its own."
+            )
+    return report, note
+
+
+class _ErcRun(NamedTuple):
+    report: dict
+    violations: list[dict]
+    notes: list[str]
+
+
+def _erc(schematic_path: str, output_dir: str, project_path: str) -> _ErcRun:
+    """ERC for one schematic file, the way a user means it, with positions in sheet millimetres.
+
+    A sheet of a project is checked from the project's root schematic, so that the hierarchy
+    around it is there, and only the violations of that sheet are returned (_sheet_violations),
+    those of every use of it under any top-level sheet the project lists. A file that is a root,
+    or that no sheet of its project uses, is given to kicad-cli as it is, and everything in its
+    report comes back. *project_path* names the project whose hierarchy to look in; a file that
+    hierarchy does not use is refused, since it cannot be given a place in it.
+    """
+    target = _require_kicad_path(schematic_path, "schematic")
+    if project_path:
+        pro = _require_kicad_path(project_path, "project")
+        root = pro.with_suffix(".kicad_sch")
+        if not root.is_file():
+            raise ToolError(f"The project {pro.name} has no root schematic {root.name} beside it.")
+        placement = _connectivity.place(target, root)
+        if placement.kind == "unused":
+            raise ToolError(
+                f"{target.name} is not used by any sheet of {root.name}, the root schematic of"
+                f" {pro.name}. Omit project_path to check it on its own."
+            )
+    else:
+        placement = _connectivity.place(target)
+
+    notes: list[str] = []
+    if placement.kind == "sheet":
+        report, scale_note = _run_erc_for_sheet(placement, output_dir)
+        violations = _sheet_violations(report, placement.instances, target)
+        notes.append(
+            "ERC ran from root schematic to include full hierarchy context;"
+            " the violations are those of this sheet."
+        )
+    else:
+        report, scale_note = _run_erc_json(schematic_path, output_dir)
+        violations = [v for entry in report.get("sheets", []) for v in entry.get("violations", [])]
+        if placement.kind == "unused":
+            notes.append("No sheet of the project uses this file, so ERC ran on it alone.")
+    if scale_note:
+        notes.append(scale_note)
+    return _ErcRun(report, violations, notes)
 
 
 @mcp.tool(annotations=_EXPORT)
@@ -3324,44 +3517,27 @@ def list_unconnected_pins(
 ) -> UnconnectedPinsResult:
     """List unconnected pins by running ERC and filtering results.
 
-    Requires kicad-cli. Auto-redirects to root schematic for sub-sheets
-    to avoid false positives from hierarchical label context.
+    Requires kicad-cli. Lists the violations KiCad types pin_not_connected. A
+    sub-sheet is checked from its project's root, as run_erc does, and gets
+    the pins of that sheet alone, under every top-level sheet the project lists.
+    A sheet below a top-level sheet other than the root is refused when that
+    kicad-cli did not check it from the root. A run that makes no report
+    raises and leaves output_dir as it was.
+
+    The x and y of each entry are millimetres (mm) in sheet coordinates, the
+    numbers get_pin_positions prints.
 
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
         output_dir: Directory for ERC report file. Optional; omit to use the configured default.
-        project_path: Path to .kicad_pro file for explicit root resolution
+        project_path: Path to .kicad_pro file; the project whose hierarchy to look in.
+            Refused when no sheet of it uses the file.
     """
-    _require_kicad_path(schematic_path, "schematic")
-    # Auto-redirect sub-sheets to root for full hierarchy context
-    root_path = _resolve_root(schematic_path, project_path)
-    erc_target = root_path or schematic_path
-    sheet_filter = Path(schematic_path).name if root_path else None
-
-    out_dir = output_dir or str(Path(erc_target).parent)
-    out_path = str(Path(out_dir) / (Path(erc_target).stem + "-erc.json"))
-    _run_cli(
-        [
-            "sch",
-            "erc",
-            "--format",
-            "json",
-            "--severity-all",
-            "--output",
-            out_path,
-            erc_target,
-        ],
-        check=False,
+    run = _erc(schematic_path, output_dir, project_path)
+    pins = _parse_unconnected_pins(run.violations)
+    return UnconnectedPinsResult(
+        unconnected_count=len(pins), pins=pins, note=" ".join(run.notes) or None
     )
-    try:
-        with open(out_path, encoding="utf-8") as f:
-            report = json.load(f)
-    except FileNotFoundError:
-        raise ToolError("ERC failed to produce output")
-
-    pins = _parse_unconnected_pins(report, sheet_filter=sheet_filter)
-    note = "ERC ran from root schematic to include full hierarchy context" if root_path else None
-    return UnconnectedPinsResult(unconnected_count=len(pins), pins=pins, note=note)
 
 
 def _sym_lib_table_note(violations: list) -> str | None:
@@ -3408,51 +3584,33 @@ def run_erc(
 ) -> ErcResult:
     """Run Electrical Rules Check (ERC) on a schematic.
 
-    Auto-redirects to root schematic for sub-sheets to avoid false
-    positives from missing hierarchical context.
+    A sub-sheet is checked from its project's root, so the hierarchy around it
+    counts, and only that sheet's own violations are returned, those of every
+    use of it under every top-level sheet the project lists. A sheet below a
+    top-level sheet other than the root is refused when that kicad-cli did not
+    check it from the root; run_erc on that top-level sheet checks it on its
+    own. A file that no sheet of its project uses is checked on its own. A run
+    that makes no report raises and leaves output_dir as it was.
 
-    Returns JSON report with violations.
+    Returns JSON report with violations. An item's position is in
+    millimetres (mm) in sheet coordinates, the numbers get_pin_positions prints.
+    The report file saved in output_dir is kicad-cli's own.
 
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
-        output_dir: Directory for report file (default: same as schematic).
+        output_dir: Directory for report file (default: beside the file ERC runs on).
             Optional; omit to use the configured default.
-        project_path: Path to .kicad_pro file for explicit root resolution
+        project_path: Path to .kicad_pro file; the project whose hierarchy to look in.
+            Refused when no sheet of it uses the file.
     """
-    _require_kicad_path(schematic_path, "schematic")
-    # Auto-redirect sub-sheets to root for full hierarchy context
-    root_path = _resolve_root(schematic_path, project_path)
-    erc_target = root_path or schematic_path
-    sheet_filter = Path(schematic_path).name if root_path else None
-
-    out_dir = output_dir or str(Path(erc_target).parent)
-    out_path = str(Path(out_dir) / (Path(erc_target).stem + "-erc.json"))
-    _run_cli(
-        ["sch", "erc", "--format", "json", "--severity-all", "--output", out_path, erc_target],
-        check=False,
-    )
-    try:
-        with open(out_path, encoding="utf-8") as f:
-            report = json.load(f)
-    except FileNotFoundError:
-        raise ToolError("ERC failed to produce output file")
-
-    all_violations = []
-    for sheet in report.get("sheets", []):
-        if sheet_filter:
-            sheet_path = sheet.get("path", "")
-            if sheet_filter not in sheet_path:
-                continue
-        all_violations.extend(sheet.get("violations", []))
-
-    root_note = "ERC ran from root schematic to include full hierarchy context" if root_path else ""
-    note = " ".join(filter(None, [root_note, _sym_lib_table_note(all_violations)])) or None
+    run = _erc(schematic_path, output_dir, project_path)
+    notes = [*run.notes, _sym_lib_table_note(run.violations)]
     return ErcResult(
-        source=report.get("source", ""),
-        kicad_version=report.get("kicad_version", ""),
-        violation_count=len(all_violations),
-        violations=all_violations,
-        note=note,
+        source=run.report.get("source", ""),
+        kicad_version=run.report.get("kicad_version", ""),
+        violation_count=len(run.violations),
+        violations=run.violations,
+        note=" ".join(filter(None, notes)) or None,
     )
 
 

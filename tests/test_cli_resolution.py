@@ -241,6 +241,34 @@ def test_startup_crash_is_repaired_and_the_call_succeeds(monkeypatch):
     assert retry is not None and retry["KICAD_DOCUMENTS_HOME"], "retry must set a documents home"
 
 
+def _record_cwds(monkeypatch) -> list[str | None]:
+    """Wrap the stubbed subprocess.run so that each call's cwd is kept."""
+    queued = subprocess.run
+    cwds: list[str | None] = []
+
+    def run(cmd, **kw):
+        cwds.append(kw.get("cwd"))
+        return queued(cmd, **kw)
+
+    monkeypatch.setattr(subprocess, "run", run)
+    return cwds
+
+
+def test_a_working_directory_reaches_the_process_and_its_retry(monkeypatch, tmp_path):
+    """run_jobset runs kicad-cli in the project's folder, and a repaired start keeps it."""
+    _queue_cli(monkeypatch, _CRASH, 0)
+    cwds = _record_cwds(monkeypatch)
+    _run_cli(["version"], cwd=str(tmp_path))
+    assert cwds == [str(tmp_path)] * 2
+
+
+def test_the_working_directory_is_left_alone_unless_one_is_asked_for(monkeypatch):
+    _queue_cli(monkeypatch, 0)
+    cwds = _record_cwds(monkeypatch)
+    _run_cli(["version"])
+    assert cwds == [None]
+
+
 def test_a_working_install_is_never_given_an_override(monkeypatch):
     """No extra process, no environment change, for the overwhelming majority."""
     envs = _queue_cli(monkeypatch, 0)

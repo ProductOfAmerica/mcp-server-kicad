@@ -56,9 +56,11 @@ These are the kicad MCP tools you should be using during verification:
 
 **Schematic checks:**
 - `run_erc` — run electrical rules check, returns all violations.
-  Auto-redirects sub-sheets to root for full hierarchy context.
+  Checks a sub-sheet from its project's root for full hierarchy context
+  and returns that sheet's own violations.
 - `list_unconnected_pins` — find unconnected pins by component.
-  Auto-redirects sub-sheets to root to avoid false positives.
+  Checks a sub-sheet from its project's root to avoid false positives
+  and returns that sheet's own pins.
 - `get_net_connections` — trace a net to debug connectivity issues
 - `validate_hierarchy` — check for unannotated refs, duplicate refs,
   orphaned labels/pins, direction mismatches, junctions and bus entry
@@ -196,11 +198,17 @@ Use `run_erc` to get the full violation list. Read every violation
 before fixing anything — some errors share a root cause.
 
 **Sub-sheet note:** `run_erc` and `list_unconnected_pins` automatically
-redirect sub-sheets to the root schematic for full hierarchy context.
-This eliminates false positives from missing parent connections
-(hierarchical label errors, dangling wire errors). The result is
-filtered to only include violations from the target sub-sheet, and a
-`"note"` field indicates when redirection occurred.
+check a sub-sheet from its project's root schematic, wherever the sheet
+file sits in the project, for full hierarchy context. This eliminates
+false positives from missing parent connections (hierarchical label
+errors, dangling wire errors). The result holds only that sheet's own
+violations, and a `"note"` field says when the check ran from the root. A
+sheet below a top-level sheet other than the root is refused when that
+kicad-cli did not check it from the root; run `run_erc` on that top-level
+sheet instead. A run that makes no report raises, and `output_dir` keeps
+what it held. A file that no sheet of its project uses is checked on its own.
+Item positions are millimetres in sheet coordinates, the numbers
+`get_pin_positions` prints.
 
 ### Step 2: Fix by Category
 

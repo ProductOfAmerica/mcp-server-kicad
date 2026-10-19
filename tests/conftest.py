@@ -1493,6 +1493,21 @@ def empty_sch(tmp_path: Path) -> Path:
     return path
 
 
+@pytest.fixture(scope="session")
+def project_hierarchy(tmp_path_factory):
+    """tests/hier_gen.py's project, built once per worker: for tests that only read it.
+
+    Never modify it, and pass an output_dir of your own to a tool that writes a report. It
+    sits outside tmp_path, so the autouse oracle does not see it; every sheet file is
+    loaded on its own here, once, by assert_kicad_parseable.
+    """
+    import hier_gen
+
+    built = hier_gen.build(tmp_path_factory.mktemp("hierarchy"))
+    assert_kicad_parseable(built.root)
+    return built
+
+
 @pytest.fixture()
 def scratch_power_lib(tmp_path: Path) -> Path:
     """Create a .kicad_sym with VCC, GND, and PWR_FLAG power symbols.

@@ -5245,7 +5245,11 @@ def export_3d(
 def export_positions(
     pcb_path: str = PCB_PATH, output_dir: str = OUTPUT_DIR
 ) -> PositionExportResult:
-    """Export component position file (pick and place).
+    """Export component position file (pick and place) as CSV, in millimetres (mm).
+
+    The columns are Ref, Val, Package, PosX, PosY, Rot and Side. PosX and PosY
+    are the footprint's position in millimetres, with the board's Y axis
+    negated; Rot is its angle in degrees; Side is top or bottom.
 
     Args:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
@@ -5254,7 +5258,10 @@ def export_positions(
     _require_kicad_path(pcb_path, "board")
     out_dir = output_dir or str(Path(pcb_path).parent)
     out_path = str(Path(out_dir) / (Path(pcb_path).stem + "-pos.csv"))
-    _run_cli(["pcb", "export", "pos", "--format", "csv", "--output", out_path, pcb_path])
+    # kicad-cli's position file is in inches unless told otherwise.
+    _run_cli(
+        ["pcb", "export", "pos", "--format", "csv", "--units", "mm", "--output", out_path, pcb_path]
+    )
     meta = _file_meta(out_path)
     with open(out_path, encoding="utf-8") as f:
         component_count = max(0, len(f.readlines()) - 1)
@@ -5279,14 +5286,15 @@ def export_ipc2581(
 
     Args:
         pcb_path: Path to .kicad_pcb file. Optional; omit to use the configured default.
-        output: Output file path
+        output: Output file path. Optional; omit to write <board name>.xml to the
+            configured output directory, or beside the board when none is configured.
         precision: Numeric precision (default: 3)
         compress: Compress output file
         version: IPC-2581 version (default: "C")
         units: Output units - "mm" or "in"
     """
     _require_kicad_path(pcb_path, "board")
-    out = output or str(Path(OUTPUT_DIR) / (Path(pcb_path).stem + ".xml"))
+    out = output or str(Path(OUTPUT_DIR or Path(pcb_path).parent) / (Path(pcb_path).stem + ".xml"))
     args = ["pcb", "export", "ipc2581", pcb_path, "-o", out]
     if precision != 3:
         args += ["--precision", str(precision)]

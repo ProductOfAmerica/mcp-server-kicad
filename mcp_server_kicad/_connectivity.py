@@ -12,19 +12,24 @@ KiCad compares connection points. schematic.py imports this module, so it must n
 schematic.py.
 
 The only files it reads are the other sheets of the hierarchy, for the duplicate-reference
-check, and only facts are kept from them: a small cache keyed by each file's content.
+check, and only facts are kept from them: a small cache keyed by each file's content. place()
+reads the sheet blocks of a project's schematics to say where a file sits in the project.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 import math
+import os
 import re
 import threading
 import unicodedata
 from collections import Counter, OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
+
+from mcp.server.mcpserver.exceptions import ToolError
 
 from mcp_server_kicad import _cst, _shared
 from mcp_server_kicad._shared import kiround
@@ -1038,11 +1043,11 @@ class Hierarchy:
     error: Refusal | None = None
 
 
-def _project_roots(path: Path) -> list[Path]:
+def _project_roots(path: Path, levels: int = _PROJECT_LEVELS) -> list[Path]:
     """Root schematics that may own this sheet, nearest first: the .kicad_sch named after the
-    only .kicad_pro in its directory, then in each of the _PROJECT_LEVELS directories above."""
+    only .kicad_pro in its directory, then in each of the *levels* directories above."""
     out, d = [], path.parent
-    for _ in range(_PROJECT_LEVELS + 1):
+    for _ in range(levels + 1):
         pros = list(d.glob("*.kicad_pro"))
         if len(pros) == 1 and pros[0].with_suffix(".kicad_sch").is_file():
             out.append(pros[0].with_suffix(".kicad_sch"))
@@ -1059,11 +1064,11 @@ _LEAF = SheetFacts("", _ON_SYMBOL_VERSION, (), (), ())
 
 def _real(p: Path) -> Path:
     """*p* resolved, or made absolute when it cannot be: resolving a symlink loop raises
-    (RuntimeError before Python 3.13, OSError after). No reader can open such a file, KiCad
-    included, so it then counts as a missing sheet."""
+    (RuntimeError before Python 3.13, OSError after), and a NUL in the name raises ValueError.
+    No reader can open such a file, so it then counts as a missing sheet."""
     try:
         return p.resolve()
-    except (OSError, RuntimeError):
+    except (OSError, RuntimeError, ValueError):
         return p.absolute()
 
 
@@ -1173,6 +1178,198 @@ def _unreadable(bad: list[str]) -> Refusal | None:
         f"sheet {bad[0]} of this hierarchy could not be read, so the reference cannot be checked"
         " for uniqueness. Remedy: fix or remove that sheet; otherwise stop and report.",
     )
+
+
+# ---------------------------------------------------------------------------------------------
+# Where a schematic file sits in its project
+# ---------------------------------------------------------------------------------------------
+
+#: A sheet block somewhere in the bytes. A file without one has no sub-sheets and is not parsed.
+_SHEET_BLOCK = re.compile(_head(b"sheet"))
+
+
+@dataclass(frozen=True)
+class Placement:
+    """Where a schematic file sits in the sheet hierarchy of its project.
+
+    *kind* is "sheet" when a project's hierarchy uses the file: *root* is the first top-level
+    sheet whose hierarchy does, *project* the project's own root schematic (the one named after
+    its .kicad_pro, which is *root* unless the project lists other top-level sheets) and
+    *instances* holds, for each place the project's hierarchy uses the file under any of its
+    top-level sheets, the uuids of the sheet blocks from that top-level sheet down to it.
+    It is "root" for a top-level sheet of a project, or when the nearest project was not read
+    through to say otherwise, and "unused" when it was (*root*) and none of its sheets uses the
+    file, which is then a root of its own.
+    """
+
+    kind: str
+    root: Path | None = None
+    instances: tuple[tuple[str, ...], ...] = ()
+    project: Path | None = None
+
+
+def _sheet_blocks(path: Path) -> list[tuple[str, str]] | None:
+    """(uuid, file name) of each sheet block in the schematic at *path*, in file order.
+
+    Empty for a file that is missing, empty or holds none. None for one that cannot be read or
+    parsed.
+    """
+    try:
+        if not (path.is_file() and path.stat().st_size > 0):
+            return []
+        data = path.read_bytes()
+        if not _SHEET_BLOCK.search(data):
+            return []
+        sheets = _cst.parse(data).lists[0].find_all("sheet")
+        return [
+            (_shared._node_uuid(sh), name) for sh in sheets if (name := _shared._sheet_file_cst(sh))
+        ]
+    except Exception:  # noqa: BLE001
+        # whatever stops the read or the parse leaves the file unread
+        return None
+
+
+def _instances(root: Path, target: Path) -> tuple[list[tuple[str, ...]], list[str]]:
+    """Every place the hierarchy of *root* uses *target*, and the sheet files it could not read.
+
+    A sheet block's file name resolves against the folder of the file that holds the block, an
+    absolute one stays as it is, and a file that is already its own ancestor is not entered
+    (SCH_IO_KICAD_SEXPR::loadHierarchy, sch_io_kicad_sexpr.cpp:189-222 at 9.0.8). A sheet file
+    used twice is entered at each use, as KiCad's sheet list holds it.
+
+    Each file is read once, and only the sheets that lead to *target* are entered, so a part of
+    the hierarchy that does not hold it costs nothing however often it is reused. Raises
+    ToolError when more than _MAX_INSTANCES sheets are entered on the way to *target*.
+    """
+    want = _real(target)
+    # each file's sheet blocks as (block uuid, resolved file), by resolved path; None for a file
+    # that could not be read. *target* is not read: nothing below it is looked for.
+    held: dict[Path, list[tuple[str, Path]] | None] = {}
+    unread: list[str] = []
+    todo = [root]
+    while todo:
+        here = todo.pop()
+        key = _real(here)
+        if key == want or key in held:
+            continue
+        blocks = _sheet_blocks(here)
+        if blocks is None:
+            held[key] = None
+            if here.name not in unread:
+                unread.append(here.name)
+            continue
+        children = [
+            (uuid, Path(os.path.normpath(os.path.join(here.parent, name.replace("\\", "/")))))
+            for uuid, name in blocks
+        ]
+        held[key] = [(uuid, _real(child)) for uuid, child in children]
+        todo.extend(child for _uuid, child in reversed(children))
+    # the files that hold a sheet leading to *target*, found from it upwards
+    parents: dict[Path, list[Path]] = {}
+    for key, blocks_of in held.items():
+        for _uuid, child in blocks_of or ():
+            parents.setdefault(child, []).append(key)
+    leads = {want}
+    todo = [want]
+    while todo:
+        for parent in parents.get(todo.pop(), ()):
+            if parent not in leads:
+                leads.add(parent)
+                todo.append(parent)
+    found: list[tuple[str, ...]] = []
+    stack: list[tuple[tuple[str, ...], tuple[Path, ...]]] = [((), (_real(root),))]
+    entered = 0
+    while stack:
+        chain, ancestors = stack.pop()
+        if ancestors[-1] == want:
+            found.append(chain)
+            continue
+        entered += 1
+        if entered > _MAX_INSTANCES:
+            raise ToolError(
+                f"{target.name} is used through more than {_MAX_INSTANCES} sheet instances of"
+                f" {root.name}, too many to place it in the hierarchy."
+            )
+        for uuid, child in reversed(held[ancestors[-1]] or ()):
+            if child in leads and child not in ancestors:
+                stack.append(((*chain, uuid), (*ancestors, child)))
+    return found, unread
+
+
+def _top_level_sheets(root: Path) -> list[Path]:
+    """*root*, then the other top-level sheets its project lists.
+
+    A KiCad 10 project lists them under schematic.top_level_sheets in its .kicad_pro, each file
+    resolved against the project's folder (eeschema_helpers.cpp:153 at 10.0.7). A project file
+    that is missing, is not JSON, holds anything but a list there or lists none adds nothing.
+    """
+    try:
+        listed = json.loads(root.with_suffix(".kicad_pro").read_bytes())["schematic"][
+            "top_level_sheets"
+        ]
+    except (OSError, ValueError, KeyError, TypeError):
+        return [root]
+    if not isinstance(listed, list):
+        return [root]
+    out = [root]
+    for entry in listed:
+        name = entry.get("filename") if isinstance(entry, dict) else None
+        if isinstance(name, str) and name:
+            sheet = Path(os.path.normpath(os.path.join(root.parent, name.replace("\\", "/"))))
+            if all(_real(sheet) != _real(seen) for seen in out):
+                out.append(sheet)
+    return out
+
+
+def place(path: str | Path, root: str | Path | None = None) -> Placement:
+    """Where the schematic at *path* sits in its project.
+
+    The project is *root*'s when that root schematic is given; otherwise the nearest one, in
+    the file's folder or any folder above it (_project_roots), whose hierarchy uses the file.
+    A project's hierarchy is that of each top-level sheet it lists (_top_level_sheets), and the
+    instances are those under all of them.
+
+    Raises ToolError when the answer cannot be told: a sheet file that could not be read
+    stopped a walk before it reached the file, in the project that was named or the one in the
+    file's own folder; or a project uses the file through more than _MAX_INSTANCES sheet
+    instances (_instances). A project further up that cannot be read through is no evidence
+    about a file that no readable sheet names, so it leaves the file a root of no project.
+    """
+    target = Path(os.path.abspath(path))
+    roots = (
+        [Path(os.path.abspath(root))]
+        if root is not None
+        else _project_roots(target, len(target.parents))
+    )
+    stopped: tuple[Path, str] | None = None  # the project and the file that stopped its walk
+    nearest_read = False  # whether every sheet of the nearest project was read
+    for index, project_root in enumerate(roots):
+        unread: list[str] = []
+        first: Path | None = None  # the first top-level sheet whose hierarchy uses the file
+        found: list[tuple[str, ...]] = []
+        for top in _top_level_sheets(project_root):
+            if _real(top) == _real(target):
+                if first is None:
+                    return Placement("root", top)
+                continue
+            instances, not_read = _instances(top, target)
+            if instances:
+                first = first or top
+                found += instances
+            unread += not_read
+        if first is not None:
+            return Placement("sheet", first, tuple(found), project_root)
+        if index == 0:
+            nearest_read = not unread
+        if unread and stopped is None:
+            if root is not None or _real(project_root.parent) == _real(target.parent):
+                stopped = (project_root, unread[0])
+    if stopped:
+        raise ToolError(
+            f"Cannot tell whether the project at {stopped[0].name} uses {target.name}:"
+            f" {stopped[1]} could not be read."
+        )
+    return Placement("unused", roots[0]) if nearest_read else Placement("root")
 
 
 def _one_part(group: list[tuple[SymRecord, tuple[int, ...]]]) -> str | None:

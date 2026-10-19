@@ -266,7 +266,7 @@ for you. Tool groups (109 tools total):
 - **Footprint Libraries:** `list_lib_footprints`,
   `get_footprint_info`, `export_footprint_svg`,
   `upgrade_footprint_lib`
-- **Utilities:** `run_jobset` (batch operations from .kicad_job files),
+- **Utilities:** `run_jobset` (batch operations from .kicad_jobset files),
   `get_version` (KiCad version info), `export_symbol_svg`,
   `upgrade_symbol_lib`, `export_footprint_svg`,
   `upgrade_footprint_lib`

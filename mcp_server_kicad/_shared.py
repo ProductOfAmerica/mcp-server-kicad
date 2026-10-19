@@ -1121,7 +1121,9 @@ def _died(returncode: int) -> bool:
     return returncode < 0 or returncode >= _ABNORMAL_EXIT_FLOOR
 
 
-def _spawn_cli(executable: str, args: list[str]) -> subprocess.CompletedProcess:
+def _spawn_cli(
+    executable: str, args: list[str], cwd: str | None = None
+) -> subprocess.CompletedProcess:
     """One kicad-cli invocation.
 
     ``env`` stays None until a repair is needed, so a healthy install runs with
@@ -1138,6 +1140,7 @@ def _spawn_cli(executable: str, args: list[str]) -> subprocess.CompletedProcess:
             errors="replace",
             timeout=_CLI_TIMEOUT,
             env=env,
+            cwd=cwd,
         )
     except subprocess.TimeoutExpired:
         raise ToolError(
@@ -1146,8 +1149,14 @@ def _spawn_cli(executable: str, args: list[str]) -> subprocess.CompletedProcess:
         ) from None
 
 
-def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess:
+def _run_cli(
+    args: list[str], check: bool = True, cwd: str | None = None
+) -> subprocess.CompletedProcess:
     """Run a kicad-cli command, return CompletedProcess.
+
+    *cwd* is the working directory of the process, on the retry too; it matters
+    to a command that resolves a relative path in what it is given, which
+    kicad-cli does for a jobset's output folders.
 
     A startup crash is repaired once and the call retried, and it raises whatever
     *check* says: no caller can do anything useful with a process that died
@@ -1158,14 +1167,14 @@ def _run_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess
     if executable is None:
         raise ToolError("kicad-cli not found. Install KiCad, or set KICAD_CLI_PATH.")
 
-    result = _spawn_cli(executable, args)
+    result = _spawn_cli(executable, args, cwd)
     if (
         result.returncode == _KICAD_STARTUP_CRASH
         and _documents_home is None
         and not os.environ.get("KICAD_DOCUMENTS_HOME")
     ):
         _documents_home = _fallback_documents_home()
-        result = _spawn_cli(executable, args)
+        result = _spawn_cli(executable, args, cwd)
 
     if result.returncode == _KICAD_STARTUP_CRASH:
         tried = _documents_home or os.environ.get("KICAD_DOCUMENTS_HOME")

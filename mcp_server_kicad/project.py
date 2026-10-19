@@ -8,6 +8,8 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import tempfile
 from collections import Counter
 from pathlib import Path
 
@@ -24,7 +26,6 @@ from mcp_server_kicad._shared import (
     SCH_PATH,
     _atomic_write,
     _ensure_dir,
-    _find_root_schematic,
     _gen_uuid,
     _node_uuid,
     _read_kicad_bytes,
@@ -1112,6 +1113,10 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
 def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:
     """Check if a schematic is the root or a sub-sheet.
 
+    A sheet is found in its project wherever its file sits below the project's
+    folder. A file that no sheet of its project uses is a root. For a sub-sheet,
+    root_path is the top-level sheet of its project that holds it.
+
     Args:
         schematic_path: Path to .kicad_sch file. Optional; omit to use the configured default.
     """
@@ -1119,11 +1124,10 @@ def is_root_schematic(schematic_path: str = SCH_PATH) -> RootSchematicResult:
     # does not exist also satisfies, so a bogus path used to report itself the
     # root of a hierarchy. Read it first and let the shared opener refuse.
     _read_kicad_bytes(schematic_path, "schematic")
-    root = _find_root_schematic(schematic_path)
-    return RootSchematicResult(
-        is_root=root is None,
-        root_path=root,
-    )
+    placement = _connectivity.place(schematic_path)
+    if placement.kind != "sheet":
+        return RootSchematicResult(is_root=True, root_path=None)
+    return RootSchematicResult(is_root=False, root_path=str(placement.root))
 
 
 @mcp.tool(annotations=_READ_ONLY)
@@ -1922,19 +1926,77 @@ def export_hierarchical_netlist(
         raise ToolError(f"Failed to parse netlist at {output_path}: {e}") from e
 
 
+# kicad-cli prints this line, coloured, once for each output it runs; its words are wxT
+# literals, not translated (kicad/jobs_runner.cpp:324-328 at 9.0.8).
+_JOBSET_COUNTS = re.compile(r"(\d+) jobs succeeded, (\d+) job failed")
+_ANSI_COLOUR = re.compile(r"\x1b\[[0-9;]*m")
+
+
+def _project_beside(jobset: Path) -> Path:
+    """The one .kicad_pro in the jobset's own folder, else a ToolError saying why not."""
+    found = sorted(jobset.parent.glob("*.kicad_pro"))
+    if len(found) == 1:
+        return found[0]
+    if not found:
+        raise ToolError(
+            f"No .kicad_pro beside {jobset.name} in {jobset.parent}. run_jobset runs a jobset"
+            " against the one project file in the jobset's own folder."
+        )
+    names = ", ".join(p.name for p in found)
+    raise ToolError(
+        f"{len(found)} .kicad_pro files beside {jobset.name} in {jobset.parent} ({names}),"
+        " and run_jobset needs exactly one to know which project the jobset runs against."
+    )
+
+
 @mcp.tool(annotations=_EXPORT)
 def run_jobset(jobset_path: str) -> str:
-    """Run a KiCad jobset file.
+    """Run a KiCad jobset file: every output it defines.
+
+    The jobset runs against the one .kicad_pro in its own folder, and a relative
+    output folder in it is relative to that folder. kicad-cli is given a copy of
+    the jobset, never the file, because it rewrites or deletes a jobset it cannot
+    parse. It is an error when nothing ran or a job failed, and the error carries
+    the counts kicad-cli reported.
 
     Args:
         jobset_path: Path to .kicad_jobset file
     """
-    _require_kicad_path(jobset_path, "jobset")
-    try:
-        result = _run_cli(["jobset", "run", jobset_path])
-        return f"Jobset completed successfully.\n{result.stdout}"
-    except (RuntimeError, FileNotFoundError) as e:
-        raise ToolError(f"Jobset failed: {e}") from e
+    data = _read_kicad_bytes(jobset_path, "jobset")
+    jobset = Path(os.path.abspath(jobset_path))
+    pro = _project_beside(jobset)
+    # kicad-cli answers a jobset its own parser refuses by writing an empty jobset over the
+    # file or deleting it (JSON_SETTINGS::LoadFromFile, json_settings.cpp:339-346 at 9.0.8).
+    # That parser takes comments and refuses lone surrogate escapes, which Python's json does
+    # the other way round, so no check of ours says what it will refuse: it gets a copy.
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
+        copy = Path(scratch) / jobset.name
+        _atomic_write(copy, data)
+        result = _run_cli(
+            ["jobset", "run", "--file", str(copy), str(pro)], check=False, cwd=str(pro.parent)
+        )
+        rewritten = not copy.is_file() or copy.read_bytes() != data
+    stdout = _ANSI_COLOUR.sub("", result.stdout)
+    counts = _JOBSET_COUNTS.findall(stdout)
+    reported = "; ".join(f"{done} jobs succeeded, {failed} job failed" for done, failed in counts)
+    if result.returncode != 0 or any(int(failed) for _, failed in counts):
+        detail = f" {result.stderr.strip()}" if result.stderr.strip() else ""
+        raise ToolError(
+            f"Jobset {jobset.name} failed: kicad-cli exit code {result.returncode},"
+            f" {reported or 'no job counts'}.{detail}"
+        )
+    if not any(int(done) for done, _ in counts):
+        why = (
+            "kicad-cli replaced or deleted its copy of the jobset, which it does to one it"
+            f" cannot parse. {jobset.name} itself is unchanged."
+            if rewritten
+            else "A jobset with no outputs, or a file that is not a jobset, runs nothing."
+        )
+        raise ToolError(
+            f"Jobset {jobset.name} ran nothing: kicad-cli reported {reported or 'no job counts'}."
+            f" {why}"
+        )
+    return f"Jobset completed successfully.\n{stdout}"
 
 
 @mcp.tool(annotations=_READ_ONLY)

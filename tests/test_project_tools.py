@@ -10,7 +10,9 @@ import sys
 from pathlib import Path
 
 import conftest
+import erc_oracle
 import pytest
+from conftest import requires_cli
 from kiutils.schematic import Schematic
 from kiutils.symbol import SymbolLib
 from mcp.server.mcpserver.exceptions import ToolError
@@ -873,7 +875,13 @@ class TestSubSheetErcRedirect:
         result = schematic.run_erc(schematic_path=str(child_path))
         assert result.note is not None, "Expected a 'note' indicating root redirect"
         assert "root schematic" in result.note
-        assert result.violation_count == 0
+        # The child's own violations, as kicad-cli's report of the root files them. They were
+        # 0 here while the tool matched sheet paths against a file name; those paths hold the
+        # sheets' names.
+        want = erc_oracle.Project(proj_dir / "erc_proj.kicad_sch").own(child_path)
+        assert want, "premise: kicad-cli reports violations that live in the child"
+        assert erc_oracle.keys(result.violations) == erc_oracle.keys(want)
+        assert result.violation_count == len(want)
 
     def test_erc_on_root_no_redirect(self, tmp_path: Path):
         """Run ERC on root schematic directly — no redirect note expected."""
@@ -1094,11 +1102,49 @@ class TestIsRootSchematic:
         project.create_project(directory=str(proj_dir), name="proj")
         child = proj_dir / "child.kicad_sch"
         project.create_schematic(schematic_path=str(child))
+        project.add_hierarchical_sheet(
+            parent_schematic_path=str(proj_dir / "proj.kicad_sch"),
+            sheet_name="Child",
+            sheet_file=str(child),
+            pins=[],
+            project_path=str(proj_dir / "proj.kicad_pro"),
+        )
 
         result = project.is_root_schematic(schematic_path=str(child))
         assert result.is_root is False
         assert result.root_path is not None
         assert "proj.kicad_sch" in result.root_path
+
+    def test_a_file_no_sheet_uses_is_a_root(self, tmp_path: Path):
+        """Bug 79: this file sits beside a project's root and no sheet of the project names it,
+        so it is a root of its own; it was reported as a sub-sheet."""
+        proj_dir = tmp_path / "proj"
+        project.create_project(directory=str(proj_dir), name="proj")
+        stray = proj_dir / "stray.kicad_sch"
+        project.create_schematic(schematic_path=str(stray))
+
+        result = project.is_root_schematic(schematic_path=str(stray))
+        assert result.is_root is True
+        assert result.root_path is None
+
+
+@requires_cli
+class TestIsRootSchematicInAHierarchy:
+    """Judged by kicad-cli's netlist of the project's root, which names the file of every
+    sheet the hierarchy uses (tests/erc_oracle.py). The fixture keeps sheets in sub-folders
+    and a sheet inside a sub-folder's sheet, reached from their parents' folders."""
+
+    def test_every_file_is_a_root_unless_a_sheet_of_the_project_uses_it(self, project_hierarchy):
+        h = project_hierarchy
+        used = set(erc_oracle.sheet_files(h.root).values()) - {h.root.name}
+        assert used == set(h.sheets), "premise: the fixture's sheets are the ones KiCad uses"
+        for path in sorted(h.folder.rglob("*.kicad_sch")):
+            got = project.is_root_schematic(schematic_path=str(path))
+            assert got.is_root == (path.name not in used), path
+            if got.is_root:
+                assert got.root_path is None, path
+            else:
+                assert got.root_path is not None and Path(got.root_path) == h.root, path
 
 
 class TestListHierarchy:

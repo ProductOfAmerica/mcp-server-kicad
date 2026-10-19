@@ -286,7 +286,7 @@ app through Controlled folder access.
 | `get_symbol_pins` | Get pin info for a symbol in the schematic's `lib_symbols` |
 | `get_pin_positions` | Get absolute pin positions for a placed component, accounting for rotation and mirror |
 | `get_net_connections` | Get all connections for a named net (multi-hop BFS wire tracing) |
-| `list_unconnected_pins` | List unconnected pins from ERC data |
+| `list_unconnected_pins` | List the pins ERC reports as not connected, positions in millimetres; a sub-sheet gets its own, from its project's root |
 
 **Write**
 
@@ -321,7 +321,7 @@ app through Controlled folder access.
 
 | Tool | Description |
 |------|-------------|
-| `run_erc` | Run Electrical Rules Check, with `project_path` support for hierarchies |
+| `run_erc` | Run Electrical Rules Check, positions in millimetres; a sub-sheet is checked from its project's root and gets its own violations, with `project_path` to name the project; a run that makes no report raises and leaves `output_dir` as it was |
 | `export_schematic` | Export schematic to PDF, SVG, or DXF |
 | `export_netlist` | Export the schematic netlist |
 | `export_bom` | Export a Bill of Materials as CSV |
@@ -377,7 +377,7 @@ app through Controlled folder access.
 | `export_pcb` | Export board layers to PDF, SVG, or DXF |
 | `export_gerbers` | Export Gerber files, all layers or a specific list |
 | `export_3d` | Export a 3D model (STEP/STL/GLB) or render the 3D view to PNG |
-| `export_positions` | Export a component position file for pick and place |
+| `export_positions` | Export a pick-and-place position file as CSV, in millimetres |
 | `export_ipc2581` | Export in IPC-2581 format for manufacturing data exchange |
 
 </details>
@@ -411,7 +411,7 @@ app through Controlled folder access.
 
 | Tool | Description |
 |------|-------------|
-| `is_root_schematic` | Check whether a schematic is the root or a sub-sheet |
+| `is_root_schematic` | Check whether a schematic is its project's root or one of its sheets, including a sheet in a folder below the project's; a file no sheet uses is a root |
 | `list_hierarchy` | List the full sheet hierarchy tree from root |
 | `get_sheet_info` | Get sheet details with pin and label matching status |
 | `validate_hierarchy` | Check every sheet for orphaned labels and pins, direction mismatches, duplicate refs, junctions and bus entry ends left inside wires, and no-connect flags and wire ends left off the pins of mirrored, rotated parts, with the call that repairs each where a tool can |
@@ -431,7 +431,7 @@ app through Controlled folder access.
 | `annotate_schematic` | Auto-assign reference designators, respecting hierarchy |
 | `export_hierarchical_netlist` | Export a netlist with hierarchy info (requires `kicad-cli`) |
 | `flatten_hierarchy` | Flatten a hierarchical schematic into a single sheet |
-| `run_jobset` | Run a KiCad jobset file |
+| `run_jobset` | Run a KiCad jobset against the project beside it; an error when nothing ran or a job failed |
 | `get_version` | Get KiCad version information |
 
 </details>
