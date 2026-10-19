@@ -389,7 +389,7 @@ app through Controlled folder access.
 
 | Tool | Description |
 |------|-------------|
-| `create_project` | Create a KiCad 9 project (`.kicad_pro`, `.kicad_prl`, `.kicad_sch`) |
+| `create_project` | Create a KiCad 9 project (`.kicad_pro` and the root `.kicad_sch`; no `.kicad_prl`) |
 | `create_schematic` | Create a blank schematic file |
 | `create_symbol_library` | Create a blank symbol library file |
 | `create_sym_lib_table` | Create a `sym-lib-table` file |
@@ -398,11 +398,11 @@ app through Controlled folder access.
 
 | Tool | Description |
 |------|-------------|
-| `add_hierarchical_sheet` | Add a hierarchical sheet with matching labels in the child |
+| `add_hierarchical_sheet` | Add a hierarchical sheet with matching labels in the child, all checked before anything is written |
 | `remove_hierarchical_sheet` | Remove a hierarchical sheet block from a parent |
-| `modify_hierarchical_sheet` | Modify sheet name, file, width, or height |
+| `modify_hierarchical_sheet` | Modify sheet name, file, width, or height; a resize keeps pins on their edges and moves the wires on them |
 | `move_hierarchical_sheet` | Move a sheet block to a new position, pins included |
-| `add_sheet_pin` | Add a pin to an existing hierarchical sheet block |
+| `add_sheet_pin` | Add a pin to the left or right edge of a sheet block, at the first free slot |
 | `remove_sheet_pin` | Remove a pin from a hierarchical sheet block |
 | `duplicate_sheet` | Duplicate a sheet, copying the child file with new UUIDs |
 | `reorder_sheet_pages` | Reorder sheets by specifying the desired UUID order |

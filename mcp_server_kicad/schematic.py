@@ -988,22 +988,39 @@ def add_wires(wires: list[WireSpec], schematic_path: str = SCH_PATH) -> str:
     return "\n".join(lines)
 
 
-# Native-shape label template (tabs, quoted uuid, no justify) for the CST write
-# path. Values are filled per call via set_text, which handles KiCad escaping.
+# Label templates as KiCad 9.0.8 writes them, whitespace included, with placeholder values.
+# Sources in its shipped demos: label "ANT" of RoyalBlue54L-NFC-Antenna, hierarchical_label
+# "OUT" of multichannel/channel_strip, global_label "uio0" of tiny_tapeout (less its
+# fields_autoplaced and Intersheetrefs property).
+# Values are filled per call via set_text, which handles KiCad escaping; _label_spin sets the
+# angle and the justify that goes with it.
 _LABEL_TPL = _cst.parse(
-    b'(label "X"\n\t(at 0 0 0)\n\t(effects\n\t\t(font\n\t\t\t(size 1.27 1.27)\n\t\t)\n\t)'
-    b'\n\t(uuid "x")\n)'
+    b'(label "X"\n\t\t(at 0 0 0)\n\t\t(effects\n\t\t\t(font\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)'
+    b'\n\t\t\t(justify left bottom)\n\t\t)\n\t\t(uuid "x")\n\t)'
 ).lists[0]
 
 _GLABEL_TPL = _cst.parse(
-    b'(global_label "X"\n\t(shape input)\n\t(at 0 0 0)\n\t(effects\n\t\t(font'
-    b'\n\t\t\t(size 1.27 1.27)\n\t\t)\n\t)\n\t(uuid "x")\n)'
+    b'(global_label "X"\n\t\t(shape input)\n\t\t(at 0 0 0)\n\t\t(effects\n\t\t\t(font'
+    b'\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t\t(justify left)\n\t\t)\n\t\t(uuid "x")\n\t)'
 ).lists[0]
 
 _HLABEL_TPL = _cst.parse(
-    b'(hierarchical_label "X"\n\t(shape input)\n\t(at 0 0 0)\n\t(effects\n\t\t(font'
-    b'\n\t\t\t(size 1.27 1.27)\n\t\t)\n\t)\n\t(uuid "x")\n)'
+    b'(hierarchical_label "X"\n\t\t(shape input)\n\t\t(at 0 0 0)\n\t\t(effects\n\t\t\t(font'
+    b'\n\t\t\t\t(size 1.27 1.27)\n\t\t\t)\n\t\t\t(justify left)\n\t\t)\n\t\t(uuid "x")\n\t)'
 ).lists[0]
+
+
+def _label_spin(node, rotation: int) -> None:
+    """Write a label-like node's angle and the horizontal justify that goes with it.
+
+    KiCad reads the spin of a label, global label or hierarchical label from the angle and
+    the horizontal justify together (SCH_LABEL_BASE::GetSpinStyle, sch_label.cpp:344 at 9.0.8),
+    so the justify is left for 0 and 90 and right for 180 and 270.
+    """
+    node.find("at").atoms[3].set_text(_angle_text(rotation))
+    justify = node.find("effects").find("justify")
+    justify.atoms[1].set_text("left" if rotation in (0, 90) else "right")
+
 
 _TEXT_TPL = _cst.parse(
     b'(text "X"\n\t(at 0 0 0)\n\t(effects\n\t\t(font\n\t\t\t(size 1.27 1.27)\n\t\t)\n\t)'
@@ -2162,7 +2179,8 @@ def add_label(
     node = _LABEL_TPL.copy()
     node.atoms[1].set_text(text)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
+    _fill_at(node, x, y, iu=SCH_IU_PER_MM)
+    _label_spin(node, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -2652,7 +2670,8 @@ def add_global_label(
     node.atoms[1].set_text(text)
     node.find("shape").atoms[1].set_text(shape)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
+    _fill_at(node, x, y, iu=SCH_IU_PER_MM)
+    _label_spin(node, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "global_label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -2687,7 +2706,8 @@ def add_hierarchical_label(
     node.atoms[1].set_text(text)
     node.find("shape").atoms[1].set_text(shape)
     _check_rotation(rotation)
-    _fill_at(node, x, y, rotation, SCH_IU_PER_MM)
+    _fill_at(node, x, y, iu=SCH_IU_PER_MM)
+    _label_spin(node, rotation)
     node.find("uuid").atoms[1].set_text(_gen_uuid())
     _splice_sch_node(root, "hierarchical_label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -3099,7 +3119,7 @@ def _wire_pins(
         at = node.find("at")
         at.atoms[1].set_text(_connectivity.mm(x))
         at.atoms[2].set_text(_connectivity.mm(y))
-        at.atoms[3].set_text(str(rot))
+        _label_spin(node, rot)
         node.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(root, "label", node)
     _atomic_write(schematic_path, _cst.serialize(tree))
@@ -3204,7 +3224,8 @@ def connect_pins(
     if not has_label:
         node = _LABEL_TPL.copy()
         node.atoms[1].set_text(f"Net-({ref1}-{pin1})")
-        _fill_at(node, x1, y1, 0, SCH_IU_PER_MM)
+        _fill_at(node, x1, y1, iu=SCH_IU_PER_MM)
+        _label_spin(node, 0)
         node.find("uuid").atoms[1].set_text(_gen_uuid())
         _splice_sch_node(root, "label", node)
 
