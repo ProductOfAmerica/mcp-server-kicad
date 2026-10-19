@@ -801,8 +801,8 @@ class TestHierarchicalSheetParseable:
 
         # In the child: place a resistor and wire its pins to the hierarchy net names
         child_sch = Schematic.from_file(str(child_path))
-        child_sch.libSymbols.append(build_r_symbol())
-        r1 = place_r1(50, 50)
+        child_sch.libSymbols.append(build_r_symbol("Device"))
+        r1 = place_r1(50, 50, lib_name=None)
         child_sch.schematicSymbols.append(r1)
         child_sch.to_file()
 
@@ -851,8 +851,8 @@ class TestSubSheetErcRedirect:
 
         # In child: place a resistor and wire its pins to hierarchy net labels
         child_sch = Schematic.from_file(str(child_path))
-        child_sch.libSymbols.append(build_r_symbol())
-        r1 = place_r1(50, 50)
+        child_sch.libSymbols.append(build_r_symbol("Device"))
+        r1 = place_r1(50, 50, lib_name=None)
         child_sch.schematicSymbols.append(r1)
         child_sch.to_file()
 
@@ -904,8 +904,8 @@ class TestSubSheetErcRedirect:
 
         # In child: place a resistor and wire its pins to hierarchy net labels
         child_sch = Schematic.from_file(str(child_path))
-        child_sch.libSymbols.append(build_r_symbol())
-        r1 = place_r1(50, 50)
+        child_sch.libSymbols.append(build_r_symbol("Device"))
+        r1 = place_r1(50, 50, lib_name=None)
         child_sch.schematicSymbols.append(r1)
         child_sch.to_file()
 
@@ -990,7 +990,7 @@ class TestAnnotateSchematic:
         from kiutils.items.schitems import SchematicSymbol
 
         sch = new_schematic()
-        sch.libSymbols.append(build_r_symbol())
+        sch.libSymbols.append(build_r_symbol("Device"))
         # Place two unannotated resistors
         for i, y in enumerate([50, 80]):
             sym = SchematicSymbol()
@@ -1040,9 +1040,9 @@ class TestAnnotateSchematic:
         from kiutils.items.schitems import SchematicSymbol
 
         sch = new_schematic()
-        sch.libSymbols.append(build_r_symbol())
+        sch.libSymbols.append(build_r_symbol("Device"))
         # R3 already exists
-        r3 = place_r1(50, 50)
+        r3 = place_r1(50, 50, lib_name=None)
         for p in r3.properties:
             if p.key == "Reference":
                 p.value = "R3"
@@ -1637,8 +1637,8 @@ class TestFlattenHierarchy:
 
         # Add a resistor to the child
         child_sch = Schematic.from_file(str(child))
-        child_sch.libSymbols.append(conftest.build_r_symbol())
-        child_sch.schematicSymbols.append(conftest.place_r1(50, 50))
+        child_sch.libSymbols.append(conftest.build_r_symbol("Device"))
+        child_sch.schematicSymbols.append(conftest.place_r1(50, 50, lib_name=None))
         child_sch.to_file()
 
         root = str(proj_dir / "proj.kicad_sch")
@@ -1754,7 +1754,7 @@ class TestRootSymbolInstanceSync:
         child_sch = Schematic.from_file(child_path)
         # Add lib symbol if not present
         if not any(s.entryName == "R" for s in child_sch.libSymbols):
-            child_sch.libSymbols.append(build_r_symbol())
+            child_sch.libSymbols.append(build_r_symbol("Device"))
 
         sym = SchematicSymbol()
         sym.libId = "Device:R"
@@ -2007,7 +2007,7 @@ class TestRootSymbolInstanceSync:
 
         # Place unannotated symbol in root
         root_sch = Schematic.from_file(root)
-        root_sch.libSymbols.append(build_r_symbol())
+        root_sch.libSymbols.append(build_r_symbol("Device"))
         sym = SchematicSymbol()
         sym.libId = "Device:R"
         sym.position = Position(X=100, Y=100)
@@ -2061,7 +2061,7 @@ class TestRootSymbolInstanceSync:
 
         # Add lib symbol to child so place_component can find it
         child_sch = Schematic.from_file(child)
-        child_sch.libSymbols.append(conftest.build_r_symbol())
+        child_sch.libSymbols.append(conftest.build_r_symbol("Device"))
         child_sch.to_file()
 
         schematic.place_component(
@@ -2087,7 +2087,7 @@ class TestRootSymbolInstanceSync:
 
         # Place a component in the child (place_component syncs root automatically)
         child_sch = Schematic.from_file(child)
-        child_sch.libSymbols.append(conftest.build_r_symbol())
+        child_sch.libSymbols.append(conftest.build_r_symbol("Device"))
         child_sch.to_file()
 
         schematic.place_component(
@@ -2114,7 +2114,7 @@ class TestRootSymbolInstanceSync:
 
         # Place a component in the child (place_component syncs root automatically)
         child_sch = Schematic.from_file(child)
-        child_sch.libSymbols.append(conftest.build_r_symbol())
+        child_sch.libSymbols.append(conftest.build_r_symbol("Device"))
         child_sch.to_file()
 
         schematic.place_component(
@@ -2184,9 +2184,9 @@ class TestRootSymbolInstanceSync:
 
         # Place annotated symbols in child BEFORE linking
         child_sch = Schematic.from_file(str(child))
-        child_sch.libSymbols.append(conftest.build_r_symbol())
-        child_sch.schematicSymbols.append(conftest.place_r1(50, 50))
-        r2 = conftest.place_r1(50, 80)
+        child_sch.libSymbols.append(conftest.build_r_symbol("Device"))
+        child_sch.schematicSymbols.append(conftest.place_r1(50, 50, lib_name=None))
+        r2 = conftest.place_r1(50, 80, lib_name=None)
         for p in r2.properties:
             if p.key == "Reference":
                 p.value = "R2"
@@ -2231,7 +2231,7 @@ class TestRootSymbolInstanceRemoval:
         from mcp_server_kicad import schematic
 
         sch = Schematic.from_file(str(path))
-        sch.libSymbols.append(conftest.build_r_symbol())
+        sch.libSymbols.append(conftest.build_r_symbol("Device"))
         sch.to_file()
         schematic.place_component(
             reference=reference,

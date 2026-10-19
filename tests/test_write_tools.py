@@ -208,10 +208,29 @@ class TestPlaceComponent:
         assert r2 is not None
         assert r2.position.angle == 90
 
+    def test_a_symbol_the_custom_lib_lacks_is_refused(self, scratch_sch, scratch_sym_lib):
+        """Test:R from a library that holds only TestPart is not found, though the sheet
+        already holds a Device:R: no other library's R stands in for it, and the file is
+        left as it was."""
+        before = scratch_sch.read_bytes()
+        with pytest.raises(ToolError, match="not found"):
+            schematic.place_component(
+                lib_id="Test:R",
+                reference="R2",
+                value="2.2K",
+                x=150,
+                y=150,
+                symbol_lib_path=str(scratch_sym_lib),
+                schematic_path=str(scratch_sch),
+                project_path=str(scratch_sch.with_suffix(".kicad_pro")),
+            )
+        assert scratch_sch.read_bytes() == before
+
     def test_placement_with_custom_lib(self, scratch_sch, scratch_sym_lib):
-        """Place using a custom symbol library file."""
-        result = schematic.place_component(
-            lib_id="Test:R",
+        """Place using a custom symbol library file: the part draws the library's own pins,
+        IN 5.08 mm left of its origin and OUT 5.08 mm right (the library's coordinates)."""
+        schematic.place_component(
+            lib_id="Test:TestPart",
             reference="R2",
             value="2.2K",
             x=150,
@@ -220,7 +239,9 @@ class TestPlaceComponent:
             schematic_path=str(scratch_sch),
             project_path=str(scratch_sch.with_suffix(".kicad_pro")),
         )
-        assert "R2" in result
+        pins = schematic.get_pin_positions("R2", schematic_path=str(scratch_sch))
+        assert "Pin 1 (IN): (144.78, 149.86)" in pins
+        assert "Pin 2 (OUT): (154.94, 149.86)" in pins
 
     def test_grid_snap(self, scratch_sch):
         """Off-grid placement snaps to nearest 1.27 mm grid point."""
@@ -386,7 +407,7 @@ class TestPlaceComponent:
         from kiutils.items.schitems import HierarchicalSheet
 
         root_sch = new_schematic()
-        root_sch.libSymbols.append(build_r_symbol())
+        root_sch.libSymbols.append(build_r_symbol("Device"))
         root_path = tmp_path / "myproject.kicad_sch"
         root_sch.filePath = str(root_path)
 
@@ -413,7 +434,7 @@ class TestPlaceComponent:
         root_sch.to_file()
 
         child_sch = new_schematic()
-        child_sch.libSymbols.append(build_r_symbol())
+        child_sch.libSymbols.append(build_r_symbol("Device"))
         child_path = tmp_path / "sub.kicad_sch"
         child_sch.filePath = str(child_path)
         child_sch.to_file()

@@ -21,11 +21,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from mcp_server_kicad import _cst, project, schematic
+from mcp_server_kicad import _connectivity, _cst, project, schematic
 
 LIB = str(Path(__file__).parent / "fixtures" / "routing.kicad_sym")
 
-#: The library prefix each fixture symbol is placed under (cosmetic: lib_name decides).
+#: The library prefix each fixture symbol is placed under. It is the key of the symbol's
+#: lib_symbols entry (``Device:R``).
 PREFIX = {
     "R": "Device",
     "D": "Device",
@@ -243,6 +244,16 @@ def _placed(root, ref: str):
     ]
 
 
+def lib_entry(root, symbol: str):
+    """The lib_symbols entry that a placed symbol of library symbol *symbol* draws from: the
+    entry its key names (``_connectivity.lib_key``), found in ``lib_index``."""
+    for s in root.find_all("symbol"):
+        lib_id = s.find("lib_id").atoms[1].text
+        if lib_id.split(":")[-1] == symbol:
+            return _connectivity.lib_index(root)[_connectivity.lib_key(s)]
+    raise LookupError(f"no placed symbol of {symbol}")
+
+
 def _edit(path: str, fn) -> None:
     p = Path(path)
     tree = _cst.parse(p.read_bytes())
@@ -442,7 +453,7 @@ def duplicate_r_swapped(path: str) -> None:
 
     def fn(root) -> None:
         libs = root.find("lib_symbols")
-        first = next(s for s in libs.find_all("symbol") if s.atoms[1].text == "R")
+        first = lib_entry(root, "R")
         dup = first.copy()
         for sub in dup.find_all("symbol"):
             for pin in sub.find_all("pin"):

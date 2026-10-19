@@ -23,6 +23,7 @@ from routing_fixtures import (
     bus,
     fresh,
     label,
+    lib_entry,
     place,
     power,
     project_file,
@@ -403,7 +404,7 @@ def _renamed_entry(tmp_path) -> str:
 
     def add_r_1(root) -> None:
         libs = root.find("lib_symbols")
-        r = next(s for s in libs.find_all("symbol") if s.atoms[1].text == "R")
+        r = lib_entry(root, "R")
         entry = r.copy()
         entry.atoms[1].set_text("R_1")
         for sub in entry.find_all("symbol"):

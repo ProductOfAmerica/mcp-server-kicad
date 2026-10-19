@@ -188,13 +188,18 @@ def _default_stroke(width: float = 0) -> Stroke:
 # ---------------------------------------------------------------------------
 
 
-def build_r_symbol() -> Symbol:
+def build_r_symbol(library: str | None = None) -> Symbol:
     """Build a Device:R library symbol definition (2-pin passive resistor).
+
+    With ``library`` the entry is named ``<library>:R``, the key a placed symbol with that
+    lib_id and no lib_name draws from (sch_symbol.cpp:242-248 at 9.0.8). Without it the entry
+    is the bare ``R`` a library file holds.
 
     Unit 0/style 1: rectangle body (no pins).
     Unit 1/style 1: pin 1 at (0, 3.81) rot 270, pin 2 at (0, -3.81) rot 90.
     """
     sym = Symbol()
+    sym.libraryNickname = library
     sym.entryName = "R"
     sym.pinNamesOffset = 0
     sym.inBom = True
@@ -240,11 +245,15 @@ def build_r_symbol() -> Symbol:
     return sym
 
 
-def place_r1(x: float = 100, y: float = 100) -> SchematicSymbol:
-    """Build a placed R1 SchematicSymbol instance at (x, y)."""
+def place_r1(x: float = 100, y: float = 100, lib_name: str | None = "R") -> SchematicSymbol:
+    """Build a placed R1 SchematicSymbol instance at (x, y).
+
+    ``lib_name`` is the lib_symbols entry it draws from. KiCad writes none when the entry is
+    named by the lib_id, so pass None beside ``build_r_symbol("Device")``.
+    """
     r1 = SchematicSymbol()
     r1.libId = "Device:R"
-    r1.libName = "R"
+    r1.libName = lib_name
     r1.position = Position(X=x, Y=y, angle=0)
     r1.uuid = _gen_uuid()
     r1.unit = 1
@@ -1452,10 +1461,10 @@ def scratch_sch(tmp_path: Path) -> Path:
     sch = new_schematic()
 
     # Library symbol
-    sch.libSymbols.append(build_r_symbol())
+    sch.libSymbols.append(build_r_symbol("Device"))
 
     # Placed component
-    sch.schematicSymbols.append(place_r1(100, 100))
+    sch.schematicSymbols.append(place_r1(100, 100, lib_name=None))
 
     # Net label
     sch.labels.append(

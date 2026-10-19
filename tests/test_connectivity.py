@@ -17,7 +17,7 @@ from hypothesis import example, given, settings
 from hypothesis import strategies as st
 from kicad_ref import parse_units as P
 from kicad_ref import transform as T
-from routing_fixtures import ORIENTED, fresh, junction, label, place, polyline, wire
+from routing_fixtures import ORIENTED, fresh, junction, label, lib_entry, place, polyline, wire
 
 from mcp_server_kicad import _connectivity as C
 from mcp_server_kicad import _cst
@@ -457,7 +457,7 @@ def _edit_lib_pin(path, symbol: str, number: str, hide=False, alternate=None, al
     data = Path(path).read_bytes()
     tree = _cst.parse(data)
     root = tree.lists[0]
-    lib = next(s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == symbol)
+    lib = lib_entry(root, symbol)
     for sub in lib.find_all("symbol"):
         for pin in sub.find_all("pin"):
             if pin.find("number").atoms[1].text == number:
@@ -863,7 +863,7 @@ def _with_jumpers(tmp_path, form: bytes, numbers):
     )
     place_custom(p, lib, "JMP", "U1", 106.68, 97.79)  # its first pin at (101.6, 97.79)
     root = _root(p)
-    entry = next(s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == "JMP")
+    entry = lib_entry(root, "JMP")
     entry.append_child(_cst.parse(form).lists[0], b" ")
     return root
 
@@ -975,7 +975,7 @@ def test_a_derived_library_entry_refuses_the_whole_call(tmp_path):
     p = _r1(tmp_path)
     place(p, "D", "D3", 152.4, 101.6)
     root = _root(p)  # KiCad never writes (extends) into a schematic, so add it in memory only
-    entry = next(s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == "D")
+    entry = lib_entry(root, "D")
     entry.append_child(_cst.parse(b'(extends "D0")').lists[0], b" ")
     plan = C.plan_wire_pins(root, [{"reference": "R1", "pin": "1"}], "N", "auto", 2.54)
     assert plan.codes == ["derived"] and "is derived" in plan.refusal()
