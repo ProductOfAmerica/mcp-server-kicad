@@ -1,0 +1,810 @@
+"""Sheet pages, duplicate_sheet and flatten_hierarchy against kicad-cli (step 12a, part 2).
+
+Judges, none of them the code under test:
+
+- kicad-cli: the sheet order of its netlist (how it reads page numbers), its components and
+  node sets (which pins join), and whether it loads the output at all;
+- KiCad's page comparison (SCH_SHEET::ComparePageNum), written out below from its source;
+- the files KiCad ships, copied into a scratch folder, for the demos.
+
+A node set is a net as a set of (reference, pin); net names are not compared, because the
+hierarchy prints /A/N where the flat file prints a name of its own for the same net.
+"""
+
+from __future__ import annotations
+
+import re
+import shutil
+from pathlib import Path
+
+import edit_judge as J
+import netlist_oracle
+import pytest
+from conftest import requires_cli
+from kicad_corpus import shipped
+from kicad_ref import sch_sheet as SS
+from mcp.server.mcpserver.exceptions import ToolError
+from test_hierarchy_writers import (
+    Proj,
+    file_uuid,
+    instance_paths,
+    kids,
+    no_demos,
+    pins_of,
+    sheet_name,
+    sheet_order,
+    sheet_uuid,
+    sheets_of,
+    top,
+    value,
+)
+
+from mcp_server_kicad import _connectivity, _cst, project, schematic
+
+# ---------------------------------------------------------------------------------------------
+# Reading and editing files for the tests
+# ---------------------------------------------------------------------------------------------
+
+
+def page_key(label: str):
+    """SCH_SHEET::ComparePageNum as a sort key (sch_sheet.cpp:1609-1642 at 9.0.8): integers
+    numerically, before every other label; those by natural string order (StrNumCmp)."""
+    if re.fullmatch(r"[0-9]+", label):
+        return (0, int(label), ())
+    return (1, 0, tuple(int(t) if t.isdigit() else t for t in re.split(r"(\d+)", label)))
+
+
+def page_labels(path: Path) -> dict[str, str]:
+    """{sheet name: the page label KiCad reads when path is the root}, by the lexer."""
+    here = f"/{file_uuid(path)}"
+    out = {}
+    for sheet in sheets_of(path):
+        pages = [page for _pj, p, page in instance_paths(sheet) if p == here]
+        assert len(pages) == 1, (sheet_name(sheet), instance_paths(sheet))
+        out[sheet_name(sheet)] = pages[0]
+    return out
+
+
+def edit(path: Path, fn) -> None:
+    """Apply fn to a file's root list and write it back: how a test makes a file the tools
+    cannot (the CST is not a judge here, only a way to put the premise on disk)."""
+    tree = _cst.parse(path.read_bytes())
+    fn(tree.lists[0])
+    path.write_bytes(_cst.serialize(tree))
+
+
+def set_pages(path: Path, labels: dict[str, str]) -> None:
+    """Give each named sheet block this page label in every instance entry it holds."""
+
+    def go(root):
+        for sheet in root.find_all("sheet"):
+            name = next(
+                p.atoms[2].text
+                for p in sheet.find_all("property")
+                if p.atoms[1].text == "Sheetname"
+            )
+            for pj in sheet.find("instances").find_all("project"):
+                for entry in pj.find_all("path"):
+                    if name in labels:
+                        entry.find("page").atoms[1].set_text(labels[name])
+
+    edit(path, go)
+
+
+def to_legacy_paths(path: Path) -> None:
+    """Rewrite each sheet's instance path to the shape earlier versions of the tools wrote:
+    the sheet's own path, which KiCad never reads a page from."""
+
+    def go(root):
+        for sheet in root.find_all("sheet"):
+            uid = sheet.find("uuid").atoms[1].text
+            for pj in sheet.find("instances").find_all("project"):
+                for entry in pj.find_all("path"):
+                    entry.atoms[1].set_text(f"{entry.atoms[1].text}/{uid}")
+
+    edit(path, go)
+
+
+def node_sets(path: Path) -> set[frozenset]:
+    """KiCad's nets as node sets, names ignored."""
+    return {nodes for _code, _name, _cls, nodes in netlist_oracle.nets(path)}
+
+
+def pins_by_ref(path: Path) -> dict[str, set[str]]:
+    out: dict[str, set[str]] = {}
+    for sets in node_sets(path):
+        for ref, pin in sets:
+            out.setdefault(ref, set()).add(pin)
+    return out
+
+
+def copy_demo(tmp_path: Path, name: str) -> Path:
+    """A scratch copy of a shipped demo project, schematics and libraries only."""
+    src = next(
+        p
+        for n, p in shipped(("demos",), (".kicad_pro",), ())
+        if n.startswith(f"demos/{name}/") and n.count("/") == name.count("/") + 2
+    )
+    dst = tmp_path / "demo"
+    shutil.copytree(
+        src.parent,
+        dst,
+        ignore=shutil.ignore_patterns("*.kicad_pcb", "*.pretty", "*.xml", "*.kicad_prl"),
+    )
+    return dst / src.with_suffix(".kicad_sch").name
+
+
+# ---------------------------------------------------------------------------------------------
+# Bug 41: reorder_sheet_pages changes the page numbers KiCad orders sheets by
+# ---------------------------------------------------------------------------------------------
+
+
+def three_sheets(p: Proj) -> dict[str, str]:
+    """A, B, C placed right to left, so their position order (B, C, A) is not their page
+    order (A=2, B=3, C=4)."""
+    uuids = {}
+    for name, x in (("A", 127.0), ("B", 25.4), ("C", 76.2)):
+        uuids[name] = p.sheet(p.root, p.child(name.lower()), name, x=x, y=25.4)
+    return uuids
+
+
+@requires_cli
+def test_reorder_makes_kicad_cli_list_the_sheets_in_the_order_asked(tmp_path):
+    p = Proj(tmp_path)
+    u = three_sheets(p)
+    assert sheet_order(p.root) == ["/", "/A/", "/B/", "/C/"], "premise: page order"
+    before = p.root.read_bytes()
+    project.reorder_sheet_pages([u["C"], u["A"]], schematic_path=str(p.root))
+    assert sheet_order(p.root) == ["/", "/C/", "/A/", "/B/"]
+    changes = J.atom_changes(before, p.root.read_bytes())
+    assert changes and all(c.path[-1][1] == "page" for c in changes), changes
+
+
+def test_reorder_writes_the_page_labels_kicad_sorts_by(tmp_path):
+    p = Proj(tmp_path)
+    u = three_sheets(p)
+    project.reorder_sheet_pages([u["B"], u["C"]], schematic_path=str(p.root))
+    labels = page_labels(p.root)
+    assert sorted(labels, key=lambda n: page_key(labels[n])) == ["B", "C", "A"]
+    assert len(set(labels.values())) == 3
+
+
+@requires_cli
+def test_reorder_repairs_the_instance_paths_earlier_versions_wrote(tmp_path):
+    p = Proj(tmp_path)
+    u = three_sheets(p)
+    to_legacy_paths(p.root)
+    if sheet_order(p.root) != ["/", "/B/", "/C/", "/A/"]:
+        raise RuntimeError("premise: kicad-cli reads those pages by position, not by label")
+    before = p.root.read_bytes()
+    project.reorder_sheet_pages([u["A"], u["B"]], schematic_path=str(p.root))
+    assert sheet_order(p.root) == ["/", "/A/", "/B/", "/C/"]
+    changes = J.atom_changes(before, p.root.read_bytes())
+    assert {c.path[-1][1] for c in changes} <= {"path", "page"}, changes
+    assert all(
+        entry[1] == f"/{file_uuid(p.root)}"
+        for sheet in sheets_of(p.root)
+        for entry in instance_paths(sheet)
+    )
+
+
+@requires_cli
+def test_reorder_gives_distinct_pages_to_sheets_sharing_one(tmp_path):
+    p = Proj(tmp_path)
+    u = three_sheets(p)
+    set_pages(p.root, {"B": "2"})  # A and B both read page 2; C reads 4
+    if sheet_order(p.root) != ["/", "/B/", "/A/", "/C/"]:
+        raise RuntimeError("premise: a tie falls to the sheets' positions")
+    project.reorder_sheet_pages([u["A"], u["B"]], schematic_path=str(p.root))
+    assert sheet_order(p.root) == ["/", "/A/", "/B/", "/C/"]
+    assert page_labels(p.root) == {"A": "2", "B": "3", "C": "4"}
+
+
+@requires_cli
+def test_reorder_does_not_hand_out_a_page_a_deeper_sheet_holds(tmp_path):
+    p = Proj(tmp_path)
+    mid = p.child("mid")
+    uid_y = p.sheet(p.root, mid, "Y")
+    uid_x = p.sheet(p.root, p.child("x"), "X")
+    p.sheet(mid, p.child("leaf"), "Leaf")
+    set_pages(mid, {"Leaf": "2"})
+    set_pages(p.root, {"X": "2", "Y": "2"})
+    project.reorder_sheet_pages([uid_y, uid_x], schematic_path=str(p.root))
+    assert page_labels(p.root) == {"Y": "3", "X": "4"}
+    assert sheet_order(p.root) == ["/", "/Y/Leaf/", "/Y/", "/X/"]
+
+
+@requires_cli
+def test_reorder_keeps_labels_that_are_not_numbers(tmp_path):
+    p = Proj(tmp_path)
+    u = three_sheets(p)
+    set_pages(p.root, {"A": "Intro", "B": "2", "C": "10"})
+    if sheet_order(p.root) != ["/", "/B/", "/C/", "/A/"]:
+        raise RuntimeError("premise: numbers sort before text, numerically")
+    project.reorder_sheet_pages([u["A"], u["C"]], schematic_path=str(p.root))
+    assert sheet_order(p.root) == ["/", "/A/", "/C/", "/B/"]
+    assert sorted(page_labels(p.root).values()) == ["10", "2", "Intro"]
+
+
+@no_demos
+@requires_cli
+def test_reorder_on_a_shipped_hierarchy(tmp_path):
+    root = copy_demo(tmp_path, "complex_hierarchy")
+    sheets = {sheet_name(s): sheet_uuid(s) for s in sheets_of(root)}
+    assert sheet_order(root) == ["/", "/ampli_ht_vertical/", "/ampli_ht_horizontal/"]
+    before = root.read_bytes()
+    project.reorder_sheet_pages([sheets["ampli_ht_horizontal"]], schematic_path=str(root))
+    assert sheet_order(root) == ["/", "/ampli_ht_horizontal/", "/ampli_ht_vertical/"]
+    changes = J.atom_changes(before, root.read_bytes())
+    assert changes and all(c.path[-1][1] == "page" for c in changes), changes
+
+
+def test_reorder_refuses_a_sub_sheet_and_writes_nothing(tmp_path):
+    p = Proj(tmp_path)
+    mid = p.child("mid")
+    p.sheet(p.root, mid, "Mid")
+    p.sheet(mid, p.child("leaf"), "Leaf")
+    leaf = sheet_uuid(sheets_of(mid)[0])
+    before = mid.read_bytes()
+    with pytest.raises(ToolError, match="root"):
+        project.reorder_sheet_pages([leaf], schematic_path=str(mid))
+    assert mid.read_bytes() == before
+
+
+# ---------------------------------------------------------------------------------------------
+# duplicate_sheet: instance at the parent's path, KiCad's field places, references of its own
+# ---------------------------------------------------------------------------------------------
+
+
+def resistor(child: Path, p: Proj, ref: str, x: float, pin1: str, pin2: str, y: float = 60.96):
+    """A resistor with a local label on each pin end (pin 1 is 3.81 above the origin)."""
+    x = round(round(x / 1.27) * 1.27, 4)
+    schematic.place_component(
+        "Device:R", ref, "1k", x, y, schematic_path=str(child), project_path=str(p.pro)
+    )
+    schematic.add_label(pin1, x, y - 3.81, 0, schematic_path=str(child))
+    schematic.add_label(pin2, x, y + 3.81, 0, schematic_path=str(child))
+
+
+def two_resistor_sheet(tmp_path: Path):
+    """Sheet C whose child holds R1 (N, M) and R2 (M, K); returns (project, child, sheet uuid)."""
+    p = Proj(tmp_path)
+    child = p.child()
+    resistor(child, p, "R1", 50.8, "N", "M")
+    resistor(child, p, "R2", 76.2, "M", "K")
+    return p, child, p.sheet(p.root, child, "C")
+
+
+def net(*pins: tuple[str, str]) -> frozenset:
+    return frozenset(pins)
+
+
+@requires_cli
+def test_a_duplicate_is_a_second_set_of_parts_not_the_same_parts_twice(tmp_path):
+    p, _child, uid = two_resistor_sheet(tmp_path)
+    assert node_sets(p.root) == {
+        net(("R1", "1")),
+        net(("R1", "2"), ("R2", "1")),
+        net(("R2", "2")),
+    }, "premise"
+    project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
+    # the copy's parts are the first free numbers, in the order of their positions
+    assert node_sets(p.root) == {
+        net(("R1", "1")),
+        net(("R1", "2"), ("R2", "1")),
+        net(("R2", "2")),
+        net(("R3", "1")),
+        net(("R3", "2"), ("R4", "1")),
+        net(("R4", "2")),
+    }
+
+
+def as_unit_of(path: Path, index: int, ref: str, unit: int) -> None:
+    """Make the index-th placed symbol of a file unit `unit` of part `ref`: its top-level
+    unit, its Reference property and its instance entries (place_component refuses a
+    reference the file already holds, so a second unit is made this way)."""
+
+    def go(root):
+        sym = root.find_all("symbol")[index]
+        sym.find("unit").atoms[1].set_text(str(unit))
+        for prop in sym.find_all("property"):
+            if prop.atoms[1].text == "Reference":
+                prop.atoms[2].set_text(ref)
+        for pj in sym.find("instances").find_all("project"):
+            for entry in pj.find_all("path"):
+                entry.find("unit").atoms[1].set_text(str(unit))
+                entry.find("reference").atoms[1].set_text(ref)
+
+    edit(path, go)
+
+
+@requires_cli
+def test_the_units_of_one_part_keep_one_reference_in_the_copy(tmp_path):
+    p = Proj(tmp_path)
+    child = p.child()
+    for x, ref in ((50.8, "U1"), (101.6, "U2")):
+        schematic.place_component(
+            "Amplifier_Operational:LM2904",
+            ref,
+            "LM2904",
+            x,
+            60.96,
+            schematic_path=str(child),
+            project_path=str(p.pro),
+        )
+    as_unit_of(child, 1, "U1", 2)
+    uid = p.sheet(p.root, child, "C")
+    pins = pins_by_ref(p.root)
+    assert set(pins) == {"U1"} and len(pins["U1"]) >= 6, "premise: both units are one part"
+    project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
+    after = pins_by_ref(p.root)
+    assert set(after) == {"U1", "U2"}
+    assert after["U1"] == after["U2"] == pins["U1"]
+
+
+def reference_pairs(path: Path) -> list[tuple[str, list[tuple[str, str]]]]:
+    """(Reference property, [(instance path, instance reference)]) per placed symbol."""
+    out = []
+    for sym in kids(top(path.read_bytes()), b"symbol"):
+        prop = next(
+            q.items[2].value.decode() for q in kids(sym, b"property") if value(q) == "Reference"
+        )
+        entries = []
+        inst = SS._child(sym, b"instances")
+        for pj in kids(inst, b"project") if inst is not None else []:
+            for entry in kids(pj, b"path"):
+                entries.append((value(entry), value(SS._child(entry, b"reference"))))
+        out.append((prop, entries))
+    return out
+
+
+def copy_file_of(root: Path) -> Path:
+    name = next(
+        q.items[2].value.decode()
+        for q in kids(sheets_of(root)[-1], b"property")
+        if value(q) == "Sheetfile"
+    )
+    return root.parent / name
+
+
+def test_the_copy_has_one_entry_at_its_own_path_and_a_matching_property(tmp_path):
+    p, child, uid = two_resistor_sheet(tmp_path)
+    project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
+    new_block = sheet_uuid(sheets_of(p.root)[-1])
+    live = f"/{file_uuid(p.root)}/{new_block}"
+    assert sorted(reference_pairs(copy_file_of(p.root))) == [
+        ("R3", [(live, "R3")]),
+        ("R4", [(live, "R4")]),
+    ]
+    assert [ref for ref, _ in reference_pairs(child)] == ["R1", "R2"], "the source is untouched"
+
+
+def test_the_copy_numbers_from_the_reference_a_symbol_has_at_its_live_path(tmp_path):
+    """R1's entry at the sheet's path says R5, though its Reference property says R1: KiCad
+    reads the entry, so R1 is free for the copy."""
+    p = Proj(tmp_path)
+    child = p.child()
+    schematic.place_component(
+        "Device:R", "R1", "1k", 50.8, 50.8, schematic_path=str(child), project_path=str(p.pro)
+    )
+    uid = p.sheet(p.root, child, "C")
+
+    def go(root):
+        entry = root.find("symbol").find("instances").find("project").find("path")
+        entry.find("reference").atoms[1].set_text("R5")
+
+    edit(child, go)
+    project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
+    live = f"/{file_uuid(p.root)}/{sheet_uuid(sheets_of(p.root)[-1])}"
+    assert reference_pairs(copy_file_of(p.root)) == [("R1", [(live, "R1")])]
+
+
+def test_duplicate_is_one_insertion_in_the_parent_at_the_parents_path(tmp_path):
+    p, _child, uid = two_resistor_sheet(tmp_path)
+    before = p.root.read_bytes()
+    project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
+    J.assert_inserted(before, p.root.read_bytes(), heads=["sheet"])
+    copy = sheets_of(p.root)[-1]
+    assert instance_paths(copy) == [("p", f"/{file_uuid(p.root)}", "3")]
+
+
+@requires_cli
+def test_kicad_cli_lists_the_copy_at_the_page_it_was_given(tmp_path):
+    """Page 3 is free, so the copy takes it and lands between A (2) and B (4), though it sits
+    left of A."""
+    p = Proj(tmp_path)
+    p.sheet(p.root, p.child("a"), "A", x=127.0, y=25.4)
+    b = p.sheet(p.root, p.child("b"), "B", x=25.4, y=25.4)
+    set_pages(p.root, {"B": "4"})
+    assert sheet_order(p.root) == ["/", "/A/", "/B/"], "premise"
+    project.duplicate_sheet(b, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
+    assert sheet_order(p.root) == ["/", "/A/", "/Copy/", "/B/"]
+
+
+def test_the_copys_fields_are_where_kicad_autoplaces_them(tmp_path):
+    p = Proj(tmp_path)
+    uid = p.sheet(
+        p.root,
+        p.child(),
+        "C",
+        pins=[{"name": "A", "direction": "input"}, {"name": "B", "direction": "output"}],
+    )
+    project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
+    source, copy = sheets_of(p.root)
+    for group in (source, copy):
+        want = SS.autoplace(SS.read_sheet(group), 1524)
+        assert SS.field_at(group, b"Sheetname") == want.name_at, sheet_name(group)
+        assert SS.field_at(group, b"Sheetfile") == want.file_at, sheet_name(group)
+    assert sheet_uuid(copy) != sheet_uuid(source)
+    src, dup = SS.read_sheet(source), SS.read_sheet(copy)
+    assert [(q.y, q.justify) for q in dup.pins] == [(q.y, q.justify) for q in src.pins]
+    assert all(
+        q.x - dup.x == r.x - src.x and q.side == r.side
+        for q, r in zip(dup.pins, src.pins, strict=True)
+    )
+
+
+def test_the_copy_keeps_what_the_source_block_carries(tmp_path):
+    """KiCad's duplicate clones the block: a field the user added comes along."""
+    p, _child, uid = two_resistor_sheet(tmp_path)
+
+    def go(root):
+        sheet = root.find("sheet")
+        extra = next(q for q in sheet.find_all("property") if q.atoms[1].text == "Sheetfile").copy()
+        extra.atoms[1].set_text("Note")
+        extra.atoms[2].set_text("keep me")
+        sheet.insert_after(sheet.find_all("property")[-1], extra)
+
+    edit(p.root, go)
+    project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
+    notes = [
+        q.items[2].value.decode()
+        for q in kids(sheets_of(p.root)[-1], b"property")
+        if value(q) == "Note"
+    ]
+    assert notes == ["keep me"]
+
+
+def test_a_source_with_sub_sheets_is_refused_and_nothing_is_written(tmp_path):
+    p = Proj(tmp_path)
+    mid = p.child("mid")
+    uid = p.sheet(p.root, mid, "Mid")
+    p.sheet(mid, p.child("leaf"), "Leaf")
+    before = {f.name: f.read_bytes() for f in p.dir.iterdir()}
+    with pytest.raises(ToolError, match="sub-sheet"):
+        project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
+    assert {f.name: f.read_bytes() for f in p.dir.iterdir()} == before
+
+
+# ---------------------------------------------------------------------------------------------
+# flatten_hierarchy: the flat file's netlist is the hierarchy's
+# ---------------------------------------------------------------------------------------------
+
+
+def flatten(root: Path) -> tuple[Path, str]:
+    out = root.with_name("flat.kicad_sch")
+    message = project.flatten_hierarchy(schematic_path=str(root), output_path=str(out))
+    return out, message
+
+
+def assert_same_netlist(root: Path, flat: Path) -> None:
+    want, got = node_sets(root), node_sets(flat)
+    assert got == want, (
+        "only in the hierarchy",
+        sorted(sorted(s) for s in want - got),
+        "only in the flat file",
+        sorted(sorted(s) for s in got - want),
+    )
+
+
+def pin_edge(root: Path, sheet: str, pin: str) -> tuple[float, float]:
+    x, y, _angle = pins_of(next(s for s in sheets_of(root) if sheet_uuid(s) == sheet))[pin]
+    return x / SS.IU_PER_MM, y / SS.IU_PER_MM
+
+
+def build_unconnected(p: Proj) -> None:
+    """F1: parts with nothing on their pins, at the root and in the child."""
+    child = p.child("c")
+    p.sheet(p.root, child, "C", x=152.4, y=25.4)
+    for path, ref in ((p.root, "R1"), (child, "R2")):
+        schematic.place_component(
+            "Device:R", ref, "1k", 50.8, 50.8, schematic_path=str(path), project_path=str(p.pro)
+        )
+
+
+def build_pin_wired_both_sides(p: Proj) -> None:
+    """F2: a root pin wired to a sheet pin, the child's hierarchical label wired to a pin,
+    and no label of one name on both sides."""
+    child = p.child("c")
+    uid = p.sheet(p.root, child, "C", x=152.4, y=50.8)
+    project.add_sheet_pin(uid, "IN", "input", str(p.root))
+    px, py = pin_edge(p.root, uid, "IN")
+    schematic.place_component(
+        "Device:R",
+        "R1",
+        "1k",
+        101.6,
+        py - 3.81,
+        schematic_path=str(p.root),
+        project_path=str(p.pro),
+    )
+    schematic.add_wires([{"x1": 101.6, "y1": py, "x2": px, "y2": py}], schematic_path=str(p.root))
+    schematic.place_component(
+        "Device:R", "R2", "1k", 101.6, 54.61, schematic_path=str(child), project_path=str(p.pro)
+    )
+    schematic.add_hierarchical_label("IN", "input", 76.2, 50.8, schematic_path=str(child))
+    schematic.add_wires(
+        [{"x1": 76.2, "y1": 50.8, "x2": 101.6, "y2": 50.8}], schematic_path=str(child)
+    )
+
+
+def build_same_local_label(p: Proj) -> None:
+    """F3: a local label N on a resistor pin in each of two sheets: two nets."""
+    for k, (name, x) in enumerate((("A", 152.4), ("B", 203.2)), 1):
+        child = p.child(name.lower())
+        resistor(child, p, f"R{k}", 50.8, "N", f"M{k}")
+        p.sheet(p.root, child, name, x=x, y=25.4)
+
+
+def build_reused_file(p: Proj) -> None:
+    """F4: one file behind two sheet blocks, its resistor R1 in one and R2 in the other."""
+    child = p.child("c")
+    resistor(child, p, "R1", 50.8, "N", "M")
+    p.sheet(p.root, child, "C1", x=152.4, y=25.4)
+    p.sheet(p.root, child, "C2", x=203.2, y=25.4)
+    second = sheet_uuid(sheets_of(p.root)[1])
+
+    def go(root):
+        for entry in root.find("symbol").find("instances").find("project").find_all("path"):
+            if entry.atoms[1].text.endswith(second):
+                entry.find("reference").atoms[1].set_text("R2")
+
+    edit(child, go)
+
+
+def build_nested(p: Proj) -> None:
+    """F5: root, A, B, with a resistor in B."""
+    a, b = p.child("a"), p.child("b")
+    p.sheet(p.root, a, "A", x=152.4, y=25.4)
+    p.sheet(a, b, "B", x=152.4, y=25.4)
+    resistor(b, p, "R1", 50.8, "N", "M")
+
+
+def build_four_rotations(p: Proj) -> None:
+    """Labels at all four rotations on both sides of the boundary."""
+    child = p.child("c")
+    uid = p.sheet(p.root, child, "C", x=152.4, y=25.4)
+    project.modify_hierarchical_sheet(uid, str(p.root), height=20.32)
+    for k, rotation in enumerate((0, 90, 180, 270)):
+        x = 40.64 + 20.32 * k
+        schematic.place_component(
+            "Device:R",
+            f"R{k + 1}",
+            "1k",
+            x,
+            60.96,
+            schematic_path=str(child),
+            project_path=str(p.pro),
+        )
+        schematic.add_hierarchical_label(
+            f"P{rotation}", "input", x, 57.15, rotation, schematic_path=str(child)
+        )
+        schematic.add_label(f"Q{rotation}", x, 64.77, rotation, schematic_path=str(child))
+        project.add_sheet_pin(uid, f"P{rotation}", "input", str(p.root))
+        p.stub(p.root, uid, f"P{rotation}", f"L{rotation}")
+
+
+def build_global_and_power(p: Proj) -> None:
+    """A global label and a power symbol shared by two sheets."""
+    for k, (name, x) in enumerate((("A", 152.4), ("B", 203.2)), 1):
+        child = p.child(name.lower())
+        schematic.place_component(
+            "Device:R",
+            f"R{k}",
+            "1k",
+            50.8,
+            60.96,
+            schematic_path=str(child),
+            project_path=str(p.pro),
+        )
+        schematic.add_global_label("G", 50.8, 57.15, 0, "input", schematic_path=str(child))
+        schematic.place_component(
+            "power:GND",
+            f"#PWR0{k}",
+            "GND",
+            50.8,
+            64.77,
+            schematic_path=str(child),
+            project_path=str(p.pro),
+        )
+        p.sheet(p.root, child, name, x=x, y=25.4)
+
+
+def build_units_across_sheets(p: Proj) -> None:
+    """The two units of U1 on two sheets."""
+    for k, name in enumerate(("A", "B"), 1):
+        child = p.child(name.lower())
+        schematic.place_component(
+            "Amplifier_Operational:LM2904",
+            "U1",
+            "LM2904",
+            76.2,
+            60.96,
+            schematic_path=str(child),
+            project_path=str(p.pro),
+        )
+        p.sheet(p.root, child, name, x=127.0 + 50.8 * k, y=25.4)
+    as_unit_of(p.dir / "b.kicad_sch", 0, "U1", 2)
+
+
+BUILDERS = [
+    pytest.param(build_unconnected, id="unconnected-pins"),
+    pytest.param(build_pin_wired_both_sides, id="pin-wired-both-sides"),
+    pytest.param(build_same_local_label, id="same-local-label"),
+    pytest.param(build_reused_file, id="reused-file"),
+    pytest.param(build_nested, id="nested"),
+    pytest.param(build_four_rotations, id="four-rotations"),
+    pytest.param(build_global_and_power, id="global-and-power"),
+    pytest.param(build_units_across_sheets, id="units-across-sheets"),
+]
+
+
+@requires_cli
+@pytest.mark.parametrize("build", BUILDERS)
+def test_the_flat_file_has_the_hierarchys_netlist(tmp_path, build):
+    p = Proj(tmp_path)
+    build(p)
+    files = {f.name: f.read_bytes() for f in p.dir.iterdir()}
+    assert node_sets(p.root), "premise: the hierarchy has nets"
+    flat, message = flatten(p.root)
+    assert "components" in message
+    assert {f.name: f.read_bytes() for f in p.dir.iterdir() if f != flat} == files
+    assert_same_netlist(p.root, flat)
+
+
+@requires_cli
+def test_every_flat_symbol_has_one_entry_at_the_flat_files_path(tmp_path):
+    p = Proj(tmp_path)
+    build_reused_file(p)
+    flat, _ = flatten(p.root)
+    here = f"/{file_uuid(flat)}"
+    entries = [e for _prop, e in reference_pairs(flat)]
+    assert all(len(e) == 1 and e[0][0] == here for e in entries), entries
+    assert sorted(e[0][1] for e in entries) == ["R1", "R2"]
+    assert not kids(top(flat.read_bytes()), b"symbol_instances")
+
+
+@requires_cli
+@pytest.mark.no_kicad_validation  # the subject is a sheet whose file is gone
+def test_a_missing_sheet_file_is_an_empty_sheet(tmp_path):
+    p = Proj(tmp_path)
+    child = p.child("c")
+    resistor(child, p, "R1", 50.8, "N", "M")
+    uid = p.sheet(p.root, child, "C", x=152.4, y=25.4)
+    project.add_sheet_pin(uid, "IN", "input", str(p.root))
+    child.unlink()
+    flat, message = flatten(p.root)
+    assert "c.kicad_sch" in message
+    assert_same_netlist(p.root, flat)
+
+
+@no_demos
+@requires_cli
+@pytest.mark.parametrize("demo", ["simulation/subsheets", "complex_hierarchy", "pic_programmer"])
+def test_a_shipped_hierarchy_flattens_to_its_own_netlist(tmp_path, demo):
+    root = copy_demo(tmp_path, demo)
+    flat, _ = flatten(root)
+    assert_same_netlist(root, flat)
+
+
+# ---------------------------------------------------------------------------------------------
+# flatten_hierarchy: where it cannot keep the netlist it refuses and writes nothing
+# ---------------------------------------------------------------------------------------------
+
+
+def refused(p: Proj, match: str) -> None:
+    before = {f.name: f.read_bytes() for f in p.dir.iterdir()}
+    out = p.dir / "flat.kicad_sch"
+    with pytest.raises(ToolError, match=match):
+        project.flatten_hierarchy(schematic_path=str(p.root), output_path=str(out))
+    assert {f.name: f.read_bytes() for f in p.dir.iterdir()} == before
+
+
+def test_a_bus_on_a_sheet_pin_is_refused(tmp_path):
+    p = Proj(tmp_path)
+    uid = p.sheet(p.root, p.child("c"), "C")
+    project.add_sheet_pin(uid, "D[0..3]", "input", str(p.root))
+    refused(p, r"bus.*D\[0\.\.3\]")
+
+
+def test_a_bus_label_in_a_sub_sheet_is_refused(tmp_path):
+    p = Proj(tmp_path)
+    child = p.child("c")
+    p.sheet(p.root, child, "C")
+    schematic.add_label("D{A0 A1}", 40.64, 40.64, 0, schematic_path=str(child))
+    refused(p, r"bus.*c\.kicad_sch")
+
+
+def test_an_overbar_name_is_not_a_bus(tmp_path):
+    p = Proj(tmp_path)
+    child = p.child("c")
+    p.sheet(p.root, child, "C", pins=[{"name": "~{RESET}", "direction": "input"}])
+    schematic.add_label("~{RESET}", 40.64, 40.64, 0, schematic_path=str(child))
+    out, _ = flatten(p.root)
+    assert out.is_file()
+
+
+def test_a_sheet_file_from_before_instances_moved_onto_symbols_is_refused(tmp_path):
+    p = Proj(tmp_path)
+    child = p.child("c")
+    p.sheet(p.root, child, "C")
+    edit(child, lambda root: root.find("version").atoms[1].set_text("20211014"))
+    refused(p, r"c\.kicad_sch.*(version|older|format)")
+
+
+def test_a_bus_alias_in_a_sub_sheet_is_refused(tmp_path):
+    p = Proj(tmp_path)
+    child = p.child("c")
+    p.sheet(p.root, child, "C")
+
+    def go(root):
+        alias = _cst.parse(b'(bus_alias "DATA"\n\t(members "D0" "D1")\n)').lists[0]
+        root.insert_before(root.find("lib_symbols"), alias)
+
+    edit(child, go)
+    refused(p, r"bus_alias.*c\.kicad_sch|c\.kicad_sch.*bus_alias")
+
+
+def test_two_definitions_of_one_library_symbol_are_refused(tmp_path):
+    p = Proj(tmp_path)
+    child = p.child("c")
+    for path in (p.root, child):
+        schematic.place_component(
+            "Device:R", "R1" if path == p.root else "R2", "1k", 50.8, 50.8,
+            schematic_path=str(path), project_path=str(p.pro),
+        )  # fmt: skip
+    p.sheet(p.root, child, "C", x=152.4, y=25.4)
+
+    def go(root):
+        lib = next(
+            s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == "Device:R"
+        )
+        prop = next(q for q in lib.find_all("property") if q.atoms[1].text == "Description")
+        prop.atoms[2].set_text("a different resistor")
+
+    edit(child, go)
+    refused(p, r"Device:R")
+
+
+@pytest.mark.parametrize("attribute", ["dnp", "in_bom", "on_board", "exclude_from_sim"])
+def test_a_sheet_marked_out_of_the_design_is_refused(tmp_path, attribute):
+    p = Proj(tmp_path)
+    p.sheet(p.root, p.child("c"), "C")
+    flipped = "yes" if attribute in ("dnp", "exclude_from_sim") else "no"
+    edit(p.root, lambda root: root.find("sheet").find(attribute).atoms[1].set_text(flipped))
+    refused(p, attribute)
+
+
+def test_two_sheets_of_one_name_are_refused(tmp_path):
+    p = Proj(tmp_path)
+    p.sheet(p.root, p.child("a"), "Same", x=127.0)
+    p.sheet(p.root, p.child("b"), "Same", x=203.2)
+    refused(p, "Same")
+
+
+@pytest.mark.no_kicad_validation
+def test_an_unreadable_sheet_file_is_refused(tmp_path):
+    p = Proj(tmp_path)
+    child = p.child("c")
+    p.sheet(p.root, child, "C")
+    child.write_bytes(b"(kicad_sch (version 20250114)")
+    refused(p, r"c\.kicad_sch")
+
+
+def test_too_many_sheet_instances_are_refused(tmp_path, monkeypatch):
+    p = Proj(tmp_path)
+    child = p.child("c")
+    p.sheet(p.root, child, "C1", x=127.0)
+    p.sheet(p.root, child, "C2", x=203.2)
+    monkeypatch.setattr(_connectivity, "_MAX_INSTANCES", 1)
+    refused(p, "instances")
