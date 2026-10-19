@@ -924,7 +924,6 @@ def test_a_library_symbol_that_differs_only_in_its_fields_flattens(tmp_path, oth
     assert_same_netlist(p.root, flat)
 
 
-@pytest.mark.no_kicad_validation  # the definition is edited by hand
 @pytest.mark.usefixtures("stock_parts")
 def test_two_definitions_differing_only_in_a_power_pin_being_hidden_are_refused(tmp_path):
     """A hidden power_in pin is a global net of its name and a visible one is not."""
@@ -946,6 +945,46 @@ def test_two_definitions_differing_only_in_a_power_pin_being_hidden_are_refused(
     p.sheet(p.root, a, "A", x=152.4, y=25.4)
     p.sheet(p.root, b, "B", x=203.2, y=25.4)
     refused(p, r"Device:R")
+
+
+_UNIT_2_WITH_HIDDEN_POWER_PIN = (
+    b'(symbol "R_2_1"'
+    b" (pin passive line (at 0 3.81 270) (length 1.27)"
+    b' (name "~" (effects (font (size 1.27 1.27))))'
+    b' (number "3" (effects (font (size 1.27 1.27)))))'
+    b" (pin power_in line (at 10.16 0 180) (length 2.54) (hide yes)"
+    b' (name "VCC" (effects (font (size 1.27 1.27))))'
+    b' (number "4" (effects (font (size 1.27 1.27))))))'
+)
+
+
+@requires_cli
+def test_a_hidden_power_pin_of_a_unit_another_sheet_places_does_not_keep_this_sheets_label(
+    tmp_path,
+):
+    """One file used twice, its part placed as unit 1 at the first sheet and as unit 2 (which
+    alone has a hidden power_in pin VCC) at the second: the first sheet's label VCC is local."""
+    p = Proj(tmp_path)
+    child = p.child("c")
+    resistor(child, p, "R1", 50.8, "VCC", "M")
+    edit(
+        child,
+        lambda r: device_r(r).append_child(
+            _cst.parse(_UNIT_2_WITH_HIDDEN_POWER_PIN).lists[0], b"\n\t\t\t"
+        ),
+    )
+    p.sheet(p.root, child, "C1", x=152.4, y=25.4)
+    p.sheet(p.root, child, "C2", x=203.2, y=25.4)
+    second = sheet_uuid(sheets_of(p.root)[1])
+
+    def place_unit_two(root):
+        for entry in root.find("symbol").find("instances").find("project").find_all("path"):
+            if entry.atoms[1].text.endswith(second):
+                entry.find("unit").atoms[1].set_text("2")
+
+    edit(child, place_unit_two)
+    flat, _ = flatten(p.root)
+    assert_same_netlist(p.root, flat)
 
 
 def test_a_root_label_named_like_a_global_net_of_another_sheet_is_refused(tmp_path):

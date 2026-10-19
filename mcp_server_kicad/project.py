@@ -2737,7 +2737,7 @@ def flatten_hierarchy(
     # A global label or a power symbol names a net on every sheet, and a local or hierarchical
     # label of the same text on the same sheet joins it. So a label keeps its text where its own
     # sheet has such a net, and is renamed where it has none.
-    def global_names(node) -> set[str]:
+    def global_names(node, live: str) -> set[str]:
         names = {g.atoms[1].text for g in node.find_all("global_label") if len(g.atoms) > 1}
         libs = _connectivity.lib_index(node)
         records = _connectivity.sheet_facts(node).records
@@ -2753,23 +2753,21 @@ def flatten_hierarchy(
                 # a hidden power_in pin names a global net by its own name (sch_pin.cpp:323-327
                 # at 9.0.8)
                 style = _connectivity._sym_body_style_cst(sym)
-                for unit in rec.every_unit():
-                    for sub in _connectivity._instance_units(lib, unit, style):
-                        for pin in sub.find_all("pin"):
-                            name = pin.find("name")
-                            if (
-                                pin.atoms[1].text == "power_in"
-                                and _connectivity._pin_hidden(pin)
-                                and name is not None
-                                and len(name.atoms) > 1
-                            ):
-                                names.add(name.atoms[1].text)
+                for sub in _connectivity._instance_units(lib, rec.at(live)[1], style):
+                    for pin in sub.find_all("pin"):
+                        name = pin.find("name")
+                        if (
+                            pin.atoms[1].text == "power_in"
+                            and _connectivity._pin_hidden(pin)
+                            and name is not None
+                            and len(name.atoms) > 1
+                        ):
+                            names.add(name.atoms[1].text)
         return names
 
-    own_globals = {id(flat_root): global_names(flat_root)}
+    own_globals = {(id(flat_root), root_live): global_names(flat_root, root_live)}
     for inst in instances:
-        if id(inst.node) not in own_globals:
-            own_globals[id(inst.node)] = global_names(inst.node)
+        own_globals[id(inst.node), inst.live] = global_names(inst.node, inst.live)
     all_globals = set().union(*own_globals.values())
 
     hier_labels = {
@@ -2794,7 +2792,7 @@ def flatten_hierarchy(
             )
         )
         lib_defs = _connectivity.lib_index(node)
-        here = own_globals[id(node)]
+        here = own_globals[id(node), live]
         for item in list(node.lists):
             head = item.head
             if head in _FLAT_FILE_LEVEL:
