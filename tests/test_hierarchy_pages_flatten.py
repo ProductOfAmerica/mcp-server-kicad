@@ -66,6 +66,12 @@ def page_labels(path: Path) -> dict[str, str]:
     return out
 
 
+@pytest.fixture()
+def stock_parts(stock_symbol_dir, monkeypatch):
+    """Device:R and power:GND resolve from a stand-in folder, so no kicad-cli is needed."""
+    monkeypatch.setenv("KICAD_SYMBOL_DIR", str(stock_symbol_dir))
+
+
 def edit(path: Path, fn) -> None:
     """Apply fn to a file's root list and write it back: how a test makes a file the tools
     cannot (the CST is not a judge here, only a way to put the premise on disk)."""
@@ -368,6 +374,7 @@ def copy_file_of(root: Path) -> Path:
     return root.parent / name
 
 
+@pytest.mark.usefixtures("stock_parts")
 def test_the_copy_has_one_entry_at_its_own_path_and_a_matching_property(tmp_path):
     p, child, uid = two_resistor_sheet(tmp_path)
     project.duplicate_sheet(uid, "Copy", schematic_path=str(p.root), project_path=str(p.pro))
@@ -380,6 +387,7 @@ def test_the_copy_has_one_entry_at_its_own_path_and_a_matching_property(tmp_path
     assert [ref for ref, _ in reference_pairs(child)] == ["R1", "R2"], "the source is untouched"
 
 
+@pytest.mark.usefixtures("stock_parts")
 def test_the_copy_numbers_from_the_reference_a_symbol_has_at_its_live_path(tmp_path):
     """R1's entry at the sheet's path says R5, though its Reference property says R1, so R1
     is free for the copy."""
@@ -400,6 +408,7 @@ def test_the_copy_numbers_from_the_reference_a_symbol_has_at_its_live_path(tmp_p
     assert reference_pairs(copy_file_of(p.root)) == [("R1", [(live, "R1")])]
 
 
+@pytest.mark.usefixtures("stock_parts")
 def test_duplicate_is_one_insertion_in_the_parent_at_the_parents_path(tmp_path):
     p, _child, uid = two_resistor_sheet(tmp_path)
     before = p.root.read_bytes()
@@ -445,6 +454,7 @@ def test_the_copys_fields_are_where_kicad_autoplaces_them(tmp_path):
     )
 
 
+@pytest.mark.usefixtures("stock_parts")
 def test_the_copy_keeps_what_the_source_block_carries(tmp_path):
     """A field the user added to the source block comes along."""
     p, _child, uid = two_resistor_sheet(tmp_path)
@@ -849,6 +859,7 @@ def reword(lib) -> None:
     prop.atoms[2].set_text("a resistor the library has since changed")
 
 
+@pytest.mark.usefixtures("stock_parts")
 @pytest.mark.parametrize("other", ["root", "sibling"])
 def test_two_definitions_of_one_library_symbol_with_different_pins_are_refused(tmp_path, other):
     p = Proj(tmp_path)
@@ -879,6 +890,7 @@ def test_a_root_label_named_like_a_global_net_of_another_sheet_is_refused(tmp_pa
 
 
 @pytest.mark.no_kicad_validation  # the power symbol's definition is edited by hand
+@pytest.mark.usefixtures("stock_parts")
 @pytest.mark.parametrize("where", ["root", "sub-sheet"])
 def test_a_local_power_symbol_is_refused(tmp_path, where):
     p = Proj(tmp_path)
