@@ -1989,7 +1989,8 @@ def reorder_sheet_pages(
     such as "Intro" stay; when they repeat, or a deeper sheet uses one, the sheets are numbered
     from the lowest positive whole number no other sheet holds. A sheet whose instance entry
     was written at its own path, as earlier versions of the tools did, has it moved to the path
-    KiCad reads.
+    KiCad reads. A root older than format 20221110, which keeps every page in its own
+    sheet_instances table, is refused.
 
     Args:
         page_order: List of sheet UUIDs in desired order
@@ -2024,6 +2025,12 @@ def reorder_sheet_pages(
     # Where each block's page is read: the entry at this file's path, or failing that one an
     # earlier version wrote at the block's own path (moved to this file's path below).
     here = f"/{_node_uuid(root)}"
+    if int(_connectivity._child_text(root, "version", "0")) < 20221110:
+        raise ToolError(
+            f"{name} is in a format older than 20221110, which keeps its sheet pages in a"
+            " table this tool does not rewrite. Open and save the project in KiCad first."
+            f" {name} was not changed."
+        )
     pages: dict[int, list] = {}
     moved: list = []
     for s in sheets:

@@ -246,6 +246,31 @@ def test_reorder_on_a_shipped_hierarchy(tmp_path):
     assert changes and all(c.path[-1][1] == "page" for c in changes), changes
 
 
+@requires_cli
+def test_reorder_refuses_a_root_whose_pages_are_in_its_sheet_instances(tmp_path):
+    """Before 20221110 a sheet carries no (instances): every page is in the root's
+    (sheet_instances), at a path below the root (sch_io_kicad_sexpr_parser.cpp:2428-2518 at
+    9.0.8)."""
+    p = Proj(tmp_path)
+    three_sheets(p)
+    tree = _cst.parse(p.root.read_bytes())
+    doc = tree.lists[0]
+    doc.find("version").atoms[1].set_text("20211123")
+    pages = ['(path "/" (page "1"))']
+    for k, block in enumerate(doc.find_all("sheet")):
+        pages.append(f'(path "/{block.find("uuid").atoms[1].text}" (page "{k + 2}"))')
+        block.remove_child(block.find("instances"))
+    doc.remove_child(doc.find("sheet_instances"))
+    doc.append_child(_cst.parse(f"(sheet_instances {' '.join(pages)})".encode()).lists[0], b"\n\t")
+    p.root.write_bytes(_cst.serialize(tree))
+    if sheet_order(p.root) != ["/", "/A/", "/B/", "/C/"]:
+        raise RuntimeError("premise: kicad-cli reads the pages from the root's table")
+    before = p.root.read_bytes()
+    with pytest.raises(ToolError, match="20221110"):
+        project.reorder_sheet_pages([sheet_uuid(sheets_of(p.root)[0])], schematic_path=str(p.root))
+    assert p.root.read_bytes() == before
+
+
 def test_reorder_refuses_a_sub_sheet_and_writes_nothing(tmp_path):
     p = Proj(tmp_path)
     mid = p.child("mid")
