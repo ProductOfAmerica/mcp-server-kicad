@@ -1690,6 +1690,10 @@ def _no_network(monkeypatch, request):
     Error 403: rate limit exceeded" on one Python version of one matrix, hours
     after the change had gone green everywhere else.
 
+    _freerouting calls urllib.request.urlopen through the module, so this
+    patch reaches it. Until 2026-10-19 it imported urlopen by name, which kept
+    the real function, and this guard never covered the download.
+
     Blocking it here rather than fixing that one test, because the next such
     test will be written by someone who does not know this happened. The
     failure is immediate and names the fixture, instead of arriving later as a

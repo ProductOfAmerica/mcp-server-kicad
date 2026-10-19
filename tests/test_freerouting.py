@@ -165,6 +165,17 @@ class TestEnsureJar:
         assert path is None
         assert err is not None and "absolute path" in err
 
+    def test_the_suites_network_guard_reaches_the_download(self, tmp_path, monkeypatch):
+        """_freerouting imported urlopen by name, which kept the real function,
+        so the autouse _no_network guard, which patches urllib.request, never
+        covered the download (probed 2026-10-19). The URL is unreachable on
+        purpose: were the guard bypassed again, this fails on a refused
+        connection and fetches nothing."""
+        monkeypatch.setattr(_fr_module, "_cache_dir", lambda: tmp_path)
+        monkeypatch.setattr(_fr_module, "_GITHUB_RELEASES_URL", "http://127.0.0.1:9/latest")
+        with pytest.raises(AssertionError, match="network connection"):
+            _fr_module._download_jar()
+
 
 class TestFindPcbnewPython:
     @pytest.fixture(autouse=True)

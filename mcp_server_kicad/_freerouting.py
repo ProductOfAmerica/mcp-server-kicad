@@ -7,9 +7,9 @@ import json
 import os
 import re
 import subprocess
+import urllib.request
 import zipfile
 from pathlib import Path
-from urllib.request import Request, urlopen
 
 from mcp_server_kicad._shared import _atomic_write, _find_on_path, _kicad_root, _run_pcbnew
 
@@ -150,8 +150,12 @@ def find_jar() -> str | None:
 
 def _download_jar() -> str:
     """Download the latest Freerouting JAR from GitHub releases. Returns path."""
-    req = Request(_GITHUB_RELEASES_URL, headers={"Accept": "application/vnd.github+json"})
-    with urlopen(req, timeout=30) as resp:
+    # Through the module, never a name imported from it: the suite's _no_network
+    # guard patches urllib.request.urlopen, which a name bound at import never sees.
+    req = urllib.request.Request(
+        _GITHUB_RELEASES_URL, headers={"Accept": "application/vnd.github+json"}
+    )
+    with urllib.request.urlopen(req, timeout=30) as resp:
         release = json.loads(resp.read())
 
     jar_asset = None
@@ -168,8 +172,8 @@ def _download_jar() -> str:
     dest = _cache_dir() / "freerouting.jar"
     dest.parent.mkdir(parents=True, exist_ok=True)
 
-    req = Request(download_url)
-    with urlopen(req, timeout=120) as resp:
+    req = urllib.request.Request(download_url)
+    with urllib.request.urlopen(req, timeout=120) as resp:
         _atomic_write(dest, resp.read())
 
     return str(dest)
