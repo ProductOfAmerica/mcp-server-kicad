@@ -123,7 +123,7 @@ silently.
 | `nc_flag` | The pin has a no-connect flag | If it should be connected, `remove_no_connect`, then call again |
 | `dup_ref` | Another part shares the reference somewhere in the hierarchy, or a sheet of the hierarchy cannot be read, so sharing cannot be ruled out | Give each part its own reference (`annotate_schematic` numbers `?` references), then call again. For an unreadable sheet, stop and report which one the message names |
 | `bus`, `bus_entry`, `sheet_pin`, `text_var`, `jumper`, `unit0_unplaced`, `units_disagree` | The pin's net may reach something this tool cannot judge | Stop and report |
-| `derived`, `unloadable` | A symbol on the sheet has pins KiCad's file does not define, or defines twice, or an angle KiCad cannot load | Stop and report |
+| `derived`, `unloadable` | A symbol on the sheet has pins KiCad's file does not define, or defines twice, or a placement or pin KiCad cannot load | Stop and report |
 
 When `auto_place_decoupling_cap` meets one of these after placing the
 cap, its error says what it left on disk and the calls that remove it;

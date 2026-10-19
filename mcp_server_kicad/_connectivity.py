@@ -53,10 +53,68 @@ Matrix = tuple[int, int, int, int]
 # ---------------------------------------------------------------------------------------------
 
 
+#: isNumber, the token grammar NeedNUMBER accepts (common/dsnlexer.cpp:495 at 9.0.8): an optional
+#: sign, digits around an optional point with at least one digit, then an optional exponent with
+#: at least one digit. Explicit [0-9], not a digit class that also matches other scripts' digits.
+_NUMBER = re.compile(r"[-+]?(?:[0-9]+\.?[0-9]*|\.[0-9]+)(?:[eE][-+]?[0-9]+)?")
+#: parseInternalUnits clamps to plus or minus INT_MAX * 0.7071 internal units before it rounds
+#: (eeschema/sch_io/kicad_sexpr/sch_io_kicad_sexpr_parser.cpp:618 at 9.0.8, 676 at 10.0.7).
+_IU_LIMIT = (2**31 - 1) * 0.7071
+#: What strtol reads of a pin angle: a sign and the digits it stops at.
+_STRTOL = re.compile(r"[-+]?[0-9]+")
+
+
+def number(text: str) -> float:
+    """The double that parseDouble reads from the token ``text`` (common/dsnlexer.cpp:859 at
+    9.0.8). Refusal for a token KiCad refuses: one that is no NUMBER (a word, inf, nan, 9_0), a
+    leading '+', a literal out of a double's range, and a nonzero literal that underflows to
+    zero. Measured with kicad-cli 9.0.8 and 10.0.7: +90, 1e400 and 1e-400 are refused, 1e-310
+    loads.
+    """
+    if not _NUMBER.fullmatch(text):
+        why = "is not a number"
+    elif text[0] == "+":
+        why = "has a leading '+'"
+    else:
+        value = float(text)
+        if not math.isinf(value) and (
+            value != 0.0 or not any(c in "123456789" for c in re.split("[eE]", text)[0])
+        ):
+            return value
+        why = "is out of a double's range"
+    raise Refusal("unloadable", f"{text!r} {why}, so KiCad cannot load this sheet.")
+
+
 def iu(text: str) -> int:
-    """A coordinate atom in mm as KiCad parses it. KiCad 9's KiROUND: on the
-    100 nm grid KiCad writes, KiCad 10's rounds the same (_shared.kiround)."""
-    return kiround(float(text) * IU_PER_MM)
+    """A coordinate token in mm as parseInternalUnits reads it: clamped to INT_MAX * 0.7071
+    internal units, then KiCad 9's KiROUND (on the 100 nm grid KiCad writes, KiCad 10's rounds
+    the same: _shared.kiround). Refusal for a token ``number`` refuses."""
+    return kiround(max(-_IU_LIMIT, min(_IU_LIMIT, number(text) * IU_PER_MM)))
+
+
+def _bare(atom) -> bool:
+    """Whether ``atom`` is written without quotes; a quoted token is not a NUMBER."""
+    return atom.raw[:1] != b'"'
+
+
+def coord(atom) -> int:
+    """``iu`` of a coordinate atom, refusing one written in quotes."""
+    if not _bare(atom):
+        raise Refusal(
+            "unloadable",
+            f"{atom.text!r} is a quoted coordinate, which KiCad cannot load: it reads only a"
+            " bare number there.",
+        )
+    return iu(atom.text)
+
+
+def _args(node, count: int):
+    """The ``count`` atoms after the head of ``node`` when it holds exactly those and all are
+    written bare, else None."""
+    args = node.children[1:]
+    if len(args) == count and all(a.kind == "atom" and _bare(a) for a in args):
+        return args
+    return None
 
 
 def mm(i: int) -> str:
@@ -285,23 +343,29 @@ def _apply(t: Matrix, x: int, y: int) -> Point:
     return t[0] * x + t[1] * y, t[2] * x + t[3] * y
 
 
-def _angle(text: str) -> int | None:
-    """An orientation atom as float() reads it, truncated to an int, if it is 0, 90, 180 or 270.
-
-    None as well for a token KiCad's parser refuses that float() still reads and int() cannot
-    truncate: nan and inf are no NUMBER, so NeedNUMBER refuses them, and 1e400 is a literal
-    from_chars reports out of range (include/dsnlexer.h:531-535 and common/dsnlexer.cpp:859-916
-    at 9.0.8). int() of an infinity raises OverflowError, which reaches an MCP client as a bare
-    "Error executing tool".
-
-    A spelling KiCad's parser refuses and float() reads without an exception, such as '+90',
-    '9_0' and '1e-400', is read as that number, not refused: bug 70, step 12b.
-    """
-    try:
-        a = int(float(text))
-    except (ValueError, OverflowError):
+def symbol_angle(atom) -> int | None:
+    """A placed symbol's angle atom as the parser reads it: ``static_cast<int>( parseDouble )``,
+    which truncates toward zero, then one of 0, 90, 180 or 270 (sch_io_kicad_sexpr_parser.cpp:3074
+    at 9.0.8). None for an atom KiCad refuses, quoted or not a number ``number`` reads."""
+    if not _bare(atom):
         return None
-    return a if a in _ROT else None
+    try:
+        angle = int(number(atom.text))
+    except Refusal:
+        return None
+    return angle if angle in _ROT else None
+
+
+def pin_angle(atom) -> int | None:
+    """A library pin's angle atom as the parser reads it: NeedNUMBER, then ``strtol``, which takes
+    a sign and stops at the first byte that is no digit (``parseInt``,
+    sch_io_kicad_sexpr_parser.h:133 at 9.0.8), then one of 0, 90, 180 or 270. So +90 and 90.9e5
+    read as 90, 9e1 as 9, and 0.9e2 as 0. None for an atom KiCad refuses."""
+    if not _bare(atom) or not _NUMBER.fullmatch(atom.text):
+        return None
+    digits = _STRTOL.match(atom.text)
+    angle = int(digits.group()) if digits else 0
+    return angle if angle in _TOWARD else None
 
 
 #: A placed symbol's position and transform while KiCad reads one of its children.
@@ -318,25 +382,41 @@ def symbol_frames(sym, ref: str) -> list[tuple[object, Frame]]:
     before ``(at)`` is lost. A property's ``(at)`` is read in the frame in force where it sits
     (sch_io_kicad_sexpr_parser.cpp:3071-3098 and 3265-3268 at 9.0.8, 3188-3215 and 3504-3507
     at 10.0.7), which is the frame of its own entry here, since a property sets no frame.
+
+    Refusal for an ``(at)`` that is not exactly three bare numbers whose angle the parser reads,
+    and for a ``(mirror)`` that is not the bare keyword x or y.
     """
     t, pos = _ROT[0], (0, 0)
     out: list[tuple[object, Frame]] = []
     for ch in sym.lists:
         if ch.head == "at":
-            a = ch.atoms
-            pos = (iu(a[1].text), iu(a[2].text))
-            ang = _angle(a[3].text) if len(a) > 3 else 0
+            a = _args(ch, 3)
+            if a is None:
+                raise Refusal(
+                    "unloadable",
+                    f"{ref} has an (at) that KiCad cannot load: it takes exactly three bare"
+                    " numbers, x, y and an angle, so KiCad cannot open this sheet either.",
+                )
+            pos = (coord(a[0]), coord(a[1]))
+            ang = symbol_angle(a[2])
             if ang is None:
                 raise Refusal(
                     "unloadable",
-                    f"{ref} is placed at angle {a[3].text}, which KiCad cannot load (0, 90, 180"
+                    f"{ref} is placed at angle {a[2].text}, which KiCad cannot load (0, 90, 180"
                     " or 270 only), so KiCad cannot open this sheet either. Remedy: call"
                     f" move_component on {ref} at its own position with rotation 0, 90, 180 or"
                     " 270, which repairs the angle.",
                 )
             t = _ROT[ang]
-        elif ch.head == "mirror" and len(ch.atoms) > 1 and ch.atoms[1].text in _MIR:
-            t = _compose(t, _MIR[ch.atoms[1].text])
+        elif ch.head == "mirror":
+            a = _args(ch, 1)
+            if a is None or a[0].text not in _MIR:
+                raise Refusal(
+                    "unloadable",
+                    f"{ref} has a (mirror) that KiCad cannot load: it takes the bare x or y, so"
+                    " KiCad cannot open this sheet either.",
+                )
+            t = _compose(t, _MIR[a[0].text])
         out.append((ch, (pos, t)))
     return out
 
@@ -386,9 +466,9 @@ def _old_order_transform(sym, ref: str) -> tuple[Point, Matrix]:
     t = _ROT[0]
     for ch in sym.lists:
         if ch.head == "at":
-            ang = _angle(ch.atoms[3].text) if len(ch.atoms) > 3 else 0
+            ang = symbol_angle(ch.children[3])
             t = _ROT[ang or 0]  # never None here: symbol_transform refused such an angle
-        elif ch.head == "mirror" and len(ch.atoms) > 1 and ch.atoms[1].text in _MIR:
+        elif ch.head == "mirror":
             t = _compose(_MIR[ch.atoms[1].text], t)  # the mirror first, then the rotation
     return pos, t
 
@@ -417,16 +497,30 @@ def pin_point_mm(sym, pin, ref: str) -> tuple[float, float, int]:
 
 
 def pin_end(pos: Point, t: Matrix, pin, ref: str) -> tuple[int, int, Point]:
-    """Connection point and outward unit vector of a lib pin under a symbol's transform."""
-    at = pin.find("at")
-    lx, ly = iu(at.atoms[1].text), iu(at.atoms[2].text)
-    ang = _angle(at.atoms[3].text) if len(at.atoms) > 3 else 0
+    """Connection point and outward unit vector of a lib pin under a symbol's transform.
+
+    Each ``(at)`` of the pin must load, as the parser reads them in file order, and the last one
+    is the pin's."""
+    ang = None
+    lx = ly = 0
+    for at in pin.find_all("at"):
+        a = _args(at, 3)
+        if a is None:
+            raise Refusal(
+                "unloadable",
+                f"{ref} has a library pin whose (at) KiCad cannot load: it takes exactly three"
+                " bare numbers, x, y and an angle. Remedy: fix that library pin.",
+            )
+        lx, ly = coord(a[0]), coord(a[1])
+        ang = pin_angle(a[2])
+        if ang is None:
+            raise Refusal(
+                "unloadable",
+                f"{ref} has a pin at angle {a[2].text}, which KiCad cannot load. Remedy: fix"
+                " that library pin's angle.",
+            )
     if ang is None:
-        raise Refusal(
-            "unloadable",
-            f"{ref} has a pin at angle {at.atoms[3].text}, which KiCad cannot load. Remedy: fix"
-            " that library pin's angle.",
-        )
+        raise Refusal("unloadable", f"{ref} has a library pin with no (at). Remedy: fix that pin.")
     dx, dy = _apply(t, lx, -ly)  # a library's Y axis points up; the sheet's points down
     tx, ty = _TOWARD[ang]
     return pos[0] + dx, pos[1] + dy, _apply(t, -tx, -ty)
@@ -679,7 +773,7 @@ def _xys(node) -> list[Point]:
     pts = node.find("pts")
     if pts is None:
         return []
-    return [(iu(p.atoms[1].text), iu(p.atoms[2].text)) for p in pts.find_all("xy")]
+    return [(coord(p.atoms[1]), coord(p.atoms[2])) for p in pts.find_all("xy")]
 
 
 def _at_point(node) -> Point:
@@ -689,7 +783,7 @@ def _at_point(node) -> Point:
     at = node.find("at")
     if at is None:
         return (0, 0)
-    return iu(at.atoms[1].text), iu(at.atoms[2].text)
+    return coord(at.atoms[1]), coord(at.atoms[2])
 
 
 def _pin_hidden(p) -> bool:
@@ -1532,7 +1626,8 @@ class Model:
                     self.add(Item("gline", *xys[0], *xys[1]))
                 return
             stroke = ch.find("stroke")
-            width = iu(_child_text(stroke, "width", "0")) if stroke is not None else 0
+            held = stroke.find("width") if stroke is not None else None
+            width = coord(held.atoms[1]) if held is not None and len(held.atoms) > 1 else 0
             for a, b in zip(xys, xys[1:]):
                 self.add(Item(h, *a, *b)).w = max(width, 0)
         elif h == "rule_area":
@@ -1543,9 +1638,7 @@ class Model:
         elif h == "bus_entry":
             size = ch.find("size")
             x, y = _at_point(ch)
-            dx, dy = (
-                (iu(size.atoms[1].text), iu(size.atoms[2].text)) if size is not None else (0, 0)
-            )
+            dx, dy = (coord(size.atoms[1]), coord(size.atoms[2])) if size is not None else (0, 0)
             self.add(Item("be", x, y, x + dx, y + dy))
         elif h in ("junction", "no_connect"):
             self.add(Item("junction" if h == "junction" else "nc", *_at_point(ch)))
@@ -1568,7 +1661,7 @@ class Model:
                 at = p.find("at")
                 if at is None:
                     continue
-                it = self.add(Item("sheetpin", iu(at.atoms[1].text), iu(at.atoms[2].text)))
+                it = self.add(Item("sheetpin", coord(at.atoms[1]), coord(at.atoms[2])))
                 it.sub = sheet_name
                 it.text = p.atoms[1].text if len(p.atoms) > 1 else ""
         elif h == "symbol":

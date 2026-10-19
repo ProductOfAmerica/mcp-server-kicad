@@ -714,6 +714,7 @@ _TOKEN_VARIANTS = [
     ("1e-400", "100", "0"),  # a nonzero literal that underflows to zero: out of range too
     ("100", "100", "1e-400"),  # the same underflow, as an angle
     ("1e-300", "100", "0"),  # far below one unit, yet a normal double: loads at 0
+    ("1e-310", "100", "0"),  # a subnormal double: loads at 0
 ]
 
 
@@ -799,7 +800,7 @@ def test_pin_angle_orientations_match_kicad_cli_drawings():
     """Each spelling in _PIN_ANGLE_VARIANTS that the port loads draws, in kicad-cli's SVG
     of the sheet, exactly as the one of 0, 90, 180 and 270 that pin_orientation reads it
     as, and unlike the other three: 0.9e2 draws as 0 does, pointing right. A load verdict
-    cannot see that; bug 70's pin angle xfail rests on it."""
+    cannot see that; test_pin_end_reads_pin_angles_as_kicads_parser_does rests on it."""
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as scratch:
         work = Path(scratch)
         canonical = {a: _drawing(work, f"at{a}", str(a)) for a in (0, 90, 180, 270)}

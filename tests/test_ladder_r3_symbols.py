@@ -631,8 +631,7 @@ def test_a_report_that_cannot_be_computed_does_not_stop_the_move(
 #: and a word. It reads the fifth, 1e308, which is in range: a coordinate or a size takes it
 #: clamped to INT_MAX * 0.7071 internal units (parseInternalUnits, sch_io_kicad_sexpr_parser.cpp:
 #: 618-638 at 9.0.8, 676-696 at 10.0.7), and kicad-cli loads a sheet that holds it as R1's x
-#: (test_ladder_r2_judges.py::test_number_token_refusals_match_kicad_cli). The tool cannot
-#: convert it: times 10,000 it is infinity, and _connectivity.iu does not clamp (bug 69).
+#: (test_ladder_r2_judges.py::test_number_token_refusals_match_kicad_cli).
 _HOSTILE_NUMBERS = (b"1e400", b"1e308", b"inf", b"nan", b"abc")
 
 
@@ -659,10 +658,8 @@ def test_no_hostile_number_makes_a_move_raise_anything_but_a_refusal(tmp_path, c
     each hostile token above, then R1 moved or turned in place: the call returns, or raises a
     ToolError and leaves the file byte for byte as it was. An exception of any other type is
     what an MCP client is told only as "Error executing tool", and it is what one
-    OverflowError after another (a pin's coordinate, a wire's, an angle) once was. A ToolError
-    for 1e308 as a coordinate is bug 69, which test_a_symbol_at_a_coordinate_kicad_clamps_is_moved
-    holds as an expected failure; this sweep allows it until step 12b. The sheets are hostile on
-    purpose, so the oracle skips the one this test leaves."""
+    OverflowError after another (a pin's coordinate, a wire's, an angle) once was. The sheets
+    are hostile on purpose, so the oracle skips the one this test leaves."""
     data = _NATIVE.read_bytes()
     spans = [
         (item.start, item.end)
@@ -719,17 +716,10 @@ def test_a_coordinate_kicad_refuses_is_refused_by_name(tmp_path, token):
     assert path.read_bytes() == before
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="bug 69: the schematic reader does not clamp a coordinate as KiCad does; "
-    "fixed by step 12b",
-)
 def test_a_symbol_at_a_coordinate_kicad_clamps_is_moved(tmp_path):
     """R1 placed at x = 1e308, which kicad-cli loads (the premise, checked first; see the
     comment over _HOSTILE_NUMBERS), moved to (63.5, 63.5): the call returns, and KiCad reads R1
-    at the target and every field at the offset in the symbol's frame it had. The tool refuses
-    the call today because _connectivity.iu does not clamp."""
+    at the target and every field at the offset in the symbol's frame it had."""
     path = _hand_edited(tmp_path, _at(b"0", "1e308", "100"))
     if HAS_KICAD_CLI:
         run_erc(path)

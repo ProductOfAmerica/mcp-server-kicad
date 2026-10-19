@@ -92,8 +92,7 @@ def _number_tokens(draw, low_mm: Fraction, high_mm: Fraction) -> str:
     sign, in a spelling KiCad's lexer classifies as a NUMBER (isNumber) and parseDouble
     reads: plain with 0 to 10 decimals (trailing zeros, a bare leading point, a leading
     zero, a bare trailing point), or a mantissa with an exponent (e or E, the exponent
-    signed or not). Never a leading '+', which parseDouble refuses (bug 70 is the
-    schematic readers accepting it)."""
+    signed or not). Never a leading '+', which parseDouble refuses."""
     decimals = draw(st.integers(0, 10))
     scale = 10**decimals
     low, high = math.ceil(low_mm * scale), math.floor(high_mm * scale)
@@ -189,14 +188,6 @@ def test_schematic_iu_reads_numbers_as_kicad_does(token):
     assert C.iu(token) in kicad, f"iu({token!r}) = {C.iu(token)}, KiCad reads {kicad}"
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "bug 69: _connectivity.iu does not clamp as parseInternalUnits does"
-        " (INT_MAX * 0.7071 internal units); fixed by step 12b"
-    ),
-)
 @example("200000")
 @example("-200000")
 @given(_number_tokens(_SCH_CLAMPED_MM, Fraction(10**6)))
@@ -230,8 +221,8 @@ def test_schematic_iu_clamps_as_kicad_does(token):
 def test_connectivity_kiround_is_kicads(value):
     """_connectivity.kiround rounds as KiCad's KiROUND does (libs/kimath/include/math/
     util.h, ported for both majors in tests/kicad_ref/eda_units.py) below |v| = INT_MAX -
-    1, past which KiCad clamps; the coordinate readers clamp before they round, which is
-    bug 69's subject. Where 9.0.8 and 10.0.7 part, at 0.49999999999999994 and its
+    1, past which KiCad clamps; the coordinate readers clamp before they round. Where 9.0.8
+    and 10.0.7 part, at 0.49999999999999994 and its
     negation (a double just below a half, which 9.0.8's added 0.5 rounds up; none other
     found over every half-integer up to 2000 and every power of two, six ulps either
     side, and 1e6 random doubles, package A probe, 2026-10-11), either answer is

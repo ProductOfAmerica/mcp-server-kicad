@@ -1142,10 +1142,10 @@ class TestSymbolFamilyPreservation:
     def test_a_rotation_is_written_over_an_angle_kicad_refuses(
         self, tmp_path, angle, rotation, to, target
     ):
-        """R1 at an angle KiCad's parser refuses and float() reads as a quarter turn (bug 70),
-        turned in place or moved with that quarter turn as the rotation: the rotation is
-        written as KiCad writes it, so kicad-cli loads the sheet and KiCad reads R1 at the
-        target and that angle. The edit is exactly R1's angle, its x and y where it moves,
+        """R1 at an angle KiCad's parser refuses (+90, 9_0 or 1e-400, which float() reads as a
+        quarter turn), turned in place or moved with that quarter turn as the rotation: the
+        rotation is written as KiCad writes it, so kicad-cli loads the sheet and KiCad reads R1
+        at the target and that angle. The edit is exactly R1's angle, its x and y where it moves,
         and each property's x and y moved by R1's own displacement: KiCad reads no frame in
         the old file (expected_move_changes needs one), so the fields keep the places the
         file gives them, as test_unloadable_angle_is_repaired_by_a_rotation states."""

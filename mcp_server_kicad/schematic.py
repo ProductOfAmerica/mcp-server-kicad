@@ -1204,8 +1204,8 @@ def _splice_line(root, a: Point, b: Point) -> None:
 
 
 def _model(root) -> _connectivity.Model:
-    """The sheet's connectivity model; a sheet KiCad cannot load (a symbol at an angle it does
-    not store) is refused before anything is written."""
+    """The sheet's connectivity model; a sheet KiCad cannot load (a symbol or pin whose angle,
+    position or mirror its parser refuses) is refused before anything is written."""
     try:
         return _connectivity.Model(root)
     except _connectivity.Refusal as e:
@@ -1315,8 +1315,8 @@ def _cuts_inside_lines(root, path: str) -> list[dict]:
     schematic.cpp:1537-1728 at 10.0.7), and its graph reads a line through a bus-entry end
     whole, joining a wire there to nothing and a bus to the entry, since GetBus finds a bus
     anywhere along it (connection_graph.cpp:1438-1460 and 1523-1536, sch_screen.h:451-455). A
-    sheet the model refuses, a symbol or pin at an angle KiCad cannot load, gets the reason in
-    place of the readings and the repair."""
+    sheet the model refuses, one KiCad cannot load, gets the reason in place of the readings and
+    the repair."""
     lines = []
     for node in root.lists:
         xys = _line_xys(node) if node.head in ("wire", "bus") else None
@@ -1673,7 +1673,7 @@ def _plain_stroke(node) -> bool:
         color = stroke.find("color")
         if color is not None and any(float(a.text) != 0 for a in color.atoms[1:]):
             return False
-    except (IndexError, ValueError):
+    except (IndexError, ValueError, _connectivity.Refusal):
         return False
     style = stroke.find("type")
     return style is None or len(style.atoms) < 2 or style.atoms[1].text in ("default", "solid")
@@ -1993,8 +1993,7 @@ def _find_sym_cst(root, reference: str):
 
 
 def _find_lib_symbol_cst(root, lib_id: str):
-    """The lib_symbols entry named *lib_id*, or None. The name matches exactly, as KiCad
-    matches the key a placed symbol draws from (``_connectivity.lib_key``): ``A:R`` and
+    """The lib_symbols entry named *lib_id*, or None. The name matches exactly: ``A:R`` and
     ``B:R`` are two entries, and neither is found by ``R``."""
     return _connectivity.lib_index(root).get(_connectivity._lib_name(lib_id))
 
@@ -2269,9 +2268,9 @@ def add_junctions(points: list[PointSpec], schematic_path: str = SCH_PATH) -> st
 def add_lib_symbol(symbol_lib_path: str, symbol_name: str, schematic_path: str = SCH_PATH) -> str:
     """Load a symbol definition from a .kicad_sym library into the schematic.
 
-    The entry is named symbol_name as given, with no library prefix, so only a placed symbol
-    whose lib_id is that bare name draws from it. To place a symbol as Library:Name, pass
-    symbol_lib_path to place_component, which embeds the definition under that lib_id.
+    The entry is named symbol_name as given, with no library prefix. To place a symbol as
+    Library:Name, pass symbol_lib_path to place_component, which embeds the definition under
+    that lib_id.
 
     Args:
         symbol_lib_path: Path to .kicad_sym file. Optional; omit to use the configured default.
@@ -2376,8 +2375,8 @@ def move_component(
         x, y = _snap_grid(x), _snap_grid(y)
         _bounds_check(x, y, page_w, page_h, page_name)
         s1 = (_mm_iu(x), _mm_iu(y))
-    # A rotation is written unless the atom already holds it as KiCad writes it: float() also
-    # reads spellings KiCad refuses (+90, 9_0, 1e-400: bug 70), and writing it repairs them.
+    # A rotation is written unless the atom already holds it as KiCad writes it, so a spelling
+    # KiCad refuses (+90, 9_0, 1e-400) is rewritten too.
     turn = rotation is not None and old_angle != _angle_text(rotation)
     where = f"({_connectivity.mm(s1[0])}, {_connectivity.mm(s1[1])})"
     if s1 == s0 and not turn:
@@ -2481,15 +2480,11 @@ def _is_here(x: float, y: float, here: Point) -> bool:
 
 def _sym_iu(text: str, reference: str) -> int:
     """A coordinate atom of ``reference`` in internal units; a ToolError naming the token when
-    ``iu`` cannot read it (a word, inf, nan, or a number too large to scale to internal
-    units), before anything is written.
-
-    ``iu`` does not clamp, so 1e308 is refused though kicad-cli loads a sheet holding it: bug
-    69, held by test_a_symbol_at_a_coordinate_kicad_clamps_is_moved.
-    """
+    ``iu`` refuses it (a word, inf, nan, a leading '+', a literal out of a double's range),
+    before anything is written. A number past the clamp reads as the clamp."""
     try:
         return _connectivity.iu(text)
-    except (ValueError, OverflowError):
+    except (ValueError, OverflowError, _connectivity.Refusal):
         raise ToolError(
             f"{reference} holds the coordinate {text!r}, which this tool cannot read as a"
             " position. The file was not changed."
@@ -2498,17 +2493,16 @@ def _sym_iu(text: str, reference: str) -> int:
 
 def _placed_angle(at) -> tuple[str | None, int | None]:
     """The angle atom of a placed symbol's ``(at)`` as written, None where it gives none, and
-    as ``_connectivity._angle`` reads it, None where that is not 0, 90, 180 or 270.
+    as ``_connectivity.symbol_angle`` reads it, None where that is not 0, 90, 180 or 270.
 
     KiCad reads the angle unconditionally: NeedNUMBER meets the closing paren of an
     ``(at x y)`` and refuses the sheet (sch_io_kicad_sexpr_parser.cpp:3074 at 9.0.8, 3191 at
-    10.0.7), so a placement with none is as unloadable as one at 45. The shared readers
-    (``symbol_frames``) still read a missing angle as 0, a known failure that
-    test_ladder_r2_transform.py holds as an expected one. This tool does not guess it: a call
-    without a rotation is refused, and the rotation it is given is the repair.
+    10.0.7), so a placement with none is as unloadable as one at 45. A call without a rotation
+    is refused, and the rotation it is given is the repair.
     """
-    text = at.atoms[3].text if len(at.atoms) > 3 else None
-    return text, None if text is None else _connectivity._angle(text)
+    if len(at.atoms) <= 3:
+        return None, None
+    return at.atoms[3].text, _connectivity.symbol_angle(at.atoms[3])
 
 
 def _angle_words(text: str | None) -> str:

@@ -35,7 +35,6 @@ import math
 from decimal import Decimal
 
 import geom_gen as G
-import pytest
 from hypothesis import example, given
 from hypothesis import strategies as st
 from kicad_ref import dsn_lexer as L
@@ -53,22 +52,6 @@ _SYMBOL_LIMIT = G.SCH_LIMIT
 #: Library pin offsets stay small enough that a symbol's position plus a transformed
 #: offset is still an int, which GetPinPhysicalPosition's VECTOR2I sum needs.
 _OFFSET_LIMIT = U.INT_MAX - G.SCH_LIMIT
-
-_BUG_70 = (
-    "bug 70: the schematic number readers accept '+'-prefixed and non-NUMBER tokens KiCad's"
-    " parseDouble refuses, and crash on inf, nan and 1e400 instead of refusing; fixed by"
-    " step 12b"
-)
-_BUG_70_GRAMMAR = (
-    "bug 70: symbol_transform and pin_end read (at) and (mirror) atoms by position, not by"
-    " KiCad's grammar: missing, extra and quoted tokens, a mirror axis other than a bare x or"
-    " y, a pin's second (at); fixed by step 12b"
-)
-_BUG_70_PIN_ANGLE = (
-    "bug 70: pin_end reads a pin angle as a truncated float where KiCad's parseInt uses"
-    " strtol: 9e1 loads, 90.9e5 is refused, 0.9e2 points up where KiCad draws it right;"
-    " fixed by step 12b"
-)
 
 
 def _state_items(state: tuple[int, str]) -> list[tuple[str, str]]:
@@ -302,7 +285,7 @@ def _symbol_angles(draw) -> str:
 def _pin_angles(draw, value: int) -> str:
     """A spelling of the pin angle ``value`` (0, 90, 180 or 270) on which KiCad's strtol
     and a truncated float agree: a sign ('+', or '-' before 0), leading zeros, a
-    fraction, a zero exponent. Spellings where the two disagree are bug 70's test."""
+    fraction, a zero exponent. The spellings where the two disagree are the pin angle test's."""
     sign = draw(st.sampled_from(("", "+", "-") if value == 0 else ("", "+")))
     places = draw(st.integers(0, 6))
     if places:
@@ -459,7 +442,6 @@ def test_symbol_transform_follows_kicads_parser(items):
     _assert_reads_as_kicad(text, want, lambda: C.symbol_transform(_parse(text), "R1"), _same_symbol)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_70)
 @example(x="100", y="50", angle="+90", mirror="")
 @example(x="100", y="50", angle="inf", mirror="")
 @example(x="+100", y="50", angle="0", mirror="")
@@ -475,8 +457,8 @@ def test_symbol_transform_refuses_what_kicads_parser_refuses(x, y, angle, mirror
     reads: parseDouble refuses a token that is not a NUMBER (inf, nan, 9_0), one with a
     leading '+' (std::from_chars), and one out of a double's range (1e400); the angle
     rule then refuses 1e2, 359 or 45. kicad-cli's verdicts on '+100', '+90' and '1e400'
-    are test_ladder_r2_judges.py's. Coordinates stay inside the clamp, which bug 69
-    owns. Anything but a Refusal or the reading is a failure."""
+    are test_ladder_r2_judges.py's. Coordinates stay inside the clamp
+    (test_ladder_r2_numbers.py). Anything but a Refusal or the reading is a failure."""
     text = _symbol_text([("at", x, y, angle)] + ([("mirror", mirror)] if mirror else []))
     want = _kicad_symbol(text)
     _assert_reads_as_kicad(text, want, lambda: C.symbol_transform(_parse(text), "R1"), _same_symbol)
@@ -545,7 +527,6 @@ def test_pin_point_mm_is_the_exact_pin_end(items, lib, angles):
         assert got in expected, (symbol_text, pin_text, got, expected)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_70)
 @example(x="+0", y="3.81", angle="270", state=(0, ""))
 @example(x="0", y="3.81", angle="inf", state=(0, ""))
 @example(x="0", y="nan", angle="90", state=(90, "x"))
@@ -563,7 +544,7 @@ def test_pin_end_refuses_what_kicads_parser_refuses(x, y, angle, state):
     leading '+', a non-NUMBER or an out-of-range token is refused; measured: kicad-cli
     9.0.8 refuses (at +0 3.81 270), 2026-10-11) and its angle through parseInt, whose
     NeedNUMBER refuses a word and whose strtol takes a '+'. Angle spellings on which
-    strtol and a float disagree are bug 70's test."""
+    strtol and a float disagree are test_pin_end_reads_pin_angles_as_kicads_parser_does's."""
     m, pos = _STATE_MATRIX[state], (1_000_000, 1_000_000)
     text = _pin_text(f"(at {x} {y} {angle})")
     want = _kicad_pin(text)
@@ -593,7 +574,6 @@ def _pin_angle_numbers(draw) -> str:
     return draw(st.sampled_from(("", "", "+", "-"))) + text
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_70_PIN_ANGLE)
 @example(token="9e1", state=(0, ""))
 @example(token="0.9e2", state=(90, "x"))
 @example(token="90.9e5", state=(180, "y"))
@@ -643,8 +623,7 @@ def _grammar_defects(draw):
     for one defect in KiCad's grammar of (at) and (mirror), named by ``kind``: a missing
     token (*_short), an extra token or list (*_extra), a quoted token, a mirror axis
     that is not the bare keyword x or y, or a second (at) in the pin. Every token is
-    otherwise valid, so the number readers' rules (bug 70) and the clamp (bug
-    69) stay out of it."""
+    otherwise valid, so the number readers' rules and the clamp stay out of it."""
     x, y = draw(_coordinates(_SYMBOL_LIMIT)), draw(_coordinates(_SYMBOL_LIMIT))
     angle = str(draw(st.sampled_from((0, 90, 180, 270))))
     items: list = [("at", x, y, angle)]
@@ -693,7 +672,6 @@ def _grammar_defects(draw):
 _A_SYMBOL = ("at", "100", "100", "0")
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason=_BUG_70_GRAMMAR)
 @example(defects=("at_short", [("raw", "(at 100 100)")], _VALID_PIN))
 @example(defects=("at_short", [("raw", "(at 1)")], _VALID_PIN))
 @example(defects=("at_extra", [("raw", "(at 100 100 0 5)")], _VALID_PIN))

@@ -82,7 +82,8 @@ def test_an_angle_kicad_truncates_is_read_the_same_way():
 
 #: Orientation atoms KiCad's parser refuses (kicad_ref.parse_units) and Python's float() reads:
 #: nan and inf are no NUMBER, so NeedNUMBER stops at them, and 1e400 is a literal from_chars
-#: reports out of range. int() of an infinity raises OverflowError, which _angle once let out.
+#: reports out of range. int() of an infinity raises OverflowError, which the angle reader once
+#: let out.
 _REFUSED_ANGLES = [
     "nan",
     "inf",
@@ -97,12 +98,12 @@ _REFUSED_ANGLES = [
 
 @pytest.mark.parametrize("atom", _REFUSED_ANGLES)
 def test_a_token_int_cannot_truncate_is_no_angle(atom):
-    """The parser port refuses the atom, so no angle is the angle _angle returns for it, not
-    an exception. (A leading '+', 9_0, digits outside ASCII and an underflow are refused by
-    KiCad and read by float() without an exception: bug 70, test_ladder_r2_transform.py.)"""
+    """The parser port refuses the atom, so no angle is the angle symbol_angle returns for it,
+    not an exception."""
     with pytest.raises(P.ParseRefusal):
         T.parse_symbol_transform([("at", atom.encode())])
-    assert C._angle(atom) is None
+    node = _cst.parse(f"(at 0 0 {atom})".encode()).lists[0]
+    assert C.symbol_angle(node.children[3]) is None
 
 
 @pytest.mark.no_kicad_validation

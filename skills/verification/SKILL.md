@@ -167,8 +167,8 @@ redrawing or moving wires, junctions or bus entries). Report the note to
 the user and wait, as in stuck escalation below:
 - `unreadable_file`: the named sheet file cannot be parsed, so none of
   its checks ran. The user must restore or repair that file.
-- A sheet KiCad cannot load (a symbol or pin at an angle KiCad does not
-  store): the user applies the remedy the note names in KiCad.
+- A sheet KiCad cannot load (a symbol or pin placed in a way its parser
+  refuses): the user applies the remedy the note names in KiCad.
 - A bus entry end where KiCad allows no junction: the user opens the
   schematic in KiCad 9's editor, which splits the line on load, makes
   any edit and undoes it, then saves. Saving with nothing edited writes

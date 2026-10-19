@@ -1454,8 +1454,8 @@ def validate_hierarchy(schematic_path: str = SCH_PATH) -> HierarchyValidationRes
     kicad-cli 9 loads the sheet at all is not checked. To fix one, make the call in its
     "repair" as given: add_junctions at the point, which splits the line, or remove_junction.
     Such an issue carries a "note" in place of a repair in two cases only: its sheet is one the
-    connectivity model refuses (a symbol or pin at an angle KiCad cannot load; no reading
-    either), or it is a bus entry end where KiCad allows no junction.
+    connectivity model refuses (a symbol or pin KiCad cannot load; no reading either), or it
+    is a bus entry end where KiCad allows no junction.
 
     Per file too: the no-connect flags ("no_connect_off_pin") and wire ends
     ("wire_end_off_pin") at the point releases 0.5.8 to 0.20.1 gave a pin of a symbol at
