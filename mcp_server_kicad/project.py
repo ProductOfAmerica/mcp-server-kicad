@@ -437,14 +437,14 @@ def _loaded_pins(sheet, box: _Box) -> list[_SheetPin]:
 
 
 def _font(node) -> tuple[int, int, bool]:
-    """(width, height, bold) of a node's text, from its effects."""
+    """(width, height, bold) of a node's text, from its effects, which print (size HEIGHT WIDTH)."""
     effects = node.find("effects")
     font = effects.find("font") if effects is not None else None
     size = font.find("size") if font is not None else None
     bold = font is not None and any(a.text == "bold" for a in font.atoms[1:])
     if size is None or len(size.atoms) < 3:
         return _DEFAULT_TEXT_SIZE, _DEFAULT_TEXT_SIZE, bold
-    return _connectivity.iu(size.atoms[1].text), _connectivity.iu(size.atoms[2].text), bold
+    return _connectivity.iu(size.atoms[2].text), _connectivity.iu(size.atoms[1].text), bold
 
 
 def _pin_span(pin: _SheetPin, ratio: float) -> tuple[int, int]:
@@ -550,8 +550,9 @@ def _autoplace_fields(sheet, default_pen: int) -> None:
     sides = [pin.side for pin in _loaded_pins(sheet, box)]
     vertical = bool(sides) and all(side in ("top", "bottom") for side in sides)
     margin = _cst.kiround(pen / 2.0) + 4
-    props = {p.atoms[1].text: p for p in sheet.find_all("property")}
-    name, file = props["Sheetname"], props["Sheetfile"]
+    props = {p.atoms[1].text.lower(): p for p in sheet.find_all("property")}
+    name = props.get("sheetname") or props["sheet name"]
+    file = props.get("sheetfile") or props["sheet file"]
     name_margin = margin + _cst.kiround(max(_font(name)[:2]) * 0.5)
     file_margin = margin + _cst.kiround(max(_font(file)[:2]) * 0.4)
     if vertical:

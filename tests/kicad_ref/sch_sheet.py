@@ -90,7 +90,7 @@ def _font_size(effects) -> tuple[int, int]:
     size = _child(font, b"size") if font is not None else None
     if size is None:
         return 12700, 12700
-    return iu(size.items[1].value), iu(size.items[2].value)
+    return iu(size.items[2].value), iu(size.items[1].value)  # (size HEIGHT WIDTH) -> (W, H)
 
 
 def _bold(effects) -> bool:

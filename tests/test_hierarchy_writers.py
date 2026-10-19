@@ -652,6 +652,46 @@ def test_a_resize_below_the_minimum_is_refused(tmp_path):
     assert SS.read_sheet(sheets_of(p.root)[0]).h == minimum
 
 
+def test_a_resize_reads_the_kicad_6_field_names(tmp_path):
+    """A sheet whose fields are named "Sheet name" and "Sheet file" resizes as any other: KiCad
+    maps both names to its sheet name and file fields (sch_io_kicad_sexpr_parser.cpp:2275-2279
+    at 9.0.8)."""
+    p = Proj(tmp_path)
+    uid = p.sheet(p.root, p.child())
+    data = p.root.read_bytes().replace(b'"Sheetname"', b'"Sheet name"')
+    data = data.replace(b'"Sheetfile"', b'"Sheet file"')
+    p.root.write_bytes(data)
+    assert b"(fields_autoplaced" in data and b'"Sheet file"' in data
+    project.modify_hierarchical_sheet(uid, str(p.root), width=38.1)
+    assert SS.read_sheet(sheets_of(p.root)[0]).w == round(38.1 * IU)
+
+
+@pytest.mark.parametrize(
+    ("size", "minimum"), [("1.27 2.54", 8.89), ("2.54 1.27", 10.16)], ids=["wide", "tall"]
+)
+def test_the_minimum_height_reads_a_pins_font_as_height_then_width(tmp_path, size, minimum):
+    """(size H W): the box takes H and the pen takes W (sch_io_kicad_sexpr_parser.cpp:748-753
+    and eda_text.cpp:458-476 at 9.0.8). Both minimums are worked by hand from those lines."""
+    p = Proj(tmp_path)
+    uid = p.sheet(p.root, p.child())
+    for name in ("A", "B", "C"):
+        project.add_sheet_pin(uid, name, "input", str(p.root))
+    data = p.root.read_bytes()
+    pins = re.compile(rb'\(pin "[ABC]" input.*?\(justify \w+\)', re.S)
+    data = pins.sub(
+        lambda m: m.group(0).replace(b"(size 1.27 1.27)", f"(size {size})".encode()), data
+    )
+    p.root.write_bytes(data)
+    assert SS.min_height(SS.read_sheet(sheets_of(p.root)[0])) == round(minimum * IU)
+    for h, accepted in ((8.89, minimum <= 8.89), (10.16, True)):
+        try:
+            project.modify_hierarchical_sheet(uid, str(p.root), height=h)
+        except ToolError:
+            assert not accepted, h
+        else:
+            assert accepted, h
+
+
 def test_an_unchanged_size_writes_nothing(tmp_path):
     p = Proj(tmp_path)
     uid = p.sheet(p.root, p.child())
