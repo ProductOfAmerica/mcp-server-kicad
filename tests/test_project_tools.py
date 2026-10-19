@@ -10,6 +10,7 @@ import sys
 from pathlib import Path
 
 import conftest
+import edit_judge as J
 import erc_oracle
 import pytest
 from conftest import requires_cli
@@ -1464,8 +1465,13 @@ class TestReorderSheetPages:
         assert root.read_bytes() == before
 
         # Left out of page_order, the shared UUID is no obstacle and both blocks stay.
+        # Sheets are ordered by page, so only the page numbers change: C's moves ahead of both.
+        before = root.read_bytes()
         project.reorder_sheet_pages(page_order=[c], schematic_path=str(root))
-        assert [s.uuid for s in Schematic.from_file(str(root)).sheets] == [c, a, a]
+        assert [s.uuid for s in Schematic.from_file(str(root)).sheets] == [a, a, c]
+        changes = J.atom_changes(before, root.read_bytes())
+        assert changes and all(ch.path[-1][1] == "page" for ch in changes)
+        assert [ch.new for ch in changes] == [b'"3"', b'"4"', b'"2"']
 
 
 class TestDuplicateSheet:

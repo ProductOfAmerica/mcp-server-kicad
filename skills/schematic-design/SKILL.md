@@ -282,9 +282,13 @@ the wiring lands in every instance, and the note names each one.
 - `list_hierarchy` / `get_sheet_info` — inspect hierarchy structure
 - `is_root_schematic` — check if a schematic is root or sub-sheet
 - `move_hierarchical_sheet` — reposition a sheet block on the canvas
-- `reorder_sheet_pages` — change the page order of hierarchical sheets
-- `duplicate_sheet` — create a copy of a sheet with new UUIDs
-- `flatten_hierarchy` — merge all sub-sheets into a single flat schematic
+- `reorder_sheet_pages`: change the page numbers, and so the page order, of hierarchical sheets
+  (call it on the root schematic)
+- `duplicate_sheet`: create a copy of a sheet with new UUIDs and its own part references
+  (a sheet that has sub-sheets of its own is refused)
+- `flatten_hierarchy`: write a single flat schematic whose netlist is the hierarchy's; it
+  refuses, writing nothing, where it could not keep that (bus names on sheet pins or in
+  sub-sheets, for one)
 - `trace_hierarchical_net` — trace a net across the hierarchy for debugging
 - `export_hierarchical_netlist` — export netlist with hierarchy info
   (use instead of `export_netlist` for hierarchical designs)
@@ -301,9 +305,10 @@ the wiring lands in every instance, and the note names each one.
 
 ### Sequence: Duplicating a channel (e.g., 4 identical sensor channels)
 1. Design the first channel as a sub-sheet
-2. `duplicate_sheet` — creates a copy with new UUIDs and a new file
+2. `duplicate_sheet`: creates a copy with new UUIDs, a new file and its own part references
+   (the first free number of each prefix), so the copy needs no annotation
 3. Repeat for each additional channel
-4. `annotate_schematic` with `project_path` — assigns unique refs across all copies
+4. `validate_hierarchy` from the root: confirms no reference is shared across the copies
 
 ### Sequence: Pre-ERC annotation and validation
 1. `annotate_schematic` with `project_path` — assign refs to all `?` components
@@ -318,9 +323,10 @@ the wiring lands in every instance, and the note names each one.
 4. Fix with `add_sheet_pin`, `add_hierarchical_label`, or `connect_pins`
 
 ### Sequence: Restructuring hierarchy
-1. `flatten_hierarchy` — merge all sheets into one (creates new file, non-destructive)
+1. `flatten_hierarchy`: merge all sheets into one new file whose netlist is the hierarchy's; the
+   hierarchy is left alone, and a design it cannot flatten faithfully is refused
 2. OR `move_hierarchical_sheet` — reposition sheet blocks on the parent
-3. OR `reorder_sheet_pages` — change page numbering order
+3. OR `reorder_sheet_pages` on the root: change the page numbers the sheets are ordered by
 4. `validate_hierarchy` — verify structure is still valid
 
 ### Sequence: Cleaning up after modifications
