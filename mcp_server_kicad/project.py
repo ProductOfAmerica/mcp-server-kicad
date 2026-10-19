@@ -614,11 +614,12 @@ def _parent_paths(parent: Path, project_path: str) -> tuple[list[str], list[Path
     return [f"/{_file_uuid(top)}"], [top]
 
 
-def _used_pages(tops: list[Path]) -> set[int]:
-    """The integer page numbers written in the hierarchy under the top-level sheets: each sheet
-    block's entry at the path of the sheet that holds it, and each top sheet's own page (1
-    when it names none)."""
-    pages: set[int] = set()
+def _used_pages(tops: list[Path], skip: Path | None = None) -> set[str]:
+    """The page labels written in the hierarchy under the top-level sheets: each sheet block's
+    entry at the path of the sheet that holds it, and each top sheet's own page (1 when it names
+    none). The blocks of the file ``skip`` are left out, for a caller that is about to rewrite
+    them."""
+    pages: set[str] = set()
 
     def read(path: Path):
         try:
@@ -639,20 +640,16 @@ def _used_pages(tops: list[Path]) -> set[int]:
                 if entry.atoms[1].text == "/" and page is not None:
                     own = page.atoms[1].text
             stack.append((top, f"/{_node_uuid(root)}", (_connectivity._real(top),)))
-        pages.add(int(own) if own is not None and own.isdigit() else 1)
+        pages.add(own if own is not None else "1")
     entered = 0
     while stack and entered < _connectivity._MAX_INSTANCES:
         path, live, chain = stack.pop()
         entered += 1
         root = read(path)
+        skipped = skip is not None and _connectivity._real(path) == _connectivity._real(skip)
         for block in root.find_all("sheet") if root is not None else []:
-            instances = block.find("instances")
-            for pj in instances.find_all("project") if instances is not None else []:
-                for entry in pj.find_all("path"):
-                    page = entry.find("page")
-                    if entry.atoms[1].text == live and page is not None:
-                        if page.atoms[1].text.isdigit():
-                            pages.add(int(page.atoms[1].text))
+            for entry in _entries_at(block, live) if not skipped else ():
+                pages.add(entry.find("page").atoms[1].text)
             name = _sheet_file_cst(block)
             if not name:
                 continue
@@ -662,6 +659,26 @@ def _used_pages(tops: list[Path]) -> set[int]:
                     (child, f"{live}/{_node_uuid(block)}", (*chain, _connectivity._real(child)))
                 )
     return pages
+
+
+def _entries_at(block, parent_path: str) -> list:
+    """The ``(path ...)`` entries of a sheet block's instances that sit at ``parent_path`` and
+    carry a page, every project: where KiCad reads the sheet's page."""
+    instances = block.find("instances")
+    return [
+        entry
+        for pj in (instances.find_all("project") if instances is not None else [])
+        for entry in pj.find_all("path")
+        if entry.atoms[1].text == parent_path and entry.find("page") is not None
+    ]
+
+
+def _page_key(label: str):
+    """SCH_SHEET::ComparePageNum as a sort key (sch_sheet.cpp:1609-1642 at 9.0.8): whole numbers
+    first and numerically, then the other labels in natural string order."""
+    if label.isascii() and label.isdigit():
+        return (0, int(label), ())
+    return (1, 0, tuple(int(t) if i % 2 else t for i, t in enumerate(re.split(r"(\d+)", label))))
 
 
 def _add_symbol_instances(sym, project_name: str, paths: list[str]) -> None:
@@ -762,7 +779,7 @@ def add_hierarchical_sheet(
     if root_sch is not None and root_sch.exists():
         _open_sch_cst(str(root_sch))  # a root that is no schematic is refused before any write
     parent_live, tops = _parent_paths(parent_path, project_path)
-    pages_used = _used_pages(tops)
+    pages_used = {int(page) for page in _used_pages(tops) if page.isascii() and page.isdigit()}
 
     x, y = _snap_grid(x), _snap_grid(y)
     x_iu, y_iu = _iu(x), _iu(y)
@@ -1933,7 +1950,17 @@ def reorder_sheet_pages(
     page_order: list[str],
     schematic_path: str = SCH_PATH,
 ) -> str:
-    """Reorder hierarchical sheets by specifying the desired UUID order.
+    """Put hierarchical sheets in the page order given: sheets listed come first, in that order,
+    then the others in the order they have now.
+
+    KiCad orders sheets by their page numbers, not by where their blocks sit in the file, so
+    this rewrites the page numbers and leaves the blocks where they are. Call it on the root
+    schematic: a sheet's page is stored at its parent's path, and a sub-sheet's blocks are
+    refused. The numbers already in use are given back in the new order, so custom labels
+    such as "Intro" stay; when they repeat, or a deeper sheet uses one, the sheets are numbered
+    from the lowest positive whole number no other sheet holds. A sheet whose instance entry
+    was written at its own path, as earlier versions of the tools did, has it moved to the path
+    KiCad reads.
 
     Args:
         page_order: List of sheet UUIDs in desired order
@@ -1948,10 +1975,8 @@ def reorder_sheet_pages(
             f"Sheet UUIDs not found: {missing}."
             " Use list_schematic_sheets to see the sheets and their UUIDs."
         )
-    # The slots are filled from new_order, so a block listed twice took two slots and the
-    # last sheet fell off the end with its pins and instances: [A, A] over A, B, C wrote
-    # A, A, B. sheet_map also keeps only the last block per UUID, so two blocks sharing a
-    # listed UUID lost one of them even when page_order itself had no repeats.
+    # sheet_map keeps only the last block per UUID, so two blocks sharing a listed UUID would
+    # lose one of them even when page_order itself has no repeats.
     name = Path(schematic_path).name
     repeated = sorted(u for u, n in Counter(page_order).items() if n > 1)
     if repeated:
@@ -1967,21 +1992,59 @@ def reorder_sheet_pages(
             " their order is ambiguous and the file was not changed. Leave them out of"
             " page_order to keep those blocks where they are."
         )
-    new_order = [sheet_map[u] for u in page_order]
-    new_order += [s for s in sheets if _node_uuid(s) not in page_order]
-    if len(new_order) != len(sheets) or {id(n) for n in new_order} != {id(s) for s in sheets}:
-        raise ToolError(
-            f"page_order would not keep every sheet block of {name} exactly once, so the"
-            " file was not changed."
-        )
-    # Swap nodes in place, keeping each slot's leading whitespace where it was.
-    slots = [i for i, c in enumerate(root.children) if c.kind == "list" and c.head == "sheet"]
-    slot_seps = [root.children[i].sep for i in slots]
-    for slot, sep, node in zip(slots, slot_seps, new_order):
-        node.sep = sep
-        root.children[slot] = node
-    _atomic_write(schematic_path, _cst.serialize(tree))
-    return f"Reordered {len(page_order)} sheets"
+    # Where each block's page is read: the entry at this file's path, or failing that one an
+    # earlier version wrote at the block's own path (moved to this file's path below).
+    here = f"/{_node_uuid(root)}"
+    pages: dict[int, list] = {}
+    moved: list = []
+    for s in sheets:
+        entries = _entries_at(s, here)
+        if not entries:
+            entries = _entries_at(s, f"{here}/{_node_uuid(s)}")
+            moved += entries
+        if not entries:
+            raise ToolError(
+                f"Sheet '{_sheet_name_cst(s)}' has no page at the path of {name}, so this is not"
+                " the root schematic of its hierarchy (a sheet's page is stored at its parent's"
+                f" path). Call reorder_sheet_pages on the root schematic. {name} was not"
+                " changed."
+            )
+        pages[id(s)] = entries
+
+    def label(s) -> str:
+        return pages[id(s)][0].find("page").atoms[1].text
+
+    def position(s):
+        box = _sheet_box(s)
+        return (box.x, box.y, _node_uuid(s))
+
+    current = sorted(sheets, key=lambda s: (_page_key(label(s)), position(s)))
+    listed = [sheet_map[u] for u in page_order]
+    new_order = listed + [s for s in current if s not in listed]
+    held = [label(s) for s in current]
+    deeper = _used_pages([Path(schematic_path)], skip=Path(schematic_path))
+    if len(set(held)) == len(held) and not deeper & set(held):
+        new_labels = sorted(held, key=_page_key)
+    else:
+        taken, new_labels = {p for p in deeper if p.isascii() and p.isdigit()}, []
+        for _ in new_order:
+            page = next(n for n in range(1, len(taken) + len(new_order) + 2) if str(n) not in taken)
+            taken.add(str(page))
+            new_labels.append(str(page))
+    changed = False
+    for s, new in zip(new_order, new_labels, strict=True):
+        for entry in pages[id(s)]:
+            if entry in moved:
+                entry.atoms[1].set_text(here)
+                changed = True
+            page = entry.find("page").atoms[1]
+            if page.text != new:
+                page.set_text(new)
+                changed = True
+    if changed:
+        _atomic_write(schematic_path, _cst.serialize(tree))
+    numbering = ", ".join(f"{_sheet_name_cst(s)} = {n}" for s, n in zip(new_order, new_labels))
+    return f"Reordered {len(page_order)} sheets. Pages now: {numbering}"
 
 
 @mcp.tool(annotations=_DESTRUCTIVE)

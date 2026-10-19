@@ -1361,8 +1361,16 @@ class TestProjectToolsPreservation:
         sheet = next(s for s in reparse(parent).sheets if s.uuid == uuids[0])
         assert (sheet.position.X, sheet.position.Y) == (101.6, 50.8)
 
+        # KiCad orders sheets by their page numbers, not by their blocks' places in the file
+        # (sch_sheet_path.cpp SortByPageNumbers), so the blocks stay and the two pages swap.
+        before = parent.read_bytes()
         project.reorder_sheet_pages([uuids[1], uuids[0]], schematic_path=str(parent))
-        assert [s.uuid for s in reparse(parent).sheets] == [uuids[1], uuids[0]]
+        assert [
+            (c.path[-1][1], c.old, c.new) for c in J.atom_changes(before, parent.read_bytes())
+        ] == [
+            ("page", b'"2"', b'"3"'),
+            ("page", b'"3"', b'"2"'),
+        ]
         with pytest.raises(ToolError, match="Sheet UUIDs not found"):
             project.reorder_sheet_pages(["nope"], schematic_path=str(parent))
 
