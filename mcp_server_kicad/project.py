@@ -2060,13 +2060,15 @@ def reorder_sheet_pages(
     new_order = listed + [s for s in current if s not in listed]
     held = [label(s) for s in current]
     deeper = _used_pages([Path(schematic_path)], skip=Path(schematic_path))
-    if len(set(held)) == len(held) and not deeper & set(held):
+    # Compared by key, not by text: KiCad reads "01" and "1" as one page, which it cannot order.
+    held_keys = {_page_key(page) for page in held}
+    if len(held_keys) == len(held) and not held_keys & {_page_key(page) for page in deeper}:
         new_labels = sorted(held, key=_page_key)
     else:
-        taken, new_labels = {p for p in deeper if p.isascii() and p.isdigit()}, []
+        taken, new_labels = {int(p) for p in deeper if p.isascii() and p.isdigit()}, []
         for _ in new_order:
-            page = next(n for n in range(1, len(taken) + len(new_order) + 2) if str(n) not in taken)
-            taken.add(str(page))
+            page = next(n for n in range(1, len(taken) + len(new_order) + 2) if n not in taken)
+            taken.add(page)
             new_labels.append(str(page))
     changed = False
     for s, new in zip(new_order, new_labels, strict=True):

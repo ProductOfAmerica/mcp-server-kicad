@@ -222,6 +222,21 @@ def test_reorder_does_not_hand_out_a_page_a_deeper_sheet_holds(tmp_path):
 
 
 @requires_cli
+@pytest.mark.parametrize("order", [("A", "B", "C"), ("B", "A", "C")])
+def test_reorder_renumbers_labels_that_are_one_number_spelled_twice(tmp_path, order):
+    """KiCad compares two whole-number labels by value, so '01', '001' and the root's '1' are
+    one page to it, and ComparePageNum orders no two of them (sch_sheet.cpp:1609-1642 at
+    9.0.8): kept, they would leave the order to chance."""
+    p = Proj(tmp_path)
+    u = three_sheets(p)
+    set_pages(p.root, {"A": "01", "B": "001", "C": "3"})
+    project.reorder_sheet_pages([u[n] for n in order], schematic_path=str(p.root))
+    labels = page_labels(p.root)
+    assert len({int(label) for label in labels.values()} | {1}) == 4, labels
+    assert sheet_order(p.root) == ["/", *(f"/{n}/" for n in order)]
+
+
+@requires_cli
 def test_reorder_keeps_labels_that_are_not_numbers(tmp_path):
     p = Proj(tmp_path)
     u = three_sheets(p)
