@@ -60,6 +60,7 @@ class Pin(NamedTuple):
     y: int
     size: tuple[int, int]
     bold: bool
+    thickness: int  # the font's (thickness), 0 when absent
     justify: tuple[str, ...]  # the (justify ...) atoms as written
 
 
@@ -93,11 +94,19 @@ def _font_size(effects) -> tuple[int, int]:
     return iu(size.items[2].value), iu(size.items[1].value)  # (size HEIGHT WIDTH) -> (W, H)
 
 
-def _bold(effects) -> bool:
+def _font_flags(effects) -> tuple[bool, int]:
+    """(bold, thickness) as the parser reads them: `bold`, `(bold)` and `(bold yes)` set bold,
+    `(bold no)` clears it, `(thickness T)` sets the thickness; the last written wins."""
     font = _child(effects, b"font") if effects is not None else None
-    return font is not None and any(
-        c.kind in L.ATOM_KINDS and c.value == b"bold" for c in font.items[1:]
-    )
+    bold, thickness = False, 0
+    for c in font.items[1:] if font is not None else ():
+        if c.kind in L.ATOM_KINDS and c.value == b"bold":
+            bold = True
+        elif _head(c) == b"bold":
+            bold = not (len(c.items) > 1 and c.items[1].value == b"no")
+        elif _head(c) == b"thickness" and len(c.items) > 1:
+            thickness = iu(c.items[1].value)
+    return bold, thickness
 
 
 def _justify(effects) -> tuple[str, ...]:
@@ -167,6 +176,7 @@ def read_sheet(group) -> Sheet:
             continue
         pat = _child(p, b"at")
         effects = _child(p, b"effects")
+        bold, thickness = _font_flags(effects)
         side, px, py = load_pin(
             x, y, w, h, iu(pat.items[1].value), iu(pat.items[2].value), float(pat.items[3].value)
         )
@@ -177,7 +187,8 @@ def read_sheet(group) -> Sheet:
                 px,
                 py,
                 _font_size(effects),
-                _bold(effects),
+                bold,
+                thickness,
                 _justify(effects),
             )
         )
@@ -202,14 +213,14 @@ def pin_justify(side: str) -> tuple[str, ...]:
     return {"left": ("left",), "right": ("right",), "top": ("right",), "bottom": ("left",)}[side]
 
 
-def pen_of(size: tuple[int, int], bold: bool) -> int:
-    pen = kiround(size[0] / 5.0) if bold else kiround(size[0] / 8.0)
+def pen_of(size: tuple[int, int], bold: bool, thickness: int = 0) -> int:
+    pen = thickness if thickness > 1 else kiround(size[0] / (5.0 if bold else 8.0))
     return min(pen, kiround(min(size) * 0.25))
 
 
 def pin_span(pin: Pin, ratio: float) -> tuple[int, int]:
     """(low, high) of the pin's box along its edge, in IU."""
-    height = pin.size[1] + pen_of(pin.size, pin.bold) + kiround(ratio * pin.size[1])
+    height = pin.size[1] + pen_of(pin.size, pin.bold, pin.thickness) + kiround(ratio * pin.size[1])
     low = (pin.y if pin.side in ("left", "right") else pin.x) - height // 2
     return low, low + height
 

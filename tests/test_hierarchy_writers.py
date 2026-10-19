@@ -692,6 +692,73 @@ def test_the_minimum_height_reads_a_pins_font_as_height_then_width(tmp_path, siz
             assert accepted, h
 
 
+#: (extra font atoms, minimum height in mm) for three left pins whose font is (size 1.9 1.9).
+#: Worked by hand, in IU of 0.0001 mm, from KiCad 9.0.8: the parser reads `bold`, `(bold)` and
+#: `(bold yes)` as bold and `(bold no)` as not (sch_io_kicad_sexpr_parser.cpp:147-172, 763-766)
+#: and `(thickness T)` as the text thickness (same file, 758-761); the pen is T when T > 1,
+#: else width/5 bold or width/8 plain, clamped to a quarter of the smaller size
+#: (eda_text.cpp:458-476); the pin's box is height + pen + margin with margin = 0.15 * height
+#: (sch_label.cpp:2155-2205), centred on the pin with C integer halving. The lowest pin is 76200
+#: below the sheet's top, which lies on the 50 mil (12700) grid. Size 19000:
+#:   plain      pen 2375, extent 24225, half 12112, 76200 + 12112 = 88312 -> bump 88900 (8.89 mm)
+#:   bold       pen 3800, extent 25650, half 12825, 76200 + 12825 = 89025 -> bump 101600 (10.16)
+#:   T = 4000   extent 25850, half 12925, 76200 + 12925 = 89125 -> bump 101600 (10.16)
+#:   T = 1000   extent 22850, half 11425, 76200 + 11425 = 87625 -> bump 88900 (8.89), bold or not
+#:   T = 1      not above 1 IU, so the plain pen
+#: The size is chosen so the plain and bold boxes straddle the 88900 line; at 1.27 both bump to
+#: the same line and the pen would not show.
+_PEN_CASES = [
+    ("", 8.89),
+    (" bold", 10.16),
+    (" (bold)", 10.16),
+    (" (bold yes)", 10.16),
+    (" (bold no)", 8.89),
+    (" (thickness 0.4)", 10.16),
+    (" (thickness 0.0001)", 8.89),
+    (" (bold yes) (thickness 0.1)", 8.89),
+]
+_PEN_IDS = ["plain", "bare-bold", "bold-empty", "bold-yes", "bold-no", "thick", "thin", "both"]
+
+
+def _pins_with_font(tmp_path, extra):
+    p = Proj(tmp_path)
+    uid = p.sheet(p.root, p.child())
+    for name in ("A", "B", "C"):
+        project.add_sheet_pin(uid, name, "input", str(p.root))
+    data = p.root.read_bytes()
+    pins = re.compile(rb'\(pin "[ABC]" input.*?\(justify \w+\)', re.S)
+    data = pins.sub(
+        lambda m: m.group(0).replace(b"(size 1.27 1.27)", f"(size 1.9 1.9){extra}".encode()),
+        data,
+    )
+    p.root.write_bytes(data)
+    return p, uid
+
+
+@pytest.mark.parametrize(("extra", "minimum"), _PEN_CASES, ids=_PEN_IDS)
+def test_the_judge_reads_a_pins_bold_and_thickness(tmp_path, extra, minimum):
+    """The port's minimum height equals the hand-worked one in _PEN_CASES."""
+    p, _ = _pins_with_font(tmp_path, extra)
+    sheet = SS.read_sheet(sheets_of(p.root)[0])
+    assert sheet.y % SS.GRID == 0
+    assert SS.min_height(sheet) == round(minimum * IU)
+
+
+@pytest.mark.parametrize(("extra", "minimum"), _PEN_CASES, ids=_PEN_IDS)
+def test_the_minimum_height_reads_a_pins_bold_and_thickness(tmp_path, extra, minimum):
+    """modify_hierarchical_sheet refuses 8.89 mm exactly when the hand-worked minimum in
+    _PEN_CASES is above it, and accepts the minimum."""
+    p, uid = _pins_with_font(tmp_path, extra)
+    before = p.root.read_bytes()
+    if minimum > 8.89:
+        with pytest.raises(ToolError):
+            project.modify_hierarchical_sheet(uid, str(p.root), height=8.89)
+        assert p.root.read_bytes() == before
+    else:
+        project.modify_hierarchical_sheet(uid, str(p.root), height=8.89)
+    project.modify_hierarchical_sheet(uid, str(p.root), height=minimum)
+
+
 def test_an_unchanged_size_writes_nothing(tmp_path):
     p = Proj(tmp_path)
     uid = p.sheet(p.root, p.child())

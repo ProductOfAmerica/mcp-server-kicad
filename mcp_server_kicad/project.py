@@ -436,22 +436,38 @@ def _loaded_pins(sheet, box: _Box) -> list[_SheetPin]:
     return pins
 
 
-def _font(node) -> tuple[int, int, bool]:
-    """(width, height, bold) of a node's text, from its effects, which print (size HEIGHT WIDTH)."""
+def _font(node) -> tuple[int, int, bool, int]:
+    """(width, height, bold, thickness) of a node's text, from its effects, which print
+    (size HEIGHT WIDTH). Bold is `bold`, `(bold)` or `(bold yes)` (not `(bold no)`), the last
+    one written winning; thickness is 0 when absent."""
     effects = node.find("effects")
     font = effects.find("font") if effects is not None else None
+    bold, thickness = False, 0
+    for child in (font.children or ()) if font is not None else ():
+        if child.kind == "atom" and child.text == "bold":
+            bold = True
+        elif child.kind == "list" and child.head == "bold":
+            bold = not (len(child.atoms) > 1 and child.atoms[1].text == "no")
+        elif child.kind == "list" and child.head == "thickness" and len(child.atoms) > 1:
+            thickness = _connectivity.iu(child.atoms[1].text)
     size = font.find("size") if font is not None else None
-    bold = font is not None and any(a.text == "bold" for a in font.atoms[1:])
     if size is None or len(size.atoms) < 3:
-        return _DEFAULT_TEXT_SIZE, _DEFAULT_TEXT_SIZE, bold
-    return _connectivity.iu(size.atoms[2].text), _connectivity.iu(size.atoms[1].text), bold
+        return _DEFAULT_TEXT_SIZE, _DEFAULT_TEXT_SIZE, bold, thickness
+    return (
+        _connectivity.iu(size.atoms[2].text),
+        _connectivity.iu(size.atoms[1].text),
+        bold,
+        thickness,
+    )
 
 
 def _pin_span(pin: _SheetPin, ratio: float) -> tuple[int, int]:
     """The pin's box along its edge: text height plus pen width plus the text offset, centred
-    on the pin (SCH_HIERLABEL::GetBodyBoundingBox, sch_label.cpp:2155-2205 at 9.0.8)."""
-    width, height, bold = _font(pin.node)
-    pen = _cst.kiround(width / (5.0 if bold else 8.0))
+    on the pin (SCH_HIERLABEL::GetBodyBoundingBox, sch_label.cpp:2155-2205 at 9.0.8). The pen
+    is the font's thickness above 1 IU, else width/8 (bold width/5), clamped to a quarter of
+    the smaller size (EDA_TEXT::GetEffectiveTextPenWidth, eda_text.cpp:458-476)."""
+    width, height, bold, thickness = _font(pin.node)
+    pen = thickness if thickness > 1 else _cst.kiround(width / (5.0 if bold else 8.0))
     pen = min(pen, _cst.kiround(min(width, height) * 0.25))
     extent = height + pen + _cst.kiround(ratio * height)
     low = (pin.y if pin.side in ("left", "right") else pin.x) - extent // 2
