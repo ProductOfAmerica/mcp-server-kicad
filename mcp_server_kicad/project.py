@@ -2388,8 +2388,8 @@ def _fresh_uuids(node) -> None:
 
 def _pin_signature(lib) -> tuple:
     """The part of a library symbol flatten_hierarchy compares: each pin's number, type, place
-    and flags in its unit, and the symbol's power and extends. Pin names, graphics and fields
-    are left out."""
+    and flags in its unit, a power_in pin's name and visibility, and the symbol's power and
+    extends. Other pin names, graphics and fields are left out."""
     pins = []
     for sub in lib.find_all("symbol"):
         for pin in sub.find_all("pin"):
@@ -2397,6 +2397,9 @@ def _pin_signature(lib) -> tuple:
             for key in ("at", "length", "number"):
                 part = pin.find(key)
                 parts.append(tuple(a.text for a in part.atoms[1:]) if part is not None else ())
+            if pin.atoms[1].text == "power_in":
+                name = pin.find("name")
+                parts += [_connectivity._pin_hidden(pin), name.atoms[1].text if name else ""]
             pins.append(tuple(map(str, parts)))
     flags = tuple(
         tuple(a.text for a in node.atoms) for key in ("power", "extends") if (node := lib.find(key))
@@ -2490,12 +2493,13 @@ def flatten_hierarchy(
 
     The flat file is the root schematic with each sub-sheet's content copied below it, one
     cell per use of a sheet file (a file used twice is copied twice). Each part keeps the
-    reference and unit KiCad reads for it at its sheet's path. A sheet pin becomes a local
-    label at its place, and a local or hierarchical label of a sub-sheet becomes a local label
-    named after the sheet's path, so nets keep their joins and no others; net names change
-    to those labels. A label whose own sheet has a global label or power symbol of its text
-    keeps that text, so it keeps joining it. Text variables that name the sheet are not
-    rewritten.
+    reference and unit KiCad reads for it at its sheet's path. A sheet pin becomes a
+    local label at its place when its sheet has a hierarchical label of its name, and nothing
+    otherwise. A local or hierarchical label of a sub-sheet becomes a local label named after
+    the sheet's path, so nets keep their joins and no others; net names change to those
+    labels. A label whose own sheet has a global label, a power symbol or a hidden power input
+    pin of its text keeps that text, so it keeps joining it. Text variables that name the
+    sheet are not rewritten.
 
     The tool refuses, writing nothing, where the flat file could not keep the netlist: a
     sheet pin or sub-sheet label that may be a bus, a file older than format 20221002, a
@@ -2736,11 +2740,30 @@ def flatten_hierarchy(
     def global_names(node) -> set[str]:
         names = {g.atoms[1].text for g in node.find_all("global_label") if len(g.atoms) > 1}
         libs = _connectivity.lib_index(node)
-        for sym in node.find_all("symbol"):
+        records = _connectivity.sheet_facts(node).records
+        for sym, rec in zip(node.find_all("symbol"), records, strict=True):
             lib = libs.get(_connectivity.lib_key(sym))
+            if lib is None:
+                continue
             value = _sym_property_cst(sym, "Value")
-            if lib is not None and lib.find("power") is not None and value:
-                names.add(value)
+            if lib.find("power") is not None:
+                if value:
+                    names.add(value)
+            elif lib.find("extends") is None:
+                # a hidden power_in pin names a global net by its own name (sch_pin.cpp:323-327
+                # at 9.0.8)
+                style = _connectivity._sym_body_style_cst(sym)
+                for unit in rec.every_unit():
+                    for sub in _connectivity._instance_units(lib, unit, style):
+                        for pin in sub.find_all("pin"):
+                            name = pin.find("name")
+                            if (
+                                pin.atoms[1].text == "power_in"
+                                and _connectivity._pin_hidden(pin)
+                                and name is not None
+                                and len(name.atoms) > 1
+                            ):
+                                names.add(name.atoms[1].text)
         return names
 
     own_globals = {id(flat_root): global_names(flat_root)}
@@ -2748,6 +2771,13 @@ def flatten_hierarchy(
         if id(inst.node) not in own_globals:
             own_globals[id(inst.node)] = global_names(inst.node)
     all_globals = set().union(*own_globals.values())
+
+    hier_labels = {
+        inst.live: {
+            h.atoms[1].text for h in inst.node.find_all("hierarchical_label") if len(h.atoms) > 1
+        }
+        for inst in instances
+    }
 
     def global_clash(file: str, text: str) -> ToolError:
         return ToolError(
@@ -2771,8 +2801,11 @@ def flatten_hierarchy(
                 continue
             if head == "sheet":
                 child_prefix = prefix + _net_escape(_sheet_name_cst(item) or "") + "{slash}"
+                joined = hier_labels.get(f"{live}/{_node_uuid(item)}", set())
                 for pin in item.find_all("pin"):
                     check_text(file, "sheet pin", pin.atoms[1].text)
+                    if pin.atoms[1].text not in joined:
+                        continue  # a pin joins hierarchical labels only (connection_graph.cpp:2644)
                     if child_prefix + pin.atoms[1].text in all_globals:
                         raise global_clash(file, child_prefix + pin.atoms[1].text)
                     label = _flat_label(child_prefix + pin.atoms[1].text, pin.find("at"))

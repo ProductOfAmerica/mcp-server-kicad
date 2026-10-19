@@ -703,6 +703,50 @@ def build_hierarchical_label_beside_a_global_one(p: Proj) -> None:
     schematic.add_global_label("P", 76.2, 57.15, 0, "input", schematic_path=str(child))
 
 
+def build_pin_beside_a_local_label(p: Proj) -> None:
+    """Sheet pin X wired to a root part; the child has a local label X and no hierarchical
+    label X, so the pin joins nothing in the child."""
+    child = p.child("c")
+    uid = p.sheet(p.root, child, "C", x=152.4, y=50.8)
+    project.add_sheet_pin(uid, "X", "input", str(p.root))
+    px, py = pin_edge(p.root, uid, "X")
+    schematic.place_component(
+        "Device:R",
+        "R1",
+        "1k",
+        101.6,
+        py - 3.81,
+        schematic_path=str(p.root),
+        project_path=str(p.pro),
+    )
+    schematic.add_wires([{"x1": 101.6, "y1": py, "x2": px, "y2": py}], schematic_path=str(p.root))
+    resistor(child, p, "R2", 50.8, "X", "M")
+
+
+def make_pin_two_hidden_power(lib, hidden: bool) -> None:
+    """Pin 2 of a resistor's definition becomes power_in VCC, hidden or not."""
+    pin = [q for sub in lib.find_all("symbol") for q in sub.find_all("pin")][1]
+    pin.atoms[1].set_text("power_in")
+    pin.find("name").atoms[1].set_text("VCC")
+    if hidden:
+        pin.insert_after(pin.find("length"), _cst.parse(b"(hide yes)").lists[0])
+
+
+def device_r(root):
+    return next(
+        s for s in root.find("lib_symbols").find_all("symbol") if s.atoms[1].text == "Device:R"
+    )
+
+
+def build_local_label_beside_a_hidden_power_pin(p: Proj) -> None:
+    """R1's hidden power_in pin 2 is the global net VCC, which a local label VCC on pin 1 of
+    the same sheet joins."""
+    child = p.child("c")
+    resistor(child, p, "R1", 50.8, "VCC", "M1")
+    edit(child, lambda r: make_pin_two_hidden_power(device_r(r), True))
+    p.sheet(p.root, child, "C", x=152.4, y=25.4)
+
+
 BUILDERS = [
     pytest.param(build_unconnected, id="unconnected-pins"),
     pytest.param(build_pin_wired_both_sides, id="pin-wired-both-sides"),
@@ -715,6 +759,8 @@ BUILDERS = [
     pytest.param(build_local_label_beside_a_global_one, id="local-beside-global"),
     pytest.param(build_local_label_beside_a_power_symbol, id="local-beside-power"),
     pytest.param(build_hierarchical_label_beside_a_global_one, id="hierarchical-beside-global"),
+    pytest.param(build_pin_beside_a_local_label, id="pin-beside-local-label"),
+    pytest.param(build_local_label_beside_a_hidden_power_pin, id="local-beside-hidden-power-pin"),
 ]
 
 
@@ -876,6 +922,30 @@ def test_a_library_symbol_that_differs_only_in_its_fields_flattens(tmp_path, oth
     two_definitions(p, other, reword)
     flat, _ = flatten(p.root)
     assert_same_netlist(p.root, flat)
+
+
+@pytest.mark.no_kicad_validation  # the definition is edited by hand
+@pytest.mark.usefixtures("stock_parts")
+def test_two_definitions_differing_only_in_a_power_pin_being_hidden_are_refused(tmp_path):
+    """A hidden power_in pin is a global net of its name and a visible one is not."""
+    p = Proj(tmp_path)
+    a, b = p.child("a"), p.child("b")
+    for path, refs in ((a, ("R1",)), (b, ("R2", "R3"))):
+        for k, ref in enumerate(refs):
+            schematic.place_component(
+                "Device:R",
+                ref,
+                "1k",
+                50.8 + 25.4 * k,
+                60.96,
+                schematic_path=str(path),
+                project_path=str(p.pro),
+            )
+    edit(a, lambda r: make_pin_two_hidden_power(device_r(r), False))
+    edit(b, lambda r: make_pin_two_hidden_power(device_r(r), True))
+    p.sheet(p.root, a, "A", x=152.4, y=25.4)
+    p.sheet(p.root, b, "B", x=203.2, y=25.4)
+    refused(p, r"Device:R")
 
 
 def test_a_root_label_named_like_a_global_net_of_another_sheet_is_refused(tmp_path):
