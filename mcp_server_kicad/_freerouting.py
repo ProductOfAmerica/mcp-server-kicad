@@ -102,9 +102,15 @@ def check_java(jar_path: str | None = None, *, java: str | None) -> str | None:
     _JAVA_FLOOR otherwise.
     """
     needed = (jar_java_requirement(jar_path) if jar_path else None) or _JAVA_FLOOR
+    # Each source named here offered Java 25 or newer when checked on 2026-10-19.
+    # Not named: a distribution's default JRE, which can be older than the jar
+    # needs, and Homebrew's openjdk formula, which is keg-only, so not on PATH.
     how = (
-        "Install a JRE of at least that version: "
-        "https://adoptium.net, `brew install openjdk`, or `apt install default-jre`."
+        "Eclipse Temurin has installers for Windows and macOS at"
+        " https://adoptium.net/temurin/releases/ and Linux packages at"
+        " https://adoptium.net/installation/linux/; on macOS,"
+        " `brew install --cask temurin` installs the newest. Restart your MCP client"
+        " afterwards."
     )
     missing = f"Java runtime not found. Autorouting needs Java {needed}+. {how}"
     if java is None:

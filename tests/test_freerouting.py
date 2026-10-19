@@ -57,7 +57,10 @@ class TestCheckJava:
             result = check_java(java="/fake/java")
             assert result is not None
             assert "Java" in result
-            assert "apt install" in result
+            assert "https://adoptium.net/temurin/releases/" in result
+            # It named `apt install default-jre`, which can install a Java older
+            # than the jar needs.
+            assert "default-jre" not in result
 
     def test_no_java_on_path_is_reported_without_spawning(self):
         """None is what the PATH lookup hands over when there is no java at all."""
