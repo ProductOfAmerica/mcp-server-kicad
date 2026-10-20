@@ -28,6 +28,27 @@ change on disk.
 
 </div>
 
+> [!IMPORTANT]
+> **Maintenance mode.** As of October 2026 this project gets security fixes and KiCad compatibility fixes only. No new tools or features are planned. Existing installs keep working. [Why](#why-maintenance-mode)
+
+## Why maintenance mode
+
+The plugin was built on one idea: KiCad files are large, so an AI assistant should change them through tools instead of editing the text. We tested that idea against plain Claude Code with KiCad installed and no plugin: the same model (Claude Opus 5.5), the same settings and the same tasks, each result judged by KiCad 10 itself (netlist, board, ERC and DRC).
+
+- **Six single edits** on a public KiCad 10 design (a value change, do-not-populate, a footprint swap, pads assigned to a net, a footprint rotation, a net renamed across sheets), three runs each. Plain Claude Code got all 18 right. With the plugin, 3 of 18 were right.
+- **A long session of 20 board edits.** Both got every edit right, and the plugin's sessions used about 1.8 times as much context.
+- **Why the plugin failed**, from reading every transcript:
+  - It had no tool for some edits (a pad's net, the do-not-populate flag, swapping one footprint).
+  - Its instructions told the model never to edit KiCad files directly, so the model stopped and asked instead.
+  - Its board-sync tool rewrote almost every footprint on the board, so the model undid its own work.
+- **The premise did not hold in these tests.** Plain Claude Code changed a 2 MB board without reading it whole: it searched for the part and edited only the lines it needed.
+
+These were small tests on one design, not a verdict on every board or every model. They were enough to stop adding tools. The test material is not published, because the design it used carries no license.
+
+**What to use instead:** a coding agent such as Claude Code, with KiCad installed. Ask it to check its changes with `kicad-cli` (netlist export, ERC, DRC) before it finishes.
+
+Bug reports and fixes for KiCad compatibility are still welcome.
+
 ---
 
 ## What it looks like
