@@ -154,7 +154,7 @@ jobs:
       - name: Install the pinned MCPB packer
         run: npm ci --prefix .github/tools/mcpb --ignore-scripts --no-audit --no-fund
 
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           python-version: "3.11"
           # No cache in a release. setup-uv's "auto" turns caching off for

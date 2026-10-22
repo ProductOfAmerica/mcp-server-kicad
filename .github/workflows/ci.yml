@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@v7
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           python-version: "3.11"
           # Same cache key as test (3.11). Only that job saves it, because two
@@ -76,7 +76,7 @@ jobs:
       # did neither: uv kept resolving .python-version (then 3.10), so every
       # leg ran 3.10 (run 36915736772, 2026-10-01: the 3.11, 3.12 and 3.13
       # legs all reported Python 3.10.21).
-      - uses: astral-sh/setup-uv@v10.2.0
+      - uses: astral-sh/setup-uv@v10.3.0
         with:
           python-version: ${{ matrix.python-version }}
       - run: uv sync --frozen --all-extras --dev
